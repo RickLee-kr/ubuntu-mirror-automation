@@ -140,14 +140,28 @@ um_whiptail_yesno() {
 }
 
 um_whiptail_msg() {
-  local title="$1" text="$2"
+  local title="$1" text="$2" height="${3:-16}" width="${4:-72}"
   if ! um_menu_has_whiptail; then
     printf '\n== %s ==\n%b\n' "$title" "$text"
     um_menu_pause
     return 0
   fi
   um_menu_set_newt_colors
-  whiptail --title "$title" --msgbox "$text" 14 70
+  # msgbox keeps focus on <Ok>; Enter dismisses (unlike --textbox where
+  # arrows scroll and Tab-to-Ok is unreliable over some SSH clients).
+  whiptail --title "$title" --msgbox "$text" "$height" "$width"
+}
+
+# Show a file in a msgbox (Enter closes). Strips ANSI color codes.
+um_whiptail_file_msg() {
+  local title="$1" file="$2" height="${3:-20}" width="${4:-72}"
+  local body
+  body="$(sed 's/\x1b\[[0-9;]*m//g' "$file" 2>/dev/null || cat "$file")"
+  # Trailing hint so operators know how to leave
+  body="${body}
+
+(Press Enter to close)"
+  um_whiptail_msg "$title" "$body" "$height" "$width"
 }
 
 um_whiptail_input() {
@@ -195,8 +209,7 @@ um_menu_show_status() {
     printf 'State: %s\nPath: %s\n' "$(um_menu_sync_label)" "$BASE_PATH" >"$tmp"
   fi
   if um_menu_has_whiptail; then
-    um_menu_set_newt_colors
-    whiptail --title "Status" --scrolltext --textbox "$tmp" 20 72
+    um_whiptail_file_msg "Status" "$tmp" 22 72
   else
     cat "$tmp"
     um_menu_pause
@@ -283,8 +296,7 @@ um_menu_prepare_install_minimal() {
   cap_out="$(mktemp)"
   if ! um_check_sync_capacity "$BASE_PATH" "minimal" >"$cap_out" 2>&1; then
     if um_menu_has_whiptail; then
-      um_menu_set_newt_colors
-      whiptail --title "Capacity check failed" --scrolltext --textbox "$cap_out" 18 72
+      um_whiptail_file_msg "Capacity check failed" "$cap_out" 18 72
     else
       cat "$cap_out"
       um_menu_pause
@@ -317,8 +329,7 @@ um_menu_prepare_install_full() {
   cap_out="$(mktemp)"
   if ! um_check_sync_capacity "$BASE_PATH" "full" >"$cap_out" 2>&1; then
     if um_menu_has_whiptail; then
-      um_menu_set_newt_colors
-      whiptail --title "Full mode blocked" --scrolltext --textbox "$cap_out" 18 72
+      um_whiptail_file_msg "Full mode blocked" "$cap_out" 18 72
     else
       cat "$cap_out"
       um_menu_pause

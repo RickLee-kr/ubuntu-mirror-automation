@@ -258,5 +258,11 @@ grep -q 'um_install_menu' "${ROOT}/install.sh" && pass "install.sh calls menu" |
 grep -q 'whiptail' "${ROOT}/lib/install-menu.sh" && pass "whiptail dialog UI" || fail "whiptail missing"
 grep -q 'NEWT_COLORS' "${ROOT}/lib/install-menu.sh" && pass "dialog color theme" || fail "NEWT_COLORS missing"
 grep -q 'whiptail' "${ROOT}/install.sh" && pass "install ensures whiptail package" || fail "whiptail not in packages"
+grep -q 'um_whiptail_file_msg\|--msgbox' "${ROOT}/lib/install-menu.sh" && pass "status uses msgbox (Enter closes)" || fail "msgbox helper missing"
+if grep -qE -- '--textbox' "${ROOT}/lib/install-menu.sh"; then
+  fail "textbox still used (Tab-to-Ok broken over SSH)"
+else
+  pass "no textbox (avoids focus trap)"
+fi
 
 exit "$FAIL"
