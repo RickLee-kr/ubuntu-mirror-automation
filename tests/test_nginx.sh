@@ -18,12 +18,14 @@ um_generate_nginx_conf >"${TMPDIR_TEST}/apt-mirror.conf"
 
 # Structural checks
 grep -q 'listen' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
-grep -q 'location /ubuntu' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
+grep -q 'location /ubuntu/' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
+grep -q 'location /offline/' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
 grep -q 'autoindex on' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
 grep -q 'alias ' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
 
 # Template file exists and matches guide essentials
-grep -q 'location /ubuntu' "${ROOT}/templates/nginx.conf" || FAIL=1
+grep -q 'location /ubuntu/' "${ROOT}/templates/nginx.conf" || FAIL=1
+grep -q 'location /offline/' "${ROOT}/templates/nginx.conf" || FAIL=1
 
 if command -v nginx >/dev/null 2>&1; then
   # Build a minimal nginx.conf that includes our server block for -t

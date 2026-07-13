@@ -1,11 +1,11 @@
 [Unit]
-Description=APT Mirror Sync Service
+Description=Ubuntu Offline Mirror Sync Service
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/lib/ubuntu-mirror/run-apt-mirror.sh
+ExecStart=/usr/local/sbin/ubuntu-offline-mirror.sh sync
 StandardOutput=journal
 StandardError=journal
 User=root

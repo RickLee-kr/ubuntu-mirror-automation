@@ -31,11 +31,18 @@ PROJECTED_SIZE_GIB_FULL="700"
 UPSTREAM_MIRROR="http://archive.ubuntu.com/ubuntu"
 DEFAULT_ARCH="amd64"
 NTHREADS="20"
-# Default is minimal (main + restricted). Full requires explicit --full.
-MIRROR_MODE="minimal"
+# Offline upgrade mirror defaults to full (main restricted universe multiverse).
+# Installer still accepts --minimal for smaller footprints.
+MIRROR_MODE="full"
 UBUNTU_VERSIONS="xenial bionic focal jammy noble"
-SUITE_SUFFIXES="updates security"
+SUITE_SUFFIXES="updates security backports"
 INCLUDE_SOURCE="false"
+# Dedicated data-disk enforcement for offline mirror (override via defaults file)
+ALLOW_ROOT_FS_MIRROR="false"
+MIN_FREE_GB="50"
+PUBLIC_BASE_URL=""
+SYNC_RANDOMIZED_DELAY_SEC="900"
+RUN_CLEAN="true"
 NGINX_SITE_NAME="apt-mirror"
 NGINX_LISTEN_IPV6="true"
 NGINX_DEFAULT_SERVER="true"
@@ -140,19 +147,22 @@ um_apply_mirror_mode_components() {
   esac
 }
 
-# Resolve install/runtime mode: full only when explicitly requested.
-# Without --full, MIRROR_MODE=full in config is ignored (never auto-start full).
+# Resolve install/runtime mode.
+# Offline upgrade mirror defaults to full. --minimal forces reduced footprint.
+# --full explicitly selects full. Config MIRROR_MODE=full is honored without --full.
 um_resolve_mirror_mode() {
   local want_full="${1:-0}"
-  if [[ "$want_full" == "1" ]]; then
+  local want_minimal="${2:-0}"
+  if [[ "$want_minimal" == "1" ]]; then
+    MIRROR_MODE="minimal"
+  elif [[ "$want_full" == "1" ]]; then
     MIRROR_MODE="full"
   else
-    if [[ "${MIRROR_MODE}" == "full" || "${MIRROR_MODE}" == "FULL" ]]; then
-      if [[ "${UM_QUIET_LOAD:-0}" != "1" ]]; then
-        um_warn "MIRROR_MODE=full ignored without --full; using minimal (main + restricted)"
-      fi
-    fi
-    MIRROR_MODE="minimal"
+    case "${MIRROR_MODE}" in
+      full|FULL) MIRROR_MODE="full" ;;
+      minimal|MINIMAL) MIRROR_MODE="minimal" ;;
+      *) MIRROR_MODE="full" ;;
+    esac
   fi
   um_apply_mirror_mode_components
 }
@@ -199,6 +209,12 @@ set nthreads     ${NTHREADS}
 set _tilde 0
 ############# end config ##############
 
+# Offline LTS upgrade chain (amd64 only)
+# INCLUDED: official Ubuntu amd64 packages (main/restricted/universe/multiverse),
+#           kernels, headers, and dependencies for release upgrades.
+# EXCLUDED: i386, deb-src, Ubuntu Pro/ESM, PPAs, Docker CE, NVIDIA/CUDA,
+#           Snap packages, vendor/private APT repositories.
+
 EOF
 
   for ver in ${UBUNTU_VERSIONS}; do
@@ -235,6 +251,7 @@ EOF
 um_generate_nginx_conf() {
   local listen_extra=""
   local default_flag=""
+  local offline_root="${BASE_PATH}/offline"
   if [[ "${NGINX_DEFAULT_SERVER}" == "true" ]]; then
     default_flag=" default_server"
   fi
@@ -243,7 +260,7 @@ um_generate_nginx_conf() {
   fi
 
   cat <<EOF
-# Managed by ubuntu-mirror-server — do not edit by hand unless necessary.
+# Managed by ubuntu-mirror-server — offline upgrade mirror
 server {
     listen ${MIRROR_PORT}${default_flag};
 ${listen_extra}
@@ -257,9 +274,25 @@ ${listen_extra}
         try_files \$uri \$uri/ =404;
     }
 
-    location /ubuntu {
-        alias ${UBUNTU_MIRROR_ROOT};
+    location = /ubuntu {
+        return 301 /ubuntu/;
+    }
+    location /ubuntu/ {
+        alias ${UBUNTU_MIRROR_ROOT}/;
         autoindex on;
+    }
+
+    location = /offline {
+        return 301 /offline/;
+    }
+    location /offline/ {
+        alias ${offline_root}/;
+        autoindex on;
+        default_type text/plain;
+    }
+
+    location ~ /\\.\\. {
+        return 403;
     }
 
     access_log ${NGINX_ACCESS_LOG};
@@ -271,14 +304,13 @@ EOF
 um_generate_systemd_service() {
   cat <<EOF
 [Unit]
-Description=APT Mirror Sync Service
+Description=Ubuntu Offline Mirror Sync Service
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=${INSTALL_LIB_DIR}/run-apt-mirror.sh
-# Timestamped operational log is written by run-apt-mirror.sh; keep journal for systemd.
+ExecStart=/usr/local/sbin/ubuntu-offline-mirror.sh sync
 StandardOutput=journal
 StandardError=journal
 User=root
@@ -296,6 +328,7 @@ EOF
 
 um_generate_systemd_timer() {
   local persistent_line=""
+  local delay="${SYNC_RANDOMIZED_DELAY_SEC:-900}"
   if [[ "${SYNC_PERSISTENT}" == "true" ]]; then
     persistent_line="Persistent=true"
   else
@@ -303,11 +336,12 @@ um_generate_systemd_timer() {
   fi
   cat <<EOF
 [Unit]
-Description=Daily APT Mirror Sync
+Description=Daily Ubuntu Offline Mirror Sync
 
 [Timer]
 OnCalendar=${SYNC_ON_CALENDAR}
 ${persistent_line}
+RandomizedDelaySec=${delay}
 Unit=apt-mirror.service
 
 [Install]

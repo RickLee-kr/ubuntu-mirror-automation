@@ -306,7 +306,7 @@ um_menu_prepare_install_minimal() {
   UM_FORCE=1
   UM_NO_SYNC=0
   UM_SYNC_MODE="foreground"
-  um_resolve_mirror_mode 0
+  um_resolve_mirror_mode 0 1
 
   local cap_out
   cap_out="$(mktemp)"
@@ -318,7 +318,7 @@ um_menu_prepare_install_minimal() {
   rm -f "$cap_out"
 
   um_whiptail_yesno "Minimal install" \
-    "Install / start sync in MINIMAL mode?\n\nComponents: main + restricted\nProjected size: ~320 GiB\n\nRecommended default." 0
+    "Install / start sync in MINIMAL mode?\n\nComponents: main + restricted\nProjected size: ~320 GiB\n\nNOTE: Minimal is NOT sufficient for closed-network release upgrades." 0
 }
 
 um_menu_prepare_install_full() {
@@ -327,21 +327,21 @@ um_menu_prepare_install_full() {
   UM_FORCE=1
   UM_NO_SYNC=0
   UM_SYNC_MODE="foreground"
-  um_resolve_mirror_mode 1
+  um_resolve_mirror_mode 1 0
 
   local cap_out
   cap_out="$(mktemp)"
   if ! um_check_sync_capacity "$BASE_PATH" "full" >"$cap_out" 2>&1; then
     um_whiptail_file_msg "Full mode blocked" "$cap_out" 18 72
     rm -f "$cap_out"
-    um_resolve_mirror_mode 0
+    um_resolve_mirror_mode 0 0
     return 1
   fi
   rm -f "$cap_out"
 
-  if ! um_whiptail_yesno "Full install" \
-    "Install / start sync in FULL mode?\n\nComponents: main restricted universe multiverse\nProjected size: ~700 GiB\n\nRequires enough disk after 20% reserve." 1; then
-    um_resolve_mirror_mode 0
+  if ! um_whiptail_yesno "Full / offline upgrade install" \
+    "Install / start FULL offline upgrade mirror?\n\nComponents: main restricted universe multiverse\nSuites: release, updates, security, backports\nReleases: xenial→noble\nProjected size: ~700–900 GiB\n\nRequired for closed-network release upgrades." 0; then
+    um_resolve_mirror_mode 0 0
     return 1
   fi
   return 0

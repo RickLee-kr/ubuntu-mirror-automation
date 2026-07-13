@@ -117,10 +117,27 @@ sudo mirrorctl watch
 ### Non-interactive / scripted install
 
 ```bash
-sudo ./install.sh --minimal --no-menu
-sudo ./install.sh --full --no-menu
+sudo ./install.sh --full --no-menu          # offline upgrade mirror (default)
+sudo ./install.sh --minimal --no-menu       # reduced footprint (not enough for release upgrades)
 sudo ./install.sh --non-interactive
 ```
+
+### Offline upgrade mirror (server-side)
+
+Integrated sync for closed-network LTS upgrades (`xenial → noble`):
+
+```bash
+sudo ubuntu-offline-mirror sync
+sudo ubuntu-offline-mirror verify
+sudo ubuntu-offline-mirror status
+sudo ubuntu-offline-mirror freeze   # before air-gap move
+```
+
+Config: `/etc/default/ubuntu-offline-mirror` (`PUBLIC_BASE_URL`, `ALLOW_ROOT_FS_MIRROR`, …).  
+Ops guide: `docs/operations.md`.
+
+**Included:** amd64 packages (main/restricted/universe/multiverse), updates/security/backports, release upgraders.  
+**Excluded:** i386, deb-src, Ubuntu Pro/ESM, PPAs, Docker/NVIDIA external repos, Snap, vendor private APT.
 
 ### Installation modes
 
@@ -128,12 +145,12 @@ sudo ./install.sh --non-interactive
 sudo ./install.sh                 # interactive menu (TTY)
 sudo ./install.sh --menu          # force menu
 sudo ./install.sh --minimal       # skip menu; minimal sync
-sudo ./install.sh --full          # skip menu; full sync (capacity checked)
+sudo ./install.sh --full          # skip menu; full offline sync (capacity checked)
 sudo ./install.sh --background    # skip menu; start sync and return to shell
 sudo ./install.sh --foreground    # skip menu; keep dashboard attached
 ```
 
-Default mode is **minimal** (~320 GiB projected). Full mode (~700 GiB) is never started automatically — including on a 1TB disk — and requires menu option **2** or `--full`. Before sync starts, the installer compares the projected download size against free disk minus a **20% safety reserve** and blocks sync if it would not fit.
+Default mode is **full** for the offline upgrade mirror (~700–900 GiB projected). Use `--minimal` only for a reduced footprint. Before sync starts, capacity checks apply; `/var/spool/apt-mirror` should be a dedicated data mount (override with `ALLOW_ROOT_FS_MIRROR=true` only if necessary).
 
 `--background` example:
 

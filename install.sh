@@ -249,29 +249,48 @@ maybe_mount_data_device() {
 # ---------------------------------------------------------------------------
 phase2_packages() {
   phase "Phase 2: Install required packages"
+  local pkgs=(
+    apt-mirror
+    nginx
+    curl
+    ca-certificates
+    gpgv
+    ubuntu-keyring
+    coreutils
+    util-linux
+    jq
+    xz-utils
+    gzip
+    whiptail
+  )
   if [[ "$UM_DRY_RUN" == "1" ]]; then
-    um_dry "Would install apt-mirror nginx curl whiptail"
+    um_dry "Would install: ${pkgs[*]}"
     um_dry "SKIPPED: requires installed package (apt-mirror, nginx)"
     return 0
   fi
 
-  local need=0
-  um_command_exists apt-mirror || need=1
-  um_command_exists nginx || need=1
-  um_command_exists curl || need=1
-  um_command_exists whiptail || need=1
+  local need=0 p
+  for p in apt-mirror nginx curl gpgv jq xz gzip flock sha256sum; do
+    um_command_exists "$p" || need=1
+  done
+  # gpgv package provides gpgv; ubuntu-keyring provides keyring file
+  [[ -f /usr/share/keyrings/ubuntu-archive-keyring.gpg ]] || need=1
 
   if [[ "$need" -eq 0 ]]; then
-    um_ok "Packages already installed (apt-mirror, nginx, curl, whiptail)"
-    return 0
+    um_ok "Required packages/commands already present"
+  else
+    apt-get update -y
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${pkgs[@]}"
+    UM_CHANGES=1
   fi
 
-  apt-get update -y
-  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends apt-mirror nginx curl whiptail
-  um_command_exists apt-mirror || um_die "apt-mirror not found after install"
-  um_command_exists nginx || um_die "nginx not found after install"
-  um_ok "Packages installed"
-  UM_CHANGES=1
+  local c
+  for c in apt-mirror nginx curl gpgv jq xz gzip flock sha256sum findmnt; do
+    um_command_exists "$c" || um_die "Required command missing after install: $c"
+  done
+  [[ -f /usr/share/keyrings/ubuntu-archive-keyring.gpg ]] \
+    || um_die "ubuntu-archive-keyring.gpg not found"
+  um_ok "Packages and commands verified"
 }
 
 # ---------------------------------------------------------------------------
@@ -280,7 +299,7 @@ phase2_packages() {
 phase3_config() {
   phase "Phase 3: Generate and install configuration"
 
-  um_run mkdir -p "$MIRROR_PATH" "$SKEL_PATH" "$VAR_PATH"
+  um_run mkdir -p "$MIRROR_PATH" "$SKEL_PATH" "$VAR_PATH" "${BASE_PATH}/offline" "${BASE_PATH}/offline/announcements"
   um_run mkdir -p "$LOG_DIR" "$BACKUP_DIR" "$INSTALL_CONF_DIR" "$INSTALL_LIB_DIR" "$(um_state_root)"
   um_run mkdir -p "$(dirname "$NGINX_ACCESS_LOG")"
   if [[ "$UM_DRY_RUN" != "1" ]]; then
@@ -291,6 +310,24 @@ phase3_config() {
   local tmp
   tmp="$(mktemp)"
   um_generate_mirror_list >"$tmp"
+  # Prefer project offline template when present (includes backports + exclusion comments)
+  if [[ -f "${UM_PROJECT_ROOT}/templates/mirror.list" ]]; then
+    # Still generate dynamically so UPSTREAM_MIRROR / components stay consistent
+    :
+  fi
+  # Validate generated mirror.list: amd64 only, no i386, no deb-src
+  if grep -Eiq '^[[:space:]]*deb-src|[[:space:]]i386[[:space:]]' "$tmp"; then
+    rm -f "$tmp"
+    um_die "Generated mirror.list contains i386 or deb-src (forbidden)"
+  fi
+  if ! grep -q 'set defaultarch  amd64' "$tmp"; then
+    rm -f "$tmp"
+    um_die "Generated mirror.list missing defaultarch amd64"
+  fi
+  if ! grep -q 'xenial-backports' "$tmp" || ! grep -q 'noble-backports' "$tmp"; then
+    rm -f "$tmp"
+    um_die "Generated mirror.list missing required backports suites"
+  fi
   if [[ -f /etc/apt/mirror.list ]] && cmp -s "$tmp" /etc/apt/mirror.list; then
     vlog "Unchanged: /etc/apt/mirror.list"
     rm -f "$tmp"
@@ -307,6 +344,27 @@ phase3_config() {
       um_ok "Installed /etc/apt/mirror.list"
       UM_CHANGES=1
     fi
+  fi
+
+  # Offline mirror defaults
+  if [[ "$UM_DRY_RUN" != "1" ]]; then
+    if [[ ! -f /etc/default/ubuntu-offline-mirror ]] || [[ "$UM_FORCE" == "1" ]]; then
+      local def_src="${UM_PROJECT_ROOT}/templates/ubuntu-offline-mirror.default"
+      if [[ -f "$def_src" ]]; then
+        if [[ -f /etc/default/ubuntu-offline-mirror ]]; then
+          um_backup_file /etc/default/ubuntu-offline-mirror >/dev/null || true
+        fi
+        install -m 0644 "$def_src" /etc/default/ubuntu-offline-mirror
+        # Seed PUBLIC_BASE_URL from detected mirror URL when still default
+        if [[ -n "${MIRROR_URL:-}" ]]; then
+          sed -i "s|^PUBLIC_BASE_URL=.*|PUBLIC_BASE_URL=${MIRROR_URL}|" /etc/default/ubuntu-offline-mirror
+        fi
+        um_ok "Installed /etc/default/ubuntu-offline-mirror"
+        UM_CHANGES=1
+      fi
+    fi
+  else
+    um_dry "Would install /etc/default/ubuntu-offline-mirror"
   fi
 
   # nginx site
@@ -383,7 +441,7 @@ phase3_config() {
 
 install_mgmt_tools() {
   if [[ "$UM_DRY_RUN" == "1" ]]; then
-    um_dry "Would install mirrorctl, mirror-dashboard, mirror-status, mirror-recovery"
+    um_dry "Would install mirrorctl, ubuntu-offline-mirror, mirror-dashboard, mirror-status, mirror-recovery"
     return 0
   fi
 
@@ -391,6 +449,8 @@ install_mgmt_tools() {
   um_install_file "${UM_PROJECT_ROOT}/scripts/mirror-dashboard.sh" "${INSTALL_BIN_DIR}/mirror-dashboard" 0755
   um_install_file "${UM_PROJECT_ROOT}/scripts/mirror-status.sh" "${INSTALL_BIN_DIR}/mirror-status" 0755
   um_install_file "${UM_PROJECT_ROOT}/scripts/mirror-recovery.sh" "${INSTALL_BIN_DIR}/mirror-recovery" 0755
+  um_install_file "${UM_PROJECT_ROOT}/scripts/ubuntu-offline-mirror.sh" /usr/local/sbin/ubuntu-offline-mirror.sh 0755
+  ln -sfn /usr/local/sbin/ubuntu-offline-mirror.sh /usr/local/bin/ubuntu-offline-mirror 2>/dev/null || true
   ln -sfn "${INSTALL_BIN_DIR}/mirror-status" "${INSTALL_BIN_DIR}/mirror-status.sh"
   ln -sfn "${INSTALL_BIN_DIR}/mirror-recovery" "${INSTALL_BIN_DIR}/mirror-recovery.sh"
   ln -sfn "${INSTALL_BIN_DIR}/mirror-dashboard" "${INSTALL_BIN_DIR}/mirror-dashboard.sh"
@@ -404,6 +464,7 @@ install_mgmt_tools() {
   um_install_file "${UM_PROJECT_ROOT}/lib/state.sh" "${INSTALL_LIB_DIR}/state.sh" 0644
   um_install_file "${UM_PROJECT_ROOT}/lib/progress.sh" "${INSTALL_LIB_DIR}/progress.sh" 0644
   um_install_file "${UM_PROJECT_ROOT}/lib/install-menu.sh" "${INSTALL_LIB_DIR}/install-menu.sh" 0644
+  um_install_file "${UM_PROJECT_ROOT}/lib/offline.sh" "${INSTALL_LIB_DIR}/offline.sh" 0644
 
   # Remember git checkout path so `mirrorctl watch` picks up git pull without reinstall
   mkdir -p "${INSTALL_CONF_DIR}"
@@ -430,10 +491,24 @@ phase4_validate() {
   for s in "${UM_PROJECT_ROOT}/install.sh" \
            "${UM_PROJECT_ROOT}/scripts/mirrorctl" \
            "${UM_PROJECT_ROOT}/scripts/mirror-dashboard.sh" \
-           "${UM_PROJECT_ROOT}/scripts/run-apt-mirror.sh"; do
+           "${UM_PROJECT_ROOT}/scripts/run-apt-mirror.sh" \
+           "${UM_PROJECT_ROOT}/scripts/ubuntu-offline-mirror.sh" \
+           "${UM_PROJECT_ROOT}/lib/offline.sh"; do
     bash -n "$s"
   done
   um_ok "bash -n syntax ok"
+
+  # apt-mirror config parse check when available
+  if [[ "$UM_DRY_RUN" != "1" ]] && um_command_exists apt-mirror && [[ -f /etc/apt/mirror.list ]]; then
+    if grep -Eiq '^[[:space:]]*deb-src|[[:space:]]i386[[:space:]]' /etc/apt/mirror.list; then
+      um_die "/etc/apt/mirror.list contains i386 or deb-src"
+    fi
+    # apt-mirror prints config when parsing; dry-run by invoking with empty nthreads check:
+    # Validate key directives exist (apt-mirror has no --dry-run).
+    grep -q 'set defaultarch  amd64' /etc/apt/mirror.list \
+      || um_die "mirror.list missing defaultarch amd64"
+    um_ok "mirror.list policy checks passed (amd64, no i386/deb-src)"
+  fi
 
   # nginx -t
   if [[ "$UM_DRY_RUN" == "1" ]]; then
@@ -796,11 +871,13 @@ main() {
     done
   fi
 
-  # Non-menu path: resolve mode from CLI flags
+  # Non-menu path: resolve mode from CLI flags (default = config / full for offline)
   if [[ "$UM_FULL" == "1" ]]; then
-    um_resolve_mirror_mode 1
+    um_resolve_mirror_mode 1 0
+  elif [[ "$UM_MINIMAL" == "1" ]]; then
+    um_resolve_mirror_mode 0 1
   else
-    um_resolve_mirror_mode 0
+    um_resolve_mirror_mode 0 0
   fi
 
   run_install_pipeline

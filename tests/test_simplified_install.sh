@@ -134,10 +134,10 @@ else
   fail "timer not explicitly disabled"
 fi
 svc="$(um_generate_systemd_service)"
-if echo "$svc" | grep -q 'run-apt-mirror.sh'; then
-  pass "service uses finalize wrapper"
+if echo "$svc" | grep -q 'ubuntu-offline-mirror.sh sync'; then
+  pass "service uses offline sync wrapper"
 else
-  fail "wrapper missing"
+  fail "offline sync ExecStart missing"
 fi
 
 # ---------------------------------------------------------------------------
@@ -175,16 +175,15 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-echo "[test_default_is_minimal_not_full]"
-OUT="$(bash "${ROOT}/install.sh" --dry-run 2>&1 || true)"
-echo "$OUT" | grep -q 'Mirror mode: minimal' || fail "default dry-run should report minimal mode"
-echo "$OUT" | grep -qE 'main restricted' || fail "default should mention main restricted"
-if echo "$OUT" | grep -q 'Mirror mode: full'; then
-  fail "default must not select full mode"
-else
-  pass "default is minimal"
-fi
-OUT_FULL="$(bash "${ROOT}/install.sh" --dry-run --full 2>&1 || true)"
+echo "[test_default_is_full_offline]"
+OUT="$(bash "${ROOT}/install.sh" --dry-run --no-menu 2>&1 || true)"
+echo "$OUT" | grep -q 'Mirror mode: full' || fail "default dry-run should report full mode for offline mirror"
+echo "$OUT" | grep -qE 'universe' || fail "default full should mention universe"
+pass "default is full (offline upgrade)"
+OUT_MIN="$(bash "${ROOT}/install.sh" --dry-run --no-menu --minimal 2>&1 || true)"
+echo "$OUT_MIN" | grep -q 'Mirror mode: minimal' || fail "--minimal should select minimal mode"
+pass "--minimal selects minimal mode"
+OUT_FULL="$(bash "${ROOT}/install.sh" --dry-run --no-menu --full 2>&1 || true)"
 echo "$OUT_FULL" | grep -q 'Mirror mode: full' || fail "--full should select full mode"
 pass "--full selects full mode"
 

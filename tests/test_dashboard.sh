@@ -271,13 +271,13 @@ timeout 5 bash "${ROOT}/scripts/mirrorctl" --config "${ROOT}/mirror.conf" logs -
 
 # ---------------------------------------------------------------------------
 echo "[test_automatic_finalize_visible]"
-if grep -q 'finalize_log' "${ROOT}/scripts/run-apt-mirror.sh"; then
-  pass "run-apt-mirror writes finalize steps"
+if grep -q 'ubuntu-offline-mirror' "${ROOT}/scripts/run-apt-mirror.sh"; then
+  pass "run-apt-mirror delegates to offline sync"
 else
-  fail "finalize_log missing"
+  fail "run-apt-mirror wrapper missing offline delegate"
 fi
-if grep -q '\[OK\] Mirror state READY' "${ROOT}/scripts/run-apt-mirror.sh"; then
-  pass "READY finalize message"
+if grep -q 'READY' "${ROOT}/scripts/ubuntu-offline-mirror.sh"; then
+  pass "offline sync READY marker support"
 else
   fail "READY message missing"
 fi
@@ -301,7 +301,7 @@ echo "$out" | grep -qE '^[0-9]{4}-' && pass "timestamp prefixed" || fail "no tim
 
 # ---------------------------------------------------------------------------
 echo "[test_run_apt_mirror_stdbuf]"
-grep -q 'stdbuf' "${ROOT}/scripts/run-apt-mirror.sh" && pass "stdbuf line buffering" || fail "stdbuf missing"
+grep -q 'stdbuf' "${ROOT}/scripts/ubuntu-offline-mirror.sh" && pass "stdbuf line buffering" || fail "stdbuf missing"
 
 # ---------------------------------------------------------------------------
 echo "[test_pause_resume_commands]"

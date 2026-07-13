@@ -1,9 +1,10 @@
 [Unit]
-Description=Daily APT Mirror Sync
+Description=Daily Ubuntu Offline Mirror Sync
 
 [Timer]
 OnCalendar=*-*-* 02:00:00
 Persistent=true
+RandomizedDelaySec=900
 Unit=apt-mirror.service
 
 [Install]

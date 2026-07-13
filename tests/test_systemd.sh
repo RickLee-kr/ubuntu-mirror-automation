@@ -16,14 +16,20 @@ TIMER="$(um_generate_systemd_timer)"
 
 echo "$SVC" | grep -q '^\[Unit\]' || FAIL=1
 echo "$SVC" | grep -q 'Type=oneshot' || FAIL=1
-echo "$SVC" | grep -q 'run-apt-mirror.sh' || FAIL=1
+echo "$SVC" | grep -q 'ubuntu-offline-mirror.sh sync' || FAIL=1
+echo "$SVC" | grep -q 'network-online.target' || FAIL=1
 echo "$TIMER" | grep -q '^\[Timer\]' || FAIL=1
 echo "$TIMER" | grep -q 'OnCalendar=' || FAIL=1
 echo "$TIMER" | grep -q 'Persistent=true' || FAIL=1
+echo "$TIMER" | grep -q 'RandomizedDelaySec=' || FAIL=1
 
-# Template files
-grep -q 'run-apt-mirror.sh' "${ROOT}/templates/apt-mirror.service" || FAIL=1
+  # Template files
+grep -q 'ubuntu-offline-mirror.sh sync' "${ROOT}/templates/apt-mirror.service" || FAIL=1
 grep -q 'OnCalendar=' "${ROOT}/templates/apt-mirror.timer" || FAIL=1
+grep -q 'RandomizedDelaySec=' "${ROOT}/templates/apt-mirror.timer" || FAIL=1
+
+# Compatibility: run-apt-mirror.sh remains as a thin wrapper
+grep -q 'ubuntu-offline-mirror' "${ROOT}/scripts/run-apt-mirror.sh" || FAIL=1
 
 TMPDIR_TEST="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_TEST"' EXIT

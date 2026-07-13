@@ -1,0 +1,61 @@
+# Ubuntu offline upgrade mirror defaults
+# Installed to: /etc/default/ubuntu-offline-mirror
+# Override values for closed-network deployment as needed.
+
+# Public base URL served to clients / local meta-release-lts rewrite.
+# Change this to the closed-network hostname or IP before freeze/move.
+PUBLIC_BASE_URL=http://ubuntu-mirror.local
+
+# apt-mirror spool root (must be a dedicated data mount in production)
+MIRROR_ROOT=/var/spool/apt-mirror
+
+# Upstream Ubuntu archive used while internet is available
+UPSTREAM_BASE_URL=http://archive.ubuntu.com/ubuntu
+
+# meta-release-lts upstream
+META_RELEASE_URL=http://changelogs.ubuntu.com/meta-release-lts
+
+# Minimum free space (GiB) required before sync starts
+MIN_FREE_GB=50
+
+# Architecture (amd64 only — do not change for this deployment)
+DEFAULT_ARCH=amd64
+
+# Comma or space separated allowlisted download hosts for upgrader/meta assets
+ALLOWED_HOSTS="changelogs.ubuntu.com archive.ubuntu.com security.ubuntu.com old-releases.ubuntu.com"
+
+# Optional extra official Ubuntu mirror hostnames (space-separated)
+EXTRA_ALLOWED_HOSTS=""
+
+# Run apt-mirror clean.sh after successful sync+verify (true|false)
+RUN_CLEAN=true
+
+# Allow MIRROR_ROOT on the OS root filesystem (NOT recommended). Default: false
+ALLOW_ROOT_FS_MIRROR=false
+
+# Skip apt-mirror package sync (upgrader/meta only) — for tests / recovery
+SKIP_APT_MIRROR=false
+
+# GPG keyring for release-upgrader signature verification
+UBUNTU_KEYRING=/usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+# Logging
+LOG_FILE=/var/log/ubuntu-offline-mirror.log
+LOCK_FILE=/run/ubuntu-offline-mirror.lock
+
+# Curl timeouts / retries
+CURL_CONNECT_TIMEOUT=30
+CURL_MAX_TIME=600
+CURL_RETRIES=3
+
+# systemd timer randomization (seconds)
+SYNC_RANDOMIZED_DELAY_SEC=900
+
+# Included releases / suites (informational; mirror.list is authoritative)
+UBUNTU_RELEASES="xenial bionic focal jammy noble"
+UPGRADER_DISTS="bionic focal jammy noble"
+SUITE_SUFFIXES="updates security backports"
+COMPONENTS="main restricted universe multiverse"
+
+# HTTP listen used for localhost verify (nginx)
+VERIFY_HTTP_BASE=http://127.0.0.1
