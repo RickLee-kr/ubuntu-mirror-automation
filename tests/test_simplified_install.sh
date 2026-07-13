@@ -264,5 +264,7 @@ if grep -qE -- '--textbox' "${ROOT}/lib/install-menu.sh"; then
 else
   pass "no textbox (avoids focus trap)"
 fi
+grep -q -- '--nocancel' "${ROOT}/lib/install-menu.sh" && pass "nocancel (Enter selects without Tab)" || fail "missing --nocancel"
+grep -q 'um_menu_keys_hint' "${ROOT}/lib/install-menu.sh" && pass "keyboard hints shown" || fail "keys hint missing"
 
 exit "$FAIL"

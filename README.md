@@ -29,7 +29,8 @@ On an interactive terminal this opens a **dialog-style menu** (whiptail):
 └────────────────────────────────────────────┘
 ```
 
-Use arrow keys to move, **Enter** / **Ok** to select.
+Use **↑ / ↓** to move, **Enter** to select. Tab is not required.
+Esc goes back / quits. Cancel buttons are omitted for SSH reliability.
 Choose **1** for the recommended default (main + restricted).  
 Choose **7** to wipe previous mirror data before re-installing.  
 Choose **3** anytime to re-attach the live sync dashboard.

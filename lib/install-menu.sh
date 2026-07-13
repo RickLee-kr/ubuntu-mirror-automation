@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
 # Interactive installer menu — dialog/whiptail style TUI (SSH-friendly).
+#
+# Keyboard model (no Tab required):
+#   ↑ / ↓     move in the list
+#   Enter     select / confirm  (Ok)
+#   Esc       leave dialog      (same as Cancel)
+# Tab-to-button focus is unreliable over many SSH clients, so Cancel buttons
+# are omitted (--nocancel) and Esc / Exit items are used instead.
 
 # shellcheck disable=SC2317
 if [[ -n "${UM_INSTALL_MENU_LOADED:-}" ]]; then
@@ -8,7 +15,7 @@ if [[ -n "${UM_INSTALL_MENU_LOADED:-}" ]]; then
 fi
 UM_INSTALL_MENU_LOADED=1
 
-# Classic dialog look (magenta root, gray window, red selection) — matches DSP-style menus.
+# Classic dialog look (magenta root, gray window, red selection).
 um_menu_set_newt_colors() {
   export NEWT_COLORS='
 root=white,magenta
@@ -45,7 +52,6 @@ um_menu_has_whiptail() {
   command -v whiptail >/dev/null 2>&1
 }
 
-# Returns 0 when the interactive menu should be shown.
 um_should_show_install_menu() {
   if [[ "${UM_FORCE_MENU:-0}" == "1" ]]; then
     um_menu_is_tty || return 1
@@ -102,20 +108,32 @@ um_menu_status_blurb() {
   printf '%s | %s | data %s GiB | %s' "$host" "$sync_label" "$data_gib" "$disk_free"
 }
 
+um_menu_keys_hint() {
+  printf '↑↓ move   Enter = select   Esc = back'
+}
+
 # ---------------------------------------------------------------------------
-# whiptail helpers
+# whiptail helpers — always --nocancel so Enter confirms without Tab
 # ---------------------------------------------------------------------------
 um_whiptail_menu() {
   # um_whiptail_menu <title> <text> <tag1> <item1> ...
   local title="$1" text="$2"
   shift 2
   um_menu_set_newt_colors
-  # Height/width tuned for SSH; menu height auto from items
-  whiptail --title "$title" --menu "$text" 20 72 10 "$@" 3>&1 1>&2 2>&3
+  # --nocancel: only Ok; focus stays on the list; Enter selects the highlighted item.
+  # Esc still aborts (exit 1) for "back/quit".
+  whiptail --title "$title" --nocancel --ok-button "OK" \
+    --menu "$text" 22 74 10 "$@" 3>&1 1>&2 2>&3
 }
 
 um_whiptail_yesno() {
+  # Implemented as a 2-item menu so Tab is never required.
   local title="$1" text="$2" default_no="${3:-0}"
+  local choice default_item="yes"
+  if [[ "$default_no" == "1" ]]; then
+    default_item="no"
+  fi
+
   if ! um_menu_has_whiptail; then
     printf '%s\n%s\n' "$title" "$(printf '%b' "$text")"
     if [[ "$default_no" == "1" ]]; then
@@ -131,36 +149,39 @@ um_whiptail_yesno() {
     fi
     return $?
   fi
+
   um_menu_set_newt_colors
-  if [[ "$default_no" == "1" ]]; then
-    whiptail --title "$title" --yesno "$text" 12 70 --defaultno
-  else
-    whiptail --title "$title" --yesno "$text" 12 70
-  fi
+  choice="$(whiptail --title "$title" --nocancel --ok-button "OK" \
+    --default-item "$default_item" \
+    --menu "${text}
+
+$(um_menu_keys_hint)" 16 70 2 \
+    "yes" "Yes — continue" \
+    "no"  "No — cancel" \
+    3>&1 1>&2 2>&3)" || return 1
+  [[ "$choice" == "yes" ]]
 }
 
 um_whiptail_msg() {
   local title="$1" text="$2" height="${3:-16}" width="${4:-72}"
   if ! um_menu_has_whiptail; then
     printf '\n== %s ==\n%b\n' "$title" "$text"
-    um_menu_pause
+    printf 'Press Enter... '
+    read -r _ || true
     return 0
   fi
   um_menu_set_newt_colors
-  # msgbox keeps focus on <Ok>; Enter dismisses (unlike scrollable file viewers where
-  # arrows scroll and Tab-to-Ok is unreliable over some SSH clients).
-  whiptail --title "$title" --msgbox "$text" "$height" "$width"
+  # Single OK button — Enter dismisses. No Cancel / no Tab.
+  whiptail --title "$title" --nocancel --ok-button "OK" \
+    --msgbox "${text}
+
+(Press Enter)" "$height" "$width"
 }
 
-# Show a file in a msgbox (Enter closes). Strips ANSI color codes.
 um_whiptail_file_msg() {
   local title="$1" file="$2" height="${3:-20}" width="${4:-72}"
   local body
   body="$(sed 's/\x1b\[[0-9;]*m//g' "$file" 2>/dev/null || cat "$file")"
-  # Trailing hint so operators know how to leave
-  body="${body}
-
-(Press Enter to close)"
   um_whiptail_msg "$title" "$body" "$height" "$width"
 }
 
@@ -174,16 +195,15 @@ um_whiptail_input() {
     return 0
   fi
   um_menu_set_newt_colors
-  whiptail --title "$title" --inputbox "$text" 12 70 "$default" 3>&1 1>&2 2>&3
+  # --nocancel: type text, press Enter to submit (no Tab to Ok).
+  whiptail --title "$title" --nocancel --ok-button "OK" \
+    --inputbox "${text}
+
+$(um_menu_keys_hint)" 14 70 "$default" 3>&1 1>&2 2>&3
 }
 
 um_menu_pause() {
-  if um_menu_has_whiptail; then
-    um_whiptail_msg "Ubuntu Mirror" "Press Ok to return to the menu."
-  else
-    printf '\nPress Enter to return to the menu... '
-    read -r _ || true
-  fi
+  um_whiptail_msg "Ubuntu Mirror" "Press Enter to return to the menu."
 }
 
 um_menu_run_dashboard() {
@@ -208,12 +228,7 @@ um_menu_show_status() {
   else
     printf 'State: %s\nPath: %s\n' "$(um_menu_sync_label)" "$BASE_PATH" >"$tmp"
   fi
-  if um_menu_has_whiptail; then
-    um_whiptail_file_msg "Status" "$tmp" 22 72
-  else
-    cat "$tmp"
-    um_menu_pause
-  fi
+  um_whiptail_file_msg "Status" "$tmp" 22 72
   rm -f "$tmp"
 }
 
@@ -223,12 +238,7 @@ um_menu_follow_logs() {
   if [[ -f "${APT_MIRROR_LOG}" ]]; then
     tail -n 50 -f "${APT_MIRROR_LOG}" || true
   else
-    if um_menu_has_whiptail; then
-      um_whiptail_msg "Logs" "Log not found yet:\n${APT_MIRROR_LOG}"
-    else
-      um_warn "Log not found yet: ${APT_MIRROR_LOG}"
-      um_menu_pause
-    fi
+    um_whiptail_msg "Logs" "Log not found yet:\n${APT_MIRROR_LOG}"
   fi
 }
 
@@ -295,26 +305,14 @@ um_menu_prepare_install_minimal() {
   local cap_out
   cap_out="$(mktemp)"
   if ! um_check_sync_capacity "$BASE_PATH" "minimal" >"$cap_out" 2>&1; then
-    if um_menu_has_whiptail; then
-      um_whiptail_file_msg "Capacity check failed" "$cap_out" 18 72
-    else
-      cat "$cap_out"
-      um_menu_pause
-    fi
+    um_whiptail_file_msg "Capacity check failed" "$cap_out" 18 72
     rm -f "$cap_out"
     return 1
   fi
   rm -f "$cap_out"
 
-  if um_menu_has_whiptail; then
-    um_whiptail_yesno "Minimal install" \
-      "Install / start sync in MINIMAL mode?\n\nComponents: main + restricted\nProjected size: ~320 GiB\n\nRecommended default." 0
-  else
-    printf 'Proceed with minimal install + sync? [Y/n] '
-    local ans
-    read -r ans || true
-    [[ ! "$ans" =~ ^[Nn]$ ]]
-  fi
+  um_whiptail_yesno "Minimal install" \
+    "Install / start sync in MINIMAL mode?\n\nComponents: main + restricted\nProjected size: ~320 GiB\n\nRecommended default." 0
 }
 
 um_menu_prepare_install_full() {
@@ -328,37 +326,21 @@ um_menu_prepare_install_full() {
   local cap_out
   cap_out="$(mktemp)"
   if ! um_check_sync_capacity "$BASE_PATH" "full" >"$cap_out" 2>&1; then
-    if um_menu_has_whiptail; then
-      um_whiptail_file_msg "Full mode blocked" "$cap_out" 18 72
-    else
-      cat "$cap_out"
-      um_menu_pause
-    fi
+    um_whiptail_file_msg "Full mode blocked" "$cap_out" 18 72
     rm -f "$cap_out"
     um_resolve_mirror_mode 0
     return 1
   fi
   rm -f "$cap_out"
 
-  if um_menu_has_whiptail; then
-    if ! um_whiptail_yesno "Full install" \
-      "Install / start sync in FULL mode?\n\nComponents: main restricted universe multiverse\nProjected size: ~700 GiB\n\nRequires enough disk after 20% reserve." 1; then
-      um_resolve_mirror_mode 0
-      return 1
-    fi
-  else
-    printf 'Proceed with FULL install + sync? [y/N] '
-    local ans
-    read -r ans || true
-    if [[ ! "$ans" =~ ^[Yy]$ ]]; then
-      um_resolve_mirror_mode 0
-      return 1
-    fi
+  if ! um_whiptail_yesno "Full install" \
+    "Install / start sync in FULL mode?\n\nComponents: main restricted universe multiverse\nProjected size: ~700 GiB\n\nRequires enough disk after 20% reserve." 1; then
+    um_resolve_mirror_mode 0
+    return 1
   fi
   return 0
 }
 
-# Plain-text fallback when whiptail is unavailable
 um_menu_fallback_draw() {
   cat <<EOF
 ┌──────────────── Ubuntu Mirror Server ─────────────────┐
@@ -371,7 +353,7 @@ um_menu_fallback_draw() {
 │  5) Follow raw logs                                   │
 │  6) Stop running synchronization                      │
 │  7) Delete existing mirror data  (DANGEROUS)          │
-│  8) Quit                                              │
+│  8) Exit                                              │
 └───────────────────────────────────────────────────────┘
 EOF
 }
@@ -409,7 +391,6 @@ um_install_menu_fallback() {
   done
 }
 
-# Main entry: dialog-style whiptail menu (preferred)
 um_install_menu() {
   UM_MENU_ACTION=""
 
@@ -436,7 +417,8 @@ um_install_menu() {
 
 ${blurb}
 
-Use arrow keys, then Ok." \
+$(um_menu_keys_hint)
+(Cancel button removed — Esc or choose Exit)" \
       "1" "Install / start sync — Minimal (~320 GiB)" \
       "2" "Install / start sync — Full (~700 GiB)" \
       "3" "Monitor live dashboard" \
@@ -446,7 +428,6 @@ Use arrow keys, then Ok." \
       "7" "Delete existing mirror data (DANGEROUS)" \
       "8" "Exit" \
     )" || {
-      # Cancel / Esc
       UM_MENU_ACTION="quit"
       return 0
     }
