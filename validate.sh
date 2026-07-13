@@ -109,7 +109,7 @@ check_disk_space() {
   elif [[ "$pct" -ge "${DISK_WARN_PERCENT}" ]]; then
     um_result WARNING "Disk Space" "${pct}% used, ${avail_gib} GiB free"
   elif [[ "$avail_gib" -lt "${MIN_FREE_GIB}" ]] && [[ ! -d "$DIST_ROOT/noble" ]]; then
-    um_result WARNING "Disk Space" "${avail_gib} GiB free < recommended ${MIN_FREE_GIB} GiB for initial full sync"
+    um_result WARNING "Disk Space" "${avail_gib} GiB free < recommended ${MIN_FREE_GIB} GiB for initial ${MIRROR_MODE} sync"
   else
     um_result PASS "Disk Space" "${pct}% used, ${avail_gib} GiB free"
   fi

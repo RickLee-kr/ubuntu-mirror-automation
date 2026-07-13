@@ -27,6 +27,7 @@ echo "[test_default_install_flow] help lists simplified options only"
 HELP="$(bash "${ROOT}/install.sh" --help)"
 echo "$HELP" | grep -q -- '--dry-run' || fail "missing --dry-run"
 echo "$HELP" | grep -q -- '--no-sync' || fail "missing --no-sync"
+echo "$HELP" | grep -q -- '--full' || fail "missing --full"
 echo "$HELP" | grep -q -- '--minimal' || fail "missing --minimal"
 echo "$HELP" | grep -q -- '--verbose' || fail "missing --verbose"
 if echo "$HELP" | grep -q -- '--start-sync'; then fail "deprecated --start-sync still in help"; fi
@@ -169,6 +170,36 @@ if bash "${ROOT}/install.sh" --help | grep -q -- '--minimal'; then
   pass "--minimal accepted"
 else
   fail "--minimal"
+fi
+
+# ---------------------------------------------------------------------------
+echo "[test_default_is_minimal_not_full]"
+OUT="$(bash "${ROOT}/install.sh" --dry-run 2>&1 || true)"
+echo "$OUT" | grep -q 'Mirror mode: minimal' || fail "default dry-run should report minimal mode"
+echo "$OUT" | grep -qE 'main restricted' || fail "default should mention main restricted"
+if echo "$OUT" | grep -q 'Mirror mode: full'; then
+  fail "default must not select full mode"
+else
+  pass "default is minimal"
+fi
+OUT_FULL="$(bash "${ROOT}/install.sh" --dry-run --full 2>&1 || true)"
+echo "$OUT_FULL" | grep -q 'Mirror mode: full' || fail "--full should select full mode"
+pass "--full selects full mode"
+
+# ---------------------------------------------------------------------------
+echo "[test_capacity_check_in_install]"
+echo "$OUT" | grep -q 'Pre-sync capacity check\|Projected mirror size\|Disk capacity check' \
+  || fail "dry-run should run capacity check"
+pass "capacity check present"
+if grep -q 'um_check_sync_capacity' "${ROOT}/install.sh"; then
+  pass "install calls um_check_sync_capacity"
+else
+  fail "capacity gate missing"
+fi
+if grep -q 'um_resolve_mirror_mode' "${ROOT}/install.sh"; then
+  pass "mode resolver used"
+else
+  fail "mode resolver missing"
 fi
 
 # ---------------------------------------------------------------------------

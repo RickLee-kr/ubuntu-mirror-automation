@@ -271,6 +271,130 @@ um_disk_usage_percent() {
   df -P "$path" 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}'
 }
 
+um_df_total_kib() {
+  local path="${1:-.}" out
+  out="$(df -Pk "$path" 2>/dev/null | awk 'NR==2 {print $2+0}')" || true
+  printf '%s\n' "${out:-0}"
+}
+
+um_df_avail_kib() {
+  local path="${1:-.}" out
+  out="$(df -Pk "$path" 2>/dev/null | awk 'NR==2 {print $4+0}')" || true
+  printf '%s\n' "${out:-0}"
+}
+
+# ---------------------------------------------------------------------------
+# Mirror capacity / projected download size
+# ---------------------------------------------------------------------------
+# apt-mirror has no dry-run; we use documented archive size estimates and
+# subtract whatever is already present under BASE_PATH.
+
+um_projected_mirror_gib() {
+  local mode="${1:-${MIRROR_MODE:-minimal}}"
+  case "$mode" in
+    full|FULL)
+      printf '%s\n' "${PROJECTED_SIZE_GIB_FULL:-700}"
+      ;;
+    *)
+      printf '%s\n' "${PROJECTED_SIZE_GIB_MINIMAL:-320}"
+      ;;
+  esac
+}
+
+um_existing_mirror_gib() {
+  local root="${1:-${BASE_PATH:-/var/spool/apt-mirror}}"
+  local bytes=0
+  if [[ -d "$root" ]]; then
+    bytes="$(du -sb "$root" 2>/dev/null | awk '{print $1+0}')" || bytes=0
+  fi
+  # GiB, integer
+  printf '%s\n' "$(( ${bytes:-0} / 1024 / 1024 / 1024 ))"
+}
+
+um_remaining_download_gib() {
+  local projected existing remaining
+  projected="$(um_projected_mirror_gib "${1:-${MIRROR_MODE:-minimal}}")"
+  existing="$(um_existing_mirror_gib "${2:-${BASE_PATH:-/var/spool/apt-mirror}}")"
+  remaining=$((projected - existing))
+  if [[ "$remaining" -lt 0 ]]; then remaining=0; fi
+  printf '%s\n' "$remaining"
+}
+
+um_disk_reserve_gib() {
+  # Reserve at least DISK_RESERVE_PERCENT of total filesystem (default 20%).
+  local path="${1:-${BASE_PATH:-/}}"
+  local pct total_kib reserve_kib
+  pct="${DISK_RESERVE_PERCENT:-20}"
+  total_kib="$(um_df_total_kib "$path")"
+  reserve_kib=$(( total_kib * pct / 100 ))
+  printf '%s\n' "$(( reserve_kib / 1024 / 1024 ))"
+}
+
+# Print a human capacity report; return 0 if sync is allowed, 1 if blocked.
+um_check_sync_capacity() {
+  local path="${1:-${BASE_PATH:-/var/spool/apt-mirror}}"
+  local mode="${2:-${MIRROR_MODE:-minimal}}"
+  local total_kib avail_kib total_gib avail_gib
+  local projected remaining reserve usable
+  local reserve_pct="${DISK_RESERVE_PERCENT:-20}"
+
+  if [[ ! -d "$path" ]]; then
+    mkdir -p "$path" 2>/dev/null || true
+  fi
+  if [[ ! -d "$path" ]]; then
+    um_error "Cannot evaluate disk capacity: $path missing"
+    return 1
+  fi
+
+  total_kib="$(um_df_total_kib "$path")"
+  avail_kib="$(um_df_avail_kib "$path")"
+  total_gib=$(( total_kib / 1024 / 1024 ))
+  avail_gib=$(( avail_kib / 1024 / 1024 ))
+  projected="$(um_projected_mirror_gib "$mode")"
+  remaining="$(um_remaining_download_gib "$mode" "$path")"
+  reserve="$(um_disk_reserve_gib "$path")"
+  usable=$(( avail_gib - reserve ))
+  if [[ "$usable" -lt 0 ]]; then usable=0; fi
+
+  printf 'Disk capacity check (%s mode):\n' "$mode"
+  printf '  Filesystem total:     %s GiB\n' "$total_gib"
+  printf '  Available now:        %s GiB\n' "$avail_gib"
+  printf '  Safety reserve:       %s GiB (%s%% of total)\n' "$reserve" "$reserve_pct"
+  printf '  Usable for download:  %s GiB\n' "$usable"
+  printf '  Projected mirror size:%s GiB\n' "$projected"
+  printf '  Remaining to download:%s GiB\n' "$remaining"
+
+  # Never allow a sync that would consume the safety reserve.
+  if [[ "$remaining" -gt "$usable" ]]; then
+    um_error "Projected download (${remaining} GiB) exceeds usable space (${usable} GiB)"
+    um_error "Refusing to start sync — free disk or use minimal mode (default)."
+    if [[ "$mode" == "full" || "$mode" == "FULL" ]]; then
+      um_error "Full mode (~${projected} GiB) is not safe on this disk with a ${reserve_pct}% reserve."
+      um_error "Use: sudo ./install.sh   # minimal (main + restricted)"
+      um_error "Or expand storage before: sudo ./install.sh --full"
+    fi
+    return 1
+  fi
+
+  # Extra guard: ~1TB class disks must not run full unless clearly enough headroom
+  # (usable already enforced above; this message clarifies operator intent).
+  if [[ "$mode" == "full" || "$mode" == "FULL" ]] && [[ "$total_gib" -le 1100 ]]; then
+    local free_after=$(( avail_gib - remaining ))
+    local free_after_pct=0
+    if [[ "$total_gib" -gt 0 ]]; then
+      free_after_pct=$(( free_after * 100 / total_gib ))
+    fi
+    if [[ "$free_after_pct" -lt "$reserve_pct" ]]; then
+      um_error "Full mode on ~1TB disk would leave ~${free_after_pct}% free (< ${reserve_pct}% reserve)"
+      um_error "Refusing full sync. Default minimal mode is required on this disk size."
+      return 1
+    fi
+  fi
+
+  um_ok "Capacity OK for ${mode} sync (remaining ${remaining} GiB <= usable ${usable} GiB)"
+  return 0
+}
+
 um_confirm() {
   # um_confirm "message" — returns 0 if yes. Skipped in non-interactive.
   local msg="$1"

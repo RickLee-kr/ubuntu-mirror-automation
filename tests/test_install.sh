@@ -30,21 +30,58 @@ assert_contains "$list" "focal" "includes focal"
 assert_contains "$list" "jammy" "includes jammy"
 assert_contains "$list" "noble" "includes noble"
 assert_contains "$list" "set nthreads     20" "nthreads 20"
-assert_contains "$list" "universe multiverse" "full mode components"
-
-echo "[test] minimal mode"
-MIN_CONF="$(mktemp)"
-sed 's/^MIRROR_MODE=.*/MIRROR_MODE="minimal"/' "${ROOT}/mirror.conf" >"$MIN_CONF"
-um_load_config "$MIN_CONF"
-list_min="$(um_generate_mirror_list)"
-rm -f "$MIN_CONF"
-if [[ "$list_min" == *"universe"* ]]; then
-  echo "  FAIL: minimal should not include universe"
+assert_contains "$list" "main restricted" "minimal default components"
+if [[ "$list" == *"universe"* ]]; then
+  echo "  FAIL: default mode must not include universe"
   FAIL=1
 else
-  echo "  PASS: minimal excludes universe"
+  echo "  PASS: default minimal excludes universe"
 fi
+[[ "$MIRROR_MODE" == "minimal" ]] && echo "  PASS: MIRROR_MODE=minimal" || { echo "  FAIL: mode=$MIRROR_MODE"; FAIL=1; }
+
+echo "[test] full mode via config"
+FULL_CONF="$(mktemp)"
+sed 's/^MIRROR_MODE=.*/MIRROR_MODE="full"/' "${ROOT}/mirror.conf" >"$FULL_CONF"
+um_load_config "$FULL_CONF"
+list_full="$(um_generate_mirror_list)"
+rm -f "$FULL_CONF"
+assert_contains "$list_full" "universe multiverse" "full mode components"
 # restore default config for subsequent tests
+um_load_config "${ROOT}/mirror.conf"
+
+echo "[test] projected sizes and capacity helpers"
+proj_min="$(um_projected_mirror_gib minimal)"
+proj_full="$(um_projected_mirror_gib full)"
+[[ "$proj_min" -lt "$proj_full" ]] && echo "  PASS: minimal projected < full ($proj_min < $proj_full)" || { echo "  FAIL: projections"; FAIL=1; }
+[[ "${DISK_RESERVE_PERCENT}" -ge 15 ]] && echo "  PASS: reserve >= 15% (${DISK_RESERVE_PERCENT})" || { echo "  FAIL: reserve"; FAIL=1; }
+
+echo "[test] capacity check blocks when projection exceeds usable space"
+CAP_DIR="$(mktemp -d)"
+# Force an impossible projection against this filesystem
+old_proj="$PROJECTED_SIZE_GIB_MINIMAL"
+PROJECTED_SIZE_GIB_MINIMAL=999999
+BASE_PATH="$CAP_DIR"
+set +e
+um_check_sync_capacity "$CAP_DIR" minimal >/tmp/um-cap.out 2>&1
+cap_rc=$?
+set -e
+PROJECTED_SIZE_GIB_MINIMAL="$old_proj"
+if [[ "$cap_rc" -ne 0 ]]; then
+  echo "  PASS: capacity check blocks oversized projection"
+else
+  echo "  FAIL: capacity check should have blocked"
+  FAIL=1
+  cat /tmp/um-cap.out || true
+fi
+rm -rf "$CAP_DIR"
+
+echo "[test] resolve mode ignores full without --full"
+MIRROR_MODE="full"
+um_resolve_mirror_mode 0
+[[ "$MIRROR_MODE" == "minimal" ]] && echo "  PASS: full without flag → minimal" || { echo "  FAIL: $MIRROR_MODE"; FAIL=1; }
+um_resolve_mirror_mode 1
+[[ "$MIRROR_MODE" == "full" ]] && echo "  PASS: --full → full" || { echo "  FAIL: $MIRROR_MODE"; FAIL=1; }
+um_resolve_mirror_mode 0
 um_load_config "${ROOT}/mirror.conf"
 
 echo "[test] nginx + systemd generators"

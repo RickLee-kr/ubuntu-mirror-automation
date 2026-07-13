@@ -199,12 +199,6 @@ um_df_used_kib() {
   printf '%s\n' "${out:-0}"
 }
 
-um_df_avail_kib() {
-  local path="${1:-${BASE_PATH:-/}}" out
-  out="$(df -Pk "$path" 2>/dev/null | awk 'NR==2 {print $4+0}')" || true
-  printf '%s\n' "${out:-0}"
-}
-
 um_inode_usage_percent() {
   local path="${1:-${BASE_PATH:-/}}" out
   out="$(df -Pi "$path" 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5+0}')" || true

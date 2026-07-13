@@ -56,10 +56,12 @@ sudo mirrorctl sync stop          # explicit stop only
 
 ## Mirror sizes
 
-| Mode | Approx size |
-|------|-------------|
-| Full | ~660 GB |
-| Minimal (`--minimal`) | ~305 GB |
+| Mode | Approx / projected size | How to select |
+|------|-------------------------|---------------|
+| Minimal (default) | ~320 GiB | `sudo ./install.sh` |
+| Full | ~700 GiB | `sudo ./install.sh --full` (explicit only) |
+
+Sync is blocked if the projected remaining download exceeds free space minus `DISK_RESERVE_PERCENT` (default 20%). Full mode is never started automatically on a 1TB-class disk.
 
 ## Client rollout
 

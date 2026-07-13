@@ -31,11 +31,13 @@ The installer automatically:
 ### Installation modes
 
 ```bash
-sudo ./install.sh                 # start sync + live dashboard (default on a TTY)
+sudo ./install.sh                 # minimal (main + restricted) + live dashboard
 sudo ./install.sh --background    # start sync and return to the shell
 sudo ./install.sh --foreground    # start sync and keep the dashboard attached
+sudo ./install.sh --full          # explicit full mirror (universe + multiverse)
 ```
 
+Default mode is **minimal** (~320 GiB projected). Full mode (~700 GiB) is never started automatically — including on a 1TB disk — and requires `--full`. Before sync starts, the installer compares the projected download size against free disk minus a **20% safety reserve** and blocks sync if it would not fit.
 `--background` example:
 
 ```text
@@ -74,13 +76,14 @@ sudo mirrorctl finalize
 
 | Option | Behavior |
 |--------|----------|
-| *(none)* | Full automatic installation, start sync, attach live dashboard |
+| *(none)* | Automatic installation, **minimal** sync (main + restricted), attach live dashboard |
+| `--full` | Explicit full mirror (main restricted universe multiverse) |
+| `--minimal` | Explicit minimal mode (same as default) |
 | `--background` | Start sync and return to the shell immediately |
 | `--foreground` | Start sync and keep the live dashboard attached |
 | `--config FILE` | Use a custom configuration file |
 | `--dry-run` | Show planned actions without changing the system |
 | `--no-sync` | Install and validate but do not start initial sync |
-| `--minimal` | Use minimal mirror components (~305 GB) |
 | `--verbose` | Show full validation details |
 | `--force` | Replace changed managed configuration after backup |
 | `--help` | Show concise usage |
@@ -90,11 +93,12 @@ sudo mirrorctl finalize
 Edit `mirror.conf` before install if needed:
 
 - `BASE_PATH` (default `/var/spool/apt-mirror`)
-- `MIRROR_MODE` (`full` or `minimal`)
+- `MIRROR_MODE` (default `minimal`; `full` in config is ignored unless `install.sh --full`)
+- `DISK_RESERVE_PERCENT` (default `20`) — free space that must remain after sync
+- `PROJECTED_SIZE_GIB_MINIMAL` / `PROJECTED_SIZE_GIB_FULL` — pre-sync size estimates
 - `UBUNTU_VERSIONS`, `NTHREADS`, `UPSTREAM_MIRROR`
 - `MIRROR_IP` / `MIRROR_URL` (auto-detected when empty)
 - `STALL_THRESHOLD_SEC` (default 600) for dashboard stall detection
-
 If `/var/spool/apt-mirror` is already mounted (for example `/dev/sdb1`), leave `DATA_DEVICE` empty. The installer will not format or remount it.
 
 ## Day-2 operations

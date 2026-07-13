@@ -21,11 +21,18 @@ DATA_FSTYPE="ext4"
 DATA_MOUNT_OPTS="defaults,noatime"
 DISK_WARN_PERCENT="80"
 DISK_CRIT_PERCENT="90"
-MIN_FREE_GIB="700"
+# Minimum free GiB warning for default (minimal) sync
+MIN_FREE_GIB="350"
+# Keep at least this percent of the filesystem free after sync
+DISK_RESERVE_PERCENT="20"
+# Projected apt-mirror footprint (GiB) used for pre-sync capacity checks
+PROJECTED_SIZE_GIB_MINIMAL="320"
+PROJECTED_SIZE_GIB_FULL="700"
 UPSTREAM_MIRROR="http://archive.ubuntu.com/ubuntu"
 DEFAULT_ARCH="amd64"
 NTHREADS="20"
-MIRROR_MODE="full"
+# Default is minimal (main + restricted). Full requires explicit --full.
+MIRROR_MODE="minimal"
 UBUNTU_VERSIONS="xenial bionic focal jammy noble"
 SUITE_SUFFIXES="updates security"
 INCLUDE_SOURCE="false"
@@ -89,18 +96,13 @@ um_load_config() {
   UBUNTU_MIRROR_ROOT="${UBUNTU_MIRROR_ROOT:-$MIRROR_PATH/archive.ubuntu.com/ubuntu}"
   DIST_ROOT="${DIST_ROOT:-$UBUNTU_MIRROR_ROOT/dists}"
 
-  # Components based on mode
-  case "${MIRROR_MODE}" in
-    full|FULL)
-      MIRROR_COMPONENTS="main restricted universe multiverse"
-      ;;
-    minimal|MINIMAL)
-      MIRROR_COMPONENTS="main restricted"
-      ;;
-    *)
-      um_die "Invalid MIRROR_MODE='$MIRROR_MODE' (use full|minimal)"
-      ;;
-  esac
+  # Disk capacity defaults
+  DISK_RESERVE_PERCENT="${DISK_RESERVE_PERCENT:-20}"
+  PROJECTED_SIZE_GIB_MINIMAL="${PROJECTED_SIZE_GIB_MINIMAL:-320}"
+  PROJECTED_SIZE_GIB_FULL="${PROJECTED_SIZE_GIB_FULL:-700}"
+  MIN_FREE_GIB="${MIN_FREE_GIB:-350}"
+
+  um_apply_mirror_mode_components
 
   if [[ -z "${MIRROR_IP}" ]]; then
     MIRROR_IP="$(um_detect_primary_ip)"
@@ -119,6 +121,50 @@ um_load_config() {
   WAITING_THRESHOLD_SEC="${WAITING_THRESHOLD_SEC:-30}"
   if [[ "${UM_QUIET_LOAD:-0}" != "1" ]]; then
     um_info "Loaded config: $UM_CONFIG_PATH"
+  fi
+}
+
+um_apply_mirror_mode_components() {
+  case "${MIRROR_MODE}" in
+    full|FULL)
+      MIRROR_MODE="full"
+      MIRROR_COMPONENTS="main restricted universe multiverse"
+      ;;
+    minimal|MINIMAL|"")
+      MIRROR_MODE="minimal"
+      MIRROR_COMPONENTS="main restricted"
+      ;;
+    *)
+      um_die "Invalid MIRROR_MODE='$MIRROR_MODE' (use full|minimal)"
+      ;;
+  esac
+}
+
+# Resolve install/runtime mode: full only when explicitly requested.
+# Without --full, MIRROR_MODE=full in config is ignored (never auto-start full).
+um_resolve_mirror_mode() {
+  local want_full="${1:-0}"
+  if [[ "$want_full" == "1" ]]; then
+    MIRROR_MODE="full"
+  else
+    if [[ "${MIRROR_MODE}" == "full" || "${MIRROR_MODE}" == "FULL" ]]; then
+      if [[ "${UM_QUIET_LOAD:-0}" != "1" ]]; then
+        um_warn "MIRROR_MODE=full ignored without --full; using minimal (main + restricted)"
+      fi
+    fi
+    MIRROR_MODE="minimal"
+  fi
+  um_apply_mirror_mode_components
+}
+
+um_persist_mirror_mode_to_conf() {
+  # Ensure installed mirror.conf matches the resolved mode.
+  local conf="${1:-${INSTALL_CONF_DIR}/mirror.conf}"
+  [[ -f "$conf" ]] || return 0
+  if grep -qE '^MIRROR_MODE=' "$conf" 2>/dev/null; then
+    sed -i "s/^MIRROR_MODE=.*/MIRROR_MODE=\"${MIRROR_MODE}\"/" "$conf"
+  else
+    printf '\nMIRROR_MODE="%s"\n' "$MIRROR_MODE" >>"$conf"
   fi
 }
 

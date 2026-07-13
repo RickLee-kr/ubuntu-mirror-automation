@@ -52,6 +52,13 @@ um_clear_marker "sync-failed"
 um_mark_state "sync-started"
 um_progress_event sync_started "mode=${MIRROR_MODE}"
 
+# Refuse to start if projected download would violate the safety reserve
+if ! um_check_sync_capacity "$BASE_PATH" "$MIRROR_MODE"; then
+  um_mark_state "sync-failed"
+  um_progress_event sync_failed "reason=capacity"
+  exit 2
+fi
+
 # Start filesystem progress sampler in background
 um_progress_sampler_loop 30 &
 SAMPLER_PID=$!

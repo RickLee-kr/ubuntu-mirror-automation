@@ -27,7 +27,7 @@ echo "End time: fixture" >>"$FIX/logs/apt-mirror.log"
 CONF="$FIX/mirror.conf"
 cat >"$CONF" <<EOF
 BASE_PATH="$FIX"
-MIRROR_MODE="full"
+MIRROR_MODE="minimal"
 UBUNTU_VERSIONS="xenial bionic focal jammy noble"
 SUITE_SUFFIXES="updates security"
 UPSTREAM_MIRROR="http://archive.ubuntu.com/ubuntu"

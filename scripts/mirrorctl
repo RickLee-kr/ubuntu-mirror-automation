@@ -261,12 +261,15 @@ cmd_sync() {
   case "$action" in
     start)
       need_root
+      if ! um_check_sync_capacity "$BASE_PATH" "$MIRROR_MODE"; then
+        um_die "Sync blocked by disk capacity / safety reserve check" 2
+      fi
       if um_is_sync_running; then
         um_ok "Sync already running"
       else
         systemctl start --no-block apt-mirror.service
         um_mark_state "sync-started"
-        um_ok "Started apt-mirror.service"
+        um_ok "Started apt-mirror.service (mode=${MIRROR_MODE})"
       fi
       if [[ "$mode" == "foreground" ]]; then
         cmd_watch --foreground

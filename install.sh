@@ -15,6 +15,7 @@ UM_DRY_RUN=0
 UM_FORCE=0
 UM_NO_SYNC=0
 UM_MINIMAL=0
+UM_FULL=0
 UM_VERBOSE=0
 UM_FORMAT_DEVICE=0
 UM_CONFIG_ARG=""
@@ -29,6 +30,9 @@ Usage: sudo ./install.sh [OPTIONS]
 
 Install and start an Ubuntu Mirror Server in one command.
 
+Default mode is minimal (main + restricted only, ~320 GiB projected).
+Full mode (universe + multiverse, ~700 GiB) requires explicit --full.
+
 Options:
   --help              Show this help
   --config PATH       Use a custom mirror.conf
@@ -36,7 +40,8 @@ Options:
   --no-sync           Install and validate but do not start initial sync
   --foreground        Start sync and keep the live dashboard attached
   --background        Start sync and return to the shell immediately
-  --minimal           Use minimal mirror components (main restricted)
+  --full              Mirror main restricted universe multiverse (explicit)
+  --minimal           Mirror main + restricted only (default)
   --verbose           Show detailed validation and command output
   --force             Replace changed managed configuration after backup
 
@@ -44,9 +49,9 @@ Examples:
   sudo ./install.sh
   sudo ./install.sh --background
   sudo ./install.sh --foreground
+  sudo ./install.sh --full
   sudo ./install.sh --dry-run
   sudo ./install.sh --no-sync
-  sudo ./install.sh --minimal
 EOF
 }
 
@@ -62,7 +67,8 @@ parse_args() {
       --no-sync) UM_NO_SYNC=1; shift ;;
       --foreground) UM_SYNC_MODE="foreground"; shift ;;
       --background) UM_SYNC_MODE="background"; shift ;;
-      --minimal) UM_MINIMAL=1; shift ;;
+      --full) UM_FULL=1; UM_MINIMAL=0; shift ;;
+      --minimal) UM_MINIMAL=1; UM_FULL=0; shift ;;
       --verbose) UM_VERBOSE=1; shift ;;
       --force) UM_FORCE=1; shift ;;
       # Hidden expert option — not advertised in Quick Start
@@ -155,13 +161,13 @@ phase1_preflight() {
 
   if [[ -d "$BASE_PATH" ]]; then
     local avail_kib avail_gib pct
-    avail_kib="$(df -Pk "$BASE_PATH" 2>/dev/null | awk 'NR==2 {print $4}')"
+    avail_kib="$(um_df_avail_kib "$BASE_PATH")"
     avail_gib=$(( ${avail_kib:-0} / 1024 / 1024 ))
     pct="$(um_disk_usage_percent "$BASE_PATH" || echo 0)"
     if [[ "$avail_gib" -lt "${MIN_FREE_GIB}" ]] && ! um_initial_sync_complete; then
-      um_warn "Free space ${avail_gib} GiB < recommended ${MIN_FREE_GIB} GiB for full sync"
+      um_warn "Free space ${avail_gib} GiB < recommended ${MIN_FREE_GIB} GiB for ${MIRROR_MODE} sync"
     else
-      um_ok "Disk space: ${avail_gib} GiB free (${pct}% used)"
+      um_ok "Disk space: ${avail_gib} GiB free (${pct}% used, mode=${MIRROR_MODE})"
     fi
     if [[ ! -w "$BASE_PATH" ]] && [[ "$UM_DRY_RUN" != "1" ]]; then
       um_die "No write permission on $BASE_PATH"
@@ -377,8 +383,10 @@ install_mgmt_tools() {
 
   if [[ -f "${INSTALL_CONF_DIR}/mirror.conf" ]] && [[ "$UM_FORCE" != "1" ]]; then
     vlog "Keeping existing ${INSTALL_CONF_DIR}/mirror.conf"
+    um_persist_mirror_mode_to_conf "${INSTALL_CONF_DIR}/mirror.conf"
   else
     um_install_file "${UM_CONFIG_PATH}" "${INSTALL_CONF_DIR}/mirror.conf" 0644
+    um_persist_mirror_mode_to_conf "${INSTALL_CONF_DIR}/mirror.conf"
   fi
   ln -sfn "${INSTALL_BIN_DIR}/mirrorctl" /usr/local/sbin/mirrorctl 2>/dev/null || true
 }
@@ -568,15 +576,23 @@ phase6_sync() {
   local attach_mode already_running=0
   attach_mode="$(um_resolve_sync_attach_mode)"
 
+  # Pre-sync capacity gate (projected size vs available minus reserve)
+  phase "Phase 6a: Pre-sync capacity check"
+  if [[ "$UM_DRY_RUN" == "1" ]]; then
+    um_check_sync_capacity "$BASE_PATH" "$MIRROR_MODE" || um_dry "Capacity check would block sync"
+    um_dry "Would start initial synchronization (systemctl start --no-block)"
+    um_dry "Would attach mode: ${attach_mode}"
+    um_dry "Mirror mode: ${MIRROR_MODE} (components: ${MIRROR_COMPONENTS})"
+    return 0
+  fi
+
+  if ! um_check_sync_capacity "$BASE_PATH" "$MIRROR_MODE"; then
+    um_die "Initial sync blocked by disk capacity / safety reserve check" 2
+  fi
+
   if um_is_sync_running; then
     um_ok "Initial synchronization is already running"
     already_running=1
-  fi
-
-  if [[ "$UM_DRY_RUN" == "1" ]]; then
-    um_dry "Would start initial synchronization (systemctl start --no-block)"
-    um_dry "Would attach mode: ${attach_mode}"
-    return 0
   fi
 
   if [[ "$already_running" -eq 0 ]]; then
@@ -598,7 +614,7 @@ phase6_sync() {
 
     if [[ "$ok" -eq 1 ]]; then
       um_mark_state "sync-started"
-      um_ok "apt-mirror.service starting"
+      um_ok "apt-mirror.service starting (mode=${MIRROR_MODE})"
       um_ok "Raw log: ${APT_MIRROR_LOG}"
       um_ok "Dashboard: sudo mirrorctl watch"
     else
@@ -694,9 +710,12 @@ main() {
   um_register_cleanup cleanup_temps
 
   um_load_config "$UM_CONFIG_ARG"
-  if [[ "$UM_MINIMAL" == "1" ]]; then
-    MIRROR_MODE="minimal"
-    MIRROR_COMPONENTS="main restricted"
+  # Default is always minimal unless --full is explicit. Never auto-start full
+  # (including when mirror.conf still says full, e.g. on a 1TB disk).
+  if [[ "$UM_FULL" == "1" ]]; then
+    um_resolve_mirror_mode 1
+  else
+    um_resolve_mirror_mode 0
   fi
 
   um_set_log_file "${LOG_DIR}/install.log"
