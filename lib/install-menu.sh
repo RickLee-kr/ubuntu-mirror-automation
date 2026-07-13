@@ -207,8 +207,14 @@ um_menu_pause() {
 }
 
 um_menu_run_dashboard() {
-  local dash
-  dash="${INSTALL_BIN_DIR:-/usr/local/bin}/mirror-dashboard"
+  local dash repo
+  dash=""
+  if [[ -f "${INSTALL_CONF_DIR:-/etc/ubuntu-mirror}/source-repo" ]]; then
+    repo="$(tr -d '\r\n' <"${INSTALL_CONF_DIR:-/etc/ubuntu-mirror}/source-repo" 2>/dev/null || true)"
+    [[ -x "${repo}/scripts/mirror-dashboard.sh" ]] && dash="${repo}/scripts/mirror-dashboard.sh"
+  fi
+  [[ -n "$dash" ]] || dash="${UM_PROJECT_ROOT}/scripts/mirror-dashboard.sh"
+  [[ -x "$dash" ]] || dash="${INSTALL_BIN_DIR:-/usr/local/bin}/mirror-dashboard"
   [[ -x "$dash" ]] || dash="${UM_PROJECT_ROOT}/scripts/mirror-dashboard.sh"
   if [[ ! -x "$dash" ]]; then
     um_whiptail_msg "Monitor" "Dashboard not installed yet.\n\nInstall first (Minimal or Full)."

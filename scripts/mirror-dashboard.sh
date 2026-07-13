@@ -30,7 +30,7 @@ resolve_libs() {
 resolve_libs
 
 UM_CONFIG_ARG=""
-DASH_INTERVAL=5
+DASH_INTERVAL=10
 DASH_NO_COLOR=0
 DASH_ONCE=0
 DASH_RAW=0
@@ -53,7 +53,7 @@ Live terminal dashboard for Ubuntu Mirror synchronization.
 
 Options:
   --config PATH    Config file
-  --interval N     Refresh interval seconds (default 5)
+  --interval N     Refresh interval seconds (default 10)
   --no-color       Disable ANSI colors
   --once           Print one snapshot and exit
   --raw            Follow raw apt-mirror.log instead of TUI
@@ -76,7 +76,7 @@ parse_args() {
         shift 2
         ;;
       --interval)
-        DASH_INTERVAL="${2:-5}"
+        DASH_INTERVAL="${2:-10}"
         shift 2
         ;;
       --no-color) DASH_NO_COLOR=1; shift ;;

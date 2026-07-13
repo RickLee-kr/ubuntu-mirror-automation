@@ -405,6 +405,10 @@ install_mgmt_tools() {
   um_install_file "${UM_PROJECT_ROOT}/lib/progress.sh" "${INSTALL_LIB_DIR}/progress.sh" 0644
   um_install_file "${UM_PROJECT_ROOT}/lib/install-menu.sh" "${INSTALL_LIB_DIR}/install-menu.sh" 0644
 
+  # Remember git checkout path so `mirrorctl watch` picks up git pull without reinstall
+  mkdir -p "${INSTALL_CONF_DIR}"
+  printf '%s\n' "${UM_PROJECT_ROOT}" >"${INSTALL_CONF_DIR}/source-repo"
+
   if [[ -f "${INSTALL_CONF_DIR}/mirror.conf" ]] && [[ "$UM_FORCE" != "1" ]]; then
     vlog "Keeping existing ${INSTALL_CONF_DIR}/mirror.conf"
     um_persist_mirror_mode_to_conf "${INSTALL_CONF_DIR}/mirror.conf"
@@ -570,7 +574,9 @@ EOF
 
 um_attach_dashboard() {
   local dash
-  dash="${INSTALL_BIN_DIR}/mirror-dashboard"
+  # Prefer checkout copy so refresh interval / UI fixes apply after git pull
+  dash="${UM_PROJECT_ROOT}/scripts/mirror-dashboard.sh"
+  [[ -x "$dash" ]] || dash="${INSTALL_BIN_DIR}/mirror-dashboard"
   [[ -x "$dash" ]] || dash="${UM_PROJECT_ROOT}/scripts/mirror-dashboard.sh"
   if [[ ! -x "$dash" ]]; then
     um_warn "mirror-dashboard not found — use: sudo mirrorctl status"

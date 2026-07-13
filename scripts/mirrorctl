@@ -61,7 +61,7 @@ Sync examples:
 Watch examples:
   sudo mirrorctl watch
   sudo mirrorctl watch --foreground
-  sudo mirrorctl watch --interval 1
+  sudo mirrorctl watch --interval 10
   sudo mirrorctl watch --once
   sudo mirrorctl watch --raw
 EOF
@@ -70,10 +70,28 @@ EOF
 need_root() { um_require_root; }
 
 dashboard_bin() {
-  local dash
+  local dash repo here
+  # 1) Git checkout recorded at install time (so git pull applies without reinstall)
+  if [[ -f "${INSTALL_CONF_DIR:-/etc/ubuntu-mirror}/source-repo" ]]; then
+    repo="$(tr -d '\r\n' <"${INSTALL_CONF_DIR:-/etc/ubuntu-mirror}/source-repo" 2>/dev/null || true)"
+    if [[ -n "$repo" ]] && [[ -x "${repo}/scripts/mirror-dashboard.sh" ]]; then
+      printf '%s\n' "${repo}/scripts/mirror-dashboard.sh"
+      return
+    fi
+  fi
+  # 2) Companion next to this mirrorctl (repo/scripts or /usr/local/bin)
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [[ -x "${here}/mirror-dashboard.sh" ]]; then
+    printf '%s\n' "${here}/mirror-dashboard.sh"
+    return
+  fi
+  if [[ -x "${here}/mirror-dashboard" ]]; then
+    printf '%s\n' "${here}/mirror-dashboard"
+    return
+  fi
+  # 3) Installed / project fallbacks
   dash="${INSTALL_BIN_DIR}/mirror-dashboard"
   [[ -x "$dash" ]] || dash="${UM_SRC_ROOT}/scripts/mirror-dashboard.sh"
-  [[ -x "$dash" ]] || dash="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mirror-dashboard.sh"
   printf '%s\n' "$dash"
 }
 
