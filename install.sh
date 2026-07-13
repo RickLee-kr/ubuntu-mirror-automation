@@ -10,6 +10,8 @@ source "${UM_PROJECT_ROOT}/lib/common.sh"
 source "${UM_PROJECT_ROOT}/lib/config.sh"
 # shellcheck source=lib/state.sh
 source "${UM_PROJECT_ROOT}/lib/state.sh"
+# shellcheck source=lib/install-menu.sh
+source "${UM_PROJECT_ROOT}/lib/install-menu.sh"
 
 UM_DRY_RUN=0
 UM_FORCE=0
@@ -20,6 +22,9 @@ UM_VERBOSE=0
 UM_FORMAT_DEVICE=0
 UM_CONFIG_ARG=""
 UM_CHANGES=0
+UM_NO_MENU=0
+UM_FORCE_MENU=0
+UM_FROM_MENU=0
 # Sync attach mode: auto | foreground | background
 # auto = attach dashboard when TTY, else background
 UM_SYNC_MODE="auto"
@@ -28,10 +33,21 @@ usage() {
   cat <<'EOF'
 Usage: sudo ./install.sh [OPTIONS]
 
-Install and start an Ubuntu Mirror Server in one command.
+Install and start an Ubuntu Mirror Server.
+
+Interactive (default on a TTY):
+  sudo ./install.sh
+    Opens a menu to choose minimal/full mode, monitor sync,
+    delete existing mirror data, or quit.
+
+Non-interactive / scripted:
+  sudo ./install.sh --minimal
+  sudo ./install.sh --full
+  sudo ./install.sh --non-interactive
 
 Default mode is minimal (main + restricted only, ~320 GiB projected).
-Full mode (universe + multiverse, ~700 GiB) requires explicit --full.
+Full mode (universe + multiverse, ~700 GiB) requires explicit --full
+or menu option 2.
 
 Options:
   --help              Show this help
@@ -41,12 +57,16 @@ Options:
   --foreground        Start sync and keep the live dashboard attached
   --background        Start sync and return to the shell immediately
   --full              Mirror main restricted universe multiverse (explicit)
-  --minimal           Mirror main + restricted only (default)
+  --minimal           Mirror main + restricted only (skip menu)
+  --menu              Force interactive menu (TTY required)
+  --no-menu           Skip menu even on a TTY
+  --non-interactive   Alias for --no-menu + background-friendly defaults
   --verbose           Show detailed validation and command output
   --force             Replace changed managed configuration after backup
 
 Examples:
   sudo ./install.sh
+  sudo ./install.sh --menu
   sudo ./install.sh --background
   sudo ./install.sh --foreground
   sudo ./install.sh --full
@@ -69,13 +89,15 @@ parse_args() {
       --background) UM_SYNC_MODE="background"; shift ;;
       --full) UM_FULL=1; UM_MINIMAL=0; shift ;;
       --minimal) UM_MINIMAL=1; UM_FULL=0; shift ;;
+      --menu) UM_FORCE_MENU=1; shift ;;
+      --no-menu) UM_NO_MENU=1; shift ;;
       --verbose) UM_VERBOSE=1; shift ;;
       --force) UM_FORCE=1; shift ;;
       # Hidden expert option — not advertised in Quick Start
       --format-device) UM_FORMAT_DEVICE=1; shift ;;
       -h|--help) usage; exit 0 ;;
-      # Compatibility aliases (deprecated, still accepted quietly)
-      --non-interactive) UM_SYNC_MODE="background"; shift ;;
+      # Compatibility aliases
+      --non-interactive) UM_NO_MENU=1; UM_SYNC_MODE="background"; shift ;;
       --start-sync) UM_NO_SYNC=0; shift ;;
       --validate) UM_VERBOSE=1; shift ;;
       --skip-packages) shift ;; # ignored; dry-run handles missing packages
@@ -380,6 +402,7 @@ install_mgmt_tools() {
   um_install_file "${UM_PROJECT_ROOT}/lib/config.sh" "${INSTALL_LIB_DIR}/config.sh" 0644
   um_install_file "${UM_PROJECT_ROOT}/lib/state.sh" "${INSTALL_LIB_DIR}/state.sh" 0644
   um_install_file "${UM_PROJECT_ROOT}/lib/progress.sh" "${INSTALL_LIB_DIR}/progress.sh" 0644
+  um_install_file "${UM_PROJECT_ROOT}/lib/install-menu.sh" "${INSTALL_LIB_DIR}/install-menu.sh" 0644
 
   if [[ -f "${INSTALL_CONF_DIR}/mirror.conf" ]] && [[ "$UM_FORCE" != "1" ]]; then
     vlog "Keeping existing ${INSTALL_CONF_DIR}/mirror.conf"
@@ -704,34 +727,17 @@ cleanup_temps() {
   rm -f "${UM_NGINX_TMP:-}" "${UM_SVC_TMP:-}" "${UM_TIMER_TMP:-}" 2>/dev/null || true
 }
 
-main() {
-  parse_args "$@"
-  um_setup_trap
-  um_register_cleanup cleanup_temps
-
-  um_load_config "$UM_CONFIG_ARG"
-  # Default is always minimal unless --full is explicit. Never auto-start full
-  # (including when mirror.conf still says full, e.g. on a 1TB disk).
-  if [[ "$UM_FULL" == "1" ]]; then
-    um_resolve_mirror_mode 1
-  else
-    um_resolve_mirror_mode 0
-  fi
-
-  um_set_log_file "${LOG_DIR}/install.log"
-  um_ensure_log_dir
-  UM_BACKUP_SESSION=""
-  um_backup_session_dir >/dev/null
-
+run_install_pipeline() {
   # Idempotent fast path (real run only): already installed, config current, sync running
-  if [[ "$UM_DRY_RUN" != "1" ]] && [[ "$UM_FORCE" != "1" ]] && um_is_installed; then
+  # Skipped when operator came from the interactive menu with an explicit install choice.
+  if [[ "$UM_FROM_MENU" != "1" ]] && [[ "$UM_DRY_RUN" != "1" ]] && [[ "$UM_FORCE" != "1" ]] && um_is_installed; then
     local gen
     gen="$(mktemp)"; um_generate_mirror_list >"$gen"
     if cmp -s "$gen" /etc/apt/mirror.list 2>/dev/null; then
       if um_is_sync_running || um_has_marker "ready" || um_initial_sync_complete; then
         rm -f "$gen"
         phase7_summary
-        exit 0
+        return 0
       fi
     fi
     rm -f "$gen"
@@ -747,6 +753,50 @@ main() {
   phase5_services
   phase6_sync
   phase7_summary
+}
+
+main() {
+  parse_args "$@"
+  um_setup_trap
+  um_register_cleanup cleanup_temps
+
+  UM_QUIET_LOAD=0
+  um_load_config "$UM_CONFIG_ARG"
+
+  um_set_log_file "${LOG_DIR}/install.log"
+  um_ensure_log_dir
+  UM_BACKUP_SESSION=""
+  um_backup_session_dir >/dev/null
+
+  # Interactive menu: mode select / monitor / delete data
+  if um_should_show_install_menu; then
+    while true; do
+      UM_QUIET_LOAD=1
+      um_install_menu
+      case "${UM_MENU_ACTION:-quit}" in
+        install)
+          UM_FROM_MENU=1
+          run_install_pipeline
+          # After install/dashboard detach, return to menu
+          UM_FROM_MENU=0
+          printf '\nReturning to menu...\n'
+          sleep 1
+          ;;
+        quit|*)
+          exit 0
+          ;;
+      esac
+    done
+  fi
+
+  # Non-menu path: resolve mode from CLI flags
+  if [[ "$UM_FULL" == "1" ]]; then
+    um_resolve_mirror_mode 1
+  else
+    um_resolve_mirror_mode 0
+  fi
+
+  run_install_pipeline
 }
 
 main "$@"

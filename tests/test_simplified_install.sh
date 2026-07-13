@@ -29,6 +29,7 @@ echo "$HELP" | grep -q -- '--dry-run' || fail "missing --dry-run"
 echo "$HELP" | grep -q -- '--no-sync' || fail "missing --no-sync"
 echo "$HELP" | grep -q -- '--full' || fail "missing --full"
 echo "$HELP" | grep -q -- '--minimal' || fail "missing --minimal"
+echo "$HELP" | grep -q -- '--menu' || fail "missing --menu"
 echo "$HELP" | grep -q -- '--verbose' || fail "missing --verbose"
 if echo "$HELP" | grep -q -- '--start-sync'; then fail "deprecated --start-sync still in help"; fi
 if echo "$HELP" | grep -q -- '--non-interactive'; then fail "deprecated --non-interactive still in help"; fi
@@ -209,10 +210,49 @@ if grep -q 'sudo ./install.sh' "${ROOT}/README.md"; then
 else
   fail "README"
 fi
+if grep -q 'Interactive setup menu\|Delete existing mirror data' "${ROOT}/README.md"; then
+  pass "README documents interactive menu"
+else
+  fail "README menu docs missing"
+fi
 if grep -q 'Development and Troubleshooting' "${ROOT}/README.md"; then
   pass "README has advanced section"
 else
   fail "advanced section"
 fi
+
+# ---------------------------------------------------------------------------
+echo "[test_install_menu_helpers]"
+# shellcheck source=../lib/install-menu.sh
+source "${ROOT}/lib/install-menu.sh"
+UM_DRY_RUN=1
+UM_FORCE_MENU=0
+UM_NO_MENU=0
+UM_FULL=0
+UM_MINIMAL=0
+UM_NO_SYNC=0
+UM_SYNC_MODE="auto"
+if um_should_show_install_menu; then
+  fail "dry-run should not show menu"
+else
+  pass "dry-run skips menu"
+fi
+UM_DRY_RUN=0
+UM_NO_MENU=1
+if um_should_show_install_menu; then
+  fail "--no-menu should skip"
+else
+  pass "--no-menu skips menu"
+fi
+UM_NO_MENU=0
+UM_FULL=1
+if um_should_show_install_menu; then
+  fail "--full should skip menu"
+else
+  pass "--full skips menu"
+fi
+grep -q 'Delete existing mirror data' "${ROOT}/lib/install-menu.sh" && pass "purge menu option exists" || fail "purge missing"
+grep -q 'Monitor live dashboard' "${ROOT}/lib/install-menu.sh" && pass "monitor menu option exists" || fail "monitor missing"
+grep -q 'um_install_menu' "${ROOT}/install.sh" && pass "install.sh calls menu" || fail "menu not wired"
 
 exit "$FAIL"

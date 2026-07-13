@@ -1,19 +1,25 @@
 # Operations
 
-## Install (one command)
+## Install (interactive menu)
 
 ```bash
 cd ubuntu-mirror-automation
 sudo ./install.sh
 ```
 
-The installer starts the initial sync through systemd and opens a live terminal dashboard.
-Press `B`, `Q`, or `Ctrl+C` to detach — synchronization continues in the background.
+The installer opens a terminal menu:
+
+1. Minimal install/sync (recommended)
+2. Full install/sync (explicit)
+3. Monitor dashboard
+4. Status / 5. Logs / 6. Stop sync
+7. Delete existing mirror data
+8. Quit
 
 ```bash
-sudo ./install.sh --background   # start sync, return to shell
-sudo ./install.sh --foreground   # keep dashboard attached
-sudo mirrorctl watch             # reattach dashboard anytime
+sudo ./install.sh --minimal --no-menu   # scripted minimal
+sudo ./install.sh --full --no-menu      # scripted full
+sudo mirrorctl watch
 sudo mirrorctl status
 sudo mirrorctl logs
 ```

@@ -10,34 +10,49 @@ cd ubuntu-mirror-automation
 sudo ./install.sh
 ```
 
-The installer starts the initial sync and opens a live terminal dashboard.
-Press **B**, **Q**, or **Ctrl+C** to detach. The sync continues in the background.
-Reconnect at any time with:
+On an interactive terminal this opens a **setup menu**:
+
+```text
+1) Install / start sync — Minimal (~320 GiB)
+2) Install / start sync — Full (~700 GiB)
+3) Monitor live dashboard
+4) Show status
+5) Follow raw logs
+6) Stop running synchronization
+7) Delete existing mirror data  (DANGEROUS)
+8) Quit
+```
+
+Choose **1** for the recommended default (main + restricted).  
+Choose **7** to wipe previous mirror data before re-installing.  
+Choose **3** anytime to re-attach the live sync dashboard.
+
+After install starts, the live dashboard appears. Press **B**, **Q**, or **Ctrl+C** to detach; sync continues in the background. Reconnect with menu option **3** or:
 
 ```bash
 sudo mirrorctl watch
 ```
 
-The installer automatically:
+### Non-interactive / scripted install
 
-1. Validates the server
-2. Installs apt-mirror and nginx
-3. Creates the mirror configuration
-4. Configures systemd
-5. Starts nginx
-6. Starts the initial synchronization (non-blocking) and attaches the live dashboard
-7. Prints status and monitoring commands
+```bash
+sudo ./install.sh --minimal --no-menu
+sudo ./install.sh --full --no-menu
+sudo ./install.sh --non-interactive
+```
 
 ### Installation modes
 
 ```bash
-sudo ./install.sh                 # minimal (main + restricted) + live dashboard
-sudo ./install.sh --background    # start sync and return to the shell
-sudo ./install.sh --foreground    # start sync and keep the dashboard attached
-sudo ./install.sh --full          # explicit full mirror (universe + multiverse)
+sudo ./install.sh                 # interactive menu (TTY)
+sudo ./install.sh --menu          # force menu
+sudo ./install.sh --minimal       # skip menu; minimal sync
+sudo ./install.sh --full          # skip menu; full sync (capacity checked)
+sudo ./install.sh --background    # skip menu; start sync and return to shell
+sudo ./install.sh --foreground    # skip menu; keep dashboard attached
 ```
 
-Default mode is **minimal** (~320 GiB projected). Full mode (~700 GiB) is never started automatically — including on a 1TB disk — and requires `--full`. Before sync starts, the installer compares the projected download size against free disk minus a **20% safety reserve** and blocks sync if it would not fit.
+Default mode is **minimal** (~320 GiB projected). Full mode (~700 GiB) is never started automatically — including on a 1TB disk — and requires menu option **2** or `--full`. Before sync starts, the installer compares the projected download size against free disk minus a **20% safety reserve** and blocks sync if it would not fit.
 `--background` example:
 
 ```text
@@ -76,11 +91,13 @@ sudo mirrorctl finalize
 
 | Option | Behavior |
 |--------|----------|
-| *(none)* | Automatic installation, **minimal** sync (main + restricted), attach live dashboard |
-| `--full` | Explicit full mirror (main restricted universe multiverse) |
-| `--minimal` | Explicit minimal mode (same as default) |
-| `--background` | Start sync and return to the shell immediately |
-| `--foreground` | Start sync and keep the live dashboard attached |
+| *(none)* | Interactive menu on a TTY (mode / monitor / delete data) |
+| `--menu` | Force interactive menu |
+| `--no-menu` / `--non-interactive` | Skip menu (automation / CI) |
+| `--full` | Skip menu; explicit full mirror |
+| `--minimal` | Skip menu; minimal mirror |
+| `--background` | Skip menu; start sync and return to the shell |
+| `--foreground` | Skip menu; keep the live dashboard attached |
 | `--config FILE` | Use a custom configuration file |
 | `--dry-run` | Show planned actions without changing the system |
 | `--no-sync` | Install and validate but do not start initial sync |
