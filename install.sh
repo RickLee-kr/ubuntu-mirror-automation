@@ -250,7 +250,7 @@ maybe_mount_data_device() {
 phase2_packages() {
   phase "Phase 2: Install required packages"
   if [[ "$UM_DRY_RUN" == "1" ]]; then
-    um_dry "Would install apt-mirror nginx curl"
+    um_dry "Would install apt-mirror nginx curl whiptail"
     um_dry "SKIPPED: requires installed package (apt-mirror, nginx)"
     return 0
   fi
@@ -259,14 +259,15 @@ phase2_packages() {
   um_command_exists apt-mirror || need=1
   um_command_exists nginx || need=1
   um_command_exists curl || need=1
+  um_command_exists whiptail || need=1
 
   if [[ "$need" -eq 0 ]]; then
-    um_ok "Packages already installed (apt-mirror, nginx, curl)"
+    um_ok "Packages already installed (apt-mirror, nginx, curl, whiptail)"
     return 0
   fi
 
   apt-get update -y
-  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends apt-mirror nginx curl
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends apt-mirror nginx curl whiptail
   um_command_exists apt-mirror || um_die "apt-mirror not found after install"
   um_command_exists nginx || um_die "nginx not found after install"
   um_ok "Packages installed"

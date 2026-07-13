@@ -10,19 +10,26 @@ cd ubuntu-mirror-automation
 sudo ./install.sh
 ```
 
-On an interactive terminal this opens a **setup menu**:
+On an interactive terminal this opens a **dialog-style menu** (whiptail):
 
 ```text
-1) Install / start sync — Minimal (~320 GiB)
-2) Install / start sync — Full (~700 GiB)
-3) Monitor live dashboard
-4) Show status
-5) Follow raw logs
-6) Stop running synchronization
-7) Delete existing mirror data  (DANGEROUS)
-8) Quit
+┌──────────── Ubuntu Mirror Menu ────────────┐
+│ Ubuntu Mirror Server                       │
+│                                            │
+│ 1 Install / start sync — Minimal (~320 GiB)│
+│ 2 Install / start sync — Full (~700 GiB)   │
+│ 3 Monitor live dashboard                   │
+│ 4 Show status                              │
+│ 5 Follow raw logs                          │
+│ 6 Stop running synchronization             │
+│ 7 Delete existing mirror data (DANGEROUS)  │
+│ 8 Exit                                     │
+│                                            │
+│           <Ok>            <Cancel>         │
+└────────────────────────────────────────────┘
 ```
 
+Use arrow keys to move, **Enter** / **Ok** to select.
 Choose **1** for the recommended default (main + restricted).  
 Choose **7** to wipe previous mirror data before re-installing.  
 Choose **3** anytime to re-attach the live sync dashboard.

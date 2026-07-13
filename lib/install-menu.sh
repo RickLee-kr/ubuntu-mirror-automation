@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
-# Interactive installer menu (SSH-friendly TUI) for Ubuntu Mirror Server.
+# Interactive installer menu — dialog/whiptail style TUI (SSH-friendly).
 
 # shellcheck disable=SC2317
 if [[ -n "${UM_INSTALL_MENU_LOADED:-}" ]]; then
@@ -8,8 +8,41 @@ if [[ -n "${UM_INSTALL_MENU_LOADED:-}" ]]; then
 fi
 UM_INSTALL_MENU_LOADED=1
 
+# Classic dialog look (magenta root, gray window, red selection) — matches DSP-style menus.
+um_menu_set_newt_colors() {
+  export NEWT_COLORS='
+root=white,magenta
+border=black,lightgray
+window=black,lightgray
+shadow=black,blue
+title=red,lightgray
+button=black,lightgray
+actbutton=white,green
+compactbutton=black,lightgray
+checkbox=black,lightgray
+actcheckbox=white,blue
+entry=black,lightgray
+label=black,lightgray
+listbox=black,lightgray
+actlistbox=white,red
+sellistbox=black,lightgray
+actsellistbox=white,red
+textbox=black,lightgray
+acttextbox=black,lightgray
+roottext=black,magenta
+emptyscale=,gray
+fullscale=,blue
+disentry=gray,lightgray
+helpline=black,lightgray
+'
+}
+
 um_menu_is_tty() {
   [[ -t 0 ]] && [[ -t 1 ]]
+}
+
+um_menu_has_whiptail() {
+  command -v whiptail >/dev/null 2>&1
 }
 
 # Returns 0 when the interactive menu should be shown.
@@ -24,7 +57,6 @@ um_should_show_install_menu() {
   if [[ "${UM_DRY_RUN:-0}" == "1" ]]; then
     return 1
   fi
-  # Explicit CLI install intent → skip menu
   if [[ "${UM_FULL:-0}" == "1" ]] || [[ "${UM_MINIMAL:-0}" == "1" ]]; then
     return 1
   fi
@@ -35,12 +67,6 @@ um_should_show_install_menu() {
     return 1
   fi
   um_menu_is_tty
-}
-
-um_menu_clear() {
-  if um_menu_is_tty; then
-    clear 2>/dev/null || printf '\033[2J\033[H'
-  fi
 }
 
 um_menu_existing_data_gib() {
@@ -66,36 +92,269 @@ um_menu_sync_label() {
   fi
 }
 
-um_menu_draw() {
-  local host disk_free data_gib sync_label mode_hint avail_kib
+um_menu_status_blurb() {
+  local host data_gib sync_label disk_free avail_kib
   host="$(hostname 2>/dev/null || echo unknown)"
-  avail_kib="$(um_df_avail_kib "${BASE_PATH:-/}" 2>/dev/null || echo 0)"
-  if declare -F um_format_bytes >/dev/null 2>&1; then
-    disk_free="$(um_format_bytes $(( avail_kib * 1024 )))"
-  else
-    disk_free="$(( avail_kib / 1024 / 1024 )) GiB"
-  fi
   data_gib="$(um_menu_existing_data_gib)"
   sync_label="$(um_menu_sync_label)"
-  mode_hint="${MIRROR_MODE:-minimal}"
+  avail_kib="$(um_df_avail_kib "${BASE_PATH:-/}" 2>/dev/null || echo 0)"
+  disk_free="$(( avail_kib / 1024 / 1024 )) GiB free"
+  printf '%s | %s | data %s GiB | %s' "$host" "$sync_label" "$data_gib" "$disk_free"
+}
 
+# ---------------------------------------------------------------------------
+# whiptail helpers
+# ---------------------------------------------------------------------------
+um_whiptail_menu() {
+  # um_whiptail_menu <title> <text> <tag1> <item1> ...
+  local title="$1" text="$2"
+  shift 2
+  um_menu_set_newt_colors
+  # Height/width tuned for SSH; menu height auto from items
+  whiptail --title "$title" --menu "$text" 20 72 10 "$@" 3>&1 1>&2 2>&3
+}
+
+um_whiptail_yesno() {
+  local title="$1" text="$2" default_no="${3:-0}"
+  if ! um_menu_has_whiptail; then
+    printf '%s\n%s\n' "$title" "$(printf '%b' "$text")"
+    if [[ "$default_no" == "1" ]]; then
+      printf '[y/N] '
+      local ans
+      read -r ans || true
+      [[ "$ans" =~ ^[Yy]$ ]]
+    else
+      printf '[Y/n] '
+      local ans
+      read -r ans || true
+      [[ ! "$ans" =~ ^[Nn]$ ]]
+    fi
+    return $?
+  fi
+  um_menu_set_newt_colors
+  if [[ "$default_no" == "1" ]]; then
+    whiptail --title "$title" --yesno "$text" 12 70 --defaultno
+  else
+    whiptail --title "$title" --yesno "$text" 12 70
+  fi
+}
+
+um_whiptail_msg() {
+  local title="$1" text="$2"
+  if ! um_menu_has_whiptail; then
+    printf '\n== %s ==\n%b\n' "$title" "$text"
+    um_menu_pause
+    return 0
+  fi
+  um_menu_set_newt_colors
+  whiptail --title "$title" --msgbox "$text" 14 70
+}
+
+um_whiptail_input() {
+  local title="$1" text="$2" default="${3:-}"
+  if ! um_menu_has_whiptail; then
+    printf '%s\n%b\n> ' "$title" "$text"
+    local val
+    read -r val || true
+    printf '%s\n' "${val:-$default}"
+    return 0
+  fi
+  um_menu_set_newt_colors
+  whiptail --title "$title" --inputbox "$text" 12 70 "$default" 3>&1 1>&2 2>&3
+}
+
+um_menu_pause() {
+  if um_menu_has_whiptail; then
+    um_whiptail_msg "Ubuntu Mirror" "Press Ok to return to the menu."
+  else
+    printf '\nPress Enter to return to the menu... '
+    read -r _ || true
+  fi
+}
+
+um_menu_run_dashboard() {
+  local dash
+  dash="${INSTALL_BIN_DIR:-/usr/local/bin}/mirror-dashboard"
+  [[ -x "$dash" ]] || dash="${UM_PROJECT_ROOT}/scripts/mirror-dashboard.sh"
+  if [[ ! -x "$dash" ]]; then
+    um_whiptail_msg "Monitor" "Dashboard not installed yet.\n\nInstall first (Minimal or Full)."
+    return 0
+  fi
+  clear 2>/dev/null || true
+  "$dash" --config "${UM_CONFIG_PATH:-${INSTALL_CONF_DIR}/mirror.conf}" || true
+}
+
+um_menu_show_status() {
+  local bin tmp
+  bin="${INSTALL_BIN_DIR:-/usr/local/bin}/mirrorctl"
+  [[ -x "$bin" ]] || bin="${UM_PROJECT_ROOT}/scripts/mirrorctl"
+  tmp="$(mktemp)"
+  if [[ -x "$bin" ]]; then
+    "$bin" --config "${UM_CONFIG_PATH}" status >"$tmp" 2>&1 || true
+  else
+    printf 'State: %s\nPath: %s\n' "$(um_menu_sync_label)" "$BASE_PATH" >"$tmp"
+  fi
+  if um_menu_has_whiptail; then
+    um_menu_set_newt_colors
+    whiptail --title "Status" --scrolltext --textbox "$tmp" 20 72
+  else
+    cat "$tmp"
+    um_menu_pause
+  fi
+  rm -f "$tmp"
+}
+
+um_menu_follow_logs() {
+  clear 2>/dev/null || true
+  printf 'Following %s (Ctrl+C returns to menu)\n' "${APT_MIRROR_LOG}"
+  if [[ -f "${APT_MIRROR_LOG}" ]]; then
+    tail -n 50 -f "${APT_MIRROR_LOG}" || true
+  else
+    if um_menu_has_whiptail; then
+      um_whiptail_msg "Logs" "Log not found yet:\n${APT_MIRROR_LOG}"
+    else
+      um_warn "Log not found yet: ${APT_MIRROR_LOG}"
+      um_menu_pause
+    fi
+  fi
+}
+
+um_menu_stop_sync() {
+  um_require_root
+  if ! um_is_sync_running && ! pgrep -f '/usr/bin/apt-mirror' >/dev/null 2>&1; then
+    um_whiptail_msg "Stop sync" "No sync process is running."
+    return 0
+  fi
+  if ! um_whiptail_yesno "Stop sync" "Stop apt-mirror.service now?\n\nSync will halt until started again." 1; then
+    return 0
+  fi
+  systemctl kill -s SIGCONT apt-mirror.service 2>/dev/null || true
+  systemctl stop apt-mirror.service 2>/dev/null || true
+  pkill -f '/usr/bin/apt-mirror' 2>/dev/null || true
+  um_whiptail_msg "Stop sync" "Stop requested."
+}
+
+um_menu_delete_data() {
+  um_require_root
+  local data_gib confirm
+  data_gib="$(um_menu_existing_data_gib)"
+
+  if um_is_sync_running; then
+    um_whiptail_msg "Delete data" \
+      "A sync is currently RUNNING.\n\nStop it first (menu: Stop running sync),\nthen delete data."
+    return 0
+  fi
+
+  if ! um_whiptail_yesno "Delete data" \
+    "DANGER: Delete existing mirror data?\n\nPath: ${BASE_PATH}\nSize: ~${data_gib} GiB\n\nRemoves mirror/, skel/, var/.\nConfig and nginx are kept." 1; then
+    return 0
+  fi
+
+  confirm="$(um_whiptail_input "Confirm delete" \
+    "Type DELETE to permanently remove:\n${BASE_PATH}" "")" || return 0
+  if [[ "$confirm" != "DELETE" ]]; then
+    um_whiptail_msg "Delete data" "Cancelled — data not deleted."
+    return 0
+  fi
+
+  mkdir -p "$BASE_PATH"
+  rm -rf "${MIRROR_PATH}" "${SKEL_PATH}" "${VAR_PATH}"
+  um_clear_marker "sync-started" 2>/dev/null || true
+  um_clear_marker "sync-failed" 2>/dev/null || true
+  um_clear_marker "initial-sync-complete" 2>/dev/null || true
+  um_clear_marker "ready" 2>/dev/null || true
+  um_clear_marker "finalizing" 2>/dev/null || true
+  : >"${APT_MIRROR_LOG}" 2>/dev/null || true
+  if declare -F um_progress_jsonl_path >/dev/null 2>&1; then
+    : >"$(um_progress_jsonl_path)" 2>/dev/null || true
+  fi
+  um_whiptail_msg "Delete data" "Mirror data deleted under:\n${BASE_PATH}"
+}
+
+um_menu_prepare_install_minimal() {
+  UM_FULL=0
+  UM_MINIMAL=1
+  UM_FORCE=1
+  UM_NO_SYNC=0
+  UM_SYNC_MODE="foreground"
+  um_resolve_mirror_mode 0
+
+  local cap_out
+  cap_out="$(mktemp)"
+  if ! um_check_sync_capacity "$BASE_PATH" "minimal" >"$cap_out" 2>&1; then
+    if um_menu_has_whiptail; then
+      um_menu_set_newt_colors
+      whiptail --title "Capacity check failed" --scrolltext --textbox "$cap_out" 18 72
+    else
+      cat "$cap_out"
+      um_menu_pause
+    fi
+    rm -f "$cap_out"
+    return 1
+  fi
+  rm -f "$cap_out"
+
+  if um_menu_has_whiptail; then
+    um_whiptail_yesno "Minimal install" \
+      "Install / start sync in MINIMAL mode?\n\nComponents: main + restricted\nProjected size: ~320 GiB\n\nRecommended default." 0
+  else
+    printf 'Proceed with minimal install + sync? [Y/n] '
+    local ans
+    read -r ans || true
+    [[ ! "$ans" =~ ^[Nn]$ ]]
+  fi
+}
+
+um_menu_prepare_install_full() {
+  UM_FULL=1
+  UM_MINIMAL=0
+  UM_FORCE=1
+  UM_NO_SYNC=0
+  UM_SYNC_MODE="foreground"
+  um_resolve_mirror_mode 1
+
+  local cap_out
+  cap_out="$(mktemp)"
+  if ! um_check_sync_capacity "$BASE_PATH" "full" >"$cap_out" 2>&1; then
+    if um_menu_has_whiptail; then
+      um_menu_set_newt_colors
+      whiptail --title "Full mode blocked" --scrolltext --textbox "$cap_out" 18 72
+    else
+      cat "$cap_out"
+      um_menu_pause
+    fi
+    rm -f "$cap_out"
+    um_resolve_mirror_mode 0
+    return 1
+  fi
+  rm -f "$cap_out"
+
+  if um_menu_has_whiptail; then
+    if ! um_whiptail_yesno "Full install" \
+      "Install / start sync in FULL mode?\n\nComponents: main restricted universe multiverse\nProjected size: ~700 GiB\n\nRequires enough disk after 20% reserve." 1; then
+      um_resolve_mirror_mode 0
+      return 1
+    fi
+  else
+    printf 'Proceed with FULL install + sync? [y/N] '
+    local ans
+    read -r ans || true
+    if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+      um_resolve_mirror_mode 0
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# Plain-text fallback when whiptail is unavailable
+um_menu_fallback_draw() {
   cat <<EOF
 ┌──────────────── Ubuntu Mirror Server ─────────────────┐
-│ Interactive setup menu (SSH-friendly)                 │
-├───────────────────────────────────────────────────────┤
-│ Host:        ${host}
-│ Mirror URL:  ${MIRROR_URL:-?}/ubuntu
-│ Disk free:   ${disk_free}
-│ Existing:    ${data_gib} GiB under ${BASE_PATH}
-│ Sync state:  ${sync_label}
-│ Config mode: ${mode_hint}
+│ $(um_menu_status_blurb)
 ├───────────────────────────────────────────────────────┤
 │  1) Install / start sync — Minimal (~320 GiB)         │
-│     main + restricted only  [recommended default]     │
-│                                                       │
 │  2) Install / start sync — Full (~700 GiB)            │
-│     + universe + multiverse  [explicit; capacity OK?] │
-│                                                       │
 │  3) Monitor live dashboard                            │
 │  4) Show status                                       │
 │  5) Follow raw logs                                   │
@@ -106,181 +365,25 @@ um_menu_draw() {
 EOF
 }
 
-um_menu_pause() {
-  printf '\nPress Enter to return to the menu... '
-  read -r _ || true
-}
-
-um_menu_run_dashboard() {
-  local dash
-  dash="${INSTALL_BIN_DIR:-/usr/local/bin}/mirror-dashboard"
-  [[ -x "$dash" ]] || dash="${UM_PROJECT_ROOT}/scripts/mirror-dashboard.sh"
-  if [[ ! -x "$dash" ]]; then
-    um_warn "Dashboard not installed yet. Install first (option 1 or 2)."
-    um_menu_pause
-    return 0
-  fi
-  "$dash" --config "${UM_CONFIG_PATH:-${INSTALL_CONF_DIR}/mirror.conf}" || true
-}
-
-um_menu_show_status() {
-  local bin
-  bin="${INSTALL_BIN_DIR:-/usr/local/bin}/mirrorctl"
-  [[ -x "$bin" ]] || bin="${UM_PROJECT_ROOT}/scripts/mirrorctl"
-  if [[ -x "$bin" ]]; then
-    "$bin" --config "${UM_CONFIG_PATH}" status || true
-  else
-    printf 'State: %s\nPath: %s\n' "$(um_menu_sync_label)" "$BASE_PATH"
-  fi
-  um_menu_pause
-}
-
-um_menu_follow_logs() {
-  printf 'Following %s (Ctrl+C returns to menu)\n' "${APT_MIRROR_LOG}"
-  if [[ -f "${APT_MIRROR_LOG}" ]]; then
-    tail -n 50 -f "${APT_MIRROR_LOG}" || true
-  else
-    um_warn "Log not found yet: ${APT_MIRROR_LOG}"
-    um_menu_pause
-  fi
-}
-
-um_menu_stop_sync() {
-  um_require_root
-  if ! um_is_sync_running && ! pgrep -f '/usr/bin/apt-mirror' >/dev/null 2>&1; then
-    um_info "No sync process is running."
-    um_menu_pause
-    return 0
-  fi
-  printf 'Stop apt-mirror.service? [y/N] '
-  local ans
-  read -r ans || true
-  if [[ ! "$ans" =~ ^[Yy]$ ]]; then
-    um_info "Cancelled."
-    um_menu_pause
-    return 0
-  fi
-  systemctl kill -s SIGCONT apt-mirror.service 2>/dev/null || true
-  systemctl stop apt-mirror.service 2>/dev/null || true
-  pkill -f '/usr/bin/apt-mirror' 2>/dev/null || true
-  um_ok "Stop requested."
-  um_menu_pause
-}
-
-um_menu_delete_data() {
-  um_require_root
-  local data_gib
-  data_gib="$(um_menu_existing_data_gib)"
-  cat <<EOF
-
-⚠  DANGER: Delete existing mirror data
-   Path: ${BASE_PATH}
-   Size: ~${data_gib} GiB
-   This removes mirror/, skel/, and var/ under BASE_PATH.
-   Configuration and nginx are kept.
-
-EOF
-  if um_is_sync_running; then
-    um_warn "A sync is currently RUNNING. Stop it before deleting (menu option 6)."
-    um_menu_pause
-    return 0
-  fi
-
-  printf 'Type DELETE to confirm removal of %s: ' "$BASE_PATH"
-  local confirm
-  read -r confirm || true
-  if [[ "$confirm" != "DELETE" ]]; then
-    um_info "Cancelled — data not deleted."
-    um_menu_pause
-    return 0
-  fi
-
-  printf 'Final confirm — delete ~%s GiB? [y/N] ' "$data_gib"
-  local ans
-  read -r ans || true
-  if [[ ! "$ans" =~ ^[Yy]$ ]]; then
-    um_info "Cancelled."
-    um_menu_pause
-    return 0
-  fi
-
-  mkdir -p "$BASE_PATH"
-  rm -rf "${MIRROR_PATH}" "${SKEL_PATH}" "${VAR_PATH}"
-  # Clear sync lifecycle markers so a fresh install can start cleanly
-  um_clear_marker "sync-started" 2>/dev/null || true
-  um_clear_marker "sync-failed" 2>/dev/null || true
-  um_clear_marker "initial-sync-complete" 2>/dev/null || true
-  um_clear_marker "ready" 2>/dev/null || true
-  um_clear_marker "finalizing" 2>/dev/null || true
-  # Truncate operational logs for a clean dashboard
-  : >"${APT_MIRROR_LOG}" 2>/dev/null || true
-  : >"$(um_progress_jsonl_path 2>/dev/null || echo /dev/null)" 2>/dev/null || true
-  um_ok "Mirror data deleted under ${BASE_PATH}"
-  um_menu_pause
-}
-
-# Sets globals for the chosen install action.
-# Prints: install | quit  on stdout (last line via return path uses UM_MENU_ACTION)
-um_install_menu() {
+um_install_menu_fallback() {
   local choice
-  UM_MENU_ACTION=""
-
-  # Menu needs progress helpers when available
-  if [[ -f "${UM_PROJECT_ROOT}/lib/progress.sh" ]]; then
-    # shellcheck source=lib/progress.sh
-    source "${UM_PROJECT_ROOT}/lib/progress.sh" 2>/dev/null || true
-  elif [[ -f /usr/local/lib/ubuntu-mirror/progress.sh ]]; then
-    # shellcheck source=/dev/null
-    source /usr/local/lib/ubuntu-mirror/progress.sh 2>/dev/null || true
-  fi
-
   while true; do
-    um_menu_clear
-    um_menu_draw
+    clear 2>/dev/null || true
+    um_menu_fallback_draw
     printf 'Select [1-8]: '
     read -r choice || choice="8"
     case "$choice" in
       1)
-        UM_FULL=0
-        UM_MINIMAL=1
-        UM_FORCE=1
-        UM_NO_SYNC=0
-        UM_SYNC_MODE="foreground"
-        um_resolve_mirror_mode 0
-        printf '\nSelected: MINIMAL (main + restricted)\n'
-        if ! um_check_sync_capacity "$BASE_PATH" "minimal"; then
-          um_menu_pause
-          continue
+        if um_menu_prepare_install_minimal; then
+          UM_MENU_ACTION="install"
+          return 0
         fi
-        printf 'Proceed with minimal install + sync? [Y/n] '
-        read -r choice || true
-        if [[ "$choice" =~ ^[Nn]$ ]]; then
-          continue
-        fi
-        UM_MENU_ACTION="install"
-        return 0
         ;;
       2)
-        UM_FULL=1
-        UM_MINIMAL=0
-        UM_FORCE=1
-        UM_NO_SYNC=0
-        UM_SYNC_MODE="foreground"
-        um_resolve_mirror_mode 1
-        printf '\nSelected: FULL (main restricted universe multiverse)\n'
-        if ! um_check_sync_capacity "$BASE_PATH" "full"; then
-          um_warn "Full mode blocked by capacity / safety reserve."
-          um_menu_pause
-          continue
+        if um_menu_prepare_install_full; then
+          UM_MENU_ACTION="install"
+          return 0
         fi
-        printf 'Proceed with FULL install + sync? [y/N] '
-        read -r choice || true
-        if [[ ! "$choice" =~ ^[Yy]$ ]]; then
-          um_resolve_mirror_mode 0
-          continue
-        fi
-        UM_MENU_ACTION="install"
-        return 0
         ;;
       3) um_menu_run_dashboard ;;
       4) um_menu_show_status ;;
@@ -289,12 +392,75 @@ um_install_menu() {
       7) um_menu_delete_data ;;
       8|q|Q)
         UM_MENU_ACTION="quit"
-        printf 'Goodbye.\n'
         return 0
         ;;
-      *)
-        printf 'Invalid choice.\n'
-        sleep 1
+    esac
+  done
+}
+
+# Main entry: dialog-style whiptail menu (preferred)
+um_install_menu() {
+  UM_MENU_ACTION=""
+
+  if [[ -f "${UM_PROJECT_ROOT}/lib/progress.sh" ]]; then
+    # shellcheck source=lib/progress.sh
+    source "${UM_PROJECT_ROOT}/lib/progress.sh" 2>/dev/null || true
+  elif [[ -f /usr/local/lib/ubuntu-mirror/progress.sh ]]; then
+    # shellcheck source=/dev/null
+    source /usr/local/lib/ubuntu-mirror/progress.sh 2>/dev/null || true
+  fi
+
+  if ! um_menu_has_whiptail; then
+    um_warn "whiptail not found — using plain text menu"
+    um_warn "Install with: apt-get install -y whiptail"
+    um_install_menu_fallback
+    return $?
+  fi
+
+  local choice blurb
+  while true; do
+    blurb="$(um_menu_status_blurb)"
+    choice="$(um_whiptail_menu "Ubuntu Mirror Menu" \
+      "Ubuntu Mirror Server
+
+${blurb}
+
+Use arrow keys, then Ok." \
+      "1" "Install / start sync — Minimal (~320 GiB)" \
+      "2" "Install / start sync — Full (~700 GiB)" \
+      "3" "Monitor live dashboard" \
+      "4" "Show status" \
+      "5" "Follow raw logs" \
+      "6" "Stop running synchronization" \
+      "7" "Delete existing mirror data (DANGEROUS)" \
+      "8" "Exit" \
+    )" || {
+      # Cancel / Esc
+      UM_MENU_ACTION="quit"
+      return 0
+    }
+
+    case "$choice" in
+      1)
+        if um_menu_prepare_install_minimal; then
+          UM_MENU_ACTION="install"
+          return 0
+        fi
+        ;;
+      2)
+        if um_menu_prepare_install_full; then
+          UM_MENU_ACTION="install"
+          return 0
+        fi
+        ;;
+      3) um_menu_run_dashboard ;;
+      4) um_menu_show_status ;;
+      5) um_menu_follow_logs ;;
+      6) um_menu_stop_sync ;;
+      7) um_menu_delete_data ;;
+      8)
+        UM_MENU_ACTION="quit"
+        return 0
         ;;
     esac
   done
