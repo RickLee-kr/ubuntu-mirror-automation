@@ -224,13 +224,14 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/apt-mirror
+ExecStart=${INSTALL_LIB_DIR}/run-apt-mirror.sh
 StandardOutput=append:${APT_MIRROR_LOG}
 StandardError=append:${APT_MIRROR_LOG}
 User=root
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
+TimeoutStartSec=infinity
 
 [Install]
 WantedBy=multi-user.target

@@ -8,6 +8,8 @@ resolve_libs() {
     source /usr/local/lib/ubuntu-mirror/common.sh
     # shellcheck source=/dev/null
     source /usr/local/lib/ubuntu-mirror/config.sh
+    # shellcheck source=/dev/null
+    source /usr/local/lib/ubuntu-mirror/state.sh
     UM_SRC_ROOT="/usr/local/lib/ubuntu-mirror"
   else
     UM_SRC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,6 +17,8 @@ resolve_libs() {
     source "${UM_SRC_ROOT}/lib/common.sh"
     # shellcheck source=lib/config.sh
     source "${UM_SRC_ROOT}/lib/config.sh"
+    # shellcheck source=lib/state.sh
+    source "${UM_SRC_ROOT}/lib/state.sh"
   fi
 }
 
@@ -27,50 +31,124 @@ usage() {
 Usage: mirrorctl [--config PATH] <command> [args]
 
 Commands:
-  status              Show enhanced health status
-  validate            Run full validation suite
+  status              Concise operational status
+  validate            Operational readiness checks
+  finalize            After initial sync: cleanup, enable timer, mark ready
   sync [start|stop|status]
-                      Manage apt-mirror sync (resume-safe start)
-  logs [sync|nginx|install|validate|health|follow]
-                      Show or follow logs
-  cleanup             Run apt-mirror clean.sh (superseded packages)
+  logs [sync|nginx|follow|install]
+  cleanup             Run apt-mirror clean.sh
   nginx [status|test|reload|restart|recover]
-                      Manage nginx site
   timer [status|start|stop|enable|disable]
-                      Manage daily sync timer
-  client [setup|validate] [args...]
-                      Client configuration helpers
-  restart             Restart nginx + reload systemd units
-  recover             Auto-recover nginx / sync / systemd issues
-  info                Show configuration and paths
-  help                Show this help
+  client [setup|validate]
+  restart             Reload systemd + restart nginx
+  recover             Auto-recover common failures
+  info                Show configuration paths
+  help
 EOF
 }
 
-need_root() {
-  um_require_root
-}
+need_root() { um_require_root; }
 
 cmd_status() {
-  local bin
-  if [[ -x "${INSTALL_BIN_DIR}/mirror-status.sh" ]]; then
-    bin="${INSTALL_BIN_DIR}/mirror-status.sh"
+  local state nginx_state disk_line timer_line sync_line
+  state="$(um_detect_lifecycle_state)"
+
+  if systemctl is-active --quiet nginx 2>/dev/null; then
+    nginx_state="Running"
   else
-    bin="${UM_SRC_ROOT}/scripts/mirror-status.sh"
+    nginx_state="Down"
   fi
-  "$bin" --config "${UM_CONFIG_PATH}" "$@"
+
+  if [[ -d "$BASE_PATH" ]]; then
+    local pct avail_kib avail_gib
+    pct="$(um_disk_usage_percent "$BASE_PATH" || echo "?")"
+    avail_kib="$(df -Pk "$BASE_PATH" 2>/dev/null | awk 'NR==2 {print $4}')"
+    avail_gib=$(( ${avail_kib:-0} / 1024 / 1024 ))
+    disk_line="${pct}% used, ${avail_gib} GiB free"
+  else
+    disk_line="path missing"
+  fi
+
+  case "$state" in
+    SYNC_RUNNING) sync_line="Running" ;;
+    SYNC_COMPLETE) sync_line="Complete (finalize pending)" ;;
+    SYNC_FAILED) sync_line="Failed" ;;
+    READY) sync_line="Complete" ;;
+    INSTALLED) sync_line="Not started / pending" ;;
+    *) sync_line="$state" ;;
+  esac
+
+  if systemctl is-enabled --quiet apt-mirror.timer 2>/dev/null; then
+    timer_line="Enabled"
+  else
+    timer_line="Disabled until initial sync completes"
+  fi
+
+  local install_line="OK"
+  um_is_installed || install_line="Incomplete"
+
+  cat <<EOF
+Installation: ${install_line}
+State: ${state}
+Nginx: ${nginx_state}
+Mirror disk: ${disk_line}
+Initial sync: ${sync_line}
+Timer: ${timer_line}
+Mirror URL: ${MIRROR_URL}/ubuntu
+EOF
+
+  if [[ "$1" == "--full" ]]; then
+    local bin="${INSTALL_BIN_DIR}/mirror-status"
+    [[ -x "$bin" ]] || bin="${INSTALL_BIN_DIR}/mirror-status.sh"
+    [[ -x "$bin" ]] || bin="${UM_SRC_ROOT}/scripts/mirror-status.sh"
+    if [[ -x "$bin" ]]; then
+      "$bin" --config "${UM_CONFIG_PATH}" || true
+    fi
+  fi
 }
 
 cmd_validate() {
-  local bin
-  if [[ -x "${INSTALL_BIN_DIR}/validate.sh" ]]; then
-    bin="${INSTALL_BIN_DIR}/validate.sh"
-  elif [[ -x "${UM_SRC_ROOT}/validate.sh" ]]; then
-    bin="${UM_SRC_ROOT}/validate.sh"
-  else
-    bin="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/validate.sh"
+  local bin project_root
+  project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  bin="${INSTALL_BIN_DIR}/validate.sh"
+  [[ -x "$bin" ]] || bin="${project_root}/validate.sh"
+  "$bin" --config "${UM_CONFIG_PATH}" --mode operational "$@"
+}
+
+cmd_finalize() {
+  need_root
+  if um_is_sync_running; then
+    um_die "Initial sync is still running — wait for completion"
   fi
-  "$bin" --config "${UM_CONFIG_PATH}" "$@"
+  if ! um_initial_sync_complete && [[ ! -f "${DIST_ROOT}/noble/Release" ]]; then
+    um_die "Initial sync does not appear complete (no noble/Release)"
+  fi
+
+  um_info "Running cleanup"
+  if [[ -x "$CLEAN_SCRIPT" ]]; then
+    bash "$CLEAN_SCRIPT" || um_warn "cleanup returned non-zero"
+  else
+    um_warn "clean.sh not found yet — skipping"
+  fi
+
+  systemctl daemon-reload
+  systemctl enable apt-mirror.timer
+  systemctl start apt-mirror.timer
+  um_mark_state "initial-sync-complete"
+  um_mark_state "ready"
+  um_clear_marker "sync-failed"
+
+  local code
+  code="$(curl -sS -o /dev/null --max-time "${HTTP_TIMEOUT_SEC}" -w '%{http_code}' \
+    "${MIRROR_URL}/ubuntu/dists/noble/Release" 2>/dev/null || true)"
+  if [[ "$code" == "200" ]]; then
+    um_ok "HTTP noble/Release = 200"
+  else
+    um_warn "HTTP noble/Release = ${code:-000}"
+  fi
+
+  printf '\nMirror is READY.\n'
+  cmd_status
 }
 
 cmd_sync() {
@@ -78,83 +156,61 @@ cmd_sync() {
   case "$action" in
     start)
       need_root
-      if pgrep -f '/usr/bin/apt-mirror' >/dev/null 2>&1; then
-        um_warn "apt-mirror already running"
-        pgrep -af apt-mirror || true
+      if um_is_sync_running; then
+        um_ok "Sync already running"
         return 0
       fi
-      um_info "Starting apt-mirror (resumes incomplete downloads)"
-      touch "$APT_MIRROR_INITIAL_LOG" "$APT_MIRROR_LOG"
-      nohup apt-mirror >>"$APT_MIRROR_INITIAL_LOG" 2>&1 &
-      um_ok "Started PID $!"
+      systemctl start apt-mirror.service
+      um_ok "Started apt-mirror.service"
       ;;
     stop)
       need_root
-      if pgrep -f '/usr/bin/apt-mirror' >/dev/null 2>&1; then
-        pkill -f '/usr/bin/apt-mirror' || true
-        um_ok "Sent stop signal to apt-mirror"
-      else
-        um_info "No apt-mirror process running"
-      fi
+      systemctl stop apt-mirror.service 2>/dev/null || true
+      pkill -f '/usr/bin/apt-mirror' 2>/dev/null || true
+      um_ok "Stop requested"
       ;;
     status)
-      if pgrep -af '/usr/bin/apt-mirror' 2>/dev/null; then
-        um_ok "Sync running"
+      if um_is_sync_running; then
+        echo "Sync: running"
+        systemctl status apt-mirror.service --no-pager -l 2>/dev/null | head -20 || true
       else
-        um_info "No sync currently running"
-      fi
-      if [[ -f "$APT_MIRROR_INITIAL_LOG" ]]; then
-        um_info "Last log lines:"
-        tail -n 15 "$APT_MIRROR_INITIAL_LOG" || true
+        echo "Sync: not running (state=$(um_detect_lifecycle_state))"
       fi
       ;;
-    *)
-      um_die "sync args: start|stop|status"
-      ;;
+    *) um_die "sync args: start|stop|status" ;;
   esac
 }
 
 cmd_logs() {
   local which="${1:-sync}"
   case "$which" in
-    sync)
+    sync|"")
       if [[ -f "$APT_MIRROR_LOG" ]]; then
         tail -n 80 "$APT_MIRROR_LOG"
-      elif [[ -f "$APT_MIRROR_INITIAL_LOG" ]]; then
-        tail -n 80 "$APT_MIRROR_INITIAL_LOG"
       else
-        um_warn "No sync log yet"
+        journalctl -u apt-mirror.service -n 80 --no-pager 2>/dev/null || um_warn "No sync log yet"
       fi
       ;;
     follow)
-      local f="$APT_MIRROR_INITIAL_LOG"
-      [[ -f "$APT_MIRROR_LOG" ]] && f="$APT_MIRROR_LOG"
-      [[ -f "$f" ]] || um_die "No log to follow"
-      tail -f "$f"
+      if [[ -f "$APT_MIRROR_LOG" ]]; then
+        tail -f "$APT_MIRROR_LOG"
+      else
+        journalctl -u apt-mirror.service -f
+      fi
       ;;
     nginx)
-      if [[ -f "$NGINX_ACCESS_LOG" ]]; then
-        tail -n 50 "$NGINX_ACCESS_LOG"
-      fi
-      if [[ -f "$NGINX_ERROR_LOG" ]]; then
-        tail -n 50 "$NGINX_ERROR_LOG"
-      fi
+      [[ -f "$NGINX_ACCESS_LOG" ]] && tail -n 50 "$NGINX_ACCESS_LOG"
+      [[ -f "$NGINX_ERROR_LOG" ]] && tail -n 50 "$NGINX_ERROR_LOG"
       ;;
     install) tail -n 80 "${LOG_DIR}/install.log" 2>/dev/null || um_warn "missing" ;;
-    validate) tail -n 80 "${LOG_DIR}/validate.log" 2>/dev/null || um_warn "missing" ;;
-    health) tail -n 80 "${LOG_DIR}/health.log" 2>/dev/null || um_warn "missing" ;;
-    *) um_die "logs args: sync|nginx|install|validate|health|follow" ;;
+    *) um_die "logs args: sync|nginx|follow|install" ;;
   esac
 }
 
 cmd_cleanup() {
   need_root
-  if [[ ! -x "$CLEAN_SCRIPT" ]]; then
-    um_warn "clean.sh not found at $CLEAN_SCRIPT — run a sync first to generate it"
-    return 1
-  fi
-  um_info "Running $CLEAN_SCRIPT"
-  "$CLEAN_SCRIPT"
+  [[ -x "$CLEAN_SCRIPT" ]] || um_die "clean.sh missing at $CLEAN_SCRIPT"
+  bash "$CLEAN_SCRIPT"
   um_ok "Cleanup finished"
 }
 
@@ -167,12 +223,9 @@ cmd_nginx() {
     restart) need_root; nginx -t && systemctl restart nginx && um_ok "restarted" ;;
     recover)
       need_root
-      if ! systemctl is-active --quiet nginx; then
-        um_warn "nginx down — restarting"
-        systemctl restart nginx
-      fi
+      systemctl restart nginx
       nginx -t
-      systemctl is-active --quiet nginx && um_ok "nginx healthy"
+      um_ok "nginx recovered"
       ;;
     *) um_die "nginx args: status|test|reload|restart|recover" ;;
   esac
@@ -181,11 +234,11 @@ cmd_nginx() {
 cmd_timer() {
   local action="${1:-status}"
   case "$action" in
-    status) systemctl list-timers apt-mirror.timer --no-pager || true; systemctl status apt-mirror.timer --no-pager || true ;;
+    status) systemctl list-timers apt-mirror.timer --no-pager || true ;;
     start) need_root; systemctl start apt-mirror.timer; um_ok "timer started" ;;
     stop) need_root; systemctl stop apt-mirror.timer; um_ok "timer stopped" ;;
-    enable) need_root; systemctl enable apt-mirror.timer; um_ok "timer enabled" ;;
-    disable) need_root; systemctl disable apt-mirror.timer; um_ok "timer disabled" ;;
+    enable) need_root; systemctl enable --now apt-mirror.timer; um_ok "timer enabled" ;;
+    disable) need_root; systemctl disable --now apt-mirror.timer; um_ok "timer disabled" ;;
     *) um_die "timer args: status|start|stop|enable|disable" ;;
   esac
 }
@@ -193,21 +246,16 @@ cmd_timer() {
 cmd_client() {
   local action="${1:-}"
   shift || true
-  local setup_bin validate_bin
-  local project_root
+  local project_root setup_bin validate_bin
   project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   setup_bin="${INSTALL_BIN_DIR}/client-setup.sh"
   validate_bin="${INSTALL_BIN_DIR}/client-validate.sh"
   [[ -x "$setup_bin" ]] || setup_bin="${project_root}/client/client-setup.sh"
   [[ -x "$validate_bin" ]] || validate_bin="${project_root}/client/client-validate.sh"
-
   case "$action" in
     setup) "$setup_bin" --mirror-url "${MIRROR_URL}" "$@" ;;
     validate) "$validate_bin" --mirror-url "${MIRROR_URL}" "$@" ;;
-    "")
-      um_info "Client mirror URL: ${MIRROR_URL}/ubuntu"
-      um_info "Run: mirrorctl client setup | mirrorctl client validate"
-      ;;
+    "") echo "Mirror URL: ${MIRROR_URL}/ubuntu" ;;
     *) um_die "client args: setup|validate" ;;
   esac
 }
@@ -217,43 +265,30 @@ cmd_restart() {
   systemctl daemon-reload
   nginx -t
   systemctl restart nginx
-  um_ok "systemd reloaded; nginx restarted"
+  um_ok "restarted"
 }
 
 cmd_recover() {
   need_root
-  local bin
-  bin="${INSTALL_BIN_DIR}/mirror-recovery.sh"
+  local bin="${INSTALL_BIN_DIR}/mirror-recovery"
+  [[ -x "$bin" ]] || bin="${INSTALL_BIN_DIR}/mirror-recovery.sh"
   [[ -x "$bin" ]] || bin="${UM_SRC_ROOT}/scripts/mirror-recovery.sh"
-  [[ -x "$bin" ]] || bin="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/mirror-recovery.sh"
   "$bin" --config "${UM_CONFIG_PATH}" "$@"
 }
 
 cmd_info() {
   cat <<EOF
-Ubuntu Mirror Server
-  Config:       ${UM_CONFIG_PATH}
-  Base path:    ${BASE_PATH}
-  Mirror path:  ${MIRROR_PATH}
-  Ubuntu root:  ${UBUNTU_MIRROR_ROOT}
-  Mode:         ${MIRROR_MODE}
-  Versions:     ${UBUNTU_VERSIONS}
-  Threads:      ${NTHREADS}
-  Upstream:     ${UPSTREAM_MIRROR}
-  Mirror URL:   ${MIRROR_URL}
-  Mirror IP:    ${MIRROR_IP}
-  Port:         ${MIRROR_PORT}
-  Sync calendar:${SYNC_ON_CALENDAR}
-  Log dir:      ${LOG_DIR}
-  Backup dir:   ${BACKUP_DIR}
+Config:      ${UM_CONFIG_PATH}
+Base path:   ${BASE_PATH}
+Mirror URL:  ${MIRROR_URL}/ubuntu
+Mode:        ${MIRROR_MODE}
+Versions:    ${UBUNTU_VERSIONS}
+State:       $(um_detect_lifecycle_state)
 EOF
 }
 
 main() {
-  local cmd=""
-  local args=()
-  local filtered=()
-  # Allow --config anywhere in the argv
+  local cmd="" args=() filtered=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --config)
@@ -261,32 +296,17 @@ main() {
         [[ -n "$UM_CONFIG_ARG" ]] || um_die "--config requires a path"
         shift 2
         ;;
-      -h|--help)
-        usage
-        exit 0
-        ;;
-      *)
-        filtered+=("$1")
-        shift
-        ;;
+      -h|--help) usage; exit 0 ;;
+      *) filtered+=("$1"); shift ;;
     esac
   done
   set -- "${filtered[@]+"${filtered[@]}"}"
-
   while [[ $# -gt 0 ]]; do
-    if [[ -z "$cmd" ]]; then
-      cmd="$1"
-    else
-      args+=("$1")
-    fi
+    if [[ -z "$cmd" ]]; then cmd="$1"; else args+=("$1"); fi
     shift
   done
-
   [[ -n "$cmd" ]] || { usage; exit 1; }
-  if [[ "$cmd" == "help" ]]; then
-    usage
-    exit 0
-  fi
+  [[ "$cmd" == "help" ]] && { usage; exit 0; }
 
   um_load_config "$UM_CONFIG_ARG"
   um_set_log_file "${LOG_DIR}/mirrorctl.log"
@@ -295,6 +315,7 @@ main() {
   case "$cmd" in
     status)   cmd_status "${args[@]+"${args[@]}"}" ;;
     validate) cmd_validate "${args[@]+"${args[@]}"}" ;;
+    finalize) cmd_finalize ;;
     sync)     cmd_sync "${args[@]+"${args[@]}"}" ;;
     logs)     cmd_logs "${args[@]+"${args[@]}"}" ;;
     cleanup)  cmd_cleanup ;;

@@ -1,160 +1,107 @@
 # Ubuntu Mirror Server Automation
 
-Production-oriented automation for the **Ubuntu Mirror Server - Complete Setup Guide** (offline package mirror for Ubuntu 16.04 → 24.04).
+Production installer for an Ubuntu package mirror (16.04 → 24.04) using apt-mirror + nginx + systemd.
 
-This is not a one-shot command dump: installs are **idempotent**, **config-driven**, **backed up**, **validated**, and **recoverable**.
-
-## Features
-
-- Idempotent `install.sh` (safe to re-run)
-- `mirror.conf` for path, versions, full/minimal mode, threads, upstream, sync time, port, disk
-- Automatic timestamped backups before changing configs
-- systemd timer (daily 02:00) + oneshot service
-- nginx site with `/ubuntu` alias (per guide)
-- `validate.sh` with PASS / WARNING / FAIL
-- Enhanced `mirror-status.sh` (CPU, memory, disk, inode, latency, errors, …)
-- `mirrorctl` operator CLI
-- Auto recovery (`mirror-recovery.sh`)
-- Client setup for classic `sources.list` and Ubuntu 24.04 `.sources` (deb822)
-- ShellCheck-clean Bash, automated tests
-
-## Prerequisites (from guide)
-
-- Ubuntu 24.04 LTS server (other Ubuntu versions may work with warnings)
-- Data disk recommended (~1 TB) mounted at `/var/spool/apt-mirror`
-- Root/sudo, internet for initial sync (100+ Mbps recommended)
-- Static IP for clients
-
-## Quick install
+## Quick Start
 
 ```bash
-cd ubuntu-mirror-server
-sudo ./install.sh --non-interactive --validate
-sudo ./install.sh --start-sync          # begins ~660 GB full sync
+git clone https://github.com/RickLee-kr/ubuntu-mirror-automation.git
+cd ubuntu-mirror-automation/ubuntu-mirror-server
+sudo ./install.sh
+```
+
+The installer automatically:
+
+1. Validates the server
+2. Installs apt-mirror and nginx
+3. Creates the mirror configuration
+4. Configures systemd
+5. Starts nginx
+6. Starts the initial synchronization
+7. Prints status and monitoring commands
+
+Then monitor with:
+
+```bash
 sudo mirrorctl status
+sudo mirrorctl logs
 ```
 
-Dry-run:
+When the first sync finishes, finalization runs automatically (cleanup + daily timer). If needed:
 
 ```bash
-sudo ./install.sh --dry-run
+sudo mirrorctl finalize
 ```
 
-Minimal mirror (~305 GB):
+## Operator options
+
+| Option | Behavior |
+|--------|----------|
+| *(none)* | Full automatic installation and initial sync |
+| `--config FILE` | Use a custom configuration file |
+| `--dry-run` | Show planned actions without changing the system |
+| `--no-sync` | Install and validate but do not start initial sync |
+| `--minimal` | Use minimal mirror components (~305 GB) |
+| `--verbose` | Show full validation details |
+| `--force` | Replace changed managed configuration after backup |
+| `--help` | Show concise usage |
+
+## Configuration
+
+Edit `mirror.conf` before install if needed:
+
+- `BASE_PATH` (default `/var/spool/apt-mirror`)
+- `MIRROR_MODE` (`full` or `minimal`)
+- `UBUNTU_VERSIONS`, `NTHREADS`, `UPSTREAM_MIRROR`
+- `MIRROR_IP` / `MIRROR_URL` (auto-detected when empty)
+
+If `/var/spool/apt-mirror` is already mounted (for example `/dev/sdb1`), leave `DATA_DEVICE` empty. The installer will not format or remount it.
+
+## Day-2 operations
 
 ```bash
-# edit mirror.conf: MIRROR_MODE="minimal"
-sudo ./install.sh --non-interactive
+sudo mirrorctl status
+sudo mirrorctl logs
+sudo mirrorctl validate
+sudo mirrorctl finalize    # if auto-finalize did not run
+sudo mirrorctl cleanup
+sudo mirrorctl timer status
 ```
-
-Custom config:
-
-```bash
-sudo ./install.sh --config /path/to/mirror.conf --non-interactive
-```
-
-## Upgrade / re-apply
-
-```bash
-sudo ./install.sh --config mirror.conf --non-interactive
-sudo mirrorctl restart
-```
-
-Existing `/etc/ubuntu-mirror/mirror.conf` is preserved unless `--force`.
 
 ## Uninstall
 
 ```bash
-sudo ./uninstall.sh                 # remove units/helpers; keep mirror data
-sudo ./uninstall.sh --purge-data --force   # delete mirrored packages (DANGEROUS)
+sudo ./uninstall.sh
+# Dangerous: also delete mirrored packages
+sudo ./uninstall.sh --purge-data --force
 ```
 
-## Operator CLI (`mirrorctl`)
+## Development and Troubleshooting
+
+Advanced scripts remain available for diagnostics:
 
 ```bash
-sudo mirrorctl status
-sudo mirrorctl validate
-sudo mirrorctl sync start|stop|status
-sudo mirrorctl logs sync|nginx|follow
-sudo mirrorctl cleanup
-sudo mirrorctl nginx status|test|reload|restart|recover
-sudo mirrorctl timer status|start|stop|enable|disable
-sudo mirrorctl client setup|validate
-sudo mirrorctl restart
+./validate.sh --mode install
+./validate.sh --mode operational
 sudo mirrorctl recover
-sudo mirrorctl info
+sudo mirror-status
+sudo mirror-recovery
 ```
 
-## Validation
-
-```bash
-sudo ./validate.sh
-# Exit: 0=PASS, 1=WARNING, 2=FAIL
-```
-
-Checks include: Ubuntu version, disk mount/space, directories, apt-mirror, nginx, systemd, URL reachability, xenial/bionic/focal/jammy/noble, HTTP status, permissions, logs, health.
-
-## Client
-
-```bash
-sudo ./client/client-setup.sh --mirror-url http://10.34.200.20
-./client/client-validate.sh --mirror-url http://10.34.200.20
-```
-
-## Project layout
-
-```
-ubuntu-mirror-server/
-  install.sh uninstall.sh validate.sh mirror.conf README.md
-  lib/          common.sh config.sh
-  templates/    mirror.list nginx.conf apt-mirror.service/.timer
-  scripts/      mirrorctl mirror-status.sh mirror-recovery.sh
-  client/       client-setup.sh client-validate.sh
-  docs/         architecture.md operations.md recovery.md
-  tests/        test_*.sh run_all.sh
-```
-
-## Troubleshooting
-
-See [docs/recovery.md](docs/recovery.md). Common guide issues:
-
-| Symptom | Action |
-|---------|--------|
-| invalid config file | `sudo mirrorctl recover --fix-config` or re-install |
-| path not mounted | set `DATA_DEVICE`, re-run install (format only with `--format-device --force`) |
-| sync crashed | `sudo mirrorctl sync start` (resumes) |
-| nginx 404 | `sudo mirrorctl nginx recover`; wait for sync |
-| disk full | minimal mode / expand volume / drop releases |
-
-## FAQ
-
-**Q: Can I run install twice?**  
-Yes. Unchanged files are skipped; changed files are backed up under `/var/backups/ubuntu-mirror/`.
-
-**Q: Will it format my disk?**  
-Never, unless you pass `--format-device --force` and set `DATA_DEVICE`.
-
-**Q: When should I start the daily timer?**  
-After the initial sync completes (guide §9): `sudo mirrorctl timer start`.
-
-**Q: Full vs minimal?**  
-`MIRROR_MODE=full` includes universe/multiverse (~660 GB). `minimal` is main+restricted (~305 GB).
-
-**Q: Where are logs?**  
-`/var/log/ubuntu-mirror/` and `/var/log/apt-mirror*.log`.
-
-## Tests
+Run the test suite:
 
 ```bash
 cd tests && ./run_all.sh
 ```
 
-## Documentation
+Includes `bash -n`, ShellCheck, dry-run (no packages required), and install-flow fixtures.
 
-- [Architecture](docs/architecture.md)
-- [Operations](docs/operations.md)
-- [Recovery](docs/recovery.md)
+See also:
 
-## License / provenance
+- [docs/architecture.md](docs/architecture.md)
+- [docs/operations.md](docs/operations.md)
+- [docs/recovery.md](docs/recovery.md)
 
-Implements procedures from *Ubuntu Mirror Server - Complete Setup Guide* (Last Updated: January 31, 2026). Automation additions are operational hardening on top of that guide.
+### Safety
+
+Normal `sudo ./install.sh` never formats disks, deletes mirror data, or enables the daily timer before the first successful sync. Disk formatting is a hidden expert flag (`--format-device --force`) and is not part of Quick Start.

@@ -1,32 +1,41 @@
 #!/usr/bin/env bash
-# validate.sh — Comprehensive Ubuntu Mirror Server validation
-# Exit codes: 0=all PASS, 1=WARNING(s), 2=FAIL(s)
+# validate.sh — Ubuntu Mirror Server validation (install | operational)
+# Exit: 0=ready/OK, 1=sync pending/warnings, 2=critical failure
 set -euo pipefail
 
 UM_PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Prefer installed libs if present
+# shellcheck source=lib/common.sh
+source "${UM_PROJECT_ROOT}/lib/common.sh"
+# shellcheck source=lib/config.sh
+source "${UM_PROJECT_ROOT}/lib/config.sh"
+# shellcheck source=lib/state.sh
+source "${UM_PROJECT_ROOT}/lib/state.sh"
 if [[ -f /usr/local/lib/ubuntu-mirror/common.sh ]]; then
   # shellcheck source=/dev/null
   source /usr/local/lib/ubuntu-mirror/common.sh
   # shellcheck source=/dev/null
   source /usr/local/lib/ubuntu-mirror/config.sh
-  UM_PROJECT_ROOT="${UM_PROJECT_ROOT:-/usr/local/lib/ubuntu-mirror}"
-else
-  # shellcheck source=lib/common.sh
-  source "${UM_PROJECT_ROOT}/lib/common.sh"
-  # shellcheck source=lib/config.sh
-  source "${UM_PROJECT_ROOT}/lib/config.sh"
+  # shellcheck source=/dev/null
+  source /usr/local/lib/ubuntu-mirror/state.sh
 fi
 
 UM_CONFIG_ARG=""
 UM_QUIET=0
+UM_MODE="operational" # install | operational
+UM_SYNC_PENDING=0
 
 usage() {
   cat <<'EOF'
-Usage: ./validate.sh [--config PATH] [--quiet]
+Usage: ./validate.sh [--config PATH] [--mode install|operational] [--quiet]
 
-Checks disk, packages, nginx, systemd, HTTP, Ubuntu dists, permissions, logs, health.
-Prints PASS / WARNING / FAIL for each check.
+Modes:
+  install       Critical install checks only; unsynced versions = PENDING/WARNING
+  operational   Full readiness (Release files, HTTP 200, timer, sync complete)
+
+Exit codes:
+  0 = ready / install OK
+  1 = installed but sync pending or warnings (INSTALLATION_OK_SYNC_PENDING)
+  2 = critical failure
 EOF
 }
 
@@ -34,11 +43,16 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --config) UM_CONFIG_ARG="${2:-}"; shift 2 ;;
+      --mode) UM_MODE="${2:-}"; shift 2 ;;
       --quiet) UM_QUIET=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) um_die "Unknown option: $1" ;;
     esac
   done
+  case "$UM_MODE" in
+    install|operational) ;;
+    *) um_die "--mode must be install or operational" ;;
+  esac
 }
 
 check_ubuntu_version() {
@@ -176,19 +190,19 @@ check_systemd_service() {
 }
 
 check_systemd_timer() {
-  if [[ -f /etc/systemd/system/apt-mirror.timer ]]; then
-    if systemctl is-enabled --quiet apt-mirror.timer 2>/dev/null; then
-      um_result PASS "systemd timer" "enabled"
-    else
-      um_result WARNING "systemd timer" "present but not enabled"
-    fi
-    if systemctl is-active --quiet apt-mirror.timer 2>/dev/null; then
-      um_result PASS "systemd timer active" "waiting for calendar event"
-    else
-      um_result WARNING "systemd timer active" "not started (enable after initial sync)"
-    fi
-  else
+  if [[ ! -f /etc/systemd/system/apt-mirror.timer ]]; then
     um_result FAIL "systemd timer" "unit file missing"
+    return
+  fi
+  if [[ "$UM_MODE" == "install" ]]; then
+    um_result PASS "systemd timer" "unit installed (disabled until initial sync)"
+    return
+  fi
+  if systemctl is-enabled --quiet apt-mirror.timer 2>/dev/null; then
+    um_result PASS "systemd timer" "enabled"
+  else
+    um_result WARNING "systemd timer" "disabled until initial sync / finalize"
+    UM_SYNC_PENDING=1
   fi
 }
 
@@ -199,27 +213,40 @@ check_mirror_url_reachable() {
   if [[ -z "$code" ]]; then
     code="000"
   fi
-  # Accept any HTTP response as "reachable" (including 404 before sync)
   if [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]; then
     um_result PASS "Mirror URL reachable" "$url (HTTP $code)"
   else
-    um_result FAIL "Mirror URL reachable" "$url unreachable (HTTP $code)"
+    if [[ "$UM_MODE" == "install" ]]; then
+      um_result WARNING "Mirror URL reachable" "PENDING (HTTP $code)"
+      UM_SYNC_PENDING=1
+    else
+      um_result FAIL "Mirror URL reachable" "$url unreachable (HTTP $code)"
+    fi
   fi
 }
 
 check_ubuntu_versions() {
-  local ver missing=0 present=0
+  local ver present=0
   for ver in ${UBUNTU_VERSIONS}; do
     if [[ -d "${DIST_ROOT}/${ver}" ]]; then
       ((present++)) || true
       um_result PASS "Ubuntu version ${ver}" "dists present"
     else
-      ((missing++)) || true
-      um_result WARNING "Ubuntu version ${ver}" "not yet synced"
+      if [[ "$UM_MODE" == "install" ]]; then
+        um_result WARNING "Ubuntu version ${ver}" "PENDING (not yet synced)"
+        UM_SYNC_PENDING=1
+      else
+        um_result FAIL "Ubuntu version ${ver}" "not available"
+      fi
     fi
   done
   if [[ "$present" -eq 0 ]]; then
-    um_result WARNING "Ubuntu versions" "none synced yet (initial sync pending)"
+    if [[ "$UM_MODE" == "install" ]]; then
+      um_result WARNING "Ubuntu versions" "INSTALLATION_OK_SYNC_PENDING"
+      UM_SYNC_PENDING=1
+    else
+      um_result FAIL "Ubuntu versions" "none synced"
+    fi
   fi
 }
 
@@ -234,11 +261,16 @@ check_http_status() {
       ((any_ok++)) || true
       um_result PASS "HTTP Status ${ver}" "200 OK"
     else
-      um_result WARNING "HTTP Status ${ver}" "HTTP $code"
+      if [[ "$UM_MODE" == "install" ]]; then
+        um_result WARNING "HTTP Status ${ver}" "PENDING (HTTP $code)"
+        UM_SYNC_PENDING=1
+      else
+        um_result FAIL "HTTP Status ${ver}" "HTTP $code"
+      fi
     fi
   done
-  if [[ "$any_ok" -eq 0 ]]; then
-    um_result WARNING "HTTP Status" "no Release files reachable yet"
+  if [[ "$any_ok" -eq 0 && "$UM_MODE" == "install" ]]; then
+    um_result WARNING "HTTP Status" "expected before initial sync completes"
   fi
 }
 
@@ -281,24 +313,29 @@ check_logs() {
 }
 
 check_health() {
+  if [[ "$UM_MODE" == "install" ]]; then
+    return 0
+  fi
   local status_bin=""
-  if [[ -x "${INSTALL_BIN_DIR}/mirror-status.sh" ]]; then
+  if [[ -x "${INSTALL_BIN_DIR}/mirror-status" ]]; then
+    status_bin="${INSTALL_BIN_DIR}/mirror-status"
+  elif [[ -x "${INSTALL_BIN_DIR}/mirror-status.sh" ]]; then
     status_bin="${INSTALL_BIN_DIR}/mirror-status.sh"
   elif [[ -x "${UM_PROJECT_ROOT}/scripts/mirror-status.sh" ]]; then
     status_bin="${UM_PROJECT_ROOT}/scripts/mirror-status.sh"
   fi
   if [[ -z "$status_bin" ]]; then
-    um_result WARNING "Health" "mirror-status.sh not installed"
+    um_result WARNING "Health" "mirror-status not installed"
     return
   fi
   if "$status_bin" --quiet >/dev/null 2>&1; then
-    um_result PASS "Health" "mirror-status.sh exit 0"
+    um_result PASS "Health" "ok"
   else
     local rc=$?
     if [[ "$rc" -eq 1 ]]; then
-      um_result WARNING "Health" "mirror-status reported warnings"
+      um_result WARNING "Health" "warnings"
     else
-      um_result FAIL "Health" "mirror-status exit $rc"
+      um_result FAIL "Health" "exit $rc"
     fi
   fi
 }
@@ -310,14 +347,11 @@ main() {
   um_set_log_file "${LOG_DIR}/validate.log"
   um_ensure_log_dir
   um_result_reset
+  UM_SYNC_PENDING=0
 
   if [[ "$UM_QUIET" != "1" ]]; then
-    printf '%s╔════════════════════════════════════════════════╗%s\n' "$UM_C_BOLD" "$UM_C_RESET"
-    printf '%s║     Ubuntu Mirror Server - Validation          ║%s\n' "$UM_C_BOLD" "$UM_C_RESET"
-    printf '%s╚════════════════════════════════════════════════╝%s\n\n' "$UM_C_BOLD" "$UM_C_RESET"
+    printf '%sValidation mode: %s%s\n\n' "$UM_C_BOLD" "$UM_MODE" "$UM_C_RESET"
   fi
-
-  um_info "Writing results to ${um_log_file}"
 
   check_ubuntu_version
   check_disk_mounted
@@ -328,17 +362,50 @@ main() {
   check_nginx_config
   check_systemd_service
   check_systemd_timer
-  check_mirror_url_reachable
-  check_ubuntu_versions
-  check_http_status
   check_permissions
-  check_logs
-  check_health
 
+  if [[ "$UM_MODE" == "operational" ]]; then
+    check_mirror_url_reachable
+    check_ubuntu_versions
+    check_http_status
+    check_logs
+    check_health
+  else
+    # install mode: report sync as pending, never FAIL solely for missing dists
+    check_ubuntu_versions
+    check_logs
+  fi
+
+  if [[ "$UM_QUIET" != "1" ]]; then
+    if [[ "$UM_SYNC_PENDING" -eq 1 && "$UM_FAIL_COUNT" -eq 0 ]]; then
+      printf '\nStatus: INSTALLATION_OK_SYNC_PENDING\n'
+    fi
+  fi
+
+  set +e
   um_result_summary
   local rc=$?
-  um_info "validate exit=$rc"
-  exit "$rc"
+  set -e
+
+  # install mode: warnings/sync-pending => exit 1 is OK for installer; no fails => treat pending as 1
+  if [[ "$UM_MODE" == "install" ]]; then
+    if [[ "$UM_FAIL_COUNT" -gt 0 ]]; then
+      exit 2
+    fi
+    if [[ "$UM_SYNC_PENDING" -eq 1 || "$UM_WARN_COUNT" -gt 0 ]]; then
+      exit 1
+    fi
+    exit 0
+  fi
+
+  # operational
+  if [[ "$UM_FAIL_COUNT" -gt 0 ]]; then
+    exit 2
+  fi
+  if [[ "$UM_SYNC_PENDING" -eq 1 || "$UM_WARN_COUNT" -gt 0 ]]; then
+    exit 1
+  fi
+  exit 0
 }
 
 main "$@"

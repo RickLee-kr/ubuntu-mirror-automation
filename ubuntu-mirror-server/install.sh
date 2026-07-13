@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# install.sh — Idempotent Ubuntu Mirror Server installer
-# Based on: Ubuntu Mirror Server - Complete Setup Guide
+# install.sh — Single-command Ubuntu Mirror Server installer
+# Default: sudo ./install.sh  → validate, install, configure, start nginx, start sync
 set -euo pipefail
 
 UM_PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,35 +8,38 @@ UM_PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${UM_PROJECT_ROOT}/lib/common.sh"
 # shellcheck source=lib/config.sh
 source "${UM_PROJECT_ROOT}/lib/config.sh"
+# shellcheck source=lib/state.sh
+source "${UM_PROJECT_ROOT}/lib/state.sh"
 
 UM_DRY_RUN=0
 UM_FORCE=0
-UM_NON_INTERACTIVE=0
-UM_START_SYNC=0
-UM_VALIDATE=0
+UM_NO_SYNC=0
+UM_MINIMAL=0
+UM_VERBOSE=0
 UM_FORMAT_DEVICE=0
 UM_CONFIG_ARG=""
-UM_SKIP_PACKAGES=0
+UM_CHANGES=0
 
 usage() {
   cat <<'EOF'
 Usage: sudo ./install.sh [OPTIONS]
 
+Install and start an Ubuntu Mirror Server in one command.
+
 Options:
-  --config PATH         Path to mirror.conf (default: ./mirror.conf)
-  --dry-run             Print actions without changing the system
-  --force               Allow overwriting managed configs / enable timer early
-  --non-interactive     Do not prompt; assume yes for safe actions
-  --start-sync          Start initial apt-mirror sync in background after install
-  --validate            Run validate.sh after successful install
-  --format-device       DANGEROUS: mkfs DATA_DEVICE before mount (requires DATA_DEVICE)
-  --skip-packages       Skip apt-get install (templates/config only)
-  -h, --help            Show this help
+  --help              Show this help
+  --config PATH       Use a custom mirror.conf
+  --dry-run           Show planned actions without changing the system
+  --no-sync           Install and validate but do not start initial sync
+  --minimal           Use minimal mirror components (main restricted)
+  --verbose           Show detailed validation and command output
+  --force             Replace changed managed configuration after backup
 
 Examples:
   sudo ./install.sh
   sudo ./install.sh --dry-run
-  sudo ./install.sh --config mirror.conf --non-interactive --validate
+  sudo ./install.sh --no-sync
+  sudo ./install.sh --minimal
 EOF
 }
 
@@ -49,329 +52,587 @@ parse_args() {
         shift 2
         ;;
       --dry-run) UM_DRY_RUN=1; shift ;;
+      --no-sync) UM_NO_SYNC=1; shift ;;
+      --minimal) UM_MINIMAL=1; shift ;;
+      --verbose) UM_VERBOSE=1; shift ;;
       --force) UM_FORCE=1; shift ;;
-      --non-interactive) UM_NON_INTERACTIVE=1; shift ;;
-      --start-sync) UM_START_SYNC=1; shift ;;
-      --validate) UM_VALIDATE=1; shift ;;
+      # Hidden expert option — not advertised in Quick Start
       --format-device) UM_FORMAT_DEVICE=1; shift ;;
-      --skip-packages) UM_SKIP_PACKAGES=1; shift ;;
       -h|--help) usage; exit 0 ;;
-      *) um_die "Unknown option: $1" ;;
+      # Compatibility aliases (deprecated, still accepted quietly)
+      --non-interactive) shift ;;
+      --start-sync) UM_NO_SYNC=0; shift ;;
+      --validate) UM_VERBOSE=1; shift ;;
+      --skip-packages) shift ;; # ignored; dry-run handles missing packages
+      *) um_die "Unknown option: $1 (see --help)" ;;
     esac
   done
 }
 
-install_packages() {
-  if [[ "$UM_SKIP_PACKAGES" == "1" ]]; then
-    um_info "Skipping package installation (--skip-packages)"
-    return 0
-  fi
-  um_info "Updating package lists"
-  um_run apt-get update -y
-  um_info "Installing apt-mirror and nginx"
-  um_run apt-get install -y apt-mirror nginx curl
-  if um_command_exists apt-mirror; then
-    um_ok "apt-mirror present: $(command -v apt-mirror)"
-  else
-    um_die "apt-mirror not found after install"
-  fi
-  if um_command_exists nginx; then
-    um_ok "nginx present: $(command -v nginx)"
-  else
-    um_die "nginx not found after install"
+vlog() {
+  if [[ "$UM_VERBOSE" == "1" ]] || [[ "$UM_DRY_RUN" == "1" ]]; then
+    um_info "$*"
   fi
 }
 
-maybe_format_and_mount() {
-  if [[ -z "${DATA_DEVICE}" ]]; then
-    um_info "DATA_DEVICE empty — skipping mount/format (using existing BASE_PATH)"
-    return 0
+phase() {
+  printf '\n==> %s\n' "$*"
+}
+
+# ---------------------------------------------------------------------------
+# Phase 1: Root and environment validation
+# ---------------------------------------------------------------------------
+phase1_preflight() {
+  phase "Phase 1: Environment validation"
+
+  if [[ "$UM_DRY_RUN" != "1" ]]; then
+    um_require_root
+  else
+    um_dry "Would require root privileges"
   fi
 
-  if [[ ! -b "$DATA_DEVICE" ]]; then
-    um_die "DATA_DEVICE is not a block device: $DATA_DEVICE"
-  fi
-
-  if findmnt -n -S "$DATA_DEVICE" >/dev/null 2>&1; then
-    local current
-    current="$(findmnt -n -o TARGET -S "$DATA_DEVICE" | head -1)"
-    um_info "Device $DATA_DEVICE already mounted at $current"
-    if [[ "$current" != "$BASE_PATH" ]]; then
-      um_warn "Mounted path differs from BASE_PATH ($BASE_PATH)"
+  if [[ -f /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    if [[ "${ID:-}" == "ubuntu" ]]; then
+      um_ok "OS: ${PRETTY_NAME}"
+    else
+      um_warn "Non-Ubuntu host: ${PRETTY_NAME:-unknown} (continuing)"
     fi
-    return 0
+  else
+    um_die "Cannot detect OS (/etc/os-release missing)"
   fi
 
-  if [[ "$UM_FORMAT_DEVICE" == "1" ]]; then
-    if [[ "$UM_FORCE" != "1" ]]; then
-      um_die "--format-device also requires --force"
+  if ! um_command_exists apt-get; then
+    um_die "apt-get not available"
+  fi
+  um_ok "apt-get available"
+
+  if ! um_command_exists systemctl; then
+    um_die "systemd/systemctl not available"
+  fi
+  um_ok "systemd available"
+
+  # Internet (best-effort)
+  if curl -sS --max-time 5 -I http://archive.ubuntu.com/ubuntu/ >/dev/null 2>&1 \
+    || curl -sS --max-time 5 -I https://archive.ubuntu.com/ubuntu/ >/dev/null 2>&1; then
+    um_ok "Internet connectivity"
+  else
+    if [[ "$UM_DRY_RUN" == "1" ]]; then
+      um_dry "SKIPPED: internet check (runtime)"
+    else
+      um_warn "Could not reach archive.ubuntu.com — sync may fail"
     fi
-    um_warn "FORMATTING $DATA_DEVICE as ${DATA_FSTYPE} — ALL DATA WILL BE LOST"
-    if [[ "$UM_NON_INTERACTIVE" != "1" ]]; then
-      um_confirm "Type y to proceed with mkfs on $DATA_DEVICE" || um_die "Aborted"
-    fi
-    um_run "mkfs.${DATA_FSTYPE}" -F "$DATA_DEVICE"
   fi
 
-  um_run mkdir -p "$BASE_PATH"
-  um_run mount "$DATA_DEVICE" "$BASE_PATH"
-  um_ok "Mounted $DATA_DEVICE -> $BASE_PATH"
+  # Base path / mount — do NOT require DATA_DEVICE when already mounted
+  if [[ ! -d "$BASE_PATH" ]]; then
+    if [[ "$UM_DRY_RUN" == "1" ]]; then
+      um_dry "Would create BASE_PATH $BASE_PATH"
+    else
+      mkdir -p "$BASE_PATH"
+    fi
+  fi
 
-  # Persist in fstab if not already present
-  local uuid
-  uuid="$(blkid -s UUID -o value "$DATA_DEVICE" 2>/dev/null || true)"
-  if [[ -n "$uuid" ]]; then
-    if ! grep -q "UUID=$uuid" /etc/fstab 2>/dev/null; then
-      um_backup_file /etc/fstab >/dev/null || true
-      local line="UUID=$uuid $BASE_PATH $DATA_FSTYPE $DATA_MOUNT_OPTS 0 2"
-      if [[ "$UM_DRY_RUN" == "1" ]]; then
-        um_info "DRY-RUN: append fstab: $line"
+  if [[ -d "$BASE_PATH" ]] && um_path_mounted "$BASE_PATH"; then
+    local src
+    src="$(findmnt -n -o SOURCE -T "$BASE_PATH" 2>/dev/null || echo unknown)"
+    um_ok "Mirror path mounted: $BASE_PATH <- $src"
+  elif [[ "$UM_DRY_RUN" == "1" ]]; then
+    um_dry "SKIPPED: mount check for $BASE_PATH (not present in dry-run host)"
+  else
+    um_warn "BASE_PATH exists but is not a separate mount — ensure enough disk space"
+  fi
+
+  if [[ -d "$BASE_PATH" ]]; then
+    local avail_kib avail_gib pct
+    avail_kib="$(df -Pk "$BASE_PATH" 2>/dev/null | awk 'NR==2 {print $4}')"
+    avail_gib=$(( ${avail_kib:-0} / 1024 / 1024 ))
+    pct="$(um_disk_usage_percent "$BASE_PATH" || echo 0)"
+    if [[ "$avail_gib" -lt "${MIN_FREE_GIB}" ]] && ! um_initial_sync_complete; then
+      um_warn "Free space ${avail_gib} GiB < recommended ${MIN_FREE_GIB} GiB for full sync"
+    else
+      um_ok "Disk space: ${avail_gib} GiB free (${pct}% used)"
+    fi
+    if [[ ! -w "$BASE_PATH" ]] && [[ "$UM_DRY_RUN" != "1" ]]; then
+      um_die "No write permission on $BASE_PATH"
+    fi
+  fi
+
+  # Port conflict (informational)
+  if command -v ss >/dev/null 2>&1; then
+    if ss -ltn "( sport = :${MIRROR_PORT} )" 2>/dev/null | grep -q LISTEN; then
+      if systemctl is-active --quiet nginx 2>/dev/null; then
+        vlog "Port ${MIRROR_PORT} already used by nginx (ok)"
       else
-        printf '%s\n' "$line" >>/etc/fstab
-        um_ok "Added fstab entry for $BASE_PATH"
+        um_warn "Port ${MIRROR_PORT} is in use — nginx may fail to bind"
       fi
     fi
   fi
+
+  um_ok "Configuration loaded: $UM_CONFIG_PATH (mode=${MIRROR_MODE})"
 }
 
-ensure_directories() {
-  um_info "Ensuring mirror directories under $BASE_PATH"
+# Optional mount only when DATA_DEVICE set and not already mounted — never format by default
+maybe_mount_data_device() {
+  if [[ -z "${DATA_DEVICE}" ]]; then
+    return 0
+  fi
+  if findmnt -n -S "$DATA_DEVICE" >/dev/null 2>&1; then
+    return 0
+  fi
+  if um_path_mounted "$BASE_PATH"; then
+    vlog "BASE_PATH already mounted; ignoring DATA_DEVICE=$DATA_DEVICE"
+    return 0
+  fi
+  if [[ "$UM_FORMAT_DEVICE" == "1" ]]; then
+    [[ "$UM_FORCE" == "1" ]] || um_die "--format-device requires --force"
+    um_warn "FORMATTING $DATA_DEVICE — destructive"
+    um_confirm "Confirm mkfs on $DATA_DEVICE?" || um_die "Aborted"
+    um_run "mkfs.${DATA_FSTYPE}" -F "$DATA_DEVICE"
+  fi
+  um_run mkdir -p "$BASE_PATH"
+  um_run mount "$DATA_DEVICE" "$BASE_PATH"
+  local uuid
+  uuid="$(blkid -s UUID -o value "$DATA_DEVICE" 2>/dev/null || true)"
+  if [[ -n "$uuid" ]] && ! grep -q "UUID=$uuid" /etc/fstab 2>/dev/null; then
+    if [[ -f /etc/fstab ]]; then
+      um_backup_file /etc/fstab >/dev/null || true
+    fi
+    if [[ "$UM_DRY_RUN" == "1" ]]; then
+      um_dry "Would append fstab for UUID=$uuid"
+    else
+      printf 'UUID=%s %s %s %s 0 2\n' "$uuid" "$BASE_PATH" "$DATA_FSTYPE" "$DATA_MOUNT_OPTS" >>/etc/fstab
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Phase 2: Packages
+# ---------------------------------------------------------------------------
+phase2_packages() {
+  phase "Phase 2: Install required packages"
+  if [[ "$UM_DRY_RUN" == "1" ]]; then
+    um_dry "Would install apt-mirror nginx curl"
+    um_dry "SKIPPED: requires installed package (apt-mirror, nginx)"
+    return 0
+  fi
+
+  local need=0
+  um_command_exists apt-mirror || need=1
+  um_command_exists nginx || need=1
+  um_command_exists curl || need=1
+
+  if [[ "$need" -eq 0 ]]; then
+    um_ok "Packages already installed (apt-mirror, nginx, curl)"
+    return 0
+  fi
+
+  apt-get update -y
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends apt-mirror nginx curl
+  um_command_exists apt-mirror || um_die "apt-mirror not found after install"
+  um_command_exists nginx || um_die "nginx not found after install"
+  um_ok "Packages installed"
+  UM_CHANGES=1
+}
+
+# ---------------------------------------------------------------------------
+# Phase 3: Configuration
+# ---------------------------------------------------------------------------
+phase3_config() {
+  phase "Phase 3: Generate and install configuration"
+
   um_run mkdir -p "$MIRROR_PATH" "$SKEL_PATH" "$VAR_PATH"
-  um_run mkdir -p "$LOG_DIR" "$BACKUP_DIR" "$INSTALL_CONF_DIR" "$INSTALL_LIB_DIR"
+  um_run mkdir -p "$LOG_DIR" "$BACKUP_DIR" "$INSTALL_CONF_DIR" "$INSTALL_LIB_DIR" "$(um_state_root)"
   um_run mkdir -p "$(dirname "$NGINX_ACCESS_LOG")"
-  um_run chown -R root:root "$BASE_PATH"
-  um_run chmod -R 755 "$BASE_PATH"
-}
+  if [[ "$UM_DRY_RUN" != "1" ]]; then
+    chown -R root:root "$BASE_PATH" 2>/dev/null || true
+    chmod -R 755 "$BASE_PATH" 2>/dev/null || true
+  fi
 
-install_mirror_list() {
   local tmp
   tmp="$(mktemp)"
   um_generate_mirror_list >"$tmp"
-  if [[ -f /etc/apt/mirror.list ]]; then
-    if cmp -s "$tmp" /etc/apt/mirror.list; then
-      um_info "Unchanged: /etc/apt/mirror.list"
-      rm -f "$tmp"
-      return 0
-    fi
-    um_backup_file /etc/apt/mirror.list >/dev/null || true
-  fi
-  if [[ "$UM_DRY_RUN" == "1" ]]; then
-    um_info "DRY-RUN: write /etc/apt/mirror.list"
+  if [[ -f /etc/apt/mirror.list ]] && cmp -s "$tmp" /etc/apt/mirror.list; then
+    vlog "Unchanged: /etc/apt/mirror.list"
     rm -f "$tmp"
-    return 0
+  else
+    if [[ -f /etc/apt/mirror.list ]]; then
+      um_backup_file /etc/apt/mirror.list >/dev/null || true
+    fi
+    if [[ "$UM_DRY_RUN" == "1" ]]; then
+      um_dry "Would write /etc/apt/mirror.list"
+      rm -f "$tmp"
+    else
+      install -m 0644 "$tmp" /etc/apt/mirror.list
+      rm -f "$tmp"
+      um_ok "Installed /etc/apt/mirror.list"
+      UM_CHANGES=1
+    fi
   fi
-  install -m 0644 "$tmp" /etc/apt/mirror.list
-  rm -f "$tmp"
-  um_ok "Installed /etc/apt/mirror.list"
-}
 
-install_nginx_site() {
+  # nginx site
   local site_avail="/etc/nginx/sites-available/${NGINX_SITE_NAME}"
   local site_en="/etc/nginx/sites-enabled/${NGINX_SITE_NAME}"
-  local tmp
-  tmp="$(mktemp)"
-  um_generate_nginx_conf >"$tmp"
+  local ngx_tmp
+  ngx_tmp="$(mktemp)"
+  um_generate_nginx_conf >"$ngx_tmp"
+  UM_NGINX_TMP="$ngx_tmp"
 
-  if [[ -f "$site_avail" ]]; then
-    if cmp -s "$tmp" "$site_avail"; then
-      um_info "Unchanged: $site_avail"
-    else
+  if [[ -f "$site_avail" ]] && cmp -s "$ngx_tmp" "$site_avail"; then
+    vlog "Unchanged: $site_avail"
+  else
+    if [[ -f "$site_avail" ]]; then
       um_backup_file "$site_avail" >/dev/null || true
-      if [[ "$UM_DRY_RUN" == "1" ]]; then
-        um_info "DRY-RUN: write $site_avail"
-      else
-        install -m 0644 "$tmp" "$site_avail"
-        um_ok "Updated $site_avail"
-      fi
     fi
-  else
     if [[ "$UM_DRY_RUN" == "1" ]]; then
-      um_info "DRY-RUN: write $site_avail"
+      um_dry "Would configure nginx ($site_avail)"
     else
-      install -m 0644 "$tmp" "$site_avail"
-      um_ok "Created $site_avail"
+      install -m 0644 "$ngx_tmp" "$site_avail"
+      um_ok "Installed $site_avail"
+      UM_CHANGES=1
     fi
   fi
-  rm -f "$tmp"
 
-  if [[ "$UM_DRY_RUN" != "1" ]]; then
+  if [[ "$UM_DRY_RUN" == "1" ]]; then
+    um_dry "Would enable nginx site symlink"
+  else
     ln -sfn "$site_avail" "$site_en"
-  else
-    um_info "DRY-RUN: ln -sfn $site_avail $site_en"
-  fi
-
-  if [[ "${NGINX_DISABLE_DEFAULT}" == "true" ]]; then
-    if [[ -e /etc/nginx/sites-enabled/default ]]; then
-      if [[ "$UM_FORCE" == "1" ]] || [[ "$UM_NON_INTERACTIVE" == "1" ]]; then
-        um_run rm -f /etc/nginx/sites-enabled/default
-        um_ok "Disabled nginx default site"
-      else
-        if um_confirm "Disable nginx default site?"; then
-          um_run rm -f /etc/nginx/sites-enabled/default
-        else
-          um_warn "Leaving default site enabled (may conflict on port 80)"
-        fi
-      fi
+    if [[ "${NGINX_DISABLE_DEFAULT}" == "true" ]] && [[ -e /etc/nginx/sites-enabled/default ]]; then
+      rm -f /etc/nginx/sites-enabled/default
+      um_ok "Disabled nginx default site"
+      UM_CHANGES=1
     fi
   fi
 
-  if um_command_exists nginx; then
-    if [[ "$UM_DRY_RUN" == "1" ]]; then
-      um_info "DRY-RUN: nginx -t && systemctl reload/restart nginx"
-    else
-      nginx -t
-      systemctl enable nginx
-      systemctl restart nginx
-      um_ok "nginx configuration applied"
-    fi
-  fi
-}
-
-install_systemd_units() {
+  # systemd units (timer installed but NOT enabled until finalize)
   local svc_tmp timer_tmp
   svc_tmp="$(mktemp)"
   timer_tmp="$(mktemp)"
   um_generate_systemd_service >"$svc_tmp"
   um_generate_systemd_timer >"$timer_tmp"
+  UM_SVC_TMP="$svc_tmp"
+  UM_TIMER_TMP="$timer_tmp"
 
-  if [[ -f /etc/systemd/system/apt-mirror.service ]]; then
-    if ! cmp -s "$svc_tmp" /etc/systemd/system/apt-mirror.service; then
+  if [[ -f /etc/systemd/system/apt-mirror.service ]] && cmp -s "$svc_tmp" /etc/systemd/system/apt-mirror.service; then
+    vlog "Unchanged: apt-mirror.service"
+  else
+    if [[ -f /etc/systemd/system/apt-mirror.service ]]; then
       um_backup_file /etc/systemd/system/apt-mirror.service >/dev/null || true
     fi
+    if [[ "$UM_DRY_RUN" == "1" ]]; then
+      um_dry "Would install systemd units"
+    else
+      install -m 0644 "$svc_tmp" /etc/systemd/system/apt-mirror.service
+      UM_CHANGES=1
+    fi
   fi
-  if [[ -f /etc/systemd/system/apt-mirror.timer ]]; then
-    if ! cmp -s "$timer_tmp" /etc/systemd/system/apt-mirror.timer; then
+  if [[ -f /etc/systemd/system/apt-mirror.timer ]] && cmp -s "$timer_tmp" /etc/systemd/system/apt-mirror.timer; then
+    vlog "Unchanged: apt-mirror.timer"
+  else
+    if [[ -f /etc/systemd/system/apt-mirror.timer ]]; then
       um_backup_file /etc/systemd/system/apt-mirror.timer >/dev/null || true
+    fi
+    if [[ "$UM_DRY_RUN" != "1" ]]; then
+      install -m 0644 "$timer_tmp" /etc/systemd/system/apt-mirror.timer
+      UM_CHANGES=1
     fi
   fi
 
-  if [[ "$UM_DRY_RUN" == "1" ]]; then
-    um_info "DRY-RUN: install systemd units"
-  else
-    install -m 0644 "$svc_tmp" /etc/systemd/system/apt-mirror.service
-    install -m 0644 "$timer_tmp" /etc/systemd/system/apt-mirror.timer
-    systemctl daemon-reload
-    systemctl enable apt-mirror.timer
-    um_ok "systemd apt-mirror.service/timer installed and enabled"
-  fi
-  rm -f "$svc_tmp" "$timer_tmp"
+  # Management tools (without .sh suffixes for status/recovery)
+  install_mgmt_tools
 }
 
-install_project_files() {
-  um_info "Installing management tools"
-  local files=(
-    "scripts/mirrorctl"
-    "scripts/mirror-status.sh"
-    "scripts/mirror-recovery.sh"
-    "validate.sh"
-  )
-  local f
-  for f in "${files[@]}"; do
-    um_install_file "${UM_PROJECT_ROOT}/${f}" "${INSTALL_BIN_DIR}/$(basename "$f")" 0755
-  done
+install_mgmt_tools() {
+  if [[ "$UM_DRY_RUN" == "1" ]]; then
+    um_dry "Would install mirrorctl, mirror-status, mirror-recovery"
+    return 0
+  fi
 
-  # Also install client helpers for packaging onto clients
-  um_install_file "${UM_PROJECT_ROOT}/client/client-setup.sh" \
-    "${INSTALL_BIN_DIR}/client-setup.sh" 0755
-  um_install_file "${UM_PROJECT_ROOT}/client/client-validate.sh" \
-    "${INSTALL_BIN_DIR}/client-validate.sh" 0755
+  um_install_file "${UM_PROJECT_ROOT}/scripts/mirrorctl" "${INSTALL_BIN_DIR}/mirrorctl" 0755
+  um_install_file "${UM_PROJECT_ROOT}/scripts/mirror-status.sh" "${INSTALL_BIN_DIR}/mirror-status" 0755
+  um_install_file "${UM_PROJECT_ROOT}/scripts/mirror-recovery.sh" "${INSTALL_BIN_DIR}/mirror-recovery" 0755
+  ln -sfn "${INSTALL_BIN_DIR}/mirror-status" "${INSTALL_BIN_DIR}/mirror-status.sh"
+  ln -sfn "${INSTALL_BIN_DIR}/mirror-recovery" "${INSTALL_BIN_DIR}/mirror-recovery.sh"
 
-  # Libraries + config
+  um_install_file "${UM_PROJECT_ROOT}/scripts/run-apt-mirror.sh" "${INSTALL_LIB_DIR}/run-apt-mirror.sh" 0755
+  um_install_file "${UM_PROJECT_ROOT}/validate.sh" "${INSTALL_BIN_DIR}/validate.sh" 0755
+  um_install_file "${UM_PROJECT_ROOT}/client/client-setup.sh" "${INSTALL_BIN_DIR}/client-setup.sh" 0755
+  um_install_file "${UM_PROJECT_ROOT}/client/client-validate.sh" "${INSTALL_BIN_DIR}/client-validate.sh" 0755
   um_install_file "${UM_PROJECT_ROOT}/lib/common.sh" "${INSTALL_LIB_DIR}/common.sh" 0644
   um_install_file "${UM_PROJECT_ROOT}/lib/config.sh" "${INSTALL_LIB_DIR}/config.sh" 0644
+  um_install_file "${UM_PROJECT_ROOT}/lib/state.sh" "${INSTALL_LIB_DIR}/state.sh" 0644
 
-  # Preserve operator edits to installed mirror.conf unless --force
   if [[ -f "${INSTALL_CONF_DIR}/mirror.conf" ]] && [[ "$UM_FORCE" != "1" ]]; then
-    um_info "Keeping existing ${INSTALL_CONF_DIR}/mirror.conf (use --force to overwrite)"
+    vlog "Keeping existing ${INSTALL_CONF_DIR}/mirror.conf"
   else
     um_install_file "${UM_CONFIG_PATH}" "${INSTALL_CONF_DIR}/mirror.conf" 0644
   fi
-
-  # Symlink convenience: mirrorctl without path
-  if [[ "$UM_DRY_RUN" != "1" ]]; then
-    ln -sfn "${INSTALL_BIN_DIR}/mirrorctl" /usr/local/sbin/mirrorctl 2>/dev/null || true
-  fi
+  ln -sfn "${INSTALL_BIN_DIR}/mirrorctl" /usr/local/sbin/mirrorctl 2>/dev/null || true
 }
 
-start_initial_sync() {
-  if pgrep -f '/usr/bin/apt-mirror|apt-mirror$' >/dev/null 2>&1; then
-    um_warn "apt-mirror already running — not starting another sync"
-    return 0
-  fi
-  um_info "Starting initial apt-mirror sync in background"
+# ---------------------------------------------------------------------------
+# Phase 4: Validate generated configuration
+# ---------------------------------------------------------------------------
+phase4_validate() {
+  phase "Phase 4: Validate configuration"
+
+  # bash -n on installed/generated scripts
+  local s
+  for s in "${UM_PROJECT_ROOT}/install.sh" \
+           "${UM_PROJECT_ROOT}/scripts/mirrorctl" \
+           "${UM_PROJECT_ROOT}/scripts/run-apt-mirror.sh"; do
+    bash -n "$s"
+  done
+  um_ok "bash -n syntax ok"
+
+  # nginx -t
   if [[ "$UM_DRY_RUN" == "1" ]]; then
-    um_info "DRY-RUN: nohup apt-mirror > $APT_MIRROR_INITIAL_LOG"
+    if um_command_exists nginx && [[ -n "${UM_NGINX_TMP:-}" ]]; then
+      local wrap
+      wrap="$(mktemp -d)"
+      cat >"$wrap/nginx.conf" <<EOF
+events {}
+http {
+  include ${UM_NGINX_TMP};
+}
+EOF
+      if nginx -t -c "$wrap/nginx.conf" >/dev/null 2>&1; then
+        um_ok "nginx syntax (temp) valid"
+      else
+        um_dry "SKIPPED: full nginx -t (minimal wrapper limits)"
+      fi
+      rm -rf "$wrap"
+    else
+      um_dry "SKIPPED: requires installed package (nginx -t)"
+    fi
+  else
+    if ! nginx -t; then
+      um_error "nginx -t failed — aborting before sync"
+      return 1
+    fi
+    um_ok "nginx -t passed"
+  fi
+
+  # systemd-analyze verify
+  if [[ "$UM_DRY_RUN" == "1" ]]; then
+    if command -v systemd-analyze >/dev/null 2>&1 && [[ -n "${UM_SVC_TMP:-}" ]]; then
+      if systemd-analyze verify "${UM_SVC_TMP}" "${UM_TIMER_TMP}" 2>/dev/null; then
+        um_ok "systemd units verify ok"
+      else
+        um_dry "SKIPPED: systemd-analyze verify (environment limits)"
+      fi
+    else
+      um_dry "SKIPPED: requires installed package (systemd-analyze)"
+    fi
+  else
+    if command -v systemd-analyze >/dev/null 2>&1; then
+      if ! systemd-analyze verify /etc/systemd/system/apt-mirror.service /etc/systemd/system/apt-mirror.timer 2>/dev/null; then
+        um_warn "systemd-analyze verify reported issues (continuing if units load)"
+      else
+        um_ok "systemd units verify ok"
+      fi
+    fi
+    if ! systemctl cat apt-mirror.service >/dev/null 2>&1; then
+      um_error "apt-mirror.service failed to load"
+      return 1
+    fi
+  fi
+
+  # Internal install-mode validation (sync pending is OK)
+  if [[ "$UM_DRY_RUN" == "1" ]]; then
+    um_dry "SKIPPED: runtime install validation against live services"
     return 0
   fi
-  touch "$APT_MIRROR_INITIAL_LOG"
-  nohup apt-mirror >>"$APT_MIRROR_INITIAL_LOG" 2>&1 &
-  um_ok "Initial sync started (PID $!). Log: $APT_MIRROR_INITIAL_LOG"
-  um_info "Monitor with: mirrorctl status  OR  tail -f $APT_MIRROR_INITIAL_LOG"
+
+  if [[ -x "${UM_PROJECT_ROOT}/validate.sh" ]]; then
+    set +e
+    "${UM_PROJECT_ROOT}/validate.sh" --config "${INSTALL_CONF_DIR}/mirror.conf" --mode install --quiet
+    local vrc=$?
+    set -e
+    if [[ "$vrc" -ge 2 ]]; then
+      um_error "Installation validation failed (critical)"
+      if [[ "$UM_VERBOSE" == "1" ]]; then
+        "${UM_PROJECT_ROOT}/validate.sh" --config "${INSTALL_CONF_DIR}/mirror.conf" --mode install || true
+      fi
+      return 1
+    fi
+    um_ok "Installation validation passed (sync pending is OK)"
+  fi
 }
 
-post_install_notes() {
+# ---------------------------------------------------------------------------
+# Phase 5: Start services (timer stays disabled)
+# ---------------------------------------------------------------------------
+phase5_services() {
+  phase "Phase 5: Start services"
+
+  if [[ "$UM_DRY_RUN" == "1" ]]; then
+    um_dry "Would reload systemd"
+    um_dry "Would enable and restart nginx"
+    um_dry "Would leave apt-mirror.timer disabled until initial sync completes"
+    return 0
+  fi
+
+  systemctl daemon-reload
+  systemctl enable nginx >/dev/null
+  systemctl restart nginx
+  if ! systemctl is-active --quiet nginx; then
+    um_die "nginx failed to start"
+  fi
+  um_ok "nginx running on port ${MIRROR_PORT}"
+
+  # Explicitly keep timer disabled until finalize
+  systemctl disable apt-mirror.timer >/dev/null 2>&1 || true
+  systemctl stop apt-mirror.timer >/dev/null 2>&1 || true
+  um_ok "apt-mirror.timer installed but disabled until initial sync completes"
+  um_mark_state "installed"
+}
+
+# ---------------------------------------------------------------------------
+# Phase 6: Start initial sync
+# ---------------------------------------------------------------------------
+phase6_sync() {
+  phase "Phase 6: Start initial synchronization"
+
+  if [[ "$UM_NO_SYNC" == "1" ]]; then
+    um_info "Skipping initial sync (--no-sync)"
+    return 0
+  fi
+
+  if um_initial_sync_complete || um_has_marker "ready"; then
+    um_ok "Initial sync already completed — not restarting"
+    return 0
+  fi
+
+  if um_is_sync_running; then
+    um_ok "Initial synchronization is already running"
+    return 0
+  fi
+
+  if [[ "$UM_DRY_RUN" == "1" ]]; then
+    um_dry "Would start initial synchronization"
+    return 0
+  fi
+
+  um_clear_marker "sync-failed"
+  systemctl start apt-mirror.service
+  # oneshot may still be activating briefly
+  sleep 1
+  if um_is_sync_running || systemctl is-active --quiet apt-mirror.service 2>/dev/null \
+    || systemctl show -p ActiveState --value apt-mirror.service 2>/dev/null | grep -qE 'active|activating'; then
+    um_mark_state "sync-started"
+    printf '%s\n' "Initial synchronization started successfully."
+    printf '%s\n' "The synchronization continues in the background."
+  else
+    # Service may have exited immediately on error
+    local st
+    st="$(systemctl show -p Result --value apt-mirror.service 2>/dev/null || true)"
+    if [[ "$st" == "success" ]]; then
+      um_ok "apt-mirror.service completed quickly (check logs)"
+    else
+      um_warn "Could not confirm sync process — check: journalctl -u apt-mirror.service"
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Phase 7: Summary / idempotent short path
+# ---------------------------------------------------------------------------
+phase7_summary() {
+  local state
+  state="$(um_detect_lifecycle_state 2>/dev/null || echo INSTALLED)"
+
+  if [[ "$UM_DRY_RUN" == "1" ]]; then
+    printf '\nDry-run completed successfully.\n'
+    return 0
+  fi
+
+  if [[ "$UM_CHANGES" -eq 0 ]] && um_is_installed; then
+    printf '\nUbuntu Mirror Server is already installed.\n'
+    printf 'Configuration is current.\n'
+    case "$state" in
+      SYNC_RUNNING) printf 'Initial synchronization is running.\n' ;;
+      READY) printf 'Mirror is ready.\n' ;;
+      SYNC_COMPLETE) printf 'Initial sync complete — run: sudo mirrorctl finalize\n' ;;
+      *) printf 'State: %s\n' "$state" ;;
+    esac
+    printf 'No changes required.\n'
+  fi
+
   cat <<EOF
 
-${UM_C_BOLD}Ubuntu Mirror Server install complete${UM_C_RESET}
+Ubuntu Mirror Server installation completed.
 
-  Config:     ${UM_CONFIG_PATH}
-  Base path:  ${BASE_PATH}
-  Mode:       ${MIRROR_MODE} (${MIRROR_COMPONENTS})
-  Versions:   ${UBUNTU_VERSIONS}
-  Mirror URL: ${MIRROR_URL}/ubuntu
-  Mirror IP:  ${MIRROR_IP}
+Mirror path:
+  ${BASE_PATH}
 
-Next steps (from Setup Guide):
-  1. Start sync:   sudo mirrorctl sync start
-     (or re-run:   sudo ./install.sh --start-sync)
-  2. Monitor:      sudo mirrorctl status
-  3. After sync:   sudo mirrorctl cleanup && sudo mirrorctl timer start
-  4. Validate:     sudo ./validate.sh
-  5. Clients:      sudo ./client/client-setup.sh --mirror-url ${MIRROR_URL}
+Mirror URL:
+  ${MIRROR_URL}/ubuntu
+
+Initial synchronization:
+  $( [[ "$UM_NO_SYNC" == "1" ]] && echo "Not started (--no-sync)" || echo "Running in background" )
+
+Check status:
+  sudo mirrorctl status
+
+Watch logs:
+  sudo mirrorctl logs
+
+Check disk:
+  df -h ${BASE_PATH}
+
+After the initial sync completes:
+  sudo mirrorctl finalize
+  (or wait for automatic finalization when sync finishes)
 
 EOF
+}
+
+cleanup_temps() {
+  rm -f "${UM_NGINX_TMP:-}" "${UM_SVC_TMP:-}" "${UM_TIMER_TMP:-}" 2>/dev/null || true
 }
 
 main() {
   parse_args "$@"
   um_setup_trap
-
-  if [[ "$UM_DRY_RUN" != "1" ]]; then
-    um_require_root
-  fi
+  um_register_cleanup cleanup_temps
 
   um_load_config "$UM_CONFIG_ARG"
+  if [[ "$UM_MINIMAL" == "1" ]]; then
+    MIRROR_MODE="minimal"
+    MIRROR_COMPONENTS="main restricted"
+  fi
+
   um_set_log_file "${LOG_DIR}/install.log"
   um_ensure_log_dir
-  um_info "=== Ubuntu Mirror Server install begin (dry_run=$UM_DRY_RUN) ==="
+  UM_BACKUP_SESSION=""
+  um_backup_session_dir >/dev/null
 
-  if [[ "$UM_FORMAT_DEVICE" == "1" ]] && [[ -z "$DATA_DEVICE" ]]; then
-    um_die "--format-device requires DATA_DEVICE in mirror.conf"
-  fi
-
-  maybe_format_and_mount
-  install_packages
-  ensure_directories
-  install_mirror_list
-  install_nginx_site
-  install_systemd_units
-  install_project_files
-
-  if [[ "$UM_START_SYNC" == "1" ]]; then
-    start_initial_sync
-  fi
-
-  if [[ "$UM_VALIDATE" == "1" ]]; then
-    um_info "Running post-install validation"
-    if [[ "$UM_DRY_RUN" == "1" ]]; then
-      um_info "DRY-RUN: validate.sh skipped"
-    else
-      "${UM_PROJECT_ROOT}/validate.sh" --config "${INSTALL_CONF_DIR}/mirror.conf" || true
+  # Idempotent fast path (real run only): already installed, config current, sync running
+  if [[ "$UM_DRY_RUN" != "1" ]] && [[ "$UM_FORCE" != "1" ]] && um_is_installed; then
+    local gen
+    gen="$(mktemp)"; um_generate_mirror_list >"$gen"
+    if cmp -s "$gen" /etc/apt/mirror.list 2>/dev/null; then
+      if um_is_sync_running || um_has_marker "ready" || um_initial_sync_complete; then
+        rm -f "$gen"
+        phase7_summary
+        exit 0
+      fi
     fi
+    rm -f "$gen"
   fi
 
-  post_install_notes
-  um_ok "=== Install finished ==="
+  phase1_preflight
+  maybe_mount_data_device
+  phase2_packages
+  phase3_config
+  if ! phase4_validate; then
+    um_die "Installation stopped due to critical validation failure" 2
+  fi
+  phase5_services
+  phase6_sync
+  phase7_summary
 }
 
 main "$@"

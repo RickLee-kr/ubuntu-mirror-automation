@@ -54,7 +54,7 @@ ngx="$(um_generate_nginx_conf)"
 assert_contains "$ngx" "location /ubuntu" "nginx /ubuntu location"
 assert_contains "$ngx" "alias ${UBUNTU_MIRROR_ROOT}" "nginx alias path"
 svc="$(um_generate_systemd_service)"
-assert_contains "$svc" "ExecStart=/usr/bin/apt-mirror" "service ExecStart"
+assert_contains "$svc" "run-apt-mirror.sh" "service ExecStart wrapper"
 tim="$(um_generate_systemd_timer)"
 assert_contains "$tim" "OnCalendar=" "timer OnCalendar"
 
@@ -62,8 +62,8 @@ echo "[test] install.sh --help / dry-run parse"
 bash -n "${ROOT}/install.sh"
 bash "${ROOT}/install.sh" --help >/dev/null
 # dry-run without root should work
-UM_OUT="$(bash "${ROOT}/install.sh" --dry-run --skip-packages --non-interactive 2>&1 || true)"
-assert_contains "$UM_OUT" "DRY-RUN" "dry-run emits DRY-RUN markers"
+OUT="$(bash "${ROOT}/install.sh" --dry-run 2>&1 || true)"
+assert_contains "$OUT" "[DRY-RUN]" "dry-run emits DRY-RUN markers"
 
 echo "[test] uninstall.sh --help"
 bash "${ROOT}/uninstall.sh" --help >/dev/null

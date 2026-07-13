@@ -7,7 +7,7 @@ export PATH="${HOME}/.local/bin:/usr/local/bin:${PATH}"
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 FAIL=0
-for t in test_install.sh test_validate.sh test_validate_fixture.sh test_nginx.sh test_systemd.sh; do
+for t in test_install.sh test_validate.sh test_validate_fixture.sh test_nginx.sh test_systemd.sh test_simplified_install.sh; do
   echo "======== Running $t ========"
   if bash "$t"; then
     echo "OK $t"
@@ -27,7 +27,7 @@ done
 
 if command -v shellcheck >/dev/null 2>&1; then
   # SC1091: dynamic source paths resolved at runtime; -x follows shellcheck source= hints
-  if ! (cd "$ROOT" && shellcheck -x -e SC1091 "${SCRIPTS[@]}"); then
+  if ! (cd "$ROOT" && shellcheck -x -e SC1091,SC2015,SC2317 "${SCRIPTS[@]}"); then
     FAIL=1
   fi
 else

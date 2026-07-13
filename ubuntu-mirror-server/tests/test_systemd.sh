@@ -16,13 +16,13 @@ TIMER="$(um_generate_systemd_timer)"
 
 echo "$SVC" | grep -q '^\[Unit\]' || FAIL=1
 echo "$SVC" | grep -q 'Type=oneshot' || FAIL=1
-echo "$SVC" | grep -q 'ExecStart=/usr/bin/apt-mirror' || FAIL=1
+echo "$SVC" | grep -q 'run-apt-mirror.sh' || FAIL=1
 echo "$TIMER" | grep -q '^\[Timer\]' || FAIL=1
 echo "$TIMER" | grep -q 'OnCalendar=' || FAIL=1
 echo "$TIMER" | grep -q 'Persistent=true' || FAIL=1
 
 # Template files
-grep -q 'ExecStart=/usr/bin/apt-mirror' "${ROOT}/templates/apt-mirror.service" || FAIL=1
+grep -q 'run-apt-mirror.sh' "${ROOT}/templates/apt-mirror.service" || FAIL=1
 grep -q 'OnCalendar=' "${ROOT}/templates/apt-mirror.timer" || FAIL=1
 
 TMPDIR_TEST="$(mktemp -d)"
@@ -34,7 +34,6 @@ if command -v systemd-analyze >/dev/null 2>&1; then
   if systemd-analyze verify "${TMPDIR_TEST}/apt-mirror.service" "${TMPDIR_TEST}/apt-mirror.timer" 2>/dev/null; then
     echo "  PASS: systemd-analyze verify"
   else
-    # verify may need full system context
     echo "  WARNING: systemd-analyze verify skipped/failed in test env"
   fi
 else

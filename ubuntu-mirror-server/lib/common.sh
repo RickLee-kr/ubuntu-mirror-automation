@@ -121,10 +121,14 @@ um_require_root() {
 um_run() {
   # Execute a command, or print it in dry-run mode.
   if [[ "${UM_DRY_RUN:-0}" == "1" ]]; then
-    um_info "DRY-RUN: $*"
+    printf '[DRY-RUN] Would run: %s\n' "$*"
     return 0
   fi
   "$@"
+}
+
+um_dry() {
+  printf '[DRY-RUN] %s\n' "$*"
 }
 
 um_run_shell() {
@@ -138,26 +142,39 @@ um_run_shell() {
 # ---------------------------------------------------------------------------
 # Backup
 # ---------------------------------------------------------------------------
+um_backup_session_dir() {
+  # Session backup root: /var/backups/ubuntu-mirror/<timestamp>/
+  if [[ -n "${UM_BACKUP_SESSION:-}" ]]; then
+    printf '%s\n' "$UM_BACKUP_SESSION"
+    return
+  fi
+  UM_BACKUP_SESSION="${BACKUP_DIR:-/var/backups/ubuntu-mirror}/$(um_datetime_tag)"
+  printf '%s\n' "$UM_BACKUP_SESSION"
+}
+
 um_backup_file() {
   # Usage: um_backup_file <path> [backup_dir]
+  # Only call when content will change. Stores under session timestamp dir.
   local path="$1"
-  local bdir="${2:-${BACKUP_DIR:-/var/backups/ubuntu-mirror}}"
+  local bdir="${2:-}"
   local base dest
 
   if [[ ! -e "$path" ]]; then
     return 0
   fi
+  if [[ -z "$bdir" ]]; then
+    bdir="$(um_backup_session_dir)"
+  fi
   if [[ "${UM_DRY_RUN:-0}" == "1" ]]; then
-    um_info "DRY-RUN: backup $path"
+    printf '[DRY-RUN] Would backup %s -> %s/\n' "$path" "$bdir"
     return 0
   fi
 
   mkdir -p "$bdir"
   base="$(basename "$path")"
-  dest="$bdir/${base}.$(um_date_tag).bak"
-  # Avoid clobbering same-day backups
+  dest="$bdir/${base}"
   if [[ -e "$dest" ]]; then
-    dest="$bdir/${base}.$(um_datetime_tag).bak"
+    dest="$bdir/${base}.$(um_datetime_tag)"
   fi
   cp -a "$path" "$dest"
   um_ok "Backup created: $dest"
@@ -188,7 +205,7 @@ um_install_file() {
   fi
 
   if [[ "${UM_DRY_RUN:-0}" == "1" ]]; then
-    um_info "DRY-RUN: install $src -> $dest (mode $mode)"
+    um_dry "Would install $src -> $dest (mode $mode)"
     return 0
   fi
 
