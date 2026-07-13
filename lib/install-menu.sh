@@ -147,7 +147,7 @@ um_whiptail_msg() {
     return 0
   fi
   um_menu_set_newt_colors
-  # msgbox keeps focus on <Ok>; Enter dismisses (unlike --textbox where
+  # msgbox keeps focus on <Ok>; Enter dismisses (unlike scrollable file viewers where
   # arrows scroll and Tab-to-Ok is unreliable over some SSH clients).
   whiptail --title "$title" --msgbox "$text" "$height" "$width"
 }
