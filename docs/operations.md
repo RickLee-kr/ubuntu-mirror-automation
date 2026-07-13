@@ -3,7 +3,7 @@
 ## Install (one command)
 
 ```bash
-cd ubuntu-mirror-server
+cd ubuntu-mirror-automation
 sudo ./install.sh
 sudo mirrorctl status
 sudo mirrorctl logs

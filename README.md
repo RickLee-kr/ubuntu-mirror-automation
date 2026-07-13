@@ -6,7 +6,7 @@ Production installer for an Ubuntu package mirror (16.04 → 24.04) using apt-mi
 
 ```bash
 git clone https://github.com/RickLee-kr/ubuntu-mirror-automation.git
-cd ubuntu-mirror-automation/ubuntu-mirror-server
+cd ubuntu-mirror-automation
 sudo ./install.sh
 ```
 

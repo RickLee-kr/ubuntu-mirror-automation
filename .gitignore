@@ -1,3 +1,6 @@
+# Local / generated
+guide-extracted.txt
+*.bak
 *.log
 *.tmp
 *.swp
@@ -5,6 +8,7 @@
 .env.*
 __pycache__/
 *.pyc
+.DS_Store
 
 mirror/
 var/
@@ -12,5 +16,3 @@ skel/
 
 .vscode/
 .idea/
-
-.DS_Store
