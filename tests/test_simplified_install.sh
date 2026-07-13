@@ -32,8 +32,9 @@ echo "$HELP" | grep -q -- '--minimal' || fail "missing --minimal"
 echo "$HELP" | grep -q -- '--menu' || fail "missing --menu"
 echo "$HELP" | grep -q -- '--verbose' || fail "missing --verbose"
 if echo "$HELP" | grep -q -- '--start-sync'; then fail "deprecated --start-sync still in help"; fi
-if echo "$HELP" | grep -q -- '--non-interactive'; then fail "deprecated --non-interactive still in help"; fi
 if echo "$HELP" | grep -Eq -- '--validate([[:space:]]|$)'; then fail "deprecated --validate still in help"; fi
+# --non-interactive is a supported automation alias (skips menu)
+echo "$HELP" | grep -q -- '--non-interactive' || fail "missing --non-interactive"
 pass "operator help surface"
 
 # ---------------------------------------------------------------------------
