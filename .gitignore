@@ -1,0 +1,16 @@
+*.log
+*.tmp
+*.swp
+.env
+.env.*
+__pycache__/
+*.pyc
+
+mirror/
+var/
+skel/
+
+.vscode/
+.idea/
+
+.DS_Store

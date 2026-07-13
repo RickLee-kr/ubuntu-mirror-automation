@@ -1,0 +1,37 @@
+############# config ##################
+set base_path    /var/spool/apt-mirror
+set mirror_path  $base_path/mirror
+set skel_path    $base_path/skel
+set var_path     $base_path/var
+set cleanscript  $var_path/clean.sh
+set defaultarch  amd64
+set nthreads     20
+set _tilde 0
+############# end config ##############
+
+# Ubuntu 16.04 LTS (Xenial)
+deb http://archive.ubuntu.com/ubuntu xenial main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu xenial-updates main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu xenial-security main restricted universe multiverse
+
+# Ubuntu 18.04 LTS (Bionic)
+deb http://archive.ubuntu.com/ubuntu bionic main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu bionic-updates main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu bionic-security main restricted universe multiverse
+
+# Ubuntu 20.04 LTS (Focal)
+deb http://archive.ubuntu.com/ubuntu focal main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu focal-updates main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu focal-security main restricted universe multiverse
+
+# Ubuntu 22.04 LTS (Jammy)
+deb http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu jammy-security main restricted universe multiverse
+
+# Ubuntu 24.04 LTS (Noble)
+deb http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu noble-security main restricted universe multiverse
+
+clean http://archive.ubuntu.com/ubuntu

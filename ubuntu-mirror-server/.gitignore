@@ -1,0 +1,6 @@
+# Local / generated
+guide-extracted.txt
+*.bak
+*.log
+.DS_Store
+/tmp/

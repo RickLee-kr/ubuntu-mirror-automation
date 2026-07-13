@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily APT Mirror Sync
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+Unit=apt-mirror.service
+
+[Install]
+WantedBy=timers.target
