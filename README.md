@@ -2,6 +2,80 @@
 
 Production installer for an Ubuntu package mirror (16.04 → 24.04) using apt-mirror + nginx + systemd.
 
+## Usage (summary)
+
+| What you want | Command / action |
+|---------------|------------------|
+| Install & start sync | `sudo ./install.sh` → menu **1** (Minimal) or **2** (Full) |
+| Watch live progress | Menu **3**, or `sudo mirrorctl watch` |
+| Check if sync finished | `sudo mirrorctl status` → look for `State: READY` |
+| Follow raw logs | Menu **5**, or `sudo mirrorctl logs` |
+| Stop sync | Menu **6**, or `sudo mirrorctl sync stop` |
+| Delete existing mirror data | Menu **7** (type `DELETE` to confirm) |
+| Quit menu | Menu **8**, or Esc |
+
+### How to run
+
+```bash
+git clone https://github.com/RickLee-kr/ubuntu-mirror-automation.git
+cd ubuntu-mirror-automation
+sudo ./install.sh
+```
+
+1. Choose **1** (Minimal, recommended) or **2** (Full).
+2. A live dashboard opens. Detach with **B**, **Q**, or **Ctrl+C** — sync keeps running.
+3. Re-open the menu anytime with `sudo ./install.sh`, or attach the dashboard with `sudo mirrorctl watch`.
+
+### How to confirm sync is complete
+
+```bash
+sudo mirrorctl status
+```
+
+| `State` | Meaning |
+|---------|---------|
+| `SYNC_RUNNING` / `SYNC_WAITING` | Still downloading |
+| `SYNC_STALLED` | Process alive but no progress (investigate) |
+| `SYNC_FAILED` | Failed — check logs / disk |
+| `SYNC_COMPLETE` | apt-mirror finished; finalize may still be pending |
+| `READY` | **Done** — cleanup done, daily timer enabled, mirror usable |
+
+Also useful:
+
+```bash
+# Finalize log (auto-finalize steps)
+grep -E 'READY|completed' /var/log/ubuntu-mirror/finalize.log
+
+# HTTP check (replace with your mirror IP)
+curl -I http://YOUR_MIRROR_IP/ubuntu/dists/noble/Release
+```
+
+If status is `SYNC_COMPLETE` but not `READY`:
+
+```bash
+sudo mirrorctl finalize
+```
+
+### How to delete existing mirror data
+
+**From the menu (recommended):**
+
+1. `sudo ./install.sh`
+2. If sync is running → **6** Stop sync
+3. **7** Delete existing mirror data → type `DELETE` → confirm
+4. Then **1** or **2** to install/sync again
+
+**From the shell:**
+
+```bash
+sudo mirrorctl sync stop
+sudo ./uninstall.sh --purge-data --force
+```
+
+`--purge-data --force` removes package data under `BASE_PATH` (`mirror/`, `skel/`, `var/`). It does not run unless both flags are given.
+
+---
+
 ## Quick Start
 
 ```bash
@@ -24,13 +98,12 @@ On an interactive terminal this opens a **dialog-style menu** (whiptail):
 │ 6 Stop running synchronization             │
 │ 7 Delete existing mirror data (DANGEROUS)  │
 │ 8 Exit                                     │
-│                                            │
-│           <Ok>            <Cancel>         │
+│                   <OK>                     │
 └────────────────────────────────────────────┘
 ```
 
 Use **↑ / ↓** to move, **Enter** to select. Tab is not required.
-Esc goes back / quits. Cancel buttons are omitted for SSH reliability.
+Esc goes back / quits.
 Choose **1** for the recommended default (main + restricted).  
 Choose **7** to wipe previous mirror data before re-installing.  
 Choose **3** anytime to re-attach the live sync dashboard.
@@ -61,6 +134,7 @@ sudo ./install.sh --foreground    # skip menu; keep dashboard attached
 ```
 
 Default mode is **minimal** (~320 GiB projected). Full mode (~700 GiB) is never started automatically — including on a 1TB disk — and requires menu option **2** or `--full`. Before sync starts, the installer compares the projected download size against free disk minus a **20% safety reserve** and blocks sync if it would not fit.
+
 `--background` example:
 
 ```text
@@ -81,7 +155,7 @@ Without an interactive terminal (CI / redirected output), the installer automati
 ### Day-to-day monitoring
 
 ```bash
-sudo mirrorctl watch      # live TUI dashboard
+sudo mirrorctl watch      # live TUI dashboard (refresh every 10s)
 sudo mirrorctl status     # one-shot status snapshot
 sudo mirrorctl logs       # follow /var/log/apt-mirror.log
 ```

@@ -211,10 +211,12 @@ if grep -q 'sudo ./install.sh' "${ROOT}/README.md"; then
 else
   fail "README"
 fi
-if grep -q 'Interactive setup menu\|Delete existing mirror data' "${ROOT}/README.md"; then
-  pass "README documents interactive menu"
+if grep -q 'How to confirm sync is complete' "${ROOT}/README.md" \
+  && grep -q 'How to delete existing mirror data' "${ROOT}/README.md" \
+  && grep -q 'State: READY' "${ROOT}/README.md"; then
+  pass "README documents run / complete / delete usage"
 else
-  fail "README menu docs missing"
+  fail "README usage section incomplete"
 fi
 if grep -q 'Development and Troubleshooting' "${ROOT}/README.md"; then
   pass "README has advanced section"
