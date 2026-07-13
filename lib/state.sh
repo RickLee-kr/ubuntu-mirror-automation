@@ -8,7 +8,8 @@ if [[ -n "${UM_STATE_LOADED:-}" ]]; then
 fi
 UM_STATE_LOADED=1
 
-# States: NOT_INSTALLED | INSTALLED | SYNC_RUNNING | SYNC_FAILED | SYNC_COMPLETE | READY
+# States: NOT_INSTALLED | INSTALLED | STARTING | SYNC_RUNNING | SYNC_WAITING |
+#         SYNC_STALLED | SYNC_FAILED | SYNC_COMPLETE | FINALIZING | READY | PAUSED
 
 um_state_root() {
   if [[ -n "${UM_STATE_DIR:-}" ]]; then
@@ -75,6 +76,13 @@ um_initial_sync_complete() {
 }
 
 um_detect_lifecycle_state() {
+  # Prefer detailed health detection when progress helpers are loaded.
+  if declare -F um_detect_sync_health >/dev/null 2>&1; then
+    um_detect_sync_health
+    printf '%s\n' "${UM_LIFECYCLE_STATE:-INSTALLED}"
+    return
+  fi
+
   if ! um_is_installed; then
     printf 'NOT_INSTALLED\n'
     return
@@ -83,11 +91,16 @@ um_detect_lifecycle_state() {
     printf 'READY\n'
     return
   fi
+  if um_has_marker "finalizing"; then
+    printf 'FINALIZING\n'
+    return
+  fi
   if um_initial_sync_complete && systemctl is-enabled --quiet apt-mirror.timer 2>/dev/null; then
     printf 'READY\n'
     return
   fi
   if um_is_sync_running; then
+    # Coarse fallback without progress.sh: treat active sync as RUNNING
     printf 'SYNC_RUNNING\n'
     return
   fi
@@ -98,6 +111,14 @@ um_detect_lifecycle_state() {
   if um_initial_sync_complete; then
     printf 'SYNC_COMPLETE\n'
     return
+  fi
+  if um_has_marker "sync-started"; then
+    local st
+    st="$(systemctl show -p ActiveState --value apt-mirror.service 2>/dev/null || true)"
+    if [[ "$st" == "activating" ]]; then
+      printf 'STARTING\n'
+      return
+    fi
   fi
   printf 'INSTALLED\n'
 }

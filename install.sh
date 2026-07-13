@@ -19,6 +19,9 @@ UM_VERBOSE=0
 UM_FORMAT_DEVICE=0
 UM_CONFIG_ARG=""
 UM_CHANGES=0
+# Sync attach mode: auto | foreground | background
+# auto = attach dashboard when TTY, else background
+UM_SYNC_MODE="auto"
 
 usage() {
   cat <<'EOF'
@@ -31,12 +34,16 @@ Options:
   --config PATH       Use a custom mirror.conf
   --dry-run           Show planned actions without changing the system
   --no-sync           Install and validate but do not start initial sync
+  --foreground        Start sync and keep the live dashboard attached
+  --background        Start sync and return to the shell immediately
   --minimal           Use minimal mirror components (main restricted)
   --verbose           Show detailed validation and command output
   --force             Replace changed managed configuration after backup
 
 Examples:
   sudo ./install.sh
+  sudo ./install.sh --background
+  sudo ./install.sh --foreground
   sudo ./install.sh --dry-run
   sudo ./install.sh --no-sync
   sudo ./install.sh --minimal
@@ -53,6 +60,8 @@ parse_args() {
         ;;
       --dry-run) UM_DRY_RUN=1; shift ;;
       --no-sync) UM_NO_SYNC=1; shift ;;
+      --foreground) UM_SYNC_MODE="foreground"; shift ;;
+      --background) UM_SYNC_MODE="background"; shift ;;
       --minimal) UM_MINIMAL=1; shift ;;
       --verbose) UM_VERBOSE=1; shift ;;
       --force) UM_FORCE=1; shift ;;
@@ -60,7 +69,7 @@ parse_args() {
       --format-device) UM_FORMAT_DEVICE=1; shift ;;
       -h|--help) usage; exit 0 ;;
       # Compatibility aliases (deprecated, still accepted quietly)
-      --non-interactive) shift ;;
+      --non-interactive) UM_SYNC_MODE="background"; shift ;;
       --start-sync) UM_NO_SYNC=0; shift ;;
       --validate) UM_VERBOSE=1; shift ;;
       --skip-packages) shift ;; # ignored; dry-run handles missing packages
@@ -345,15 +354,17 @@ phase3_config() {
 
 install_mgmt_tools() {
   if [[ "$UM_DRY_RUN" == "1" ]]; then
-    um_dry "Would install mirrorctl, mirror-status, mirror-recovery"
+    um_dry "Would install mirrorctl, mirror-dashboard, mirror-status, mirror-recovery"
     return 0
   fi
 
   um_install_file "${UM_PROJECT_ROOT}/scripts/mirrorctl" "${INSTALL_BIN_DIR}/mirrorctl" 0755
+  um_install_file "${UM_PROJECT_ROOT}/scripts/mirror-dashboard.sh" "${INSTALL_BIN_DIR}/mirror-dashboard" 0755
   um_install_file "${UM_PROJECT_ROOT}/scripts/mirror-status.sh" "${INSTALL_BIN_DIR}/mirror-status" 0755
   um_install_file "${UM_PROJECT_ROOT}/scripts/mirror-recovery.sh" "${INSTALL_BIN_DIR}/mirror-recovery" 0755
   ln -sfn "${INSTALL_BIN_DIR}/mirror-status" "${INSTALL_BIN_DIR}/mirror-status.sh"
   ln -sfn "${INSTALL_BIN_DIR}/mirror-recovery" "${INSTALL_BIN_DIR}/mirror-recovery.sh"
+  ln -sfn "${INSTALL_BIN_DIR}/mirror-dashboard" "${INSTALL_BIN_DIR}/mirror-dashboard.sh"
 
   um_install_file "${UM_PROJECT_ROOT}/scripts/run-apt-mirror.sh" "${INSTALL_LIB_DIR}/run-apt-mirror.sh" 0755
   um_install_file "${UM_PROJECT_ROOT}/validate.sh" "${INSTALL_BIN_DIR}/validate.sh" 0755
@@ -362,6 +373,7 @@ install_mgmt_tools() {
   um_install_file "${UM_PROJECT_ROOT}/lib/common.sh" "${INSTALL_LIB_DIR}/common.sh" 0644
   um_install_file "${UM_PROJECT_ROOT}/lib/config.sh" "${INSTALL_LIB_DIR}/config.sh" 0644
   um_install_file "${UM_PROJECT_ROOT}/lib/state.sh" "${INSTALL_LIB_DIR}/state.sh" 0644
+  um_install_file "${UM_PROJECT_ROOT}/lib/progress.sh" "${INSTALL_LIB_DIR}/progress.sh" 0644
 
   if [[ -f "${INSTALL_CONF_DIR}/mirror.conf" ]] && [[ "$UM_FORCE" != "1" ]]; then
     vlog "Keeping existing ${INSTALL_CONF_DIR}/mirror.conf"
@@ -381,6 +393,7 @@ phase4_validate() {
   local s
   for s in "${UM_PROJECT_ROOT}/install.sh" \
            "${UM_PROJECT_ROOT}/scripts/mirrorctl" \
+           "${UM_PROJECT_ROOT}/scripts/mirror-dashboard.sh" \
            "${UM_PROJECT_ROOT}/scripts/run-apt-mirror.sh"; do
     bash -n "$s"
   done
@@ -490,10 +503,57 @@ phase5_services() {
 }
 
 # ---------------------------------------------------------------------------
-# Phase 6: Start initial sync
+# Phase 6: Start initial sync (non-blocking) + optional live dashboard
 # ---------------------------------------------------------------------------
+um_resolve_sync_attach_mode() {
+  # Prints: foreground | background
+  case "$UM_SYNC_MODE" in
+    foreground) printf 'foreground\n' ;;
+    background) printf 'background\n' ;;
+    *)
+      if [[ -t 1 ]]; then
+        printf 'foreground\n'
+      else
+        printf 'background\n'
+      fi
+      ;;
+  esac
+}
+
+um_print_background_sync_hints() {
+  cat <<EOF
+
+Initial synchronization started in background.
+
+Attach dashboard:
+  sudo mirrorctl watch
+
+Check status:
+  sudo mirrorctl status
+
+Follow raw logs:
+  sudo mirrorctl logs
+EOF
+}
+
+um_attach_dashboard() {
+  local dash
+  dash="${INSTALL_BIN_DIR}/mirror-dashboard"
+  [[ -x "$dash" ]] || dash="${UM_PROJECT_ROOT}/scripts/mirror-dashboard.sh"
+  if [[ ! -x "$dash" ]]; then
+    um_warn "mirror-dashboard not found — use: sudo mirrorctl status"
+    return 0
+  fi
+  printf '\nAttaching live dashboard...\n'
+  printf 'Press B or Ctrl+C to detach. Sync will continue.\n\n'
+  # Dashboard owns Ctrl+C (detach only); do not stop apt-mirror.service
+  set +e
+  "$dash" --config "${INSTALL_CONF_DIR}/mirror.conf"
+  set -e
+}
+
 phase6_sync() {
-  phase "Phase 6: Start initial synchronization"
+  phase "Phase 6: Initial synchronization"
 
   if [[ "$UM_NO_SYNC" == "1" ]]; then
     um_info "Skipping initial sync (--no-sync)"
@@ -505,35 +565,68 @@ phase6_sync() {
     return 0
   fi
 
+  local attach_mode already_running=0
+  attach_mode="$(um_resolve_sync_attach_mode)"
+
   if um_is_sync_running; then
     um_ok "Initial synchronization is already running"
-    return 0
+    already_running=1
   fi
 
   if [[ "$UM_DRY_RUN" == "1" ]]; then
-    um_dry "Would start initial synchronization"
+    um_dry "Would start initial synchronization (systemctl start --no-block)"
+    um_dry "Would attach mode: ${attach_mode}"
     return 0
   fi
 
-  um_clear_marker "sync-failed"
-  systemctl start apt-mirror.service
-  # oneshot may still be activating briefly
-  sleep 1
-  if um_is_sync_running || systemctl is-active --quiet apt-mirror.service 2>/dev/null \
-    || systemctl show -p ActiveState --value apt-mirror.service 2>/dev/null | grep -qE 'active|activating'; then
-    um_mark_state "sync-started"
-    printf '%s\n' "Initial synchronization started successfully."
-    printf '%s\n' "The synchronization continues in the background."
-  else
-    # Service may have exited immediately on error
-    local st
-    st="$(systemctl show -p Result --value apt-mirror.service 2>/dev/null || true)"
-    if [[ "$st" == "success" ]]; then
-      um_ok "apt-mirror.service completed quickly (check logs)"
+  if [[ "$already_running" -eq 0 ]]; then
+    um_clear_marker "sync-failed"
+    # Non-blocking: never freeze the installer on a multi-hour sync
+    systemctl start --no-block apt-mirror.service
+
+    local _i ok=0
+    for _i in 1 2 3 4 5; do
+      sleep 1
+      if um_is_sync_running \
+        || systemctl is-active --quiet apt-mirror.service 2>/dev/null \
+        || systemctl show -p ActiveState --value apt-mirror.service 2>/dev/null | grep -qE 'active|activating' \
+        || [[ -f "$APT_MIRROR_LOG" ]]; then
+        ok=1
+        break
+      fi
+    done
+
+    if [[ "$ok" -eq 1 ]]; then
+      um_mark_state "sync-started"
+      um_ok "apt-mirror.service starting"
+      um_ok "Raw log: ${APT_MIRROR_LOG}"
+      um_ok "Dashboard: sudo mirrorctl watch"
     else
-      um_warn "Could not confirm sync process — check: journalctl -u apt-mirror.service"
+      local st
+      st="$(systemctl show -p Result --value apt-mirror.service 2>/dev/null || true)"
+      if [[ "$st" == "success" ]]; then
+        um_ok "apt-mirror.service completed quickly (check logs)"
+      else
+        um_warn "Could not confirm sync process — check: journalctl -u apt-mirror.service"
+        um_warn "Then: sudo mirrorctl status"
+        return 0
+      fi
     fi
   fi
+
+  # Non-interactive / CI: never emit TUI controls into redirected logs
+  if [[ "$attach_mode" == "background" ]] || [[ ! -t 1 ]]; then
+    if [[ ! -t 1 ]] && [[ "$UM_SYNC_MODE" == "auto" ]]; then
+      printf '\nNo interactive terminal detected.\n'
+      printf 'Initial synchronization started in background.\n'
+      printf 'Use: sudo mirrorctl watch\n'
+    else
+      um_print_background_sync_hints
+    fi
+    return 0
+  fi
+
+  um_attach_dashboard
 }
 
 # ---------------------------------------------------------------------------
@@ -571,20 +664,22 @@ Mirror URL:
   ${MIRROR_URL}/ubuntu
 
 Initial synchronization:
-  $( [[ "$UM_NO_SYNC" == "1" ]] && echo "Not started (--no-sync)" || echo "Running in background" )
+  $( [[ "$UM_NO_SYNC" == "1" ]] && echo "Not started (--no-sync)" || echo "Started via systemd (continues if dashboard detached)" )
+
+Live dashboard:
+  sudo mirrorctl watch
 
 Check status:
   sudo mirrorctl status
 
-Watch logs:
+Follow raw logs:
   sudo mirrorctl logs
 
 Check disk:
   df -h ${BASE_PATH}
 
-After the initial sync completes:
-  sudo mirrorctl finalize
-  (or wait for automatic finalization when sync finishes)
+Finalization runs automatically when the first sync finishes.
+Manual fallback: sudo mirrorctl finalize
 
 EOF
 }

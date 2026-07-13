@@ -47,6 +47,8 @@ BACKUP_DIR="/var/backups/ubuntu-mirror"
 HTTP_TIMEOUT_SEC="10"
 HEALTH_HTTP_LATENCY_WARN_MS="500"
 HEALTH_LOG_ERROR_WARN="20"
+STALL_THRESHOLD_SEC="600"
+WAITING_THRESHOLD_SEC="30"
 ALLOW_FORMAT="false"
 ALLOW_DELETE_MIRROR_DATA="false"
 }
@@ -112,7 +114,12 @@ um_load_config() {
   fi
 
   mkdir -p "${LOG_DIR}" 2>/dev/null || true
-  um_info "Loaded config: $UM_CONFIG_PATH"
+  # Stall detection defaults (seconds)
+  STALL_THRESHOLD_SEC="${STALL_THRESHOLD_SEC:-600}"
+  WAITING_THRESHOLD_SEC="${WAITING_THRESHOLD_SEC:-30}"
+  if [[ "${UM_QUIET_LOAD:-0}" != "1" ]]; then
+    um_info "Loaded config: $UM_CONFIG_PATH"
+  fi
 }
 
 um_upstream_host_path() {
@@ -225,13 +232,16 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=${INSTALL_LIB_DIR}/run-apt-mirror.sh
-StandardOutput=append:${APT_MIRROR_LOG}
-StandardError=append:${APT_MIRROR_LOG}
+# Timestamped operational log is written by run-apt-mirror.sh; keep journal for systemd.
+StandardOutput=journal
+StandardError=journal
 User=root
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 TimeoutStartSec=infinity
+KillMode=control-group
+SendSIGKILL=no
 
 [Install]
 WantedBy=multi-user.target

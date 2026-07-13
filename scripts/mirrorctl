@@ -10,6 +10,8 @@ resolve_libs() {
     source /usr/local/lib/ubuntu-mirror/config.sh
     # shellcheck source=/dev/null
     source /usr/local/lib/ubuntu-mirror/state.sh
+    # shellcheck source=/dev/null
+    source /usr/local/lib/ubuntu-mirror/progress.sh
     UM_SRC_ROOT="/usr/local/lib/ubuntu-mirror"
   else
     UM_SRC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,6 +21,8 @@ resolve_libs() {
     source "${UM_SRC_ROOT}/lib/config.sh"
     # shellcheck source=lib/state.sh
     source "${UM_SRC_ROOT}/lib/state.sh"
+    # shellcheck source=lib/progress.sh
+    source "${UM_SRC_ROOT}/lib/progress.sh"
   fi
 }
 
@@ -31,11 +35,12 @@ usage() {
 Usage: mirrorctl [--config PATH] <command> [args]
 
 Commands:
-  status              Concise operational status
+  status              Concise operational status snapshot
+  watch               Live terminal sync dashboard
   validate            Operational readiness checks
   finalize            After initial sync: cleanup, enable timer, mark ready
-  sync [start|stop|status]
-  logs [sync|nginx|follow|install]
+  sync [start|stop|status|pause|resume]
+  logs [--lines N|--no-follow|--progress|--raw]
   cleanup             Run apt-mirror clean.sh
   nginx [status|test|reload|restart|recover]
   timer [status|start|stop|enable|disable]
@@ -44,14 +49,45 @@ Commands:
   recover             Auto-recover common failures
   info                Show configuration paths
   help
+
+Sync examples:
+  sudo mirrorctl sync start
+  sudo mirrorctl sync start --background
+  sudo mirrorctl sync start --foreground
+  sudo mirrorctl sync stop
+  sudo mirrorctl sync pause
+  sudo mirrorctl sync resume
+
+Watch examples:
+  sudo mirrorctl watch
+  sudo mirrorctl watch --foreground
+  sudo mirrorctl watch --interval 1
+  sudo mirrorctl watch --once
+  sudo mirrorctl watch --raw
 EOF
 }
 
 need_root() { um_require_root; }
 
+dashboard_bin() {
+  local dash
+  dash="${INSTALL_BIN_DIR}/mirror-dashboard"
+  [[ -x "$dash" ]] || dash="${UM_SRC_ROOT}/scripts/mirror-dashboard.sh"
+  [[ -x "$dash" ]] || dash="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mirror-dashboard.sh"
+  printf '%s\n' "$dash"
+}
+
 cmd_status() {
+  local full=0
+  local a
+  for a in "$@"; do
+    [[ "$a" == "--full" ]] && full=1
+  done
+
+  UM_QUIET_LOAD=1
+  um_detect_sync_health
   local state nginx_state disk_line timer_line sync_line
-  state="$(um_detect_lifecycle_state)"
+  state="${UM_LIFECYCLE_STATE}"
 
   if systemctl is-active --quiet nginx 2>/dev/null; then
     nginx_state="Running"
@@ -70,10 +106,15 @@ cmd_status() {
   fi
 
   case "$state" in
-    SYNC_RUNNING) sync_line="Running" ;;
+    SYNC_RUNNING) sync_line="Running — ${UM_HEALTH_REASON}" ;;
+    SYNC_WAITING) sync_line="Waiting — ${UM_HEALTH_REASON}" ;;
+    SYNC_STALLED) sync_line="Stalled — ${UM_HEALTH_REASON}" ;;
     SYNC_COMPLETE) sync_line="Complete (finalize pending)" ;;
-    SYNC_FAILED) sync_line="Failed" ;;
+    SYNC_FAILED) sync_line="Failed — ${UM_HEALTH_REASON}" ;;
+    FINALIZING) sync_line="Finalizing" ;;
+    PAUSED) sync_line="Paused" ;;
     READY) sync_line="Complete" ;;
+    STARTING) sync_line="Starting" ;;
     INSTALLED) sync_line="Not started / pending" ;;
     *) sync_line="$state" ;;
   esac
@@ -87,17 +128,28 @@ cmd_status() {
   local install_line="OK"
   um_is_installed || install_line="Incomplete"
 
+  local log_age mirror_bytes pkgs
+  log_age="$(um_seconds_since_log_activity)"
+  mirror_bytes="$(um_mirror_size_bytes_cached)"
+  pkgs="$(um_package_count_cached)"
+
   cat <<EOF
 Installation: ${install_line}
 State: ${state}
+Health: ${UM_HEALTH_STATE}
+Reason: ${UM_HEALTH_REASON}
 Nginx: ${nginx_state}
 Mirror disk: ${disk_line}
+Mirror size: $(um_format_bytes "${mirror_bytes:-0}")
+Packages: ${pkgs} .deb files
 Initial sync: ${sync_line}
+Last log activity: ${log_age}s ago
 Timer: ${timer_line}
 Mirror URL: ${MIRROR_URL}/ubuntu
+Dashboard: sudo mirrorctl watch
 EOF
 
-  if [[ "$1" == "--full" ]]; then
+  if [[ "$full" -eq 1 ]]; then
     local bin="${INSTALL_BIN_DIR}/mirror-status"
     [[ -x "$bin" ]] || bin="${INSTALL_BIN_DIR}/mirror-status.sh"
     [[ -x "$bin" ]] || bin="${UM_SRC_ROOT}/scripts/mirror-status.sh"
@@ -105,6 +157,29 @@ EOF
       "$bin" --config "${UM_CONFIG_PATH}" || true
     fi
   fi
+}
+
+cmd_watch() {
+  local dash args=()
+  dash="$(dashboard_bin)"
+  [[ -x "$dash" ]] || um_die "mirror-dashboard not found at $dash"
+
+  # Default attach is foreground TUI; --background just prints hints
+  local mode="foreground"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --foreground) mode="foreground"; shift ;;
+      --background)
+        printf 'Sync dashboard not attached (--background).\n'
+        printf 'Use: sudo mirrorctl watch\n'
+        return 0
+        ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  : "$mode"
+  UM_QUIET_LOAD=1
+  exec "$dash" --config "${UM_CONFIG_PATH}" "${args[@]+"${args[@]}"}"
 }
 
 cmd_validate() {
@@ -124,86 +199,221 @@ cmd_finalize() {
     um_die "Initial sync does not appear complete (no noble/Release)"
   fi
 
-  um_info "Running cleanup"
+  mkdir -p "$LOG_DIR"
+  local flog
+  flog="$(um_finalize_log_path)"
+  log_step() {
+    printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$flog"
+  }
+
+  um_mark_state "finalizing"
+  log_step "[OK] Initial synchronization completed"
+  log_step "[RUNNING] Removing superseded packages"
   if [[ -x "$CLEAN_SCRIPT" ]]; then
-    bash "$CLEAN_SCRIPT" || um_warn "cleanup returned non-zero"
+    bash "$CLEAN_SCRIPT" >>"${LOG_DIR}/cleanup.log" 2>&1 || um_warn "cleanup returned non-zero"
+    log_step "[OK] Cleanup complete"
   else
-    um_warn "clean.sh not found yet — skipping"
+    log_step "[WARN] clean.sh not found yet — skipping"
   fi
 
+  log_step "[RUNNING] Enabling daily timer"
   systemctl daemon-reload
   systemctl enable apt-mirror.timer
   systemctl start apt-mirror.timer
+  log_step "[OK] Daily timer enabled"
+
   um_mark_state "initial-sync-complete"
   um_mark_state "ready"
   um_clear_marker "sync-failed"
+  um_clear_marker "finalizing"
 
   local code
   code="$(curl -sS -o /dev/null --max-time "${HTTP_TIMEOUT_SEC}" -w '%{http_code}' \
     "${MIRROR_URL}/ubuntu/dists/noble/Release" 2>/dev/null || true)"
   if [[ "$code" == "200" ]]; then
-    um_ok "HTTP noble/Release = 200"
+    log_step "[OK] noble Release endpoint HTTP 200"
   else
-    um_warn "HTTP noble/Release = ${code:-000}"
+    log_step "[WARN] noble Release endpoint HTTP ${code:-000}"
   fi
+  log_step "[OK] Mirror state READY"
 
   printf '\nMirror is READY.\n'
   cmd_status
 }
 
 cmd_sync() {
-  local action="${1:-status}"
+  local action="status"
+  local mode="background"
+  local args=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      start|stop|status|pause|resume)
+        action="$1"
+        shift
+        ;;
+      --foreground) mode="foreground"; shift ;;
+      --background) mode="background"; shift ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+
   case "$action" in
     start)
       need_root
       if um_is_sync_running; then
         um_ok "Sync already running"
-        return 0
+      else
+        systemctl start --no-block apt-mirror.service
+        um_mark_state "sync-started"
+        um_ok "Started apt-mirror.service"
       fi
-      systemctl start apt-mirror.service
-      um_ok "Started apt-mirror.service"
+      if [[ "$mode" == "foreground" ]]; then
+        cmd_watch --foreground
+      else
+        cat <<EOF
+Initial synchronization started in background.
+
+Attach dashboard:
+  sudo mirrorctl watch
+
+Check status:
+  sudo mirrorctl status
+
+Follow raw logs:
+  sudo mirrorctl logs
+EOF
+      fi
       ;;
     stop)
       need_root
       systemctl stop apt-mirror.service 2>/dev/null || true
+      # Resume if paused so stop can complete
+      systemctl kill -s SIGCONT apt-mirror.service 2>/dev/null || true
       pkill -f '/usr/bin/apt-mirror' 2>/dev/null || true
-      um_ok "Stop requested"
+      um_ok "Stop requested (explicit). Dashboard detach does not stop sync."
+      ;;
+    pause)
+      need_root
+      if ! um_is_sync_running && ! pgrep -f 'run-apt-mirror\.sh' >/dev/null 2>&1; then
+        um_die "No running sync to pause"
+      fi
+      # KillMode=control-group: SIGSTOP reaches apt-mirror children
+      systemctl kill -s SIGSTOP apt-mirror.service 2>/dev/null || true
+      local pid
+      for pid in $(um_apt_mirror_pids); do
+        kill -STOP "$pid" 2>/dev/null || true
+      done
+      if um_is_sync_paused; then
+        um_progress_event pause "reason=mirrorctl"
+        um_ok "Sync paused (SIGSTOP). Resume with: sudo mirrorctl sync resume"
+      else
+        um_warn "Pause: not supported safely by this apt-mirror runtime"
+        um_warn "Processes may not have entered the stopped state"
+      fi
+      ;;
+    resume)
+      need_root
+      systemctl kill -s SIGCONT apt-mirror.service 2>/dev/null || true
+      local pid
+      for pid in $(um_apt_mirror_pids); do
+        kill -CONT "$pid" 2>/dev/null || true
+      done
+      um_progress_event resume "reason=mirrorctl"
+      um_ok "Sync resumed (SIGCONT)"
       ;;
     status)
-      if um_is_sync_running; then
+      if um_is_sync_paused; then
+        echo "Sync: paused"
+      elif um_is_sync_running; then
         echo "Sync: running"
-        systemctl status apt-mirror.service --no-pager -l 2>/dev/null | head -20 || true
       else
         echo "Sync: not running (state=$(um_detect_lifecycle_state))"
       fi
+      systemctl status apt-mirror.service --no-pager -l 2>/dev/null | head -20 || true
       ;;
-    *) um_die "sync args: start|stop|status" ;;
+    *) um_die "sync args: start|stop|status|pause|resume [--foreground|--background]" ;;
   esac
 }
 
 cmd_logs() {
-  local which="${1:-sync}"
+  local lines=100
+  local follow=1
+  local progress=0
+  local raw=0
+  local which="sync"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --lines)
+        lines="${2:-100}"
+        shift 2
+        ;;
+      --no-follow) follow=0; shift ;;
+      --progress) progress=1; shift ;;
+      --raw) raw=1; shift ;;
+      sync|nginx|install|follow|progress)
+        which="$1"
+        shift
+        ;;
+      *)
+        # Compatibility: bare number or subcommand
+        if [[ "$1" =~ ^[0-9]+$ ]]; then
+          lines="$1"
+          shift
+        else
+          which="$1"
+          shift
+        fi
+        ;;
+    esac
+  done
+
+  if [[ "$which" == "follow" ]]; then
+    follow=1
+    which="sync"
+  fi
+  if [[ "$which" == "progress" ]] || [[ "$progress" -eq 1 ]]; then
+    local pj
+    pj="$(um_progress_jsonl_path)"
+    if [[ ! -f "$pj" ]]; then
+      um_warn "No progress log yet: $pj"
+      return 0
+    fi
+    if [[ "$follow" -eq 1 ]]; then
+      tail -n "$lines" -f "$pj"
+    else
+      tail -n "$lines" "$pj"
+    fi
+    return 0
+  fi
+
   case "$which" in
     sync|"")
-      if [[ -f "$APT_MIRROR_LOG" ]]; then
-        tail -n 80 "$APT_MIRROR_LOG"
+      if [[ "$raw" -eq 1 ]] || [[ -f "$APT_MIRROR_LOG" ]]; then
+        if [[ ! -f "$APT_MIRROR_LOG" ]]; then
+          um_warn "No sync log yet: $APT_MIRROR_LOG"
+          return 0
+        fi
+        if [[ "$follow" -eq 1 ]]; then
+          tail -n "$lines" -f "$APT_MIRROR_LOG"
+        else
+          tail -n "$lines" "$APT_MIRROR_LOG"
+        fi
       else
-        journalctl -u apt-mirror.service -n 80 --no-pager 2>/dev/null || um_warn "No sync log yet"
-      fi
-      ;;
-    follow)
-      if [[ -f "$APT_MIRROR_LOG" ]]; then
-        tail -f "$APT_MIRROR_LOG"
-      else
-        journalctl -u apt-mirror.service -f
+        if [[ "$follow" -eq 1 ]]; then
+          journalctl -u apt-mirror.service -n "$lines" -f
+        else
+          journalctl -u apt-mirror.service -n "$lines" --no-pager
+        fi
       fi
       ;;
     nginx)
       [[ -f "$NGINX_ACCESS_LOG" ]] && tail -n 50 "$NGINX_ACCESS_LOG"
       [[ -f "$NGINX_ERROR_LOG" ]] && tail -n 50 "$NGINX_ERROR_LOG"
       ;;
-    install) tail -n 80 "${LOG_DIR}/install.log" 2>/dev/null || um_warn "missing" ;;
-    *) um_die "logs args: sync|nginx|follow|install" ;;
+    install) tail -n "$lines" "${LOG_DIR}/install.log" 2>/dev/null || um_warn "missing" ;;
+    *) um_die "logs options: [--lines N] [--no-follow] [--progress] [--raw] [sync|nginx|install]" ;;
   esac
 }
 
@@ -284,6 +494,8 @@ Mirror URL:  ${MIRROR_URL}/ubuntu
 Mode:        ${MIRROR_MODE}
 Versions:    ${UBUNTU_VERSIONS}
 State:       $(um_detect_lifecycle_state)
+Progress:    $(um_progress_jsonl_path)
+Dashboard:   sudo mirrorctl watch
 EOF
 }
 
@@ -314,6 +526,7 @@ main() {
 
   case "$cmd" in
     status)   cmd_status "${args[@]+"${args[@]}"}" ;;
+    watch)    cmd_watch "${args[@]+"${args[@]}"}" ;;
     validate) cmd_validate "${args[@]+"${args[@]}"}" ;;
     finalize) cmd_finalize ;;
     sync)     cmd_sync "${args[@]+"${args[@]}"}" ;;

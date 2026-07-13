@@ -6,13 +6,15 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/lib/ubuntu-mirror/run-apt-mirror.sh
-StandardOutput=append:/var/log/apt-mirror.log
-StandardError=append:/var/log/apt-mirror.log
+StandardOutput=journal
+StandardError=journal
 User=root
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 TimeoutStartSec=infinity
+KillMode=control-group
+SendSIGKILL=no
 
 [Install]
 WantedBy=multi-user.target
