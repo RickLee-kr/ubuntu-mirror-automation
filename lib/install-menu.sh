@@ -15,6 +15,8 @@ fi
 UM_INSTALL_MENU_LOADED=1
 
 # Classic dialog look (magenta root, gray window, red selection).
+# Full buttons (--fb) use button/actbutton; compact uses compactbutton/actcompactbutton.
+# Missing actcompactbutton makes Tab focus on Cancel invisible / unreliable.
 um_menu_set_newt_colors() {
   export NEWT_COLORS='
 root=white,magenta
@@ -25,6 +27,7 @@ title=red,lightgray
 button=black,lightgray
 actbutton=white,green
 compactbutton=black,lightgray
+actcompactbutton=white,green
 checkbox=black,lightgray
 actcheckbox=white,blue
 entry=black,lightgray
@@ -227,8 +230,8 @@ um_whiptail_menu() {
 
 $(um_menu_keys_hint)" "${menu_height}")"
 
-  # Default OK+Cancel buttons: Tab moves list/OK/Cancel; Esc = Cancel.
-  whiptail --title "${title}" \
+  # --fb: full buttons so Tab focus uses actbutton (visible OK↔Cancel).
+  whiptail --title "${title}" --fb \
     --menu "${menu_msg}" \
     "${menu_height}" "${menu_width}" "${menu_list_height}" \
     "$@" \
@@ -265,8 +268,8 @@ um_whiptail_yesno() {
 
 $(um_menu_keys_hint)")"
 
-  # Native yesno: Tab switches Yes ↔ No (labeled OK / Cancel).
-  whiptail --title "${title}" \
+  # Native yesno: Tab switches OK ↔ Cancel (full buttons).
+  whiptail --title "${title}" --fb \
     --yes-button "OK" --no-button "Cancel" \
     "${extra[@]}" \
     --yesno "${centered_msg}" "${dialog_height}" "${dialog_width}"
@@ -319,7 +322,7 @@ um_whiptail_input() {
 
 $(um_menu_keys_hint)")"
 
-  result="$(whiptail --title "${title}" \
+  result="$(whiptail --title "${title}" --fb \
     --inputbox "${centered_msg}" \
     "${dialog_height}" "${dialog_width}" "${default}" \
     3>&1 1>&2 2>&3)"

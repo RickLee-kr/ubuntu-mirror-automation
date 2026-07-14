@@ -277,5 +277,7 @@ else
 fi
 grep -q 'um_menu_keys_hint' "${ROOT}/lib/install-menu.sh" && pass "keyboard hints shown" || fail "keys hint missing"
 grep -q 'Tab = OK/Cancel' "${ROOT}/lib/install-menu.sh" && pass "Tab hint in keys help" || fail "Tab hint missing"
+grep -q 'actcompactbutton' "${ROOT}/lib/install-menu.sh" && pass "actcompactbutton in NEWT theme" || fail "missing actcompactbutton"
+grep -q -- '--fb' "${ROOT}/lib/install-menu.sh" && pass "fullbuttons (--fb) for Tab focus" || fail "missing --fb"
 
 exit "$FAIL"
