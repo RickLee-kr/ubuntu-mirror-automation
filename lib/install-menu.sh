@@ -277,7 +277,7 @@ $(um_menu_keys_hint)")"
 
 um_whiptail_msg() {
   local title="$1" text="$2" min_height="${3:-10}" min_width="${4:-70}"
-  local dialog_dims dialog_height dialog_width centered_msg
+  local dialog_dims dialog_height dialog_width centered_msg line_count
 
   if ! um_menu_has_whiptail; then
     printf '\n== %s ==\n%b\n' "$title" "$text"
@@ -287,18 +287,30 @@ um_whiptail_msg() {
   fi
 
   um_menu_set_newt_colors
+  # Size to content when possible so the text area does not steal focus from OK.
+  line_count="$(printf '%b' "$text" | wc -l)"
+  if [[ "${line_count}" -lt "${min_height}" ]]; then
+    min_height=$((line_count + 8))
+    [[ "${min_height}" -lt 10 ]] && min_height=10
+  fi
   dialog_dims="$(um_calc_dialog_size "${min_height}" "${min_width}")"
   read -r dialog_height dialog_width <<< "${dialog_dims}"
-  centered_msg="$(um_center_message "$(printf '%b' "$text")")"
+  # Cap height so short status pages stay button-focused (Enter/Tab → OK).
+  if [[ "${dialog_height}" -gt $((line_count + 12)) ]]; then
+    dialog_height=$((line_count + 12))
+    [[ "${dialog_height}" -lt 12 ]] && dialog_height=12
+  fi
+  centered_msg="$(printf '%b\n\n(Enter or Tab then Enter = OK)' "$text")"
 
-  # Esc is ignored (same as XDR whiptail_msgbox).
-  whiptail --title "${title}" \
+  # --fb: OK is a full button; Tab/Enter reach it reliably with NEWT_COLORS.
+  whiptail --title "${title}" --fb --ok-button "OK" \
     --msgbox "${centered_msg}" "${dialog_height}" "${dialog_width}" || true
 }
 
 um_whiptail_file_msg() {
   local title="$1" file="$2" height="${3:-20}" width="${4:-72}"
   local body
+  # Strip ANSI so whiptail does not treat color codes as focusable junk.
   body="$(sed 's/\x1b\[[0-9;]*m//g' "$file" 2>/dev/null || cat "$file")"
   um_whiptail_msg "$title" "$body" "$height" "$width"
 }
