@@ -172,7 +172,7 @@ Without an interactive terminal (CI / redirected output), the installer automati
 ### Day-to-day monitoring
 
 ```bash
-sudo mirrorctl watch      # live TUI dashboard (refresh every 10s)
+sudo mirrorctl watch      # live TUI dashboard (refresh every 20s)
 sudo mirrorctl status     # one-shot status snapshot
 sudo mirrorctl logs       # follow /var/log/apt-mirror.log
 ```

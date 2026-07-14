@@ -30,7 +30,7 @@ resolve_libs() {
 resolve_libs
 
 UM_CONFIG_ARG=""
-DASH_INTERVAL=10
+DASH_INTERVAL=20
 DASH_NO_COLOR=0
 DASH_ONCE=0
 DASH_RAW=0
@@ -53,7 +53,7 @@ Live terminal dashboard for Ubuntu Mirror synchronization.
 
 Options:
   --config PATH    Config file
-  --interval N     Refresh interval seconds (default 10)
+  --interval N     Refresh interval seconds (default 20)
   --no-color       Disable ANSI colors
   --once           Print one snapshot and exit
   --raw            Follow raw apt-mirror.log instead of TUI
@@ -76,7 +76,7 @@ parse_args() {
         shift 2
         ;;
       --interval)
-        DASH_INTERVAL="${2:-10}"
+        DASH_INTERVAL="${2:-20}"
         shift 2
         ;;
       --no-color) DASH_NO_COLOR=1; shift ;;
@@ -489,8 +489,19 @@ run_interactive() {
     fi
 
     key=""
+    # Wait up to DASH_INTERVAL for a key; if read fails instantly (no TTY),
+    # sleep so we never busy-loop redraw.
+    local t0 t1 elapsed remaining
+    t0="$(date +%s)"
     if read -r -n 1 -t "$DASH_INTERVAL" key 2>/dev/null; then
       handle_key "$key"
+    else
+      t1="$(date +%s)"
+      elapsed=$((t1 - t0))
+      remaining=$((DASH_INTERVAL - elapsed))
+      if [[ "${remaining}" -gt 0 ]]; then
+        sleep "${remaining}"
+      fi
     fi
   done
   cleanup_ui

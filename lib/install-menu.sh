@@ -334,12 +334,18 @@ um_menu_restore_interrupt_trap() {
 um_menu_run_detachable() {
   # Run "$@" in the background so Ctrl+C is handled here (return to menu),
   # not by install.sh's fatal INT trap.
+  # Keep stdin on /dev/tty — background jobs otherwise lose the terminal and
+  # dashboard `read -t` fails instantly (busy-refresh loop).
   local child_pid=0
   local detached=0
 
   trap 'detached=1; if [[ ${child_pid:-0} -gt 0 ]]; then kill "$child_pid" 2>/dev/null || true; fi' INT TERM
 
-  "$@" &
+  if [[ -r /dev/tty ]]; then
+    "$@" </dev/tty &
+  else
+    "$@" &
+  fi
   child_pid=$!
   wait "$child_pid" 2>/dev/null || true
   if [[ "${child_pid}" -gt 0 ]] && kill -0 "$child_pid" 2>/dev/null; then

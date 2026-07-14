@@ -61,7 +61,7 @@ Sync examples:
 Watch examples:
   sudo mirrorctl watch
   sudo mirrorctl watch --foreground
-  sudo mirrorctl watch --interval 10
+  sudo mirrorctl watch --interval 20
   sudo mirrorctl watch --once
   sudo mirrorctl watch --raw
 EOF
