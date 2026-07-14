@@ -265,7 +265,17 @@ if grep -qE -- '--textbox' "${ROOT}/lib/install-menu.sh"; then
 else
   pass "no textbox (avoids focus trap)"
 fi
-grep -q -- '--nocancel' "${ROOT}/lib/install-menu.sh" && pass "nocancel (Enter selects without Tab)" || fail "missing --nocancel"
+grep -q 'um_calc_menu_size' "${ROOT}/lib/install-menu.sh" && pass "dynamic menu sizing (XDR-style)" || fail "missing um_calc_menu_size"
+grep -q 'um_center_menu_message' "${ROOT}/lib/install-menu.sh" && pass "centered menu message" || fail "missing center helper"
+grep -q -- '--yes-button' "${ROOT}/lib/install-menu.sh" && pass "yesno uses OK/Cancel buttons" || fail "missing yesno OK/Cancel"
+# um_whiptail_menu must keep Cancel enabled for Tab/Esc
+menu_fn="$(awk '/^um_whiptail_menu\(/,/^um_whiptail_yesno\(/' "${ROOT}/lib/install-menu.sh")"
+if echo "$menu_fn" | grep -q -- '--nocancel'; then
+  fail "menu still uses --nocancel (blocks Tab/Cancel)"
+else
+  pass "menu allows Cancel (Tab/Esc)"
+fi
 grep -q 'um_menu_keys_hint' "${ROOT}/lib/install-menu.sh" && pass "keyboard hints shown" || fail "keys hint missing"
+grep -q 'Tab = OK/Cancel' "${ROOT}/lib/install-menu.sh" && pass "Tab hint in keys help" || fail "Tab hint missing"
 
 exit "$FAIL"

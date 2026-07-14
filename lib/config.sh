@@ -165,16 +165,30 @@ um_resolve_mirror_mode() {
     esac
   fi
   um_apply_mirror_mode_components
+  # Offline upgrade mirror always mirrors backports (even if a stale /etc config omitted them)
+  if [[ "$MIRROR_MODE" == "full" ]]; then
+    SUITE_SUFFIXES="updates security backports"
+  else
+    case " ${SUITE_SUFFIXES} " in
+      *" backports "*) ;;
+      *) SUITE_SUFFIXES="${SUITE_SUFFIXES:+${SUITE_SUFFIXES} }backports" ;;
+    esac
+  fi
 }
 
 um_persist_mirror_mode_to_conf() {
-  # Ensure installed mirror.conf matches the resolved mode.
+  # Ensure installed mirror.conf matches the resolved mode / suites.
   local conf="${1:-${INSTALL_CONF_DIR}/mirror.conf}"
   [[ -f "$conf" ]] || return 0
   if grep -qE '^MIRROR_MODE=' "$conf" 2>/dev/null; then
     sed -i "s/^MIRROR_MODE=.*/MIRROR_MODE=\"${MIRROR_MODE}\"/" "$conf"
   else
     printf '\nMIRROR_MODE="%s"\n' "$MIRROR_MODE" >>"$conf"
+  fi
+  if grep -qE '^SUITE_SUFFIXES=' "$conf" 2>/dev/null; then
+    sed -i "s/^SUITE_SUFFIXES=.*/SUITE_SUFFIXES=\"${SUITE_SUFFIXES}\"/" "$conf"
+  else
+    printf 'SUITE_SUFFIXES="%s"\n' "$SUITE_SUFFIXES" >>"$conf"
   fi
 }
 

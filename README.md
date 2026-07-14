@@ -98,12 +98,12 @@ On an interactive terminal this opens a **dialog-style menu** (whiptail):
 │ 6 Stop running synchronization             │
 │ 7 Delete existing mirror data (DANGEROUS)  │
 │ 8 Exit                                     │
-│                   <OK>                     │
+│              <OK>   <Cancel>               │
 └────────────────────────────────────────────┘
 ```
 
-Use **↑ / ↓** to move, **Enter** to select. Tab is not required.
-Esc goes back / quits.
+Use **↑ / ↓** to move, **Tab** to switch between **OK** and **Cancel**, **Enter** to select.
+Esc also cancels / goes back.
 Choose **1** for the recommended default (main + restricted).  
 Choose **7** to wipe previous mirror data before re-installing.  
 Choose **3** anytime to re-attach the live sync dashboard.

@@ -309,11 +309,16 @@ phase3_config() {
 
   local tmp
   tmp="$(mktemp)"
-  um_generate_mirror_list >"$tmp"
-  # Prefer project offline template when present (includes backports + exclusion comments)
+  # Prefer project offline template (amd64, backports, exclusion policy). Fall back to generator.
   if [[ -f "${UM_PROJECT_ROOT}/templates/mirror.list" ]]; then
-    # Still generate dynamically so UPSTREAM_MIRROR / components stay consistent
-    :
+    cp "${UM_PROJECT_ROOT}/templates/mirror.list" "$tmp"
+  else
+    # Offline full chain always needs release/updates/security/backports
+    case " ${SUITE_SUFFIXES} " in
+      *" backports "*) ;;
+      *) SUITE_SUFFIXES="${SUITE_SUFFIXES:+${SUITE_SUFFIXES} }backports" ;;
+    esac
+    um_generate_mirror_list >"$tmp"
   fi
   # Validate generated mirror.list: amd64 only, no i386, no deb-src
   if grep -Eiq '^[[:space:]]*deb-src|[[:space:]]i386[[:space:]]' "$tmp"; then
@@ -841,6 +846,12 @@ main() {
   parse_args "$@"
   um_setup_trap
   um_register_cleanup cleanup_temps
+
+  # --force re-install from the checkout: prefer project mirror.conf over stale /etc copy
+  if [[ -z "${UM_CONFIG_ARG}" ]] && [[ "${UM_FORCE}" == "1" ]] \
+    && [[ -f "${UM_PROJECT_ROOT}/mirror.conf" ]]; then
+    UM_CONFIG_ARG="${UM_PROJECT_ROOT}/mirror.conf"
+  fi
 
   UM_QUIET_LOAD=0
   um_load_config "$UM_CONFIG_ARG"

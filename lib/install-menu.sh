@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
-# Interactive installer menu — dialog/whiptail style TUI (SSH-friendly).
+# Interactive installer menu — whiptail TUI (SSH-friendly).
 #
-# Keyboard model (no Tab required):
+# Keyboard model (same as XDR whiptail menus):
 #   ↑ / ↓     move in the list
-#   Enter     select / confirm  (Ok)
-#   Esc       leave dialog      (same as Cancel)
-# Tab-to-button focus is unreliable over many SSH clients, so Cancel buttons
-# are omitted (--nocancel) and Esc / Exit items are used instead.
+#   Tab       switch focus (list ↔ OK ↔ Cancel)
+#   Enter     select / confirm (OK)
+#   Esc       leave dialog (same as Cancel)
 
 # shellcheck disable=SC2317
 if [[ -n "${UM_INSTALL_MENU_LOADED:-}" ]]; then
@@ -109,30 +108,138 @@ um_menu_status_blurb() {
 }
 
 um_menu_keys_hint() {
-  printf '↑↓ move   Enter = select   Esc = back'
+  printf '↑↓ move   Tab = OK/Cancel   Enter = select   Esc = back'
 }
 
 # ---------------------------------------------------------------------------
-# whiptail helpers — always --nocancel so Enter confirms without Tab
+# Whiptail sizing / centering (XDR-installer style)
 # ---------------------------------------------------------------------------
+
+um_calc_menu_size() {
+  # um_calc_menu_size <item_count> [min_width] [min_menu_height]
+  # Prints: dialog_height dialog_width menu_height
+  local item_count="$1"
+  local min_width="${2:-80}"
+  local min_height="${3:-10}"
+  local HEIGHT WIDTH MENU_HEIGHT dialog_height dialog_width max_menu_height
+
+  if command -v tput >/dev/null 2>&1; then
+    HEIGHT="$(tput lines)"
+    WIDTH="$(tput cols)"
+  else
+    HEIGHT=25
+    WIDTH=100
+  fi
+  [[ -z "${HEIGHT}" ]] && HEIGHT=25
+  [[ -z "${WIDTH}" ]] && WIDTH=100
+
+  dialog_height=$((HEIGHT - 8))
+  [[ "${dialog_height}" -lt 15 ]] && dialog_height=15
+
+  MENU_HEIGHT=$((item_count + 2))
+  [[ "${MENU_HEIGHT}" -lt "${min_height}" ]] && MENU_HEIGHT="${min_height}"
+  max_menu_height=$((dialog_height - 6))
+  [[ "${MENU_HEIGHT}" -gt "${max_menu_height}" ]] && MENU_HEIGHT="${max_menu_height}"
+
+  dialog_width=$((WIDTH - 10))
+  [[ "${dialog_width}" -lt "${min_width}" ]] && dialog_width="${min_width}"
+  [[ "${dialog_width}" -gt 120 ]] && dialog_width=120
+
+  echo "${dialog_height} ${dialog_width} ${MENU_HEIGHT}"
+}
+
+um_calc_dialog_size() {
+  # um_calc_dialog_size [min_height] [min_width]
+  # Prints: dialog_height dialog_width
+  local min_height="${1:-10}"
+  local min_width="${2:-70}"
+  local HEIGHT WIDTH dialog_height dialog_width
+
+  if command -v tput >/dev/null 2>&1; then
+    HEIGHT="$(tput lines)"
+    WIDTH="$(tput cols)"
+  else
+    HEIGHT=25
+    WIDTH=100
+  fi
+  [[ -z "${HEIGHT}" ]] && HEIGHT=25
+  [[ -z "${WIDTH}" ]] && WIDTH=100
+
+  dialog_height=$((HEIGHT - 2))
+  [[ "${dialog_height}" -lt "${min_height}" ]] && dialog_height="${min_height}"
+  [[ "${dialog_height}" -gt 35 ]] && dialog_height=35
+
+  dialog_width=$((WIDTH - 6))
+  [[ "${dialog_width}" -lt "${min_width}" ]] && dialog_width="${min_width}"
+  [[ "${dialog_width}" -gt 100 ]] && dialog_width=100
+
+  echo "${dialog_height} ${dialog_width}"
+}
+
+um_center_message() {
+  local msg="$1"
+  # Literal \n for whiptail (same as XDR center_message).
+  echo "\n\n${msg}\n"
+}
+
+um_center_menu_message() {
+  # um_center_menu_message <message> <menu_dialog_height>
+  local message="$1"
+  local menu_height="$2"
+  local HEIGHT margin available_height top_padding=2 i padding=""
+
+  if command -v tput >/dev/null 2>&1; then
+    HEIGHT="$(tput lines)"
+  else
+    HEIGHT=25
+  fi
+  [[ -z "${HEIGHT}" ]] && HEIGHT=25
+
+  margin=3
+  available_height=$((HEIGHT - margin * 2))
+  if [[ "${available_height}" -gt "${menu_height}" ]]; then
+    top_padding=$(( (available_height - menu_height) / 2 ))
+    [[ "${top_padding}" -lt 2 ]] && top_padding=2
+    [[ "${top_padding}" -gt 15 ]] && top_padding=15
+  fi
+  for ((i = 0; i < top_padding; i++)); do
+    padding+="\n"
+  done
+  echo "${padding}${message}"
+}
+
+# ---------------------------------------------------------------------------
+# Whiptail helpers — default OK+Cancel; Tab/Esc work like XDR installer
+# ---------------------------------------------------------------------------
+
 um_whiptail_menu() {
   # um_whiptail_menu <title> <text> <tag1> <item1> ...
+  # Exit 0 + tag on stdout = OK; exit 1 = Cancel/Esc.
   local title="$1" text="$2"
   shift 2
+  local item_count=$(( $# / 2 ))
+  local menu_dims menu_height menu_width menu_list_height menu_msg
+
   um_menu_set_newt_colors
-  # --nocancel: only Ok; focus stays on the list; Enter selects the highlighted item.
-  # Esc still aborts (exit 1) for "back/quit".
-  whiptail --title "$title" --nocancel --ok-button "OK" \
-    --menu "$text" 22 74 10 "$@" 3>&1 1>&2 2>&3
+  menu_dims="$(um_calc_menu_size "${item_count}" 80 10)"
+  read -r menu_height menu_width menu_list_height <<< "${menu_dims}"
+  menu_msg="$(um_center_menu_message "${text}
+
+$(um_menu_keys_hint)" "${menu_height}")"
+
+  # Default OK+Cancel buttons: Tab moves list/OK/Cancel; Esc = Cancel.
+  whiptail --title "${title}" \
+    --menu "${menu_msg}" \
+    "${menu_height}" "${menu_width}" "${menu_list_height}" \
+    "$@" \
+    3>&1 1>&2 2>&3
 }
 
 um_whiptail_yesno() {
-  # Implemented as a 2-item menu so Tab is never required.
+  # um_whiptail_yesno <title> <text> [default_no=0]
   local title="$1" text="$2" default_no="${3:-0}"
-  local choice default_item="yes"
-  if [[ "$default_no" == "1" ]]; then
-    default_item="no"
-  fi
+  local dialog_dims dialog_height dialog_width centered_msg
+  local -a extra=()
 
   if ! um_menu_has_whiptail; then
     printf '%s\n%s\n' "$title" "$(printf '%b' "$text")"
@@ -150,32 +257,40 @@ um_whiptail_yesno() {
     return $?
   fi
 
+  [[ "$default_no" == "1" ]] && extra+=(--defaultno)
   um_menu_set_newt_colors
-  choice="$(whiptail --title "$title" --nocancel --ok-button "OK" \
-    --default-item "$default_item" \
-    --menu "${text}
+  dialog_dims="$(um_calc_dialog_size 10 70)"
+  read -r dialog_height dialog_width <<< "${dialog_dims}"
+  centered_msg="$(um_center_message "$(printf '%b' "$text")
 
-$(um_menu_keys_hint)" 16 70 2 \
-    "yes" "Yes — continue" \
-    "no"  "No — cancel" \
-    3>&1 1>&2 2>&3)" || return 1
-  [[ "$choice" == "yes" ]]
+$(um_menu_keys_hint)")"
+
+  # Native yesno: Tab switches Yes ↔ No (labeled OK / Cancel).
+  whiptail --title "${title}" \
+    --yes-button "OK" --no-button "Cancel" \
+    "${extra[@]}" \
+    --yesno "${centered_msg}" "${dialog_height}" "${dialog_width}"
 }
 
 um_whiptail_msg() {
-  local title="$1" text="$2" height="${3:-16}" width="${4:-72}"
+  local title="$1" text="$2" min_height="${3:-10}" min_width="${4:-70}"
+  local dialog_dims dialog_height dialog_width centered_msg
+
   if ! um_menu_has_whiptail; then
     printf '\n== %s ==\n%b\n' "$title" "$text"
     printf 'Press Enter... '
     read -r _ || true
     return 0
   fi
-  um_menu_set_newt_colors
-  # Single OK button — Enter dismisses. No Cancel / no Tab.
-  whiptail --title "$title" --nocancel --ok-button "OK" \
-    --msgbox "${text}
 
-(Press Enter)" "$height" "$width"
+  um_menu_set_newt_colors
+  dialog_dims="$(um_calc_dialog_size "${min_height}" "${min_width}")"
+  read -r dialog_height dialog_width <<< "${dialog_dims}"
+  centered_msg="$(um_center_message "$(printf '%b' "$text")")"
+
+  # Esc is ignored (same as XDR whiptail_msgbox).
+  whiptail --title "${title}" \
+    --msgbox "${centered_msg}" "${dialog_height}" "${dialog_width}" || true
 }
 
 um_whiptail_file_msg() {
@@ -187,6 +302,8 @@ um_whiptail_file_msg() {
 
 um_whiptail_input() {
   local title="$1" text="$2" default="${3:-}"
+  local dialog_dims dialog_height dialog_width centered_msg result rc
+
   if ! um_menu_has_whiptail; then
     printf '%s\n%b\n> ' "$title" "$text"
     local val
@@ -194,12 +311,25 @@ um_whiptail_input() {
     printf '%s\n' "${val:-$default}"
     return 0
   fi
-  um_menu_set_newt_colors
-  # --nocancel: type text, press Enter to submit (no Tab to Ok).
-  whiptail --title "$title" --nocancel --ok-button "OK" \
-    --inputbox "${text}
 
-$(um_menu_keys_hint)" 14 70 "$default" 3>&1 1>&2 2>&3
+  um_menu_set_newt_colors
+  dialog_dims="$(um_calc_dialog_size 10 70)"
+  read -r dialog_height dialog_width <<< "${dialog_dims}"
+  centered_msg="$(um_center_message "$(printf '%b' "$text")
+
+$(um_menu_keys_hint)")"
+
+  result="$(whiptail --title "${title}" \
+    --inputbox "${centered_msg}" \
+    "${dialog_height}" "${dialog_width}" "${default}" \
+    3>&1 1>&2 2>&3)"
+  rc=$?
+  if [[ ${rc} -ne 0 ]]; then
+    echo ""
+    return 1
+  fi
+  echo "${result}"
+  return 0
 }
 
 um_menu_pause() {
@@ -418,13 +548,11 @@ um_install_menu() {
   local choice blurb
   while true; do
     blurb="$(um_menu_status_blurb)"
+    # Esc/Cancel: stay on menu (same as XDR installer). Use item 8 to quit.
     choice="$(um_whiptail_menu "Ubuntu Mirror Menu" \
       "Ubuntu Mirror Server
 
-${blurb}
-
-$(um_menu_keys_hint)
-(Cancel button removed — Esc or choose Exit)" \
+${blurb}" \
       "1" "Install / start sync — Minimal (~320 GiB)" \
       "2" "Install / start sync — Full (~700 GiB)" \
       "3" "Monitor live dashboard" \
@@ -433,10 +561,9 @@ $(um_menu_keys_hint)
       "6" "Stop running synchronization" \
       "7" "Delete existing mirror data (DANGEROUS)" \
       "8" "Exit" \
-    )" || {
-      UM_MENU_ACTION="quit"
-      return 0
-    }
+    )" || continue
+
+    [[ -z "${choice}" ]] && continue
 
     case "$choice" in
       1)
