@@ -332,11 +332,28 @@ um_menu_restore_interrupt_trap() {
 }
 
 um_menu_run_detachable() {
-  # Run "$@" with Ctrl+C returning to the caller (menu), not exiting install.
-  trap ':' INT
-  trap ':' TERM
-  "$@" || true
+  # Run "$@" in the background so Ctrl+C is handled here (return to menu),
+  # not by install.sh's fatal INT trap.
+  local child_pid=0
+  local detached=0
+
+  trap 'detached=1; if [[ ${child_pid:-0} -gt 0 ]]; then kill "$child_pid" 2>/dev/null || true; fi' INT TERM
+
+  "$@" &
+  child_pid=$!
+  wait "$child_pid" 2>/dev/null || true
+  if [[ "${child_pid}" -gt 0 ]] && kill -0 "$child_pid" 2>/dev/null; then
+    kill "$child_pid" 2>/dev/null || true
+    wait "$child_pid" 2>/dev/null || true
+  fi
+  child_pid=0
+
   um_menu_restore_interrupt_trap
+  if [[ "${detached}" -eq 1 ]]; then
+    printf '\nReturning to menu...\n'
+    sleep 0.3
+  fi
+  return 0
 }
 
 um_menu_run_dashboard() {
