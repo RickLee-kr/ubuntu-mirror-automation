@@ -295,14 +295,15 @@ if [[ "${wt_count}" -ge 4 ]] && [[ "${wt_count}" -eq "${fb_count}" ]]; then
 else
   fail "whiptail/--fb mismatch (whiptail=${wt_count} fb=${fb_count})"
 fi
-# All dialogs go through helpers (no raw --menu/--yesno/--msgbox/--inputbox outside helpers)
+# All dialogs go through helpers (only count real `whiptail --...` invocations)
 raw_outside="$(awk '
+  /^[[:space:]]*#/ { next }
   /^um_whiptail_(menu|yesno|msg|input)\(/ { in_helper=1 }
   in_helper && /^}/ { in_helper=0; next }
-  !in_helper && /whiptail / { print }
+  !in_helper && /whiptail[[:space:]]+--/ { print }
 ' "${ROOT}/lib/install-menu.sh" || true)"
 if [[ -n "${raw_outside}" ]]; then
-  fail "raw whiptail outside helpers:\n${raw_outside}"
+  fail "raw whiptail outside helpers: ${raw_outside}"
 else
   pass "all dialogs use whiptail helpers"
 fi
