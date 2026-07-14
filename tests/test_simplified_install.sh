@@ -311,5 +311,16 @@ grep -q 'um_menu_keys_hint' "${ROOT}/lib/install-menu.sh" && pass "keyboard hint
 grep -q 'Tab = OK/Cancel' "${ROOT}/lib/install-menu.sh" && pass "Tab hint in keys help" || fail "Tab hint missing"
 grep -q 'actcompactbutton' "${ROOT}/lib/install-menu.sh" && pass "actcompactbutton in NEWT theme" || fail "missing actcompactbutton"
 grep -q -- '--fb' "${ROOT}/lib/install-menu.sh" && pass "fullbuttons (--fb) for Tab focus" || fail "missing --fb"
+grep -q 'um_menu_run_detachable' "${ROOT}/lib/install-menu.sh" && pass "detachable runner for Ctrl+C" || fail "missing um_menu_run_detachable"
+if grep -A6 '^um_menu_follow_logs' "${ROOT}/lib/install-menu.sh" | grep -q 'um_menu_run_detachable'; then
+  pass "Follow logs Ctrl+C returns to menu"
+else
+  fail "Follow logs still uses bare tail (Ctrl+C aborts installer)"
+fi
+if grep -A20 '^um_menu_run_dashboard' "${ROOT}/lib/install-menu.sh" | grep -q 'um_menu_run_detachable'; then
+  pass "Dashboard Ctrl+C returns to menu"
+else
+  fail "Dashboard launch missing detachable wrapper"
+fi
 
 exit "$FAIL"

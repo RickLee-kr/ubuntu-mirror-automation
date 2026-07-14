@@ -325,6 +325,20 @@ um_menu_pause() {
   um_whiptail_msg "Ubuntu Mirror" "Press Enter to return to the menu."
 }
 
+# install.sh sets INT/TERM → exit 130. For log/dashboard views, Ctrl+C must
+# return to the menu instead of aborting the whole installer.
+um_menu_restore_interrupt_trap() {
+  trap 'um_error "Interrupted"; exit 130' INT TERM
+}
+
+um_menu_run_detachable() {
+  # Run "$@" with Ctrl+C returning to the caller (menu), not exiting install.
+  trap ':' INT
+  trap ':' TERM
+  "$@" || true
+  um_menu_restore_interrupt_trap
+}
+
 um_menu_run_dashboard() {
   local dash repo
   dash=""
@@ -340,7 +354,7 @@ um_menu_run_dashboard() {
     return 0
   fi
   clear 2>/dev/null || true
-  "$dash" --config "${UM_CONFIG_PATH:-${INSTALL_CONF_DIR}/mirror.conf}" || true
+  um_menu_run_detachable "$dash" --config "${UM_CONFIG_PATH:-${INSTALL_CONF_DIR}/mirror.conf}"
 }
 
 um_menu_show_status() {
@@ -361,7 +375,8 @@ um_menu_follow_logs() {
   clear 2>/dev/null || true
   printf 'Following %s (Ctrl+C returns to menu)\n' "${APT_MIRROR_LOG}"
   if [[ -f "${APT_MIRROR_LOG}" ]]; then
-    tail -n 50 -f "${APT_MIRROR_LOG}" || true
+    um_menu_run_detachable tail -n 50 -f "${APT_MIRROR_LOG}"
+    printf '\n'
   else
     um_whiptail_msg "Logs" "Log not found yet:\n${APT_MIRROR_LOG}"
   fi
