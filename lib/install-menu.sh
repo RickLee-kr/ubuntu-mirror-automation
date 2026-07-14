@@ -115,123 +115,109 @@ um_menu_keys_hint() {
 }
 
 # ---------------------------------------------------------------------------
-# Whiptail sizing / centering (XDR-installer style)
+# Whiptail sizing — prefer content fit over full-screen centering.
+# Oversized empty text regions steal Tab focus away from OK/Cancel.
 # ---------------------------------------------------------------------------
+
+um_term_size() {
+  # Sets HEIGHT WIDTH (best-effort).
+  if command -v tput >/dev/null 2>&1; then
+    HEIGHT="$(tput lines 2>/dev/null || true)"
+    WIDTH="$(tput cols 2>/dev/null || true)"
+  fi
+  [[ -z "${HEIGHT:-}" ]] && HEIGHT=25
+  [[ -z "${WIDTH:-}" ]] && WIDTH=100
+}
 
 um_calc_menu_size() {
   # um_calc_menu_size <item_count> [min_width] [min_menu_height]
-  # Prints: dialog_height dialog_width menu_height
+  # Prints: dialog_height dialog_width menu_list_height
   local item_count="$1"
-  local min_width="${2:-80}"
-  local min_height="${3:-10}"
-  local HEIGHT WIDTH MENU_HEIGHT dialog_height dialog_width max_menu_height
+  local min_width="${2:-74}"
+  local min_list="${3:-8}"
+  local HEIGHT WIDTH dialog_height dialog_width menu_list_height max_list
 
-  if command -v tput >/dev/null 2>&1; then
-    HEIGHT="$(tput lines)"
-    WIDTH="$(tput cols)"
-  else
-    HEIGHT=25
-    WIDTH=100
+  um_term_size
+  # Header (~5) + buttons (~3) + border; keep list fully visible when possible.
+  menu_list_height=$((item_count + 1))
+  [[ "${menu_list_height}" -lt "${min_list}" ]] && menu_list_height="${min_list}"
+  dialog_height=$((menu_list_height + 10))
+  max_list=$((HEIGHT - 12))
+  [[ "${max_list}" -lt 6 ]] && max_list=6
+  if [[ "${menu_list_height}" -gt "${max_list}" ]]; then
+    menu_list_height="${max_list}"
+    dialog_height=$((HEIGHT - 2))
   fi
-  [[ -z "${HEIGHT}" ]] && HEIGHT=25
-  [[ -z "${WIDTH}" ]] && WIDTH=100
-
-  dialog_height=$((HEIGHT - 8))
-  [[ "${dialog_height}" -lt 15 ]] && dialog_height=15
-
-  MENU_HEIGHT=$((item_count + 2))
-  [[ "${MENU_HEIGHT}" -lt "${min_height}" ]] && MENU_HEIGHT="${min_height}"
-  max_menu_height=$((dialog_height - 6))
-  [[ "${MENU_HEIGHT}" -gt "${max_menu_height}" ]] && MENU_HEIGHT="${max_menu_height}"
-
-  dialog_width=$((WIDTH - 10))
-  [[ "${dialog_width}" -lt "${min_width}" ]] && dialog_width="${min_width}"
-  [[ "${dialog_width}" -gt 120 ]] && dialog_width=120
-
-  echo "${dialog_height} ${dialog_width} ${MENU_HEIGHT}"
-}
-
-um_calc_dialog_size() {
-  # um_calc_dialog_size [min_height] [min_width]
-  # Prints: dialog_height dialog_width
-  local min_height="${1:-10}"
-  local min_width="${2:-70}"
-  local HEIGHT WIDTH dialog_height dialog_width
-
-  if command -v tput >/dev/null 2>&1; then
-    HEIGHT="$(tput lines)"
-    WIDTH="$(tput cols)"
-  else
-    HEIGHT=25
-    WIDTH=100
-  fi
-  [[ -z "${HEIGHT}" ]] && HEIGHT=25
-  [[ -z "${WIDTH}" ]] && WIDTH=100
-
-  dialog_height=$((HEIGHT - 2))
-  [[ "${dialog_height}" -lt "${min_height}" ]] && dialog_height="${min_height}"
-  [[ "${dialog_height}" -gt 35 ]] && dialog_height=35
+  [[ "${dialog_height}" -gt $((HEIGHT - 2)) ]] && dialog_height=$((HEIGHT - 2))
+  [[ "${dialog_height}" -lt 14 ]] && dialog_height=14
 
   dialog_width=$((WIDTH - 6))
   [[ "${dialog_width}" -lt "${min_width}" ]] && dialog_width="${min_width}"
   [[ "${dialog_width}" -gt 100 ]] && dialog_width=100
+  [[ "${dialog_width}" -gt $((WIDTH - 2)) ]] && dialog_width=$((WIDTH - 2))
+
+  echo "${dialog_height} ${dialog_width} ${menu_list_height}"
+}
+
+um_calc_dialog_size() {
+  # um_calc_dialog_size <line_count> [min_width] [extra_rows]
+  # Prints: dialog_height dialog_width  (content-fitted, not full-screen)
+  local line_count="${1:-4}"
+  local min_width="${2:-70}"
+  local extra="${3:-6}"
+  local HEIGHT WIDTH dialog_height dialog_width
+
+  um_term_size
+  [[ "${line_count}" -lt 1 ]] && line_count=1
+  dialog_height=$((line_count + extra))
+  [[ "${dialog_height}" -lt 10 ]] && dialog_height=10
+  [[ "${dialog_height}" -gt $((HEIGHT - 2)) ]] && dialog_height=$((HEIGHT - 2))
+  [[ "${dialog_height}" -gt 28 ]] && dialog_height=28
+
+  dialog_width=$((WIDTH - 6))
+  [[ "${dialog_width}" -lt "${min_width}" ]] && dialog_width="${min_width}"
+  [[ "${dialog_width}" -gt 96 ]] && dialog_width=96
+  [[ "${dialog_width}" -gt $((WIDTH - 2)) ]] && dialog_width=$((WIDTH - 2))
 
   echo "${dialog_height} ${dialog_width}"
 }
 
-um_center_message() {
-  local msg="$1"
-  # Literal \n for whiptail (same as XDR center_message).
-  echo "\n\n${msg}\n"
-}
+# ---------------------------------------------------------------------------
+# Whiptail helpers — ALWAYS --fb; never full-screen empty text traps
+# Dialog inventory (all go through these helpers):
+#   menu     → um_whiptail_menu     (main menu)
+#   yesno    → um_whiptail_yesno    (stop/delete/install confirms)
+#   msgbox   → um_whiptail_msg      (status, errors, notices)
+#   inputbox → um_whiptail_input    (DELETE confirm)
+# ---------------------------------------------------------------------------
 
-um_center_menu_message() {
-  # um_center_menu_message <message> <menu_dialog_height>
-  local message="$1"
-  local menu_height="$2"
-  local HEIGHT margin available_height top_padding=2 i padding=""
-
-  if command -v tput >/dev/null 2>&1; then
-    HEIGHT="$(tput lines)"
+# Truncate body so msgbox/yesno stay content-fitted (no scrollable text focus trap).
+um_whiptail_fit_body() {
+  local body="$1" max_lines="${2:-16}"
+  local line_count
+  line_count="$(printf '%b' "$body" | wc -l)"
+  if [[ "${line_count}" -gt "${max_lines}" ]]; then
+    printf '%b\n...(truncated)' "$(printf '%b' "$body" | head -n "$((max_lines - 1))")"
   else
-    HEIGHT=25
+    printf '%b' "$body"
   fi
-  [[ -z "${HEIGHT}" ]] && HEIGHT=25
-
-  margin=3
-  available_height=$((HEIGHT - margin * 2))
-  if [[ "${available_height}" -gt "${menu_height}" ]]; then
-    top_padding=$(( (available_height - menu_height) / 2 ))
-    [[ "${top_padding}" -lt 2 ]] && top_padding=2
-    [[ "${top_padding}" -gt 15 ]] && top_padding=15
-  fi
-  for ((i = 0; i < top_padding; i++)); do
-    padding+="\n"
-  done
-  echo "${padding}${message}"
 }
-
-# ---------------------------------------------------------------------------
-# Whiptail helpers — default OK+Cancel; Tab/Esc work like XDR installer
-# ---------------------------------------------------------------------------
 
 um_whiptail_menu() {
   # um_whiptail_menu <title> <text> <tag1> <item1> ...
-  # Exit 0 + tag on stdout = OK; exit 1 = Cancel/Esc.
   local title="$1" text="$2"
   shift 2
   local item_count=$(( $# / 2 ))
   local menu_dims menu_height menu_width menu_list_height menu_msg
 
   um_menu_set_newt_colors
-  menu_dims="$(um_calc_menu_size "${item_count}" 80 10)"
+  menu_dims="$(um_calc_menu_size "${item_count}" 74 8)"
   read -r menu_height menu_width menu_list_height <<< "${menu_dims}"
-  menu_msg="$(um_center_menu_message "${text}
+  # Minimal header only — no vertical centering padding (steals Tab).
+  menu_msg="$(printf '%b\n\n%s' "$text" "$(um_menu_keys_hint)")"
 
-$(um_menu_keys_hint)" "${menu_height}")"
-
-  # --fb: full buttons so Tab focus uses actbutton (visible OK↔Cancel).
   whiptail --title "${title}" --fb \
+    --ok-button "OK" --cancel-button "Cancel" \
     --menu "${menu_msg}" \
     "${menu_height}" "${menu_width}" "${menu_list_height}" \
     "$@" \
@@ -241,7 +227,7 @@ $(um_menu_keys_hint)" "${menu_height}")"
 um_whiptail_yesno() {
   # um_whiptail_yesno <title> <text> [default_no=0]
   local title="$1" text="$2" default_no="${3:-0}"
-  local dialog_dims dialog_height dialog_width centered_msg
+  local dialog_dims dialog_height dialog_width body line_count
   local -a extra=()
 
   if ! um_menu_has_whiptail; then
@@ -262,22 +248,20 @@ um_whiptail_yesno() {
 
   [[ "$default_no" == "1" ]] && extra+=(--defaultno)
   um_menu_set_newt_colors
-  dialog_dims="$(um_calc_dialog_size 10 70)"
+  body="$(um_whiptail_fit_body "$(printf '%b\n\n%s' "$text" "$(um_menu_keys_hint)")" 14)"
+  line_count="$(printf '%b' "$body" | wc -l)"
+  dialog_dims="$(um_calc_dialog_size "${line_count}" 70 6)"
   read -r dialog_height dialog_width <<< "${dialog_dims}"
-  centered_msg="$(um_center_message "$(printf '%b' "$text")
 
-$(um_menu_keys_hint)")"
-
-  # Native yesno: Tab switches OK ↔ Cancel (full buttons).
   whiptail --title "${title}" --fb \
     --yes-button "OK" --no-button "Cancel" \
     "${extra[@]}" \
-    --yesno "${centered_msg}" "${dialog_height}" "${dialog_width}"
+    --yesno "${body}" "${dialog_height}" "${dialog_width}"
 }
 
 um_whiptail_msg() {
-  local title="$1" text="$2" min_height="${3:-10}" min_width="${4:-70}"
-  local dialog_dims dialog_height dialog_width centered_msg line_count
+  local title="$1" text="$2" _unused_h="${3:-}" _unused_w="${4:-}"
+  local dialog_dims dialog_height dialog_width body line_count
 
   if ! um_menu_has_whiptail; then
     printf '\n== %s ==\n%b\n' "$title" "$text"
@@ -287,37 +271,26 @@ um_whiptail_msg() {
   fi
 
   um_menu_set_newt_colors
-  # Size to content when possible so the text area does not steal focus from OK.
-  line_count="$(printf '%b' "$text" | wc -l)"
-  if [[ "${line_count}" -lt "${min_height}" ]]; then
-    min_height=$((line_count + 8))
-    [[ "${min_height}" -lt 10 ]] && min_height=10
-  fi
-  dialog_dims="$(um_calc_dialog_size "${min_height}" "${min_width}")"
+  # Cap lines so the text region never scrolls (scrollable text steals OK focus).
+  body="$(um_whiptail_fit_body "$(printf '%b\n\n(Enter = OK)' "$text")" 16)"
+  line_count="$(printf '%b' "$body" | wc -l)"
+  dialog_dims="$(um_calc_dialog_size "${line_count}" 72 6)"
   read -r dialog_height dialog_width <<< "${dialog_dims}"
-  # Cap height so short status pages stay button-focused (Enter/Tab → OK).
-  if [[ "${dialog_height}" -gt $((line_count + 12)) ]]; then
-    dialog_height=$((line_count + 12))
-    [[ "${dialog_height}" -lt 12 ]] && dialog_height=12
-  fi
-  centered_msg="$(printf '%b\n\n(Enter or Tab then Enter = OK)' "$text")"
 
-  # --fb: OK is a full button; Tab/Enter reach it reliably with NEWT_COLORS.
   whiptail --title "${title}" --fb --ok-button "OK" \
-    --msgbox "${centered_msg}" "${dialog_height}" "${dialog_width}" || true
+    --msgbox "${body}" "${dialog_height}" "${dialog_width}" || true
 }
 
 um_whiptail_file_msg() {
   local title="$1" file="$2" height="${3:-20}" width="${4:-72}"
   local body
-  # Strip ANSI so whiptail does not treat color codes as focusable junk.
-  body="$(sed 's/\x1b\[[0-9;]*m//g' "$file" 2>/dev/null || cat "$file")"
+  body="$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$file" 2>/dev/null || cat "$file")"
   um_whiptail_msg "$title" "$body" "$height" "$width"
 }
 
 um_whiptail_input() {
   local title="$1" text="$2" default="${3:-}"
-  local dialog_dims dialog_height dialog_width centered_msg result rc
+  local dialog_dims dialog_height dialog_width body line_count result rc
 
   if ! um_menu_has_whiptail; then
     printf '%s\n%b\n> ' "$title" "$text"
@@ -328,14 +301,15 @@ um_whiptail_input() {
   fi
 
   um_menu_set_newt_colors
-  dialog_dims="$(um_calc_dialog_size 10 70)"
+  body="$(um_whiptail_fit_body "$(printf '%b\n\n%s' "$text" "$(um_menu_keys_hint)")" 12)"
+  line_count="$(printf '%b' "$body" | wc -l)"
+  dialog_dims="$(um_calc_dialog_size "${line_count}" 70 8)"
   read -r dialog_height dialog_width <<< "${dialog_dims}"
-  centered_msg="$(um_center_message "$(printf '%b' "$text")
 
-$(um_menu_keys_hint)")"
-
+  # Tab: entry ↔ OK ↔ Cancel
   result="$(whiptail --title "${title}" --fb \
-    --inputbox "${centered_msg}" \
+    --ok-button "OK" --cancel-button "Cancel" \
+    --inputbox "${body}" \
     "${dialog_height}" "${dialog_width}" "${default}" \
     3>&1 1>&2 2>&3)"
   rc=$?

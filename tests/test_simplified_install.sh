@@ -266,7 +266,13 @@ else
   pass "no textbox (avoids focus trap)"
 fi
 grep -q 'um_calc_menu_size' "${ROOT}/lib/install-menu.sh" && pass "dynamic menu sizing (XDR-style)" || fail "missing um_calc_menu_size"
-grep -q 'um_center_menu_message' "${ROOT}/lib/install-menu.sh" && pass "centered menu message" || fail "missing center helper"
+grep -q 'um_calc_dialog_size' "${ROOT}/lib/install-menu.sh" && pass "content-fitted dialog sizing" || fail "missing um_calc_dialog_size"
+grep -q 'um_whiptail_fit_body' "${ROOT}/lib/install-menu.sh" && pass "body truncate avoids scroll focus trap" || fail "missing um_whiptail_fit_body"
+if grep -qE 'um_center_menu_message|um_center_message' "${ROOT}/lib/install-menu.sh"; then
+  fail "centering padding still present (steals Tab focus)"
+else
+  pass "no vertical centering padding"
+fi
 grep -q -- '--yes-button' "${ROOT}/lib/install-menu.sh" && pass "yesno uses OK/Cancel buttons" || fail "missing yesno OK/Cancel"
 # um_whiptail_menu must keep Cancel enabled for Tab/Esc
 menu_fn="$(awk '/^um_whiptail_menu\(/,/^um_whiptail_yesno\(/' "${ROOT}/lib/install-menu.sh")"
@@ -274,6 +280,31 @@ if echo "$menu_fn" | grep -q -- '--nocancel'; then
   fail "menu still uses --nocancel (blocks Tab/Cancel)"
 else
   pass "menu allows Cancel (Tab/Esc)"
+fi
+if grep -qE -- '--nocancel' "${ROOT}/lib/install-menu.sh"; then
+  fail "--nocancel still used somewhere"
+else
+  pass "no --nocancel anywhere"
+fi
+# Every direct whiptail invocation must use --fb (Tab focus on OK/Cancel)
+wt_lines="$(grep -E '^\s*(result="\$\()?whiptail |^\s*whiptail ' "${ROOT}/lib/install-menu.sh" || true)"
+wt_count="$(printf '%s\n' "$wt_lines" | grep -c 'whiptail' || true)"
+fb_count="$(printf '%s\n' "$wt_lines" | grep -c -- '--fb' || true)"
+if [[ "${wt_count}" -ge 4 ]] && [[ "${wt_count}" -eq "${fb_count}" ]]; then
+  pass "all ${wt_count} whiptail calls use --fb"
+else
+  fail "whiptail/--fb mismatch (whiptail=${wt_count} fb=${fb_count})"
+fi
+# All dialogs go through helpers (no raw --menu/--yesno/--msgbox/--inputbox outside helpers)
+raw_outside="$(awk '
+  /^um_whiptail_(menu|yesno|msg|input)\(/ { in_helper=1 }
+  in_helper && /^}/ { in_helper=0; next }
+  !in_helper && /whiptail / { print }
+' "${ROOT}/lib/install-menu.sh" || true)"
+if [[ -n "${raw_outside}" ]]; then
+  fail "raw whiptail outside helpers:\n${raw_outside}"
+else
+  pass "all dialogs use whiptail helpers"
 fi
 grep -q 'um_menu_keys_hint' "${ROOT}/lib/install-menu.sh" && pass "keyboard hints shown" || fail "keys hint missing"
 grep -q 'Tab = OK/Cancel' "${ROOT}/lib/install-menu.sh" && pass "Tab hint in keys help" || fail "Tab hint missing"
