@@ -232,10 +232,12 @@ rm -f "${BASE_PATH}/offline/READY"
 # ---------------------------------------------------------------------------
 echo "[test_size_fallback_when_jsonl_empty]"
 : >"$UM_PROGRESS_JSONL"
-mkdir -p "${UBUNTU_MIRROR_ROOT}/pool"
+mkdir -p "${UBUNTU_MIRROR_ROOT}/pool" "${BASE_PATH}/mirror"
 printf 'x' >"${UBUNTU_MIRROR_ROOT}/pool/a.deb"
+# Size sample uses MIRROR_PATH (or BASE_PATH mount); seed a file there for fixtures.
 export MIRROR_PATH="${BASE_PATH}/mirror"
-mkdir -p "${MIRROR_PATH}"
+dd if=/dev/zero of="${MIRROR_PATH}/seed.bin" bs=1024 count=4 status=none 2>/dev/null \
+  || printf 'xxxx' >"${MIRROR_PATH}/seed.bin"
 sz="$(um_mirror_size_bytes_cached)"
 [[ "$sz" -gt 0 ]] && pass "mirror size falls back to sample ($sz)" || fail "size fallback got $sz"
 pk2="$(um_package_count_cached)"
