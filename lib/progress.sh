@@ -222,25 +222,34 @@ um_disk_write_sectors() {
 }
 
 um_mirror_size_bytes_cached() {
-  # Prefer last progress.jsonl mirror_size event; fall back to 0
-  local f
+  # Prefer last progress.jsonl mirror_size event; fall back to live sample.
+  local f bytes=0
   f="$(um_progress_jsonl_path)"
-  if [[ -f "$f" ]]; then
-    awk -F'"bytes":' '
+  if [[ -f "$f" ]] && [[ -s "$f" ]]; then
+    bytes="$(awk -F'"bytes":' '
       /"event":"mirror_size"/ {
         split($2, a, /[,}]/);
         last=a[1]+0
       }
       END { print last+0 }
-    ' "$f" 2>/dev/null || echo 0
-  else
-    echo 0
+    ' "$f" 2>/dev/null || echo 0)"
   fi
+  if [[ "${bytes:-0}" -gt 0 ]]; then
+    printf '%s\n' "$bytes"
+    return
+  fi
+  um_sample_mirror_size_bytes
 }
 
 um_sample_mirror_size_bytes() {
-  local root="${1:-${BASE_PATH:-/var/spool/apt-mirror}}"
+  local root="${1:-${MIRROR_PATH:-${BASE_PATH:-/var/spool/apt-mirror}/mirror}}"
+  local base="${BASE_PATH:-/var/spool/apt-mirror}"
   if [[ -d "$root" ]]; then
+    # Prefer df used-bytes when BASE_PATH is a dedicated mount (avoids multi-minute du).
+    if findmnt -n "$base" >/dev/null 2>&1; then
+      df -PB1 "$base" 2>/dev/null | awk 'NR==2 {print $3+0; exit}'
+      return
+    fi
     du -sb "$root" 2>/dev/null | awk '{print $1}'
   else
     echo 0
@@ -248,19 +257,28 @@ um_sample_mirror_size_bytes() {
 }
 
 um_package_count_cached() {
-  local f
+  local f count=0 ready_count
+  # Prefer offline READY (written at sync end) — avoids multi-minute find on large mirrors.
+  ready_count="$(um_ready_field package_count 2>/dev/null || true)"
+  if [[ "${ready_count:-}" =~ ^[0-9]+$ ]] && [[ "${ready_count}" -gt 0 ]]; then
+    printf '%s\n' "$ready_count"
+    return
+  fi
   f="$(um_progress_jsonl_path)"
-  if [[ -f "$f" ]]; then
-    awk -F'"count":' '
+  if [[ -f "$f" ]] && [[ -s "$f" ]]; then
+    count="$(awk -F'"count":' '
       /"event":"package_count"/ {
         split($2, a, /[,}]/);
         last=a[1]+0
       }
       END { print last+0 }
-    ' "$f" 2>/dev/null || echo 0
-  else
-    echo 0
+    ' "$f" 2>/dev/null || echo 0)"
   fi
+  if [[ "${count:-0}" -gt 0 ]]; then
+    printf '%s\n' "$count"
+    return
+  fi
+  um_sample_package_count
 }
 
 um_sample_package_count() {
@@ -456,7 +474,10 @@ um_detect_sync_health() {
   if um_is_sync_running || [[ "$active_state" == "activating" ]] || [[ "$active_state" == "active" ]]; then
     process_alive=1
   fi
-  if pgrep -f '/usr/bin/apt-mirror' >/dev/null 2>&1 || pgrep -f 'run-apt-mirror\.sh' >/dev/null 2>&1; then
+  # Keep in sync with um_is_sync_running() — do not use loose '/usr/bin/apt-mirror' match.
+  if pgrep -f '/usr/bin/perl /usr/bin/apt-mirror' >/dev/null 2>&1 \
+    || pgrep -f 'ubuntu-offline-mirror\.sh[[:space:]]+sync' >/dev/null 2>&1 \
+    || pgrep -f 'run-apt-mirror\.sh' >/dev/null 2>&1; then
     process_alive=1
   fi
 
@@ -473,9 +494,11 @@ um_detect_sync_health() {
   if [[ "${net_delta:-0}" -gt 1024 ]]; then has_activity=1; fi
   if [[ "${disk_delta:-0}" -gt 0 ]]; then has_activity=1; fi
 
-  # Ready / complete take priority when not actively syncing
-  if um_has_marker "ready" 2>/dev/null; then
-    if [[ "$process_alive" -eq 0 ]]; then
+  # Ready / complete take priority when not actively syncing.
+  # Treat inactive/dead service as not syncing even if pgrep false-positives.
+  if um_is_mirror_ready 2>/dev/null; then
+    if [[ "$process_alive" -eq 0 ]] \
+      || [[ "$active_state" != "active" && "$active_state" != "activating" ]]; then
       UM_LIFECYCLE_STATE="READY"
       UM_HEALTH_STATE="COMPLETE"
       UM_HEALTH_REASON="Mirror state READY"

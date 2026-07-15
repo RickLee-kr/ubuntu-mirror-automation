@@ -204,6 +204,44 @@ um_detect_sync_health 999999 0 0 0
 [[ "$UM_LIFECYCLE_STATE" == "READY" ]] && pass "READY" || fail "expected READY got $UM_LIFECYCLE_STATE"
 
 # ---------------------------------------------------------------------------
+echo "[test_offline_ready_file]"
+um_clear_marker "ready" 2>/dev/null || true
+um_clear_marker "initial-sync-complete" 2>/dev/null || true
+MOCK_PROCESS=0
+MOCK_ACTIVE_STATE="inactive"
+MOCK_RESULT="success"
+mkdir -p "${BASE_PATH}/offline"
+cat >"${BASE_PATH}/offline/READY" <<'EOF'
+generated_at=2026-07-14T23:10:05+00:00
+package_count=465138
+total_size=2.2T
+EOF
+um_detect_sync_health 999999 0 0 0
+[[ "$UM_LIFECYCLE_STATE" == "READY" ]] && pass "offline READY file → READY" \
+  || fail "expected READY from offline file got $UM_LIFECYCLE_STATE"
+pkgs="$(um_package_count_cached)"
+[[ "$pkgs" == "465138" ]] && pass "package_count from offline READY" || fail "pkgs=$pkgs"
+# False-positive process + inactive service still reports READY
+MOCK_PROCESS=1
+um_detect_sync_health 999999 0 0 0
+[[ "$UM_LIFECYCLE_STATE" == "READY" ]] && pass "READY wins over stale process when inactive" \
+  || fail "expected READY got $UM_LIFECYCLE_STATE"
+MOCK_PROCESS=0
+rm -f "${BASE_PATH}/offline/READY"
+
+# ---------------------------------------------------------------------------
+echo "[test_size_fallback_when_jsonl_empty]"
+: >"$UM_PROGRESS_JSONL"
+mkdir -p "${UBUNTU_MIRROR_ROOT}/pool"
+printf 'x' >"${UBUNTU_MIRROR_ROOT}/pool/a.deb"
+export MIRROR_PATH="${BASE_PATH}/mirror"
+mkdir -p "${MIRROR_PATH}"
+sz="$(um_mirror_size_bytes_cached)"
+[[ "$sz" -gt 0 ]] && pass "mirror size falls back to sample ($sz)" || fail "size fallback got $sz"
+pk2="$(um_package_count_cached)"
+[[ "$pk2" -ge 1 ]] && pass "package count falls back to find ($pk2)" || fail "pkg fallback got $pk2"
+
+# ---------------------------------------------------------------------------
 echo "[test_log_activity_detection]"
 printf 'line\n' >"$APT_MIRROR_LOG"
 touch -d '5 seconds ago' "$APT_MIRROR_LOG" 2>/dev/null || true

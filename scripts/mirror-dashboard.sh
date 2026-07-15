@@ -180,7 +180,7 @@ render_finalize_steps() {
     tail -n 12 "$flog" 2>/dev/null || true
     return
   fi
-  if um_has_marker "ready"; then
+  if um_is_mirror_ready; then
     printf '[OK] Mirror state READY\n'
   elif um_has_marker "initial-sync-complete"; then
     printf '[OK] Initial synchronization completed\n'

@@ -678,7 +678,7 @@ phase6_sync() {
     return 0
   fi
 
-  if um_initial_sync_complete || um_has_marker "ready"; then
+  if um_initial_sync_complete || um_is_mirror_ready; then
     um_ok "Initial sync already completed — not restarting"
     return 0
   fi
@@ -821,7 +821,7 @@ run_install_pipeline() {
     local gen
     gen="$(mktemp)"; um_generate_mirror_list >"$gen"
     if cmp -s "$gen" /etc/apt/mirror.list 2>/dev/null; then
-      if um_is_sync_running || um_has_marker "ready" || um_initial_sync_complete; then
+      if um_is_sync_running || um_is_mirror_ready || um_initial_sync_complete; then
         rm -f "$gen"
         phase7_summary
         return 0

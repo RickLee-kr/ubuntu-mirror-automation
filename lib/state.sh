@@ -45,11 +45,36 @@ um_clear_marker() {
   rm -f "$(um_state_marker "$1")" 2>/dev/null || true
 }
 
+um_offline_ready_path() {
+  printf '%s/offline/READY\n' "${BASE_PATH:-/var/spool/apt-mirror}"
+}
+
+um_is_mirror_ready() {
+  # State dir marker (mirrorctl finalize) OR offline READY file (ubuntu-offline-mirror).
+  if um_has_marker "ready"; then
+    return 0
+  fi
+  [[ -f "$(um_offline_ready_path)" ]]
+}
+
+um_ready_field() {
+  # um_ready_field <key> — read key=value from offline READY marker
+  local key="$1" f
+  f="$(um_offline_ready_path)"
+  [[ -f "$f" ]] || return 1
+  awk -F= -v k="$key" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$f"
+}
+
 um_is_sync_running() {
   if systemctl is-active --quiet apt-mirror.service 2>/dev/null; then
     return 0
   fi
-  pgrep -f '/usr/bin/apt-mirror' >/dev/null 2>&1
+  # Match real sync processes only — avoid pgrep -f '/usr/bin/apt-mirror' which
+  # false-positives on any shell whose argv/script text mentions that path.
+  pgrep -f '/usr/bin/perl /usr/bin/apt-mirror' >/dev/null 2>&1 \
+    || pgrep -f 'ubuntu-offline-mirror\.sh[[:space:]]+sync' >/dev/null 2>&1 \
+    || pgrep -f '/usr/local/lib/ubuntu-mirror/run-apt-mirror\.sh' >/dev/null 2>&1 \
+    || pgrep -f 'run-apt-mirror\.sh' >/dev/null 2>&1
 }
 
 um_is_installed() {
@@ -62,6 +87,9 @@ um_initial_sync_complete() {
   if um_has_marker "initial-sync-complete"; then
     return 0
   fi
+  if um_is_mirror_ready; then
+    return 0
+  fi
   local noble_release
   noble_release="${DIST_ROOT:-${BASE_PATH:-/var/spool/apt-mirror}/mirror/archive.ubuntu.com/ubuntu/dists}/noble/Release"
   if [[ -f "$noble_release" ]]; then
@@ -69,6 +97,9 @@ um_initial_sync_complete() {
       return 0
     fi
     if [[ -f "${APT_MIRROR_INITIAL_LOG:-/var/log/apt-mirror-initial.log}" ]] && grep -q 'End time:' "${APT_MIRROR_INITIAL_LOG}" 2>/dev/null; then
+      return 0
+    fi
+    if [[ -f /var/log/ubuntu-offline-mirror.log ]] && grep -q 'sync complete — READY' /var/log/ubuntu-offline-mirror.log 2>/dev/null; then
       return 0
     fi
   fi
@@ -87,7 +118,7 @@ um_detect_lifecycle_state() {
     printf 'NOT_INSTALLED\n'
     return
   fi
-  if um_has_marker "ready"; then
+  if um_is_mirror_ready; then
     printf 'READY\n'
     return
   fi

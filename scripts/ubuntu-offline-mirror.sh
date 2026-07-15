@@ -164,6 +164,7 @@ invalidate_ready() {
       || rm -f "$READY_MARKER"
     warn "READY marker invalidated"
   fi
+  rm -f /var/lib/ubuntu-mirror/ready /var/lib/ubuntu-mirror/initial-sync-complete 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -855,6 +856,7 @@ write_ready_marker() {
   local pkg_count total_h
   pkg_count="$(find "$UBUNTU_ROOT" -type f -name '*.deb' 2>/dev/null | wc -l | tr -d ' ')"
   total_h="$(du -sh "$MIRROR_ROOT" 2>/dev/null | awk '{print $1}')"
+  mkdir -p "$OFFLINE_DIR"
   cat >"$READY_MARKER" <<EOF
 generated_at=$(iso_now)
 sync_started=${SYNC_STARTED}
@@ -871,6 +873,11 @@ manifest=${MANIFEST_JSON}
 sha256sums=${SHA256SUMS}
 snapshot_id=${SNAPSHOT_ID}
 EOF
+  # Keep mirrorctl/state markers in sync with offline READY
+  mkdir -p /var/lib/ubuntu-mirror 2>/dev/null || true
+  date -Is >/var/lib/ubuntu-mirror/ready 2>/dev/null || true
+  date -Is >/var/lib/ubuntu-mirror/initial-sync-complete 2>/dev/null || true
+  rm -f /var/lib/ubuntu-mirror/sync-failed /var/lib/ubuntu-mirror/sync-started 2>/dev/null || true
   ok "READY marker written: $READY_MARKER"
 }
 

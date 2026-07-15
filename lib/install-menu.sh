@@ -89,7 +89,7 @@ um_menu_existing_data_gib() {
 um_menu_sync_label() {
   if um_is_sync_running 2>/dev/null; then
     printf 'RUNNING'
-  elif um_has_marker "ready" 2>/dev/null; then
+  elif um_is_mirror_ready 2>/dev/null; then
     printf 'READY'
   elif um_initial_sync_complete 2>/dev/null; then
     printf 'SYNC_COMPLETE'
