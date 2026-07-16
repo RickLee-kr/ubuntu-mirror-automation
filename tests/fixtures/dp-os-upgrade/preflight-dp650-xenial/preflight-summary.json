@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0",
+  "script_version": "1.0.0",
+  "preflight_id": "dp-upgrade-preflight-ready-aio-synthetic",
+  "started_at_utc": "2026-07-16T10:00:40Z",
+  "completed_at_utc": "2026-07-16T10:00:40Z",
+  "duration_seconds": 5,
+  "input": {
+    "path": "synthetic",
+    "type": "directory",
+    "collector_script_version": "1.0.2",
+    "collector_schema_version": "1.0",
+    "collector_status": "complete",
+    "collection_id": "synth",
+    "integrity_status": "ok"
+  },
+  "target": {
+    "hostname": "ready-aio",
+    "os_version": "16.04",
+    "os_codename": "xenial",
+    "dp_version_raw": "6.5.0ubuntu1",
+    "dp_version_normalized": "6.5.0",
+    "role": "AIO",
+    "cluster_detected": true,
+    "worker_ips": []
+  },
+  "requested_path": {
+    "package_source_mode": "mirror",
+    "package_source_url": "http://10.34.200.20",
+    "bringup_mode": "offline",
+    "snapshot_reference_present": true,
+    "backup_reference_present": false,
+    "snapshot_reference": "esxi-lab-snapshot-20260716",
+    "backup_reference": null
+  },
+  "upgrade_plan": {
+    "supported_start": true,
+    "phase1_required": true,
+    "phase1_hops": [
+      "16.04->18.04",
+      "18.04->20.04",
+      "20.04->22.04",
+      "22.04->24.04"
+    ],
+    "phase2_required": false,
+    "target_os": "24.04",
+    "target_dp": "6.5.0",
+    "recommended_action": "RUN_OS_UPGRADE",
+    "upgrade_required": true
+  },
+  "result": {
+    "overall_status": "READY",
+    "exit_code": 0,
+    "pass_count": 10,
+    "warning_count": 0,
+    "blocker_count": 0,
+    "unknown_count": 0
+  },
+  "checks": []
+}

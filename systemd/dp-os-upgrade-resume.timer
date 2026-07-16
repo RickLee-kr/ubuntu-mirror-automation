@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodic retry for retryable DP OS upgrade BLOCKED state
+Requires=dp-os-upgrade-resume.service
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+Unit=dp-os-upgrade-resume.service
+
+[Install]
+WantedBy=timers.target

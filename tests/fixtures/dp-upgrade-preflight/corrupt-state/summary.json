@@ -1,0 +1,66 @@
+{
+  "schema_version": "1.0",
+  "script_version": "1.0.2",
+  "collection_id": "corrupt-state",
+  "started_at_utc": "2026-07-16T00:00:00Z",
+  "completed_at_utc": "2026-07-16T00:00:30Z",
+  "duration_seconds": 30,
+  "hostname": "corrupt-state",
+  "fqdn": "corrupt-state",
+  "execution_user": "root",
+  "effective_user_id": 0,
+  "is_root": true,
+  "sudo_user": "root",
+  "os": {
+    "id": "ubuntu",
+    "version_id": "16.04",
+    "codename": "xenial",
+    "kernel": "4.4.0-210-generic",
+    "architecture": "x86_64"
+  },
+  "dp": {
+    "version": "6.5.0ubuntu1",
+    "version_status": "detected",
+    "role": "AIO",
+    "cluster_detected": true,
+    "worker_ips": []
+  },
+  "shells": {
+    "root": "/bin/bash",
+    "aella": "/bin/bash"
+  },
+  "storage": {
+    "root_available_bytes": 500000000000,
+    "boot_available_bytes": 500000000000,
+    "aelladata_available_bytes": 500000000000,
+    "aelladata_mounted": false
+  },
+  "time": {
+    "utc_now": "2026-07-16T00:00:10Z",
+    "ntp_synchronized": true,
+    "source": "timedatectl"
+  },
+  "apt": {
+    "dpkg_audit_clean": true,
+    "held_package_count": 0,
+    "source_uri_count": 2
+  },
+  "upgrade": {
+    "existing_state_detected": true,
+    "state": "COMPLETED",
+    "hop_history_detected": false
+  },
+  "bringup": {
+    "aelladeb_py3_exists": false,
+    "aelladeb_py3_file_count": 0,
+    "aelladeb_exists": true,
+    "aelladeb_file_count": 25
+  },
+  "collection": {
+    "status": "complete",
+    "successful_checks": 39,
+    "failed_checks": 0,
+    "skipped_checks": 0,
+    "warnings": []
+  }
+}

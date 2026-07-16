@@ -1,0 +1,4 @@
+path	size_bytes	sha256
+/opt/aelladata/cluster-name	0	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+/opt/aelladata/release-metadata.yml	138	abc123
+/opt/aelladata/release-image.yml	4537	def456

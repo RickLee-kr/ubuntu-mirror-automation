@@ -1,0 +1,3 @@
+# deduplicated source URIs
+http://archive.ubuntu.com/ubuntu/
+http://security.ubuntu.com/ubuntu/

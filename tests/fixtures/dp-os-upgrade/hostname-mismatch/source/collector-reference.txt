@@ -1,0 +1,4 @@
+collector_path=synthetic
+collector_type=directory
+collection_id=synth
+hostname=other-host

@@ -1,0 +1,27 @@
+[Unit]
+Description=Stellar Cyber DP Phase 1 OS upgrade runner
+Documentation=file:///opt/aelladata/os-upgrade/reports/phase1-remediation.md
+After=network-online.target local-fs.target
+Wants=network-online.target
+ConditionPathExists=/opt/aelladata/os-upgrade/state.json
+ConditionPathExists=/opt/aelladata/os-upgrade/runtime/dp-os-upgrade-runner.sh
+
+[Service]
+Type=oneshot
+SuccessExitStatus=0 40 41
+User=root
+WorkingDirectory=/opt/aelladata/os-upgrade
+ExecStart=/opt/aelladata/os-upgrade/runtime/dp-os-upgrade-runner.sh --resume
+TimeoutStartSec=infinity
+KillMode=mixed
+KillSignal=SIGTERM
+SendSIGKILL=no
+RemainAfterExit=no
+# Avoid restart loops on BLOCKED/FAILED/COMPLETED (oneshot + no Restart)
+Restart=no
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dp-os-upgrade
+
+[Install]
+WantedBy=multi-user.target

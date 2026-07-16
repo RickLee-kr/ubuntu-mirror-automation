@@ -1,0 +1,4 @@
+PRESENT	dir	/opt/aelladata
+ABSENT	-	/opt/aelladata/os-upgrade
+ABSENT	-	/opt/aelladata/aelladeb_py3
+PRESENT	dir	/opt/aelladata/aelladeb

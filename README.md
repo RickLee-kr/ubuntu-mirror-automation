@@ -136,6 +136,45 @@ sudo ubuntu-offline-mirror freeze   # before air-gap move
 Config: `/etc/default/ubuntu-offline-mirror` (`PUBLIC_BASE_URL`, `ALLOW_ROOT_FS_MIRROR`, …).  
 Ops guide: `docs/operations.md`.
 
+DP host evidence collection (read-only, before upgrade): [`docs/collect-dp-upgrade-readiness.md`](docs/collect-dp-upgrade-readiness.md) / `scripts/collect-dp-upgrade-readiness.sh`.
+
+DP upgrade preflight (read-only READY/BLOCKED verdict from a collection): [`docs/dp-upgrade-preflight.md`](docs/dp-upgrade-preflight.md) / `scripts/dp-os-upgrade-preflight.sh`.
+
+```bash
+sudo ./scripts/dp-os-upgrade-preflight.sh \
+  --collection /var/tmp/dp-upgrade-readiness-dp01-....tar.gz \
+  --package-source-mode mirror \
+  --package-source-url http://10.34.200.20 \
+    --snapshot-reference "esxi-dp01-before-ubuntu-upgrade" \
+  --output-dir /var/tmp \
+  --keep-directory
+```
+
+Exit codes: `0` READY, `10` READY_WITH_WARNINGS, `20` BLOCKED, `2` CLI/input error, `3` integrity/internal error.
+
+Recommended DP upgrade flow:
+
+```text
+Collector
+→ OS-only Preflight (dp-os-upgrade-preflight.sh)
+→ Discovery OS Hop (or production hop chain)
+→ Package/File Analysis
+→ Mirror/Offline Set 보완
+→ 다음 OS Hop 반복 (new collector + preflight each discovery hop)
+→ Ubuntu 24.04 도달
+────────────────────────────────
+→ 별도 Phase 2 Readiness
+→ DP Python/Py3 Bringup
+```
+
+Profiles: `production` (snapshot required, full chain allowed) vs `discovery`
+(snapshot optional, default one hop, `CHECKPOINT_REACHED`, disposable VM ack).
+
+Phase 1 OS upgrade orchestrator: [`docs/dp-os-upgrade.md`](docs/dp-os-upgrade.md) /
+`scripts/dp-os-upgrade-only.sh` (default read-only; `install` requires `--execute` and
+destructive acknowledgment). Lab destructive E2E is gated separately:
+[`docs/dp-os-upgrade-lab-e2e.md`](docs/dp-os-upgrade-lab-e2e.md).
+
 **Included:** amd64 packages (main/restricted/universe/multiverse), updates/security/backports, release upgraders.  
 **Excluded:** i386, deb-src, Ubuntu Pro/ESM, PPAs, Docker/NVIDIA external repos, Snap, vendor private APT.
 
@@ -293,6 +332,8 @@ See also:
 - [docs/architecture.md](docs/architecture.md)
 - [docs/operations.md](docs/operations.md)
 - [docs/recovery.md](docs/recovery.md)
+- [docs/collect-dp-upgrade-readiness.md](docs/collect-dp-upgrade-readiness.md)
+- [docs/dp-upgrade-preflight.md](docs/dp-upgrade-preflight.md)
 
 ### Safety
 

@@ -1,0 +1,5 @@
+hostname	status	detail
+archive.ubuntu.com	SUCCESS	1.2.3.4
+security.ubuntu.com	SUCCESS	1.2.3.5
+changelogs.ubuntu.com	SUCCESS	1.2.3.6
+old-releases.ubuntu.com	SUCCESS	1.2.3.7

@@ -1,0 +1,3 @@
+url	http_status	result
+http://archive.ubuntu.com/ubuntu/dists/noble/Release	200	200
+http://changelogs.ubuntu.com/meta-release-lts	200	200

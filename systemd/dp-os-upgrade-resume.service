@@ -1,0 +1,27 @@
+[Unit]
+Description=Stellar Cyber DP OS upgrade retryable-blocked revalidation
+Documentation=file:///opt/aelladata/os-upgrade/reports/phase1-remediation.md
+After=network-online.target local-fs.target
+Wants=network-online.target
+ConditionPathExists=/opt/aelladata/os-upgrade/state.json
+ConditionPathExists=/opt/aelladata/os-upgrade/runtime/dp-os-upgrade-runner.sh
+Conflicts=dp-os-upgrade.service
+
+[Service]
+Type=oneshot
+SuccessExitStatus=0 40 41
+User=root
+WorkingDirectory=/opt/aelladata/os-upgrade
+# Only meaningful for retryable BLOCKED; runner itself no-ops otherwise
+ExecStart=/opt/aelladata/os-upgrade/runtime/dp-os-upgrade-runner.sh --retry
+TimeoutStartSec=infinity
+KillMode=mixed
+KillSignal=SIGTERM
+SendSIGKILL=no
+Restart=no
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dp-os-upgrade-resume
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,3 @@
+check_id	category	status	severity	observed	expected	reason	remediation	evidence_file	evidence_key
+INPUT_INTEGRITY	input	PASS	INFO	o	e	ok	none	summary.json	x
+CRITICAL_HELD_PACKAGES	apt	FAIL	BLOCKER	systemd	none	held	unhold	apt/held-packages.txt	x

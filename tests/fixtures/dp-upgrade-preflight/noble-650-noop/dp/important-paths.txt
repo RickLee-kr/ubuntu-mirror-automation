@@ -1,0 +1,2 @@
+PRESENT	dir	/opt/aelladata
+PRESENT	dir	/opt/aelladata/aelladeb_py3

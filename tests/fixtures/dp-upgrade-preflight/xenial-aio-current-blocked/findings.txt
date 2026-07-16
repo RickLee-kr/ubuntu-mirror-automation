@@ -1,0 +1,3 @@
+aella shell is not /bin/bash
+/opt/aelladata is not a separate mount
+aelladeb_py3 was not found

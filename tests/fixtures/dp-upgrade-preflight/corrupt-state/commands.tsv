@@ -1,0 +1,2 @@
+check_id	category	command_description	command	started_at_utc	duration_ms	return_code	status	output_file	error_summary
+smoke	self	ok	true	2026-07-16T00:00:00Z	1	0	SUCCESS	collection.log	

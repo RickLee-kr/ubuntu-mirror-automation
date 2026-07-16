@@ -1,0 +1,5 @@
+=== total ===
+58G	/opt/aelladata
+=== counts ===
+files=13739
+dirs=1827

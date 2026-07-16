@@ -1,0 +1,4 @@
+check_id	category	status	severity	observed	expected	reason	remediation	evidence_file	evidence_key
+INPUT_INTEGRITY	input	PASS	INFO	o	e	ok	none	summary.json	x
+AELLADATA_SEPARATE_MOUNT	storage	WARN	WARNING	o	e	warn	review	none	x
+POST_OS_DP_REVALIDATION	storage	WARN	WARNING	o	e	warn	review	none	x

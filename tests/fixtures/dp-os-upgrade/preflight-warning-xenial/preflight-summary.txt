@@ -1,0 +1,2 @@
+preflight summary
+overall_status: READY_WITH_WARNINGS

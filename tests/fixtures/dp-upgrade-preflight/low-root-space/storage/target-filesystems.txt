@@ -1,0 +1,4 @@
+path	filesystem	mountpoint	fstype	total_bytes	used_bytes	avail_bytes	inodes_used	inodes_free	read_only
+/	/dev/sda1	/	ext4	623852371968	100000000000	1000	1000000	70000000	false
+/boot	/dev/sda1	/	ext4	623852371968	100000000000	1000	1000000	70000000	false
+/opt/aelladata	/dev/sda1	/	ext4	623852371968	100000000000	1000	1000000	70000000	false

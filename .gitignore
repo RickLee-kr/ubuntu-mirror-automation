@@ -16,3 +16,11 @@ skel/
 
 .vscode/
 .idea/
+
+# Real DP host collection archives (do not commit)
+dp-upgrade-readiness-*.tar.gz
+dp-upgrade-preflight-*.tar.gz
+
+
+# Local test smoke outputs
+tests/smoke-results/

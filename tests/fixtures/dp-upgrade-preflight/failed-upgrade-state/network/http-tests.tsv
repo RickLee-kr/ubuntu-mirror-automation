@@ -1,0 +1,10 @@
+url	http_status	result
+http://archive.ubuntu.com/ubuntu/dists/xenial/Release	200	200
+http://archive.ubuntu.com/ubuntu/dists/xenial-updates/Release	200	200
+http://security.ubuntu.com/ubuntu/dists/xenial-security/Release	200	200
+http://archive.ubuntu.com/ubuntu/dists/bionic/Release	200	200
+http://archive.ubuntu.com/ubuntu/dists/focal/Release	200	200
+http://archive.ubuntu.com/ubuntu/dists/jammy/Release	200	200
+http://archive.ubuntu.com/ubuntu/dists/noble/Release	200	200
+http://old-releases.ubuntu.com/ubuntu/dists/xenial/Release	404	404
+http://changelogs.ubuntu.com/meta-release-lts	200	200

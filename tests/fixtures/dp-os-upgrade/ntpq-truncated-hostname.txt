@@ -1,0 +1,4 @@
+     remote           refid      st t when poll reach   delay   offset  jitter
+==============================================================================
++time2.google.co .GOOG.           1 u  467 1024  377   58.380    1.131   1.450
+*time1.google.co .GOOG.           1 u  831 1024  377   58.750    1.476   1.977
