@@ -1,0 +1,23 @@
+Package: bash
+Version: 4.4.18-2ubuntu1
+Architecture: amd64
+Filename: pool/main/b/bash/bash_4.4.18-2ubuntu1_amd64.deb
+SHA256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+Size: 1000
+Depends: base-files (>= 2.1.12), debianutils (>= 2.15)
+Provides: bash-completion-package
+
+Package: coreutils
+Version: 8.28-1ubuntu1
+Architecture: amd64
+Filename: pool/main/c/coreutils/coreutils_8.28-1ubuntu1_amd64.deb
+SHA256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+Size: 2000
+Depends: libacl1
+
+Package: zlib1g
+Version: 1.2.11.dfsg-0ubuntu2
+Architecture: amd64
+Filename: pool/main/z/zlib/zlib1g_1.2.11.dfsg-0ubuntu2_amd64.deb
+SHA256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+Size: 3000

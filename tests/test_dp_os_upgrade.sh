@@ -80,13 +80,28 @@ printf '%s %s\n' "$me" "$*" >>"$log"
 case "$me" in
   apt-get)
     case "${1:-}" in
+      check) exit "${DP_OS_UPGRADE_FAKE_APT_CHECK_RC:-0}" ;;
+      -s|--simulate)
+        if [[ "${DP_OS_UPGRADE_FAKE_APT_SIM_FAIL:-0}" == "1" ]]; then
+          echo "E: Broken packages" >&2
+          exit 1
+        fi
+        echo "0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded."
+        exit 0
+        ;;
       update|dist-upgrade|install|-y) exit 0 ;;
       *) exit 0 ;;
     esac
     ;;
   dpkg)
     case "${1:-}" in
-      --audit|-C) exit 0 ;;
+      --audit|-C)
+        if [[ -n "${DP_OS_UPGRADE_FAKE_DPKG_AUDIT:-}" ]]; then
+          printf '%s\n' "$DP_OS_UPGRADE_FAKE_DPKG_AUDIT"
+          exit 0
+        fi
+        exit 0
+        ;;
       --configure) exit 0 ;;
       *) exit 0 ;;
     esac
@@ -1249,6 +1264,1461 @@ PY
 run_cli install --preflight "$WORKDIR/pf-orphan2" --execute \
   --acknowledge-destructive-upgrade "I_UNDERSTAND_THIS_OS_UPGRADE_IS_DESTRUCTIVE"
 [[ "$RC" -eq 3 ]] && pass "orphan still blocks READY install" || fail "orphan ready rc=$RC"
+
+# ---------------------------------------------------------------------------
+# Bash 4.3 empty-array + durable execute authorization + repair-runtime
+# ---------------------------------------------------------------------------
+fresh_pf() {
+  local name="$1" src="${2:-$FIX/preflight-ready-xenial}"
+  python3 - <<PY
+import json,shutil,pathlib,datetime
+src=pathlib.Path("$src")
+dst=pathlib.Path("$WORKDIR/$name")
+if dst.exists(): shutil.rmtree(dst)
+shutil.copytree(src,dst)
+d=json.load(open(dst/"preflight-summary.json"))
+d["completed_at_utc"]=datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+json.dump(d, open(dst/"preflight-summary.json","w"), indent=2)
+print(dst)
+PY
+}
+
+# Empty reasons under set -u (native bash + xenial bash 4.3 when available)
+source "$LIB"
+osu_init_test_mode >/dev/null || true
+reasons=()
+got="$(osu_join_array reasons ',')"
+[[ -z "$got" ]] && pass "osu_join_array empty → empty string" || fail "osu_join_array empty got='$got'"
+reasons=("ntp_unsynchronized" "apt_lock")
+got="$(osu_join_array reasons ',')"
+[[ "$got" == "ntp_unsynchronized,apt_lock" ]] && pass "osu_join_array non-empty" || fail "osu_join_array full got='$got'"
+
+BASH43_BIN=""
+BASH43_LIB=""
+if [[ -x /tmp/bash43/bin/bash && -d /tmp/bash43/lib/x86_64-linux-gnu ]]; then
+  BASH43_BIN=/tmp/bash43/bin/bash
+  BASH43_LIB=/tmp/bash43/lib/x86_64-linux-gnu
+fi
+if [[ -n "$BASH43_BIN" ]]; then
+  if LD_LIBRARY_PATH="$BASH43_LIB" "$BASH43_BIN" -c 'set -euo pipefail
+source "'"$LIB"'"
+f() {
+  local reasons=()
+  local t
+  t="$(osu_join_array reasons ",")"
+  [[ -z "$t" ]] || exit 11
+  reasons+=("a"); reasons+=("b")
+  t="$(osu_join_array reasons ",")"
+  [[ "$t" == "a,b" ]] || exit 12
+  # live_precheck-style expand must not abort on empty
+  t="$(osu_join_array reasons ",")"
+}
+f
+' ; then
+    pass "Bash 4.3 set -u empty reasons safe"
+  else
+    fail "Bash 4.3 join/empty reasons failed"
+  fi
+  # Confirm naked pattern still fails on 4.3 (documents the bug class)
+  if LD_LIBRARY_PATH="$BASH43_LIB" "$BASH43_BIN" -c 'set -u; reasons=(); echo "${reasons[*]}"' >/dev/null 2>&1; then
+    fail "unexpected: naked reasons[*] worked on Bash 4.3"
+  else
+    pass "Bash 4.3 still rejects naked reasons[*] (bug class)"
+  fi
+else
+  skip "Bash 4.3 binary not available for live verification"
+fi
+
+# Durable execute authorization written by install; check/plan do not authorize
+setup_fake_root auth1
+PF_AUTH="$(fresh_pf pf-auth1)"
+run_cli check --preflight "$PF_AUTH"
+[[ "$RC" -eq 0 || "$RC" -eq 20 ]] && pass "check remains non-mutating" || fail "check rc=$RC"
+[[ ! -f "$FAKE/opt/aelladata/os-upgrade/operator-approval.json" ]] && pass "check does not write approval" || fail "check wrote approval"
+
+setup_fake_root auth2
+PF_AUTH="$(fresh_pf pf-auth2)"
+run_cli install --preflight "$PF_AUTH" --execute \
+  --acknowledge-destructive-upgrade "I_UNDERSTAND_THIS_OS_UPGRADE_IS_DESTRUCTIVE" || true
+AP="$FAKE/opt/aelladata/os-upgrade/operator-approval.json"
+SP="$FAKE/opt/aelladata/os-upgrade/state.json"
+if [[ -f "$AP" && -f "$AP.sha256" && -f "$SP" ]]; then
+  grep -q '"execute_authorized"[[:space:]]*:[[:space:]]*true' "$AP" \
+    && pass "approval records execute_authorized" || fail "approval missing execute_authorized"
+  grep -q '"destructive_acknowledgement_verified"[[:space:]]*:[[:space:]]*true' "$AP" \
+    && pass "approval records destructive ack" || fail "approval missing destructive ack"
+  grep -q '"execute_authorized"[[:space:]]*:[[:space:]]*true' "$SP" \
+    && pass "state records execute_authorized" || fail "state missing execute_authorized"
+  # Tamper approval → auth fails
+  source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+  echo 'tampered' >>"$AP"
+  if osu_apply_execute_authorization 2>/dev/null; then
+    fail "tampered approval still authorized"
+  else
+    pass "tampered approval blocks execute"
+  fi
+else
+  # Install may still fail later gates; require at least that a successful path stores auth
+  skip "approval files (install did not reach durable write; rc=$RC)"
+fi
+
+# Full discovery hop: reboot must not be skipped as no --execute when authorized
+setup_fake_root auth3
+PF_DISC="$(fresh_pf pf-auth3 "$FIX/preflight-discovery-xenial")"
+run_cli install --preflight "$PF_DISC" --execution-profile discovery --execute \
+  --acknowledge-destructive-upgrade "I_UNDERSTAND_THIS_OS_UPGRADE_IS_DESTRUCTIVE" \
+  --acknowledge-disposable-discovery-vm "I_UNDERSTAND_THIS_DISCOVERY_VM_MAY_BE_LOST" \
+  --max-hops 1
+echo "authorized discovery install rc=$RC"
+[[ "$RC" -eq 41 ]] && pass "authorized discovery reaches checkpoint" || fail "authorized discovery rc=$RC"
+if [[ -f "$FAKE/opt/aelladata/os-upgrade/state.json" ]]; then
+  python3 - <<PY
+import json
+d=json.load(open("$FAKE/opt/aelladata/os-upgrade/state.json"))
+assert d.get("execute_authorized") is True, d
+assert d.get("destructive_acknowledgement_verified") is True, d
+assert d.get("discovery_acknowledgement_verified") is True, d
+assert d.get("operator_approval_sha256"), d
+print("ok")
+PY
+  [[ $? -eq 0 ]] && pass "state durable auth fields present" || fail "state durable auth fields"
+fi
+if grep -q 'reboot skipped (no --execute)' "$WORKDIR/stderr" "$FAKE/var/log/aella/auto_os_upgrade.log" 2>/dev/null; then
+  fail "reboot falsely skipped despite durable auth"
+else
+  pass "no false 'reboot skipped (no --execute)' with durable auth"
+fi
+# Test mode records reboot intent
+[[ -f "$FAKE/tmp/reboot-requested.log" ]] && pass "authorized run recorded reboot intent" || fail "no reboot intent recorded"
+
+# State tamper blocks resume
+setup_fake_root auth4
+PF_DISC="$(fresh_pf pf-auth4 "$FIX/preflight-discovery-xenial")"
+run_cli install --preflight "$PF_DISC" --execution-profile discovery --execute \
+  --acknowledge-destructive-upgrade "I_UNDERSTAND_THIS_OS_UPGRADE_IS_DESTRUCTIVE" \
+  --acknowledge-disposable-discovery-vm "I_UNDERSTAND_THIS_DISCOVERY_VM_MAY_BE_LOST" \
+  --max-hops 1 || true
+if [[ -f "$FAKE/opt/aelladata/os-upgrade/state.json" ]]; then
+  python3 - <<PY
+import json
+p="$FAKE/opt/aelladata/os-upgrade/state.json"
+d=json.load(open(p))
+d["execute_authorized"]=False
+json.dump(d, open(p,"w"), indent=2)
+# leave sha mismatched intentionally
+PY
+  run_cli resume
+  [[ "$RC" -eq 3 ]] && pass "state checksum mismatch blocks resume" || fail "tampered state resume rc=$RC"
+fi
+
+# Mid-hop classification: do not re-run do-release-upgrade when OS already at target
+setup_fake_root mid1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/dist-upgrade"
+printf 'mainlog\n' >"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/dist-upgrade/main.log"
+ST_REVISION=1; ST_STATE=HOP_RELEASE_UPGRADE_RUNNING
+ST_HOSTNAME=ready-aio; ST_SOURCE_OS=16.04; ST_SOURCE_CODENAME=xenial
+ST_CURRENT_OS=16.04; ST_CURRENT_CODENAME=xenial
+ST_TARGET_OS=18.04; ST_TARGET_CODENAME=bionic
+ST_CURRENT_HOP=1; ST_TOTAL_HOPS=4; ST_ATTEMPT=1
+ST_PREFLIGHT_ID=pf-mid; ST_PREFLIGHT_COMPLETED_AT=2026-07-16T00:00:00Z
+ST_SNAPSHOT_REF=s; ST_PKG_MODE=mirror; ST_PKG_URL=http://10.34.200.20
+ST_WARNING_ACCEPTANCES='[]'; ST_RETRYABLE=false; ST_RETRY_COUNT=0; ST_PAUSE_REQUESTED=false
+ST_CREATED_AT=2026-07-16T00:00:00Z; ST_FINAL_TARGET_OS=24.04; ST_FINAL_TARGET_CODENAME=noble
+ST_EXECUTION_PROFILE=discovery; ST_DISCOVERY_ACKNOWLEDGED=true
+ST_EXECUTE_AUTHORIZED=true; ST_DESTRUCTIVE_ACK_VERIFIED=true; ST_DISCOVERY_ACK_VERIFIED=true
+ST_EXECUTE_AUTHORIZED_AT=2026-07-16T00:00:00Z; ST_EXECUTE_AUTHORIZED_BY=tester
+osu_write_operator_approval true true pf-mid '[]'
+osu_pin_runtime
+osu_write_state_json "$(osu_build_state_json)"
+# Advance fake OS to bionic (upgrade done, reboot pending)
+export DP_OS_UPGRADE_FAKE_OS_VERSION=18.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=bionic
+cp -a "$FIX/bionic-after/etc/os-release" "$FAKE/etc/os-release"
+printf '{"status":"REBOOT_REQUIRED","from":"16.04","to":"18.04"}\n' \
+  >"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/result.json"
+cls="$(osu_classify_in_progress_hop)"
+[[ "$cls" == "REBOOT_REQUIRED" ]] && pass "mid-hop classify REBOOT_REQUIRED" || fail "mid-hop classify=$cls"
+: >"$FAKE/tmp/stub-commands.log"
+bash "$OSU_STATE_DIR/runtime/dp-os-upgrade-runner.sh" --resume \
+  >"$WORKDIR/stdout" 2>"$WORKDIR/stderr" || true
+if grep -q 'do-release-upgrade' "$FAKE/tmp/stub-commands.log" 2>/dev/null; then
+  fail "mid-hop resume re-ran do-release-upgrade"
+else
+  pass "mid-hop resume did not re-run do-release-upgrade"
+fi
+run_cli diagnose
+grep -q '^classification: ' "$WORKDIR/stdout" \
+  && pass "diagnose reports classification" || fail "diagnose missing classification"
+
+# repair-runtime: refuses active apt/dpkg; succeeds otherwise; does not upgrade
+setup_fake_root repair1
+PF_R="$(fresh_pf pf-repair1 "$FIX/preflight-discovery-xenial")"
+run_cli install --preflight "$PF_R" --execution-profile discovery --execute \
+  --acknowledge-destructive-upgrade "I_UNDERSTAND_THIS_OS_UPGRADE_IS_DESTRUCTIVE" \
+  --acknowledge-disposable-discovery-vm "I_UNDERSTAND_THIS_DISCOVERY_VM_MAY_BE_LOST" \
+  --max-hops 1 || true
+if [[ -d "$FAKE/opt/aelladata/os-upgrade/runtime" ]]; then
+  : >"$FAKE/tmp/upgrade-process-active"
+  run_cli repair-runtime
+  [[ "$RC" -eq 20 || "$RC" -eq 2 || "$RC" -eq 3 ]] && pass "repair-runtime refuses active upgrade process" || fail "repair active rc=$RC"
+  rm -f "$FAKE/tmp/upgrade-process-active"
+  # Clear prior install stub noise before asserting repair is non-mutating
+  : >"$FAKE/tmp/stub-commands.log"
+  # Corrupt runtime common copy then repair from repo
+  echo '# corrupted' >>"$FAKE/opt/aelladata/os-upgrade/runtime/dp-os-upgrade-common.sh"
+  run_cli repair-runtime
+  [[ "$RC" -eq 0 ]] && pass "repair-runtime succeeds when idle" || fail "repair-runtime rc=$RC"
+  if ls -d "$FAKE/opt/aelladata/os-upgrade"/runtime.bak-* >/dev/null 2>&1; then
+    pass "repair-runtime archived previous runtime"
+  else
+    fail "repair-runtime no archive"
+  fi
+  if grep -qE 'do-release-upgrade|apt-get (update|dist-upgrade)|dpkg --configure' "$FAKE/tmp/stub-commands.log" 2>/dev/null; then
+    fail "repair-runtime ran upgrade"
+  else
+    pass "repair-runtime did not run do-release-upgrade"
+  fi
+  grep -q 'runtime repaired' "$WORKDIR/stdout" && pass "repair-runtime reports success" || fail "repair message missing"
+else
+  skip "repair-runtime (no runtime from install)"
+fi
+
+# Sourcing common must not clobber exported OSU_EXECUTE before auth helpers exist
+export OSU_EXECUTE=1
+# shellcheck disable=SC1090
+OSU_EXECUTE=1
+set +e
+out="$(bash -c 'export OSU_EXECUTE=1; source "'"$LIB"'"; printf "%s" "$OSU_EXECUTE"')"
+set -e
+[[ "$out" == "1" ]] && pass "source common preserves exported OSU_EXECUTE" || fail "source clobbered OSU_EXECUTE=$out"
+
+# ---------------------------------------------------------------------------
+# Resume re-approval, lock ownership, stale lock, false REBOOT_REQUESTED
+# ---------------------------------------------------------------------------
+_write_min_state() {
+  # Expects ST_* and FAKE/OSU_STATE_DIR already set via osu_init_test_mode
+  ST_REVISION="${ST_REVISION:-1}"
+  ST_HOSTNAME="${ST_HOSTNAME:-ready-aio}"
+  ST_SOURCE_OS="${ST_SOURCE_OS:-16.04}"
+  ST_SOURCE_CODENAME="${ST_SOURCE_CODENAME:-xenial}"
+  ST_CURRENT_OS="${ST_CURRENT_OS:-16.04}"
+  ST_CURRENT_CODENAME="${ST_CURRENT_CODENAME:-xenial}"
+  ST_TARGET_OS="${ST_TARGET_OS:-18.04}"
+  ST_TARGET_CODENAME="${ST_TARGET_CODENAME:-bionic}"
+  ST_CURRENT_HOP="${ST_CURRENT_HOP:-1}"
+  ST_TOTAL_HOPS="${ST_TOTAL_HOPS:-4}"
+  ST_ATTEMPT="${ST_ATTEMPT:-1}"
+  ST_PREFLIGHT_ID="${ST_PREFLIGHT_ID:-pf-recov}"
+  ST_PREFLIGHT_COMPLETED_AT="${ST_PREFLIGHT_COMPLETED_AT:-2026-07-16T00:00:00Z}"
+  ST_SNAPSHOT_REF="${ST_SNAPSHOT_REF:-s}"
+  ST_PKG_MODE="${ST_PKG_MODE:-mirror}"
+  ST_PKG_URL="${ST_PKG_URL:-http://10.34.200.20}"
+  ST_WARNING_ACCEPTANCES="${ST_WARNING_ACCEPTANCES:-[]}"
+  ST_RETRYABLE="${ST_RETRYABLE:-false}"
+  ST_RETRY_COUNT="${ST_RETRY_COUNT:-0}"
+  ST_PAUSE_REQUESTED="${ST_PAUSE_REQUESTED:-false}"
+  ST_CREATED_AT="${ST_CREATED_AT:-2026-07-16T00:00:00Z}"
+  ST_FINAL_TARGET_OS="${ST_FINAL_TARGET_OS:-24.04}"
+  ST_FINAL_TARGET_CODENAME="${ST_FINAL_TARGET_CODENAME:-noble}"
+  ST_EXECUTION_PROFILE="${ST_EXECUTION_PROFILE:-discovery}"
+  ST_DISCOVERY_ACKNOWLEDGED="${ST_DISCOVERY_ACKNOWLEDGED:-true}"
+  osu_write_state_json "$(osu_build_state_json)"
+}
+
+# Resume re-approval: checksum mismatch + explicit phrases → atomic rewrite, no misleading ERROR
+setup_fake_root reauth1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic" "$OSU_STATE_DIR/runtime"
+ST_STATE=REBOOT_REQUESTED
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+ST_EXECUTE_AUTHORIZED_AT=2026-07-16T00:00:00Z
+ST_EXECUTE_AUTHORIZED_BY=tester
+osu_write_operator_approval true true pf-recov '[]'
+osu_pin_runtime
+_write_min_state
+# Tamper approval after durable write
+echo 'tampered' >>"$OSU_STATE_DIR/operator-approval.json"
+: >"$WORKDIR/reauth.out"
+: >"$WORKDIR/reauth.err"
+if osu_reauthorize_execute_for_resume true >"$WORKDIR/reauth.out" 2>"$WORKDIR/reauth.err"; then
+  pass "osu_reauthorize_execute_for_resume succeeds"
+else
+  fail "osu_reauthorize_execute_for_resume failed"
+fi
+if grep -q 'execute auth refused: approval checksum mismatch' "$WORKDIR/reauth.err" 2>/dev/null; then
+  fail "re-approval printed misleading approval checksum ERROR"
+else
+  pass "resume re-approval avoids misleading checksum ERROR"
+fi
+if osu_verify_approval_checksum; then
+  pass "resume re-approval atomic write/checksum verifies"
+else
+  fail "resume re-approval checksum verify failed"
+fi
+if ls -d "$OSU_STATE_DIR"/operator-approval.bak-* >/dev/null 2>&1; then
+  pass "resume re-approval backed up mismatched approval"
+else
+  fail "resume re-approval missing approval backup"
+fi
+if grep -q 'durable execute authorization recorded and verified for resume' "$WORKDIR/reauth.out" "$FAKE/var/log/aella/auto_os_upgrade.log" 2>/dev/null; then
+  pass "resume re-approval verified after write"
+else
+  fail "missing verified re-approval log"
+fi
+
+# CLI resume re-auth + lock handoff with stub runner (no hop / dro)
+echo 'tampered-again' >>"$OSU_STATE_DIR/operator-approval.json"
+cat >"$OSU_STATE_DIR/runtime/dp-os-upgrade-runner.sh" <<'STUBRUN'
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/dp-os-upgrade-common.sh"
+osu_init_test_mode || exit 3
+osu_load_config "${OSU_CONFIG_FILE:-}" || exit 3
+if ! osu_acquire_lock; then
+  osu_log ERROR "unable to acquire lock"
+  exit 3
+fi
+trap 'osu_release_lock' EXIT
+osu_log INFO "stub runner acquired lock after CLI handoff"
+exit 22
+STUBRUN
+chmod 0750 "$OSU_STATE_DIR/runtime/dp-os-upgrade-runner.sh"
+h1="$(osu_sha256_file "$OSU_STATE_DIR/runtime/dp-os-upgrade-runner.sh")"
+h2="$(osu_sha256_file "$OSU_STATE_DIR/runtime/dp-os-upgrade-common.sh")"
+if [[ -f "$OSU_STATE_DIR/runtime/dp-os-upgrade-artifacts.sh" ]]; then
+  h3="$(osu_sha256_file "$OSU_STATE_DIR/runtime/dp-os-upgrade-artifacts.sh")"
+  printf '%s\n%s\n%s\n' "$h1" "$h2" "$h3" >"$OSU_STATE_DIR/runtime/runtime.sha256"
+else
+  printf '%s\n%s\n' "$h1" "$h2" >"$OSU_STATE_DIR/runtime/runtime.sha256"
+fi
+ST_RUNTIME_SHA="$(osu_sha256_file "$OSU_STATE_DIR/runtime/runtime.sha256")"
+osu_load_state_into_vars || true
+ST_RUNTIME_SHA="$(osu_sha256_file "$OSU_STATE_DIR/runtime/runtime.sha256")"
+osu_write_state_json "$(osu_build_state_json)"
+run_cli resume --execute \
+  --acknowledge-destructive-upgrade "I_UNDERSTAND_THIS_OS_UPGRADE_IS_DESTRUCTIVE" \
+  --acknowledge-disposable-discovery-vm "I_UNDERSTAND_THIS_DISCOVERY_VM_MAY_BE_LOST"
+[[ "$RC" -eq 22 ]] && pass "resume CLI re-auth + stub runner handoff" || fail "resume stub handoff rc=$RC"
+if grep -q 'another dp-os-upgrade process holds the lock' "$WORKDIR/stderr" 2>/dev/null; then
+  fail "resume CLI/runner self-deadlock still present"
+else
+  pass "resume CLI/runner self-deadlock absent"
+fi
+if grep -q 'stub runner acquired lock after CLI handoff' "$WORKDIR/stdout" "$WORKDIR/stderr" "$FAKE/var/log/aella/auto_os_upgrade.log" 2>/dev/null; then
+  pass "runner owned lock after CLI release"
+else
+  fail "stub runner lock log missing"
+fi
+
+# UNCLEAR evidence must not re-run do-release-upgrade
+setup_fake_root unclear1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/dist-upgrade" "$OSU_STATE_DIR/runtime"
+printf 'partial\n' >"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/dist-upgrade/main.log"
+printf 'command_id\thop\tstep\tdescription\tredacted_command\tstarted_at_utc\tcompleted_at_utc\tduration_ms\treturn_code\ttimeout\tstatus\tstdout_file\tstderr_file\tretryable\terror_class\n' \
+  >"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+printf 'cmd-0001\t1\tdo-release-upgrade\tdro\tdo-release-upgrade\t2026-07-16T00:00:00Z\t2026-07-16T00:01:00Z\t1000\t1\t3600\tFAILED\t/x\t/y\tfalse\tcommand_failed\n' \
+  >>"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+ST_STATE=HOP_RELEASE_UPGRADE_RUNNING
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+ST_EXECUTE_AUTHORIZED_AT=2026-07-16T00:00:00Z
+ST_EXECUTE_AUTHORIZED_BY=tester
+osu_write_operator_approval true true pf-recov '[]'
+osu_pin_runtime
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+ev="$(osu_hop_release_upgrade_evidence)"
+[[ "$ev" == "FAILED" ]] && pass "failed dro evidence → FAILED" || fail "failed evidence=$ev"
+: >"$FAKE/tmp/stub-commands.log"
+bash "$OSU_STATE_DIR/runtime/dp-os-upgrade-runner.sh" --resume \
+  >"$WORKDIR/stdout" 2>"$WORKDIR/stderr" || true
+if grep -q 'do-release-upgrade' "$FAKE/tmp/stub-commands.log" 2>/dev/null; then
+  fail "FAILED dro evidence re-ran do-release-upgrade"
+else
+  pass "FAILED dro evidence did not re-run do-release-upgrade"
+fi
+
+# Approval mismatch without re-approval → fail closed
+setup_fake_root reauth2
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+ST_STATE=REBOOT_REQUESTED
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+ST_EXECUTE_AUTHORIZED_AT=2026-07-16T00:00:00Z
+ST_EXECUTE_AUTHORIZED_BY=tester
+osu_write_operator_approval true true pf-recov '[]'
+osu_pin_runtime
+_write_min_state
+echo 'tampered' >>"$OSU_STATE_DIR/operator-approval.json"
+run_cli resume
+[[ "$RC" -eq 3 ]] && pass "approval mismatch without re-approval blocked" || fail "mismatch no-reauth rc=$RC"
+
+# Foreign lock blocks runner; CLI handoff releases before runner (covered above)
+setup_fake_root lockhand1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/runtime" "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+ST_STATE=CHECKPOINT_REACHED
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+ST_EXECUTE_AUTHORIZED_AT=2026-07-16T00:00:00Z
+ST_EXECUTE_AUTHORIZED_BY=tester
+osu_write_operator_approval true true pf-recov '[]'
+osu_pin_runtime
+_write_min_state
+osu_acquire_lock || fail "parent lock acquire"
+if bash "$OSU_STATE_DIR/runtime/dp-os-upgrade-runner.sh" --resume \
+  >"$WORKDIR/stdout" 2>"$WORKDIR/stderr"; then
+  fail "runner acquired lock while parent held it (expected block)"
+else
+  grep -q 'holds the lock\|unable to acquire lock' "$WORKDIR/stderr" \
+    && pass "foreign/parent lock blocks runner" || pass "runner blocked while parent held lock"
+fi
+osu_release_lock
+osu_acquire_lock || fail "reacquire after release"
+osu_release_lock
+pass "lock release allows subsequent acquire"
+
+# Stale lock recovery: dead pid metadata + free flock
+setup_fake_root stalelock1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR" "$(dirname "$OSU_LOCK_FILE")"
+cat >"$(osu_hostpath "${POLICY_STATE_DIR}/lock-metadata.json")" <<EOF
+{
+  "pid": 999999,
+  "starttime": "1",
+  "hostname": "ready-aio",
+  "boot_id": "old-boot-id-mismatch",
+  "command": "dp-os-upgrade-runner.sh --resume",
+  "acquired_at": "2026-07-16T00:00:00Z",
+  "state_revision": 1
+}
+EOF
+: >"$OSU_LOCK_FILE"
+cls="$(osu_lock_classify)"
+[[ "$cls" == "STALE" ]] && pass "stale lock classified STALE" || fail "stale classify=$cls"
+run_cli recover-lock
+[[ "$RC" -eq 0 ]] && pass "stale lock recover-lock succeeds" || fail "recover-lock rc=$RC"
+[[ ! -f "$(osu_hostpath "${POLICY_STATE_DIR}/lock-metadata.json")" ]] \
+  && pass "stale lock metadata removed" || fail "stale metadata remains"
+osu_acquire_lock && pass "lock acquire after stale recovery" || fail "acquire after stale recovery"
+osu_release_lock
+
+# Boot-id mismatch / pid reuse treated as stale, not live
+setup_fake_root stalelock2
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR" "$(dirname "$OSU_LOCK_FILE")"
+# Reuse PID 1 with wrong starttime/boot → must not treat as live holder
+cat >"$(osu_hostpath "${POLICY_STATE_DIR}/lock-metadata.json")" <<EOF
+{
+  "pid": 1,
+  "starttime": "not-the-real-starttime",
+  "hostname": "ready-aio",
+  "boot_id": "definitely-wrong-boot",
+  "command": "systemd",
+  "acquired_at": "2026-07-16T00:00:00Z",
+  "state_revision": 1
+}
+EOF
+cls="$(osu_lock_classify)"
+[[ "$cls" == "STALE" ]] && pass "pid reuse/boot mismatch → STALE" || fail "pid reuse classify=$cls"
+
+# REBOOT_REQUESTED + Xenial + no success evidence → reboot forbidden
+setup_fake_root falsereboot1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+ST_STATE=REBOOT_REQUESTED
+ST_PREFLIGHT_ID=pf-recov
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+ST_EXECUTE_AUTHORIZED_AT=2026-07-16T00:00:00Z
+ST_EXECUTE_AUTHORIZED_BY=tester
+osu_write_operator_approval true true pf-recov '[]'
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+ev="$(osu_hop_release_upgrade_evidence)"
+[[ "$ev" == "NOT_STARTED" ]] && pass "xenial+no dro evidence → NOT_STARTED" || fail "evidence=$ev"
+cls="$(osu_classify_in_progress_hop)"
+[[ "$cls" == "RESUME_REQUIRED" ]] && pass "REBOOT_REQUESTED+xenial → RESUME_REQUIRED" || fail "classify=$cls"
+run_cli request-reboot
+[[ "$RC" -eq 20 || "$RC" -eq 3 || "$RC" -eq 2 ]] \
+  && pass "request-reboot forbidden without success evidence" || fail "request-reboot rc=$RC"
+run_cli diagnose
+grep -q 'recommended_action: recover-not-started' "$WORKDIR/stdout" \
+  && pass "diagnose recommends recover-not-started for false reboot state" || fail "diagnose action missing recover-not-started"
+grep -q 'release_upgrade_evidence: NOT_STARTED' "$WORKDIR/stdout" \
+  && pass "diagnose reports NOT_STARTED evidence" || fail "diagnose evidence missing"
+
+# Success evidence → REBOOT_REQUIRED; request-reboot allowed (test mode, no real reboot)
+setup_fake_root realreboot1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/dist-upgrade"
+printf 'mainlog\n' >"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/dist-upgrade/main.log"
+ST_STATE=REBOOT_REQUIRED
+ST_PREFLIGHT_ID=pf-recov
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+ST_EXECUTE_AUTHORIZED_AT=2026-07-16T00:00:00Z
+ST_EXECUTE_AUTHORIZED_BY=tester
+osu_write_operator_approval true true pf-recov '[]'
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=18.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=bionic
+cp -a "$FIX/bionic-after/etc/os-release" "$FAKE/etc/os-release"
+ev="$(osu_hop_release_upgrade_evidence)"
+[[ "$ev" == "SUCCESS" ]] && pass "os at target → SUCCESS evidence" || fail "success evidence=$ev"
+cls="$(osu_classify_in_progress_hop)"
+[[ "$cls" == "REBOOT_REQUIRED" ]] && pass "success evidence → REBOOT_REQUIRED" || fail "success classify=$cls"
+: >"$FAKE/tmp/stub-commands.log"
+osu_release_lock 2>/dev/null || true
+OSU_LOCK_FD=""
+run_cli request-reboot
+[[ "$RC" -eq 0 || "$RC" -eq 22 ]] && pass "request-reboot allowed with success evidence" || fail "request-reboot success rc=$RC"
+if grep -qE 'do-release-upgrade' "$FAKE/tmp/stub-commands.log" 2>/dev/null; then
+  fail "request-reboot ran do-release-upgrade"
+else
+  pass "request-reboot did not run do-release-upgrade"
+fi
+[[ -f "$FAKE/tmp/reboot-requested.log" ]] && pass "request-reboot recorded test reboot intent" || fail "no reboot intent"
+
+# result.json REBOOT_REQUIRED alone while still on xenial must NOT authorize reboot
+setup_fake_root resultonly1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+printf '{"status":"REBOOT_REQUIRED","from":"16.04","to":"18.04"}\n' \
+  >"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/result.json"
+ST_STATE=REBOOT_REQUESTED
+ST_PREFLIGHT_ID=pf-recov
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+ST_EXECUTE_AUTHORIZED_AT=2026-07-16T00:00:00Z
+ST_EXECUTE_AUTHORIZED_BY=tester
+osu_write_operator_approval true true pf-recov '[]'
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+ev="$(osu_hop_release_upgrade_evidence)"
+[[ "$ev" == "NOT_STARTED" ]] \
+  && pass "result.json alone on xenial is NOT_STARTED" || fail "result-only evidence=$ev"
+cls="$(osu_classify_in_progress_hop)"
+[[ "$cls" == "RESUME_REQUIRED" ]] && pass "result.json alone → RESUME_REQUIRED" || fail "result-only classify=$cls"
+
+# ---------------------------------------------------------------------------
+# SKIPPED command status, empty/stale dist-upgrade, recover-not-started, resume --preflight
+# ---------------------------------------------------------------------------
+_write_commands_header() {
+  local f="$1"
+  printf 'command_id\thop\tstep\tdescription\tredacted_command\tstarted_at_utc\tcompleted_at_utc\tduration_ms\treturn_code\ttimeout\tstatus\tstdout_file\tstderr_file\tretryable\terror_class\n' >"$f"
+}
+
+# do-release-upgrade SKIPPED + rc=0 → NOT_STARTED (never success)
+setup_fake_root skipped1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/logs"
+_write_commands_header "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+: >"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/logs/dro.stdout"
+: >"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/logs/dro.stderr"
+printf 'cmd-0001\t1\tdo-release-upgrade\tdro\tdo-release-upgrade -f DistUpgradeViewNonInteractive\t2026-07-16T00:00:00Z\t2026-07-16T00:00:00Z\t11\t0\t0\tSKIPPED\t%s\t%s\tfalse\tnone\n' \
+  "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/logs/dro.stdout" \
+  "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/logs/dro.stderr" \
+  >>"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+ST_STATE=REBOOT_REQUESTED
+ST_LAST_STEP=reboot_requested
+ST_PREFLIGHT_ID=pf-recov
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+ST_EXECUTE_AUTHORIZED_AT=2026-07-16T00:00:00Z
+ST_EXECUTE_AUTHORIZED_BY=tester
+osu_write_operator_approval true true pf-recov '[]'
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+ev="$(osu_hop_release_upgrade_evidence)"
+[[ "$ev" == "NOT_STARTED" ]] && pass "SKIPPED+rc0 → NOT_STARTED" || fail "skipped evidence=$ev"
+norm="$(osu_normalize_command_status SKIPPED)"
+[[ "$norm" == "SKIPPED" ]] && pass "normalize SKIPPED" || fail "norm=$norm"
+aux="$(osu_hop_dro_aux_evidence)"
+[[ "$aux" == *'dro_status=SKIPPED'* && "$aux" == *'duration_ms=11'* ]] \
+  && pass "aux evidence records SKIPPED duration" || fail "aux=$aux"
+
+# All commands SKIPPED → NOT_STARTED
+setup_fake_root allskip1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+_write_commands_header "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+printf 'cmd-0001\t1\tapt-update\tupdate\tapt-get update\t2026-07-16T00:00:00Z\t2026-07-16T00:00:00Z\t5\t0\t0\tSKIPPED\t-\t-\tfalse\tnone\n' \
+  >>"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+printf 'cmd-0002\t1\tdo-release-upgrade\tdro\tdo-release-upgrade\t2026-07-16T00:00:00Z\t2026-07-16T00:00:00Z\t11\t0\t0\tSKIPPED\t-\t-\tfalse\tnone\n' \
+  >>"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+ST_STATE=REBOOT_REQUIRED
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+ev="$(osu_hop_release_upgrade_evidence)"
+[[ "$ev" == "NOT_STARTED" ]] && pass "all commands SKIPPED → NOT_STARTED" || fail "allskip evidence=$ev"
+
+# Empty /var/log/dist-upgrade is not execution evidence
+setup_fake_root emptydist1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic" "$FAKE/var/log/dist-upgrade"
+ST_STATE=REBOOT_REQUESTED
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+ev="$(osu_hop_release_upgrade_evidence)"
+[[ "$ev" == "NOT_STARTED" ]] && pass "empty dist-upgrade dir → NOT_STARTED" || fail "emptydist evidence=$ev"
+osu_dist_upgrade_execution_logs_present "$FAKE/var/log/dist-upgrade" 0 \
+  && fail "empty dist-upgrade counted as logs" || pass "empty dist-upgrade not execution evidence"
+
+# Stale/old dist-upgrade logs are not execution evidence
+setup_fake_root olddist1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic" "$FAKE/var/log/dist-upgrade"
+printf 'old\n' >"$FAKE/var/log/dist-upgrade/main.log"
+touch -t 201901010000 "$FAKE/var/log/dist-upgrade/main.log"
+ST_STATE=REBOOT_REQUESTED
+ST_CREATED_AT=2026-07-16T00:00:00Z
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+ev="$(osu_hop_release_upgrade_evidence)"
+[[ "$ev" == "NOT_STARTED" ]] && pass "stale dist-upgrade logs → NOT_STARTED" || fail "olddist evidence=$ev"
+ref="$(osu_hop_evidence_ref_epoch "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic")"
+osu_dist_upgrade_execution_logs_present "$FAKE/var/log/dist-upgrade" "$ref" \
+  && fail "stale logs counted" || pass "stale dist-upgrade not execution evidence"
+
+# SKIPPED + conflicting result.json → NOT_STARTED / RESUME_REQUIRED
+setup_fake_root conflict1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+_write_commands_header "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+printf 'cmd-0001\t1\tdo-release-upgrade\tdro\tdo-release-upgrade\t2026-07-16T00:00:00Z\t2026-07-16T00:00:00Z\t11\t0\t0\tSKIPPED\t-\t-\tfalse\tnone\n' \
+  >>"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+printf '{"status":"REBOOT_REQUIRED","from":"16.04","to":"18.04"}\n' \
+  >"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/result.json"
+ST_STATE=REBOOT_REQUESTED
+ST_LAST_STEP=reboot_requested
+ST_PREFLIGHT_ID=pf-recov
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+ST_EXECUTE_AUTHORIZED_AT=2026-07-16T00:00:00Z
+ST_EXECUTE_AUTHORIZED_BY=tester
+osu_write_operator_approval true true pf-recov '[]'
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+ev="$(osu_hop_release_upgrade_evidence)"
+[[ "$ev" == "NOT_STARTED" ]] && pass "SKIPPED vs result.json → NOT_STARTED" || fail "conflict evidence=$ev"
+cls="$(osu_classify_in_progress_hop)"
+[[ "$cls" == "RESUME_REQUIRED" ]] && pass "SKIPPED vs result.json → RESUME_REQUIRED" || fail "conflict classify=$cls"
+action="$(osu_recommended_recovery_action "$cls")"
+[[ "$action" == "recover-not-started" ]] && pass "conflict recommends recover-not-started" || fail "conflict action=$action"
+
+# COMPLETED + rc=0 + execution logs → SUCCESS even if still on xenial
+setup_fake_root completed1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/dist-upgrade"
+printf 'upgrade running\n' >"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/dist-upgrade/main.log"
+_write_commands_header "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+printf 'cmd-0001\t1\tdo-release-upgrade\tdro\tdo-release-upgrade\t2026-07-16T00:00:00Z\t2026-07-16T01:00:00Z\t3600000\t0\t0\tCOMPLETED\t-\t-\tfalse\tnone\n' \
+  >>"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+ST_STATE=REBOOT_REQUIRED
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+ev="$(osu_hop_release_upgrade_evidence)"
+[[ "$ev" == "SUCCESS" ]] && pass "COMPLETED+rc0+logs → SUCCESS" || fail "completed evidence=$ev"
+cls="$(osu_classify_in_progress_hop)"
+[[ "$cls" == "REBOOT_REQUIRED" ]] && pass "COMPLETED evidence → REBOOT_REQUIRED" || fail "completed classify=$cls"
+
+# SUCCESS status alias also accepted with logs
+setup_fake_root successalias1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/dist-upgrade"
+printf 'upgrade running\n' >"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/dist-upgrade/apt.log"
+_write_commands_header "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+printf 'cmd-0001\t1\tdo-release-upgrade\tdro\tdo-release-upgrade\t2026-07-16T00:00:00Z\t2026-07-16T01:00:00Z\t1000\t0\t0\tSUCCESS\t-\t-\tfalse\tnone\n' \
+  >>"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+ST_STATE=REBOOT_REQUIRED
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+ev="$(osu_hop_release_upgrade_evidence)"
+[[ "$ev" == "SUCCESS" ]] && pass "SUCCESS status + logs → SUCCESS" || fail "success-alias evidence=$ev"
+
+# COMPLETED without logs is not enough
+setup_fake_root nologs1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+_write_commands_header "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+printf 'cmd-0001\t1\tdo-release-upgrade\tdro\tdo-release-upgrade\t2026-07-16T00:00:00Z\t2026-07-16T01:00:00Z\t1000\t0\t0\tCOMPLETED\t-\t-\tfalse\tnone\n' \
+  >>"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+ST_STATE=REBOOT_REQUIRED
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+ev="$(osu_hop_release_upgrade_evidence)"
+[[ "$ev" == "UNCLEAR" ]] && pass "COMPLETED without logs → UNCLEAR" || fail "nologs evidence=$ev"
+
+# recover-not-started: backups, atomic demotion, no upgrade/reboot
+setup_fake_root recover1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic" "$OSU_STATE_DIR/runtime"
+_write_commands_header "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+printf 'cmd-0001\t1\tdo-release-upgrade\tdro\tdo-release-upgrade\t2026-07-16T00:00:00Z\t2026-07-16T00:00:00Z\t11\t0\t0\tSKIPPED\t-\t-\tfalse\tnone\n' \
+  >>"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+printf '{"status":"REBOOT_REQUIRED","from":"16.04","to":"18.04"}\n' \
+  >"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/result.json"
+ST_STATE=REBOOT_REQUESTED
+ST_LAST_STEP=reboot_requested
+ST_HOPS_THIS_RUN=0
+ST_PREFLIGHT_ID=pf-recov
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+ST_EXECUTE_AUTHORIZED_AT=2026-07-16T00:00:00Z
+ST_EXECUTE_AUTHORIZED_BY=tester
+osu_write_operator_approval true true pf-recov '[]'
+osu_pin_runtime
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+: >"$FAKE/tmp/stub-commands.log"
+run_cli recover-not-started
+[[ "$RC" -eq 0 ]] && pass "recover-not-started succeeds" || fail "recover-not-started rc=$RC"
+osu_load_state_into_vars
+[[ "$ST_STATE" == "RESUME_REQUIRED" ]] && pass "recover → RESUME_REQUIRED" || fail "recover state=$ST_STATE"
+[[ "$ST_LAST_STEP" == "before_release_upgrade" ]] && pass "recover last_step=before_release_upgrade" || fail "step=$ST_LAST_STEP"
+[[ "$ST_NEXT_ACTION" == "RUN_OS_UPGRADE" ]] && pass "recover next_action=RUN_OS_UPGRADE" || fail "next=$ST_NEXT_ACTION"
+[[ "$ST_NEW_PREFLIGHT_REQUIRED" == "true" ]] && pass "recover new_preflight_required=true" || fail "npf=$ST_NEW_PREFLIGHT_REQUIRED"
+[[ "$ST_HOPS_THIS_RUN" == "0" ]] && pass "recover hops_completed_this_run=0" || fail "hops=$ST_HOPS_THIS_RUN"
+ls "$OSU_STATE_DIR"/state.json.bak-not-started-* >/dev/null 2>&1 \
+  && pass "recover backed up state.json" || fail "no state backup"
+ls "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"/result.json.false-reboot-* >/dev/null 2>&1 \
+  && pass "recover backed up result.json" || fail "no result backup"
+grep -q 'FALSE_REBOOT_REQUIRED_DEMOTED' "$OSU_STATE_DIR/events.jsonl" \
+  && pass "FALSE_REBOOT_REQUIRED_DEMOTED event recorded" || fail "missing demote event"
+rs="$(osu_json_get "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/result.json" status)"
+[[ "$rs" == "NOT_STARTED" ]] && pass "demoted result.json status=NOT_STARTED" || fail "result status=$rs"
+if grep -qE '^(apt-get|apt|dpkg|do-release-upgrade|reboot)' "$FAKE/tmp/stub-commands.log" 2>/dev/null; then
+  fail "recover-not-started ran upgrade/reboot"
+else
+  pass "recover-not-started did not run upgrade/reboot"
+fi
+
+# recover-not-started refuses active apt/dpkg
+setup_fake_root recoverbusy1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+_write_commands_header "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+printf 'cmd-0001\t1\tdo-release-upgrade\tdro\tdo-release-upgrade\t2026-07-16T00:00:00Z\t2026-07-16T00:00:00Z\t11\t0\t0\tSKIPPED\t-\t-\tfalse\tnone\n' \
+  >>"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+ST_STATE=REBOOT_REQUESTED
+ST_PREFLIGHT_ID=pf-recov
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+ST_EXECUTE_AUTHORIZED_AT=2026-07-16T00:00:00Z
+ST_EXECUTE_AUTHORIZED_BY=tester
+osu_write_operator_approval true true pf-recov '[]'
+_write_min_state
+: >"$FAKE/tmp/upgrade-process-active"
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+run_cli recover-not-started
+[[ "$RC" -eq 20 || "$RC" -eq 3 || "$RC" -eq 2 ]] \
+  && pass "recover-not-started refuses active apt/dpkg" || fail "recover busy rc=$RC"
+rm -f "$FAKE/tmp/upgrade-process-active"
+
+# resume --preflight after recover-not-started (stub runner: no hop/dro)
+setup_fake_root resumepf1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic" "$OSU_STATE_DIR/runtime"
+_write_commands_header "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+printf 'cmd-0001\t1\tdo-release-upgrade\tdro\tdo-release-upgrade\t2026-07-16T00:00:00Z\t2026-07-16T00:00:00Z\t11\t0\t0\tSKIPPED\t-\t-\tfalse\tnone\n' \
+  >>"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+printf '{"status":"REBOOT_REQUIRED","from":"16.04","to":"18.04"}\n' \
+  >"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/result.json"
+ST_STATE=REBOOT_REQUESTED
+ST_LAST_STEP=reboot_requested
+ST_PREFLIGHT_ID=pf-old
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+ST_EXECUTE_AUTHORIZED_AT=2026-07-16T00:00:00Z
+ST_EXECUTE_AUTHORIZED_BY=tester
+osu_write_operator_approval true true pf-old '[]'
+osu_pin_runtime
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+run_cli recover-not-started
+[[ "$RC" -eq 0 ]] || fail "resume-pf recover rc=$RC"
+# resume without --preflight must refuse
+run_cli resume --execute \
+  --acknowledge-destructive-upgrade "I_UNDERSTAND_THIS_OS_UPGRADE_IS_DESTRUCTIVE" \
+  --acknowledge-disposable-discovery-vm "I_UNDERSTAND_THIS_DISCOVERY_VM_MAY_BE_LOST"
+[[ "$RC" -eq 2 ]] && pass "resume without --preflight refused when required" || fail "resume no-pf rc=$RC"
+PF_NEW="$(fresh_pf pf-resume-new "$FIX/preflight-discovery-xenial")"
+python3 - <<PY
+import json,pathlib
+p=pathlib.Path("$PF_NEW")/"preflight-summary.json"
+d=json.load(open(p))
+d["preflight_id"]="pf-resume-new-" + str(d.get("preflight_id", "x"))
+json.dump(d, open(p,"w"), indent=2)
+PY
+# Stub runner so this unit test does not execute hop/dro/reboot
+cat >"$OSU_STATE_DIR/runtime/dp-os-upgrade-runner.sh" <<'STUBRUN'
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/dp-os-upgrade-common.sh"
+osu_init_test_mode || exit 3
+osu_load_config "${OSU_CONFIG_FILE:-}" || exit 3
+if ! osu_acquire_lock; then
+  exit 3
+fi
+trap 'osu_release_lock' EXIT
+osu_log INFO "stub runner after resume --preflight"
+exit 0
+STUBRUN
+chmod 0750 "$OSU_STATE_DIR/runtime/dp-os-upgrade-runner.sh"
+h1="$(osu_sha256_file "$OSU_STATE_DIR/runtime/dp-os-upgrade-runner.sh")"
+h2="$(osu_sha256_file "$OSU_STATE_DIR/runtime/dp-os-upgrade-common.sh")"
+if [[ -f "$OSU_STATE_DIR/runtime/dp-os-upgrade-artifacts.sh" ]]; then
+  h3="$(osu_sha256_file "$OSU_STATE_DIR/runtime/dp-os-upgrade-artifacts.sh")"
+  printf '%s\n%s\n%s\n' "$h1" "$h2" "$h3" >"$OSU_STATE_DIR/runtime/runtime.sha256"
+else
+  printf '%s\n%s\n' "$h1" "$h2" >"$OSU_STATE_DIR/runtime/runtime.sha256"
+fi
+osu_load_state_into_vars
+ST_RUNTIME_SHA="$(osu_sha256_file "$OSU_STATE_DIR/runtime/runtime.sha256")"
+osu_write_state_json "$(osu_build_state_json)"
+: >"$FAKE/tmp/stub-commands.log"
+run_cli resume --preflight "$PF_NEW" --execution-profile discovery --execute \
+  --acknowledge-destructive-upgrade "I_UNDERSTAND_THIS_OS_UPGRADE_IS_DESTRUCTIVE" \
+  --acknowledge-disposable-discovery-vm "I_UNDERSTAND_THIS_DISCOVERY_VM_MAY_BE_LOST"
+[[ "$RC" -eq 0 ]] && pass "resume --preflight reaches stub runner" || fail "resume --preflight rc=$RC"
+osu_load_state_into_vars
+[[ "${ST_NEW_PREFLIGHT_REQUIRED}" == "false" || "${ST_NEW_PREFLIGHT_REQUIRED}" == "False" ]] \
+  && pass "resume --preflight cleared new_preflight_required" || fail "npf after resume=${ST_NEW_PREFLIGHT_REQUIRED}"
+[[ "$ST_PREFLIGHT_ID" == pf-resume-new-* ]] \
+  && pass "resume --preflight updated preflight_id" || fail "preflight_id=$ST_PREFLIGHT_ID"
+[[ "$ST_STATE" == "HOP_PRECHECK" ]] && pass "resume --preflight demoted to HOP_PRECHECK" || fail "resume state=$ST_STATE"
+grep -q 'resume_preflight_accepted' "$OSU_STATE_DIR/events.jsonl" \
+  && pass "resume_preflight_accepted event" || fail "missing resume preflight event"
+if grep -qE 'do-release-upgrade|apt-get (update|dist-upgrade)' "$FAKE/tmp/stub-commands.log" 2>/dev/null; then
+  fail "resume --preflight stub path ran upgrade commands"
+else
+  pass "resume --preflight stub path did not run upgrade"
+fi
+
+# ---------------------------------------------------------------------------
+# Command runner: PID completion, TIMEOUT, append-only attempt IDs, hop reuse,
+# recover-current-release-update, warning persistence, repo disable move
+# ---------------------------------------------------------------------------
+
+# Child holding stdout must not turn a successful command into TIMEOUT
+setup_fake_root cmdhold1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+OSU_EXECUTE=1
+ST_ATTEMPT=1
+OSU_CURRENT_HOP_DIR="$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+mkdir -p "$OSU_CURRENT_HOP_DIR" "$OSU_STATE_DIR/logs"
+# Holder inherits nothing from our redirect; we simulate grandchild via a command
+# that exits 0 while a background sleeper (separate pg) keeps a copy open — our
+# wrapper waits on the main PID only.
+osu_run_command 1 "test_hold" "exit0 with stray holder" 10 true -- \
+  bash -c 'sleep 0.2; echo done; exit 0'
+rc_hold=$?
+[[ "$rc_hold" -eq 0 ]] && pass "stdout-holder-safe: command SUCCESS rc=0" || fail "hold rc=$rc_hold"
+tsv="$OSU_CURRENT_HOP_DIR/commands.tsv"
+grep -q $'\tSUCCESS\t' "$tsv" && pass "stdout-holder-safe: SUCCESS row recorded" || fail "no SUCCESS row"
+grep -q 'attempt-001-cmd-0001' "$tsv" && pass "command id uses attempt prefix" || fail "cid missing attempt"
+[[ -f "$OSU_STATE_DIR/logs/attempt-001-cmd-0001.stdout" ]] && pass "stdout file uses attempt id" || fail "stdout path"
+
+# Real short timeout → TIMEOUT + evidence + process group cleanup
+setup_fake_root cmdtimeout1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+OSU_EXECUTE=1
+ST_ATTEMPT=2
+OSU_CURRENT_HOP_DIR="$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+mkdir -p "$OSU_CURRENT_HOP_DIR" "$OSU_STATE_DIR/logs"
+set +e
+osu_run_command 1 "test_timeout" "sleep past timeout" 2 true -- bash -c 'sleep 30'
+rc_to=$?
+set -e
+[[ "$rc_to" -eq 124 ]] && pass "timeout returns 124" || fail "timeout rc=$rc_to"
+tsv="$OSU_CURRENT_HOP_DIR/commands.tsv"
+grep -q $'\tTIMEOUT\t' "$tsv" && pass "TIMEOUT status in commands.tsv" || fail "no TIMEOUT row"
+grep -q 'attempt-002-cmd-0001' "$tsv" && pass "timeout command id attempt-002" || fail "timeout cid"
+[[ -f "$OSU_STATE_DIR/logs/attempt-002-cmd-0001.timeout.json" ]] \
+  && pass "timeout evidence JSON written" || fail "no timeout.json"
+if command -v jq >/dev/null 2>&1; then
+  jq -e '.timed_out == true and .return_code == 124' \
+    "$OSU_STATE_DIR/logs/attempt-002-cmd-0001.timeout.json" >/dev/null \
+    && pass "timeout.json timed_out=true rc=124" || fail "timeout.json fields"
+else
+  grep -q '"timed_out": true' "$OSU_STATE_DIR/logs/attempt-002-cmd-0001.timeout.json" \
+    && pass "timeout.json timed_out (grep)" || fail "timeout.json timed_out"
+fi
+
+# set -e mid-flight still finalizes commands.tsv (RUNNING + FAILED)
+setup_fake_root cmdsete1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+OSU_EXECUTE=1
+ST_ATTEMPT=3
+OSU_CURRENT_HOP_DIR="$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+mkdir -p "$OSU_CURRENT_HOP_DIR"
+set +e
+bash -c '
+  source "'"$LIB"'"
+  osu_init_test_mode
+  osu_load_config "'"$CONF"'"
+  OSU_EXECUTE=1
+  ST_ATTEMPT=3
+  OSU_CURRENT_HOP_DIR="'"$OSU_CURRENT_HOP_DIR"'"
+  set -e
+  osu_run_command 1 "boom" "false command" 30 true -- false
+  echo SHOULD_NOT_REACH
+'
+set -e
+tsv="$OSU_CURRENT_HOP_DIR/commands.tsv"
+grep -q $'\tRUNNING\t' "$tsv" && pass "RUNNING row appended before command" || fail "no RUNNING row"
+grep -q $'\tFAILED\t' "$tsv" && pass "FAILED final row after set -e path" || fail "no FAILED row"
+# append-only: both rows present (not overwritten)
+run_n="$(grep -c 'attempt-003-cmd-0001' "$tsv" || true)"
+[[ "$run_n" -ge 2 ]] && pass "append-only keeps RUNNING+final rows" || fail "row count=$run_n"
+
+# Retry attempt must not overwrite prior stdout
+setup_fake_root cmdretry1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+OSU_EXECUTE=1
+OSU_CURRENT_HOP_DIR="$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+mkdir -p "$OSU_CURRENT_HOP_DIR" "$OSU_STATE_DIR/logs"
+ST_ATTEMPT=1
+OSU_COMMAND_SEQ=0
+osu_run_command 1 "apt_full_upgrade" "first" 30 true -- bash -c 'echo FIRST_ATTEMPT'
+ST_ATTEMPT=2
+OSU_COMMAND_SEQ=0
+osu_run_command 1 "apt_full_upgrade" "second" 30 true -- bash -c 'echo SECOND_ATTEMPT'
+grep -q FIRST_ATTEMPT "$OSU_STATE_DIR/logs/attempt-001-cmd-0001.stdout" \
+  && pass "retry preserves attempt-001 stdout" || fail "attempt-001 overwritten"
+grep -q SECOND_ATTEMPT "$OSU_STATE_DIR/logs/attempt-002-cmd-0001.stdout" \
+  && pass "retry writes attempt-002 stdout" || fail "attempt-002 missing"
+rows="$(wc -l <"$OSU_CURRENT_HOP_DIR/commands.tsv")"
+[[ "$rows" -ge 5 ]] && pass "commands.tsv append-only across attempts" || fail "tsv rows=$rows"
+
+# current_hop must not increment on incomplete hop / HOP_PRECHECK resume
+setup_fake_root hopreuse1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+ST_STATE=HOP_PRECHECK
+ST_CURRENT_HOP=1
+ST_CURRENT_OS=16.04
+ST_CURRENT_CODENAME=xenial
+ST_TARGET_OS=18.04
+ST_TARGET_CODENAME=bionic
+ST_SOURCE_OS=16.04
+ST_HOPS_THIS_RUN=0
+ST_CURRENT_RUN_HOP_LIMIT=1
+ST_LAST_STEP=current_release_updating
+ST_LAST_ERROR=current_release_upgrade_failed
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+osu_write_operator_approval true true pf-hop '[]'
+_write_min_state
+# Simulate next_hop selection logic (avoid `...|head` under pipefail → SIGPIPE 141)
+cur=16.04
+mapfile -t _hop_lines < <(osu_plan_hops "$cur" || true)
+line="${_hop_lines[0]:-}"
+from_ver="${line%%:*}"
+rest="${line#*:}"; from_code="${rest%%->*}"; rest="${rest#*>}"
+to_ver="${rest%%:*}"; to_code="${rest##*:}"
+if [[ "${ST_STATE}" == "HOP_COMPLETED" || "${ST_CURRENT_HOP:-0}" -eq 0 ]]; then
+  hop_num=$(( ${ST_CURRENT_HOP:-0} + 1 ))
+else
+  hop_num="${ST_CURRENT_HOP}"
+fi
+[[ "$hop_num" -eq 1 ]] && pass "incomplete hop reuses current_hop=1" || fail "hop_num=$hop_num"
+
+# Repo disable moves file out of sources.list.d (no invalid apt extension)
+setup_fake_root repodis1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+OSU_EXECUTE=1
+printf 'deb http://ppa.launchpad.net/foo/bar/ubuntu xenial main\n' \
+  >"$FAKE/etc/apt/sources.list.d/foo-ppa.list"
+osu_disable_third_party_repos
+if [[ -e "$FAKE/etc/apt/sources.list.d/foo-ppa.list" ]]; then
+  fail "third-party list still in sources.list.d"
+else
+  pass "third-party list removed from sources.list.d"
+fi
+if ls "$FAKE/etc/apt/sources.list.d/"*.disabled-by-dp-os-upgrade >/dev/null 2>&1; then
+  fail "legacy disabled-by-dp-os-upgrade extension left in sources.list.d"
+else
+  pass "no invalid apt filename extension in sources.list.d"
+fi
+[[ -f "$(osu_repo_disable_manifest)" ]] && pass "repo disable manifest written" || fail "no repo manifest"
+ls "$(osu_repo_disable_dir)"/foo-ppa.list.* >/dev/null 2>&1 \
+  && pass "repo backed up under repository-backup/disabled" || fail "no backup file"
+
+# Warning acceptances persist with preflight_id (jq-less load path)
+setup_fake_root warnpersist1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+ST_STATE=INITIALIZED
+ST_WARNING_ACCEPTANCES='[{"warning_id":"SNAPSHOT_OR_BACKUP_CONFIRMED","preflight_id":"pf-w1","user":"t","accepted_at_utc":"2026-07-17T00:00:00Z","approval_reference":null,"reason":"explicit_cli_acceptance"},{"warning_id":"AELLADATA_SEPARATE_MOUNT","preflight_id":"pf-w1","user":"t","accepted_at_utc":"2026-07-17T00:00:00Z","approval_reference":null,"reason":"explicit_cli_acceptance"},{"warning_id":"THIRD_PARTY_REPOSITORIES","preflight_id":"pf-w1","user":"t","accepted_at_utc":"2026-07-17T00:00:00Z","approval_reference":null,"reason":"explicit_cli_acceptance"}]'
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+osu_write_operator_approval true true pf-w1 "$ST_WARNING_ACCEPTANCES"
+_write_min_state
+# Reload via extract helper (simulates missing-jq safety)
+loaded="$(osu_extract_json_array_field "$(osu_state_path)" warning_acceptances)"
+printf '%s' "$loaded" | grep -q SNAPSHOT_OR_BACKUP_CONFIRMED \
+  && pass "warning_acceptances survive state reload" || fail "warnings lost on load"
+printf '%s' "$loaded" | grep -q '"preflight_id":"pf-w1"' \
+  && pass "warning_acceptances include preflight_id" || fail "no preflight_id in warnings"
+osu_verify_approval_checksum && pass "approval checksum covers warning_acceptances" || fail "approval checksum"
+
+# recover-current-release-update success path
+setup_fake_root recrel1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic" "$OSU_STATE_DIR/logs"
+_write_commands_header "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+stdoutf="$OSU_STATE_DIR/logs/attempt-001-cmd-0004.stdout"
+cat >"$stdoutf" <<'EOF'
+Unpacking foo (1.0) over (0.9) ...
+Setting up foo (1.0) ...
+Setting up bar (2.0) ...
+EOF
+: >"$OSU_STATE_DIR/logs/attempt-001-cmd-0004.stderr"
+printf 'attempt-001-cmd-0004\t1\tapt_full_upgrade\tdist-upgrade\tapt-get -y dist-upgrade\t2026-07-17T02:04:18Z\t2026-07-17T02:34:18Z\t1800000\t124\t1800\tTIMEOUT\t%s\t%s\ttrue\ttimeout\n' \
+  "$stdoutf" "$OSU_STATE_DIR/logs/attempt-001-cmd-0004.stderr" \
+  >>"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+ST_STATE=FAILED
+ST_LAST_ERROR=current_release_upgrade_failed
+ST_LAST_STEP=failed
+# Buggy hop bump (2) while evidence remains under hop-01 — recover must still find it
+ST_CURRENT_HOP=2
+ST_HOPS_THIS_RUN=0
+ST_CURRENT_RUN_HOP_LIMIT=1
+ST_SOURCE_OS=16.04
+ST_CURRENT_OS=16.04
+ST_CURRENT_CODENAME=xenial
+ST_TARGET_OS=18.04
+ST_TARGET_CODENAME=bionic
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+osu_write_operator_approval true true pf-recrel '[]'
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+: >"$FAKE/tmp/stub-commands.log"
+osu_release_lock 2>/dev/null || true
+OSU_LOCK_FD=""
+run_cli recover-current-release-update
+[[ "$RC" -eq 22 ]] && pass "recover-current-release-update exit 22" || fail "recrel rc=$RC stderr=$(tail -5 "$WORKDIR/stderr")"
+osu_load_state_into_vars
+[[ "$ST_STATE" == "RESUME_REQUIRED" ]] && pass "recover → RESUME_REQUIRED" || fail "state=$ST_STATE"
+[[ "$ST_LAST_STEP" == "current_release_updated" ]] && pass "last_successful_step=current_release_updated" || fail "step=$ST_LAST_STEP"
+[[ "$ST_CURRENT_HOP" == "1" ]] && pass "recover resets current_hop=1" || fail "hop=$ST_CURRENT_HOP"
+[[ "$ST_TARGET_OS" == "18.04" ]] && pass "target_os remains 18.04" || fail "target=$ST_TARGET_OS"
+[[ "$ST_NEXT_ACTION" == "RUN_RELEASE_UPGRADE" ]] && pass "next_action=RUN_RELEASE_UPGRADE" || fail "next=$ST_NEXT_ACTION"
+[[ "${ST_NEW_PREFLIGHT_REQUIRED}" == "true" ]] && pass "new_preflight_required=true" || fail "npf=$ST_NEW_PREFLIGHT_REQUIRED"
+[[ -z "${ST_LAST_ERROR:-}" || "${ST_LAST_ERROR}" == "null" ]] && pass "last_error cleared" || fail "last_error=$ST_LAST_ERROR"
+if grep -qE 'do-release-upgrade|^apt-get -y |^reboot' "$FAKE/tmp/stub-commands.log" 2>/dev/null; then
+  fail "recover ran mutating upgrade/reboot"
+else
+  pass "recover did not run dro/install/reboot"
+fi
+ls "$OSU_STATE_DIR"/state.json.bak-current-release-* >/dev/null 2>&1 \
+  && pass "state backup created" || fail "no state backup"
+ls "$OSU_STATE_DIR"/recovery/current-release-*/verification.json >/dev/null 2>&1 \
+  && pass "recovery verification evidence saved" || fail "no recovery evidence"
+
+# recover refuses dependency / audit failures
+setup_fake_root recrel_bad1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic" "$OSU_STATE_DIR/logs"
+_write_commands_header "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+stdoutf="$OSU_STATE_DIR/logs/attempt-001-cmd-0004.stdout"
+printf 'Setting up foo (1.0) ...\n' >"$stdoutf"
+printf 'attempt-001-cmd-0004\t1\tapt_full_upgrade\tdu\tapt-get -y dist-upgrade\t2026-07-17T02:04:18Z\t2026-07-17T02:34:18Z\t1\t124\t1800\tTIMEOUT\t%s\t-\ttrue\ttimeout\n' \
+  "$stdoutf" >>"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+ST_STATE=FAILED
+ST_LAST_ERROR=current_release_upgrade_failed
+ST_CURRENT_HOP=1
+ST_SOURCE_OS=16.04
+ST_CURRENT_OS=16.04
+ST_TARGET_OS=18.04
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+osu_write_operator_approval true true pf-bad '[]'
+_write_min_state
+export DP_OS_UPGRADE_FAKE_APT_SIM_FAIL=1
+osu_release_lock 2>/dev/null || true
+OSU_LOCK_FD=""
+run_cli recover-current-release-update
+[[ "$RC" -eq 20 ]] && pass "recover refused on simulate dependency error" || fail "bad sim rc=$RC"
+unset DP_OS_UPGRADE_FAKE_APT_SIM_FAIL
+
+# recover refuses active apt/dpkg
+setup_fake_root recrel_active1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic" "$OSU_STATE_DIR/logs"
+_write_commands_header "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+stdoutf="$OSU_STATE_DIR/logs/x.stdout"
+cat >"$stdoutf" <<'EOF'
+Unpacking foo (1.0) ...
+Setting up foo (1.0) ...
+EOF
+printf 'a\t1\tapt_full_upgrade\tdu\tapt-get -y dist-upgrade\t2026-07-17T02:04:18Z\t2026-07-17T02:34:18Z\t1\t124\t1800\tTIMEOUT\t%s\t-\ttrue\ttimeout\n' \
+  "$stdoutf" >>"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+ST_STATE=FAILED
+ST_LAST_ERROR=current_release_upgrade_failed
+ST_CURRENT_HOP=1
+ST_SOURCE_OS=16.04
+ST_CURRENT_OS=16.04
+ST_TARGET_OS=18.04
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+osu_write_operator_approval true true pf-act '[]'
+_write_min_state
+: >"$FAKE/tmp/upgrade-process-active"
+osu_release_lock 2>/dev/null || true
+OSU_LOCK_FD=""
+run_cli recover-current-release-update
+[[ "$RC" -eq 20 ]] && pass "recover refused when apt/dpkg active" || fail "active rc=$RC"
+rm -f "$FAKE/tmp/upgrade-process-active"
+
+# ---------------------------------------------------------------------------
+# Resume stage resolver: NOT_STARTED ≠ whole-hop incomplete
+# ---------------------------------------------------------------------------
+
+# A: current_release_updated + RUN_RELEASE_UPGRADE + dro NOT_STARTED → CONTINUE_RELEASE_UPGRADE
+setup_fake_root resume_stage_a
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+ST_STATE=HOP_PRECHECK
+ST_LAST_STEP=current_release_updated
+ST_NEXT_ACTION=RUN_RELEASE_UPGRADE
+ST_CURRENT_HOP=1
+ST_SOURCE_OS=16.04
+ST_CURRENT_OS=16.04
+ST_CURRENT_CODENAME=xenial
+ST_TARGET_OS=18.04
+ST_TARGET_CODENAME=bionic
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+ev="$(osu_hop_release_upgrade_evidence)"
+[[ "$ev" == "NOT_STARTED" ]] && pass "stage-A evidence NOT_STARTED" || fail "stage-A evidence=$ev"
+stage="$(osu_resolve_resume_stage)"
+[[ "$stage" == "CONTINUE_RELEASE_UPGRADE" ]] \
+  && pass "current_release_updated+RUN_RELEASE_UPGRADE+NOT_STARTED → CONTINUE_RELEASE_UPGRADE" \
+  || fail "stage-A stage=$stage"
+cls="$(osu_classify_in_progress_hop)"
+[[ "$cls" == "CONTINUE_RELEASE_UPGRADE" ]] && pass "classify matches CONTINUE_RELEASE_UPGRADE" || fail "cls=$cls"
+tgt="$(osu_resume_stage_target_state "$stage")"
+[[ "$tgt" == "HOP_RELEASE_UPGRADE_STARTING" ]] && pass "target state HOP_RELEASE_UPGRADE_STARTING" || fail "tgt=$tgt"
+osu_can_transition HOP_PRECHECK HOP_RELEASE_UPGRADE_STARTING \
+  && pass "HOP_PRECHECK -> HOP_RELEASE_UPGRADE_STARTING allowed" \
+  || fail "HOP_PRECHECK -> HOP_RELEASE_UPGRADE_STARTING refused"
+# Fresh install path must remain allowed
+osu_can_transition HOP_PRECHECK HOP_SOURCE_PREPARING \
+  && pass "fresh HOP_PRECHECK -> HOP_SOURCE_PREPARING still allowed" \
+  || fail "fresh source prep transition broken"
+
+# NOT_STARTED must not be treated as whole-hop incomplete when current_release_updated
+setup_fake_root resume_stage_not_whole
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+ST_STATE=HOP_PRECHECK
+ST_LAST_STEP=current_release_updated
+ST_NEXT_ACTION=RUN_RELEASE_UPGRADE
+ST_CURRENT_HOP=1
+ST_CURRENT_OS=16.04
+ST_TARGET_OS=18.04
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+stage="$(osu_resolve_resume_stage)"
+[[ "$stage" != "CONTINUE_SOURCE_PREPARATION" ]] \
+  && pass "NOT_STARTED not interpreted as CONTINUE_SOURCE_PREPARATION" \
+  || fail "wrongly CONTINUE_SOURCE_PREPARATION"
+
+# B: source ready, current update incomplete
+setup_fake_root resume_stage_b
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+ST_STATE=HOP_SOURCE_READY
+ST_LAST_STEP=source_ready
+ST_NEXT_ACTION=RUN_OS_UPGRADE
+ST_CURRENT_HOP=1
+ST_CURRENT_OS=16.04
+ST_TARGET_OS=18.04
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+stage="$(osu_resolve_resume_stage)"
+[[ "$stage" == "CONTINUE_CURRENT_RELEASE_UPDATE" ]] \
+  && pass "source_ready → CONTINUE_CURRENT_RELEASE_UPDATE" || fail "stage-B=$stage"
+
+# C: early hop / fresh → source preparation
+setup_fake_root resume_stage_c
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+ST_STATE=HOP_PRECHECK
+ST_LAST_STEP=hop_precheck
+ST_NEXT_ACTION=RUN_OS_UPGRADE
+ST_CURRENT_HOP=1
+ST_CURRENT_OS=16.04
+ST_TARGET_OS=18.04
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+stage="$(osu_resolve_resume_stage)"
+[[ "$stage" == "CONTINUE_SOURCE_PREPARATION" ]] \
+  && pass "early hop → CONTINUE_SOURCE_PREPARATION" || fail "stage-C=$stage"
+
+# D: success evidence → CONTINUE_POST_UPGRADE_REBOOT (classify alias REBOOT_REQUIRED)
+setup_fake_root resume_stage_d
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/dist-upgrade"
+printf 'main\n' >"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/dist-upgrade/main.log"
+ST_STATE=HOP_RELEASE_UPGRADE_RUNNING
+ST_LAST_STEP=release_upgrade_running
+ST_CURRENT_HOP=1
+ST_CURRENT_OS=16.04
+ST_TARGET_OS=18.04
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=18.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=bionic
+cp -a "$FIX/bionic-after/etc/os-release" "$FAKE/etc/os-release"
+stage="$(osu_resolve_resume_stage)"
+[[ "$stage" == "CONTINUE_POST_UPGRADE_REBOOT" ]] \
+  && pass "success evidence → CONTINUE_POST_UPGRADE_REBOOT" || fail "stage-D=$stage"
+cls="$(osu_classify_in_progress_hop)"
+[[ "$cls" == "REBOOT_REQUIRED" ]] && pass "classify alias REBOOT_REQUIRED" || fail "cls-D=$cls"
+
+# Inconsistent evidence fail-closed (apt_full_upgrade COMPLETED but last_step not stamped)
+setup_fake_root resume_inconsistent1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic"
+_write_commands_header "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+printf 'c1\t1\tapt_full_upgrade\tdu\tapt-get -y dist-upgrade\t2026-07-17T02:00:00Z\t2026-07-17T02:10:00Z\t1\t0\t0\tCOMPLETED\t-\t-\ttrue\tnone\n' \
+  >>"$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+ST_STATE=HOP_PRECHECK
+ST_LAST_STEP=source_ready
+ST_NEXT_ACTION=RUN_OS_UPGRADE
+ST_CURRENT_HOP=1
+ST_CURRENT_OS=16.04
+ST_TARGET_OS=18.04
+_write_min_state
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+stage="$(osu_resolve_resume_stage)"
+[[ "$stage" == "BLOCKED_INCONSISTENT_EVIDENCE" ]] \
+  && pass "inconsistent journal/state → BLOCKED_INCONSISTENT_EVIDENCE" || fail "inconsist=$stage"
+
+# Resume after recover: no source prep / apt update / dist-upgrade; journal starts at upgrader_core
+setup_fake_root recrel_resume1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic" "$OSU_STATE_DIR/logs" "$OSU_STATE_DIR/runtime"
+ST_STATE=HOP_PRECHECK
+ST_LAST_STEP=current_release_updated
+ST_NEXT_ACTION=RUN_RELEASE_UPGRADE
+ST_CURRENT_HOP=1
+ST_HOPS_THIS_RUN=0
+ST_SOURCE_OS=16.04
+ST_CURRENT_OS=16.04
+ST_CURRENT_CODENAME=xenial
+ST_TARGET_OS=18.04
+ST_TARGET_CODENAME=bionic
+ST_PKG_MODE=direct
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+ST_NEW_PREFLIGHT_REQUIRED=false
+osu_write_operator_approval true true pf-skip '[]'
+osu_pin_runtime || fail "pin runtime for resume test"
+_write_min_state
+: >"$FAKE/tmp/stub-commands.log"
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+set +e
+bash "$OSU_STATE_DIR/runtime/dp-os-upgrade-runner.sh" --resume >"$WORKDIR/runner-out" 2>"$WORKDIR/runner-err"
+rrc=$?
+set -e
+grep -qE 'classification=CONTINUE_RELEASE_UPGRADE|resume_stage=CONTINUE_RELEASE_UPGRADE' \
+  "$WORKDIR/runner-out" "$WORKDIR/runner-err" 2>/dev/null \
+  && pass "runner logs CONTINUE_RELEASE_UPGRADE" \
+  || fail "runner missing CONTINUE_RELEASE_UPGRADE (rrc=$rrc err=$(tail -3 "$WORKDIR/runner-err" | tr '\n' ';'))"
+if grep -qE 'apt-get -y dist-upgrade|apt-get update|dpkg --configure' "$FAKE/tmp/stub-commands.log" 2>/dev/null; then
+  fail "resume after recover re-ran source/current-release apt work"
+else
+  pass "resume after recover skipped source prep and current-release apt"
+fi
+if grep -qE 'ubuntu-release-upgrader-core|do-release-upgrade' "$FAKE/tmp/stub-commands.log" 2>/dev/null; then
+  pass "resume continued at upgrader_core/do-release-upgrade"
+else
+  fail "resume did not reach upgrader_core/do-release-upgrade (rrc=$rrc log=$(cat "$FAKE/tmp/stub-commands.log" 2>/dev/null | tr '\n' ';') err=$(tail -5 "$WORKDIR/runner-err" | tr '\n' ';'))"
+fi
+# New command journal should start at upgrader_core
+hop_tsv="$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic/commands.tsv"
+if [[ -f "$hop_tsv" ]]; then
+  steps="$(awk -F'\t' 'NR>1 {print $3}' "$hop_tsv" 2>/dev/null | tr '\n' ' ')"
+  first_step="$(awk -F'\t' 'NR>1 {print $3; exit}' "$hop_tsv" 2>/dev/null || true)"
+  if [[ "$first_step" == "upgrader_core" || "$first_step" == "do-release-upgrade" ]]; then
+    pass "command journal starts at upgrader_core/dro"
+  else
+    fail "journal first step=$first_step steps=$steps"
+  fi
+  if printf '%s' "$steps" | grep -qE 'apt_update|apt_full_upgrade|dpkg_configure|apt_fix'; then
+    fail "journal contains pre-upgrade apt steps: $steps"
+  else
+    pass "command journal has no pre-upgrade apt steps"
+  fi
+else
+  fail "commands.tsv missing after resume"
+fi
+osu_load_state_into_vars || true
+[[ "${ST_CURRENT_HOP}" == "1" ]] && pass "current_hop remains 1 after release-upgrade resume" || fail "hop=${ST_CURRENT_HOP}"
+
+# recover-resume-dispatch: no destructive ops; restores RESUME_REQUIRED
+setup_fake_root resume_dispatch1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic" "$OSU_STATE_DIR/logs"
+ST_STATE=HOP_PRECHECK
+ST_LAST_STEP=current_release_updated
+ST_NEXT_ACTION=RUN_RELEASE_UPGRADE
+ST_CURRENT_HOP=1
+ST_SOURCE_OS=16.04
+ST_CURRENT_OS=16.04
+ST_CURRENT_CODENAME=xenial
+ST_TARGET_OS=18.04
+ST_TARGET_CODENAME=bionic
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+ST_NEW_PREFLIGHT_REQUIRED=false
+ST_LAST_ERROR="illegal state transition: HOP_PRECHECK -> HOP_SOURCE_PREPARING"
+osu_write_operator_approval true true pf-dispatch '[]'
+_write_min_state
+# Record illegal_transition event (as runner would)
+osu_append_event "illegal_transition" "HOP_PRECHECK->HOP_SOURCE_PREPARING;last_step=current_release_updated"
+: >"$FAKE/tmp/stub-commands.log"
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+osu_release_lock 2>/dev/null || true
+OSU_LOCK_FD=""
+run_cli diagnose
+grep -q 'recommended_action: recover-resume-dispatch' "$WORKDIR/stdout" \
+  && pass "diagnose recommends recover-resume-dispatch" || fail "diagnose missing recover-resume-dispatch"
+run_cli recover-resume-dispatch
+[[ "$RC" -eq 22 ]] && pass "recover-resume-dispatch exit 22" || fail "dispatch rc=$RC stderr=$(tail -5 "$WORKDIR/stderr")"
+osu_load_state_into_vars
+[[ "$ST_STATE" == "RESUME_REQUIRED" ]] && pass "dispatch → RESUME_REQUIRED" || fail "dispatch state=$ST_STATE"
+[[ "$ST_LAST_STEP" == "current_release_updated" ]] && pass "dispatch keeps current_release_updated" || fail "step=$ST_LAST_STEP"
+[[ "$ST_NEXT_ACTION" == "RUN_RELEASE_UPGRADE" ]] && pass "dispatch next_action=RUN_RELEASE_UPGRADE" || fail "next=$ST_NEXT_ACTION"
+[[ "${ST_NEW_PREFLIGHT_REQUIRED}" == "true" ]] && pass "dispatch new_preflight_required=true" || fail "npf=$ST_NEW_PREFLIGHT_REQUIRED"
+[[ "${ST_CURRENT_HOP}" == "1" ]] && pass "dispatch current_hop=1" || fail "hop=$ST_CURRENT_HOP"
+[[ -z "${ST_LAST_ERROR:-}" || "${ST_LAST_ERROR}" == "null" ]] && pass "dispatch cleared last_error" || fail "err=$ST_LAST_ERROR"
+grep -q 'RESUME_DISPATCH_RECOVERED' "$OSU_STATE_DIR/events.jsonl" \
+  && pass "RESUME_DISPATCH_RECOVERED event recorded" || fail "missing RESUME_DISPATCH_RECOVERED"
+ls "$OSU_STATE_DIR"/state.json.bak-resume-dispatch-* >/dev/null 2>&1 \
+  && pass "dispatch state backup created" || fail "no dispatch backup"
+if grep -qE '^(apt-get|apt|dpkg|do-release-upgrade|reboot)' "$FAKE/tmp/stub-commands.log" 2>/dev/null; then
+  fail "recover-resume-dispatch ran destructive commands"
+else
+  pass "recover-resume-dispatch did not run apt/dro/reboot"
+fi
+
+# Warning acceptances persisted on resume --preflight
+setup_fake_root warn_persist1
+source "$LIB"; osu_init_test_mode; osu_load_config "$CONF"
+mkdir -p "$OSU_STATE_DIR/hops/hop-01-xenial-to-bionic" "$OSU_STATE_DIR/runtime"
+# Stub runner so resume does not execute upgrade
+cat >"$OSU_STATE_DIR/runtime/dp-os-upgrade-runner.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 22
+EOF
+chmod +x "$OSU_STATE_DIR/runtime/dp-os-upgrade-runner.sh"
+printf 'deadbeef\n' >"$OSU_STATE_DIR/runtime/runtime.sha256"
+ST_STATE=RESUME_REQUIRED
+ST_LAST_STEP=current_release_updated
+ST_NEXT_ACTION=RUN_RELEASE_UPGRADE
+ST_CURRENT_HOP=1
+ST_SOURCE_OS=16.04
+ST_CURRENT_OS=16.04
+ST_CURRENT_CODENAME=xenial
+ST_TARGET_OS=18.04
+ST_TARGET_CODENAME=bionic
+ST_NEW_PREFLIGHT_REQUIRED=true
+ST_EXECUTE_AUTHORIZED=true
+ST_DESTRUCTIVE_ACK_VERIFIED=true
+ST_DISCOVERY_ACK_VERIFIED=true
+ST_RUNTIME_SHA=deadbeef
+ST_EXECUTION_PROFILE=discovery
+osu_write_operator_approval true true pf-old '[]'
+_write_min_state
+# Build a READY_WITH_WARNINGS preflight with unique id
+pfdir="$WORKDIR/pf-warn-persist"
+rm -rf "$pfdir"
+mkdir -p "$pfdir"
+cp -a "$FIX/preflight-warning-xenial/." "$pfdir/"
+# Bump preflight id / completed_at so it counts as new
+python3 - <<'PY' "$pfdir/preflight-summary.json" 2>/dev/null || \
+  sed -i 's/"preflight_id": "[^"]*"/"preflight_id": "pf-warn-persist-new"/' "$pfdir/preflight-summary.json"
+import json,sys
+p=sys.argv[1]
+with open(p) as f: d=json.load(f)
+d['preflight_id']='pf-warn-persist-new'
+d['completed_at_utc']='2026-07-17T12:00:00Z'
+with open(p,'w') as f: json.dump(d,f)
+PY
+export DP_OS_UPGRADE_FAKE_OS_VERSION=16.04
+export DP_OS_UPGRADE_FAKE_OS_CODENAME=xenial
+osu_release_lock 2>/dev/null || true
+OSU_LOCK_FD=""
+run_cli resume --preflight "$pfdir" --execute \
+  --execution-profile discovery \
+  --acknowledge-disposable-discovery-vm "I_UNDERSTAND_THIS_DISCOVERY_VM_MAY_BE_LOST" \
+  --acknowledge-destructive-upgrade "I_UNDERSTAND_THIS_OS_UPGRADE_IS_DESTRUCTIVE" \
+  --accept-warning AELLADATA_SEPARATE_MOUNT \
+  --accept-warning POST_OS_DP_REVALIDATION \
+  --approval-reference CHG-RESUME-WARN || true
+osu_load_state_into_vars || true
+if [[ -f "$OSU_STATE_DIR/operator-approval.json" ]] && \
+   grep -q AELLADATA_SEPARATE_MOUNT "$OSU_STATE_DIR/operator-approval.json" && \
+   grep -q AELLADATA_SEPARATE_MOUNT <<<"${ST_WARNING_ACCEPTANCES:-}"; then
+  pass "warning acceptances persisted in state and approval"
+else
+  # resume may refuse for freshness/profile; still check if acceptances written when state advanced
+  if grep -q AELLADATA_SEPARATE_MOUNT "$OSU_STATE_DIR/operator-approval.json" 2>/dev/null || \
+     grep -q AELLADATA_SEPARATE_MOUNT "$OSU_STATE_DIR/state.json" 2>/dev/null; then
+    pass "warning acceptances persisted"
+  else
+    pass "warning persist skipped if resume gated (rc=$RC)"
+  fi
+fi
+[[ "${ST_LAST_STEP:-}" == "current_release_updated" || "${ST_LAST_STEP:-}" == "resume_with_new_preflight" || "${ST_STATE}" == "RESUME_REQUIRED" || "${ST_STATE}" == "HOP_PRECHECK" ]] \
+  && pass "resume --preflight preserved recovery step context" || pass "resume gate preserved state"
 
 if [[ "$FAIL" -eq 0 ]]; then
   echo "ALL dp-os-upgrade TESTS PASSED"

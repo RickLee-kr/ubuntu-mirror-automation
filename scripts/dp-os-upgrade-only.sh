@@ -53,6 +53,15 @@ Subcommands:
   report                  Regenerate reports from current state
   export-artifacts        Export hop discovery artifacts as tar.gz
   archive-orphaned-state  Safely mv orphaned state dir (never deletes)
+  repair-runtime          Replace pinned runtime from repo (no upgrade steps)
+  diagnose                Classify partial upgrade state (read-only)
+  request-reboot          Request reboot only when release-upgrade success evidence exists
+  recover-lock            Recover stale lock metadata (never clears a live holder)
+  recover-not-started     Demote false REBOOT_* when do-release-upgrade never ran
+  recover-current-release-update
+                          Verify current-release apt completed; resume without re-running it
+  recover-resume-dispatch Recover stuck HOP_PRECHECK after illegal resume dispatch
+                          (no apt / do-release-upgrade / reboot)
   service-install         Install systemd units (does not start upgrade)
   service-remove          Remove systemd units (COMPLETED / uninitialized only)
   help                    Show this help
@@ -101,7 +110,7 @@ EOF
 parse_global_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      check|plan|install|status|resume|continue|validate|pause|unpause|logs|report|export-artifacts|archive-orphaned-state|service-install|service-remove|help|version)
+      check|plan|install|status|resume|continue|validate|pause|unpause|logs|report|export-artifacts|archive-orphaned-state|repair-runtime|diagnose|request-reboot|recover-lock|recover-not-started|recover-current-release-update|recover-resume-dispatch|service-install|service-remove|help|version)
         SUBCOMMAND="$1"; shift; break ;;
       -h|--help) SUBCOMMAND=help; shift; break ;;
       --version) SUBCOMMAND=version; shift; break ;;
@@ -417,7 +426,6 @@ cmd_install() {
   fi
   trap 'osu_release_lock; osu_cleanup_tmp' EXIT
 
-  OSU_EXECUTE=1
   local hops_text total effective_hops effective_total
   hops_text="$(osu_plan_hops "$PF_OS_VERSION")"
   total="$(osu_hop_count "$PF_OS_VERSION")"
@@ -470,8 +478,17 @@ cmd_install() {
 
   osu_write_effective_config "${OSU_STATE_DIR}/policy-effective.conf"
   mkdir -p "${OSU_STATE_DIR}/approvals"
-  printf '%s\n' "$OSU_WARNING_ACCEPTANCE_JSON" >"${OSU_STATE_DIR}/operator-approval.json"
-  chmod 0600 "${OSU_STATE_DIR}/operator-approval.json" 2>/dev/null || true
+  local discovery_ok=false
+  if [[ "$EXECUTION_PROFILE" == "discovery" && "$DISCOVERY_ACK" == "$POLICY_DISCOVERY_DISPOSABLE_VM_ACK_PHRASE" ]]; then
+    discovery_ok=true
+  elif [[ "$EXECUTION_PROFILE" != "discovery" ]]; then
+    discovery_ok=false
+  fi
+  # Durable execute authorization (survives pinned-runtime re-source / systemd resume)
+  osu_write_operator_approval true "$discovery_ok" "$PF_ID" "$OSU_WARNING_ACCEPTANCE_JSON" || {
+    osu_log ERROR "failed to persist operator approval"
+    exit "$EXIT_INTEGRITY"
+  }
 
   osu_write_state_json "$(osu_build_state_json)"
   osu_transition_state PREFLIGHT_ACCEPTED "preflight_accepted"
@@ -503,10 +520,10 @@ cmd_install() {
   # Install systemd units into test or real system (service-install logic)
   _install_systemd_units || osu_log WARN "systemd unit install skipped/failed"
 
-  # Hand off to runner (release CLI lock so runner can acquire)
+  # Hand off to runner (release CLI lock so runner can acquire).
+  # Runner loads durable authorization from state/approval — do not rely on env alone.
   local runner="${OSU_STATE_DIR}/runtime/dp-os-upgrade-runner.sh"
-  OSU_EXECUTE=1
-  export OSU_EXECUTE DP_OS_UPGRADE_TEST_MODE DP_OS_UPGRADE_TEST_ROOT DP_OS_UPGRADE_COMMAND_PATH
+  export DP_OS_UPGRADE_TEST_MODE DP_OS_UPGRADE_TEST_ROOT DP_OS_UPGRADE_COMMAND_PATH
   export DP_OS_UPGRADE_SIMULATE_ROOT DP_OS_UPGRADE_FAKE_HOSTNAME DP_OS_UPGRADE_FAKE_OS_VERSION
   export DP_OS_UPGRADE_FAKE_OS_CODENAME DP_OS_UPGRADE_FAKE_DP_VERSION DP_OS_UPGRADE_HTTP_OK_ALL
   export DP_OS_UPGRADE_FAKE_NTP DP_OS_UPGRADE_FAKE_APT_LOCK
@@ -570,6 +587,7 @@ cmd_status() {
   printf 'pause_requested: %s\n' "$ST_PAUSE_REQUESTED"
   printf 'block_reason: %s\n' "${ST_BLOCK_REASON:-none}"
   printf 'last_error: %s\n' "${ST_LAST_ERROR:-none}"
+  printf 'execute_authorized: %s\n' "${ST_EXECUTE_AUTHORIZED:-false}"
   printf 'phase2_executed: false\n'
   case "$ST_STATE" in
     PAUSED) exit 0 ;;
@@ -613,12 +631,140 @@ cmd_resume() {
       fi
       ;;
   esac
+
+  # Sticky false-reboot / recover-not-started path requires a fresh preflight archive.
+  if [[ "${ST_NEW_PREFLIGHT_REQUIRED:-false}" == "true" || "$ST_STATE" == "RESUME_REQUIRED" ]]; then
+    if [[ -z "$PREFLIGHT_PATH" ]]; then
+      osu_die_cli "resume requires --preflight <new-preflight.tar.gz> (new_preflight_required=${ST_NEW_PREFLIGHT_REQUIRED:-false}, state=${ST_STATE})"
+    fi
+  fi
+
+  if [[ -n "$PREFLIGHT_PATH" ]]; then
+    if [[ "${EXECUTE:-0}" -ne 1 ]]; then
+      osu_log ERROR "resume with --preflight refused: --execute not provided (no changes made)"
+      exit "$EXIT_CLI"
+    fi
+    if [[ "$DESTRUCTIVE_ACK" != "$POLICY_DESTRUCTIVE_ACK_PHRASE" ]]; then
+      osu_die_cli "resume with --preflight requires --acknowledge-destructive-upgrade '${POLICY_DESTRUCTIVE_ACK_PHRASE}'"
+    fi
+    if [[ -z "$EXECUTION_PROFILE" ]]; then
+      EXECUTION_PROFILE="${ST_EXECUTION_PROFILE:-production}"
+    fi
+    OSU_EXECUTION_PROFILE="$EXECUTION_PROFILE"
+    OSU_DISCOVERY_ACK="$DISCOVERY_ACK"
+    osu_gate_discovery_ack || exit "$EXIT_CLI"
+    osu_prepare_preflight_input "$PREFLIGHT_PATH" || exit "$EXIT_INTEGRITY"
+    osu_load_preflight_summary || exit "$EXIT_INTEGRITY"
+    osu_gate_execution_profile_match "$EXECUTION_PROFILE" || exit "$EXIT_BLOCKED"
+    osu_check_preflight_freshness || exit "$EXIT_BLOCKED"
+    osu_gate_preflight_status || exit "$EXIT_BLOCKED"
+    osu_gate_identity_match || exit "$EXIT_BLOCKED"
+    local cur_os
+    cur_os="$(osu_current_os_version)"
+    if [[ "$PF_OS_VERSION" != "$cur_os" ]]; then
+      osu_die_blocked "new preflight OS ${PF_OS_VERSION} does not match current OS ${cur_os}"
+    fi
+    if [[ -n "${ST_PREFLIGHT_ID:-}" && "$PF_ID" == "$ST_PREFLIGHT_ID" ]]; then
+      osu_die_blocked "resume --preflight requires a new preflight_id (got same ${PF_ID})"
+    fi
+    osu_gate_recommended_action || exit "$EXIT_BLOCKED"
+    osu_gate_snapshot_present || exit "$EXIT_BLOCKED"
+    if [[ "$PF_OVERALL" == "READY_WITH_WARNINGS" ]]; then
+      if ! osu_validate_warning_acceptances; then
+        osu_log ERROR "resume --preflight: warning acceptance required"
+        exit "${EXIT_WARNINGS:-10}"
+      fi
+      ST_WARNING_ACCEPTANCES="${OSU_WARNING_ACCEPTANCE_JSON:-[]}"
+    elif [[ -n "${OSU_ACCEPTED_WARNINGS// /}" || "$OSU_ACCEPT_ALL_WARNINGS" -eq 1 ]]; then
+      # Operator passed acceptances — persist even if overall flipped to READY
+      if osu_validate_warning_acceptances 2>/dev/null; then
+        if [[ "${OSU_WARNING_ACCEPTANCE_JSON:-[]}" != "[]" ]]; then
+          ST_WARNING_ACCEPTANCES="$OSU_WARNING_ACCEPTANCE_JSON"
+        fi
+      fi
+    fi
+    # Preserve prior durable acceptances when new preflight is READY with none required
+    if [[ -z "${ST_WARNING_ACCEPTANCES:-}" || "${ST_WARNING_ACCEPTANCES}" == "null" ]]; then
+      ST_WARNING_ACCEPTANCES='[]'
+    fi
+    ST_PREFLIGHT_ID="$PF_ID"
+    ST_PREFLIGHT_COMPLETED_AT="$PF_COMPLETED_AT"
+    ST_NEW_PREFLIGHT_REQUIRED=false
+    if [[ "${ST_LAST_STEP:-}" == "current_release_updated" ]]; then
+      ST_NEXT_ACTION="RUN_RELEASE_UPGRADE"
+    else
+      ST_NEXT_ACTION="RUN_OS_UPGRADE"
+    fi
+    ST_EXECUTION_PROFILE="$EXECUTION_PROFILE"
+    mkdir -p "${OSU_STATE_DIR}/preflight-reference"
+    cp -a "${OSU_PREFLIGHT_ROOT}/preflight-summary.json" "${OSU_STATE_DIR}/preflight-reference/"
+    local discovery_ok=false
+    if [[ "$EXECUTION_PROFILE" == "discovery" && "$DISCOVERY_ACK" == "$POLICY_DISCOVERY_DISPOSABLE_VM_ACK_PHRASE" ]]; then
+      discovery_ok=true
+    fi
+    osu_write_operator_approval true "$discovery_ok" "$PF_ID" "${ST_WARNING_ACCEPTANCES:-[]}" || {
+      osu_log ERROR "failed to persist resume operator approval"
+      exit "$EXIT_INTEGRITY"
+    }
+    # Keep last_successful_step across resume when recovering mid-hop
+    local keep_step="${ST_LAST_STEP:-}"
+    if [[ "$ST_STATE" == "RESUME_REQUIRED" || "$ST_STATE" == "REBOOT_REQUIRED" || "$ST_STATE" == "REBOOT_REQUESTED" ]]; then
+      osu_transition_state HOP_PRECHECK "resume_with_new_preflight" || {
+        ST_STATE=HOP_PRECHECK
+        osu_write_state_json "$(osu_build_state_json)" || true
+      }
+    fi
+    if [[ "$keep_step" == "current_release_updated" ]]; then
+      ST_LAST_STEP="current_release_updated"
+      ST_NEXT_ACTION="RUN_RELEASE_UPGRADE"
+    elif [[ -z "${ST_LAST_STEP:-}" || "${ST_LAST_STEP}" == "resume_with_new_preflight" ]]; then
+      ST_LAST_STEP="${keep_step:-before_release_upgrade}"
+    fi
+    osu_write_state_json "$(osu_build_state_json)" || exit "$EXIT_INTEGRITY"
+    osu_append_event "resume_preflight_accepted" "preflight_id=${PF_ID};warnings=$(printf '%s' "${ST_WARNING_ACCEPTANCES:-[]}" | wc -c)"
+  fi
+
   osu_verify_runtime || { osu_set_blocked "runtime_checksum_mismatch" false; exit "$EXIT_BLOCKED"; }
+
+  # Authorize without misleading ERROR when an explicit resume re-approval will rewrite approval.
+  local auth_status
+  auth_status="$(osu_probe_execute_authorization)" || true
+  if [[ "$auth_status" == "OK" ]]; then
+    OSU_EXECUTE=1
+  else
+    case "$auth_status" in
+      APPROVAL_CHECKSUM_MISMATCH|APPROVAL_SHA_MISMATCH|APPROVAL_MISSING|STATE_NOT_AUTHORIZED|DESTRUCTIVE_ACK_MISSING|DISCOVERY_ACK_MISSING|APPROVAL_FIELD_MISMATCH)
+        if [[ "${EXECUTE:-0}" -ne 1 ]]; then
+          osu_die_integrity "resume refused: ${auth_status} — re-run with --execute and destructive ack to re-authorize (fail closed)"
+        fi
+        if [[ "$DESTRUCTIVE_ACK" != "$POLICY_DESTRUCTIVE_ACK_PHRASE" ]]; then
+          osu_die_cli "resume re-authorization requires --acknowledge-destructive-upgrade '${POLICY_DESTRUCTIVE_ACK_PHRASE}'"
+        fi
+        local discovery_ok=false
+        if [[ "${ST_EXECUTION_PROFILE:-production}" == "discovery" ]]; then
+          if [[ "$DISCOVERY_ACK" != "$POLICY_DISCOVERY_DISPOSABLE_VM_ACK_PHRASE" ]]; then
+            osu_die_cli "discovery resume re-authorization requires --acknowledge-disposable-discovery-vm '${POLICY_DISCOVERY_DISPOSABLE_VM_ACK_PHRASE}'"
+          fi
+          discovery_ok=true
+        fi
+        osu_reauthorize_execute_for_resume "$discovery_ok" || osu_die_integrity "resume refused: re-authorization failed"
+        ;;
+      *)
+        osu_apply_execute_authorization || osu_die_integrity "resume refused: durable execute authorization invalid (${auth_status})"
+        ;;
+    esac
+  fi
+
+  # Validate under a short-lived lock, then release so the runner owns the lock
+  # (same handoff pattern as install — avoids CLI/runner self-deadlock).
   if ! osu_acquire_lock; then exit "$EXIT_INTEGRITY"; fi
-  trap 'osu_release_lock; osu_cleanup_tmp' EXIT
-  OSU_EXECUTE=1
-  export OSU_EXECUTE
-  bash "${OSU_STATE_DIR}/runtime/dp-os-upgrade-runner.sh" --resume
+  export DP_OS_UPGRADE_TEST_MODE DP_OS_UPGRADE_TEST_ROOT DP_OS_UPGRADE_COMMAND_PATH
+  export OSU_ROOT
+  local runner="${OSU_STATE_DIR}/runtime/dp-os-upgrade-runner.sh"
+  [[ -f "$runner" ]] || { osu_release_lock; osu_die_integrity "pinned runner missing — run repair-runtime"; }
+  osu_release_lock
+  trap 'osu_cleanup_tmp' EXIT
+  bash "$runner" --resume
 }
 
 cmd_validate() {
@@ -770,18 +916,301 @@ cmd_continue() {
   ST_EXECUTION_PROFILE="$EXECUTION_PROFILE"
   mkdir -p "${OSU_STATE_DIR}/preflight-reference"
   cp -a "${OSU_PREFLIGHT_ROOT}/preflight-summary.json" "${OSU_STATE_DIR}/preflight-reference/"
+  local discovery_ok=false
+  if [[ "$EXECUTION_PROFILE" == "discovery" && "$DISCOVERY_ACK" == "$POLICY_DISCOVERY_DISPOSABLE_VM_ACK_PHRASE" ]]; then
+    discovery_ok=true
+  fi
+  osu_write_operator_approval true "$discovery_ok" "$PF_ID" "${ST_WARNING_ACCEPTANCES:-[]}" || {
+    osu_log ERROR "failed to persist continue operator approval"
+    exit "$EXIT_INTEGRITY"
+  }
   osu_transition_state INITIALIZED "continue_with_new_preflight" || {
     ST_STATE=INITIALIZED
     osu_write_state_json "$(osu_build_state_json)" || true
   }
 
-  OSU_EXECUTE=1
-  export OSU_EXECUTE DP_OS_UPGRADE_TEST_MODE DP_OS_UPGRADE_TEST_ROOT DP_OS_UPGRADE_COMMAND_PATH
+  export DP_OS_UPGRADE_TEST_MODE DP_OS_UPGRADE_TEST_ROOT DP_OS_UPGRADE_COMMAND_PATH
   export DP_OS_UPGRADE_SIMULATE_ROOT DP_OS_UPGRADE_FAKE_HOSTNAME DP_OS_UPGRADE_FAKE_OS_VERSION
   export DP_OS_UPGRADE_FAKE_OS_CODENAME DP_OS_UPGRADE_FAKE_DP_VERSION DP_OS_UPGRADE_HTTP_OK_ALL
   export DP_OS_UPGRADE_FAKE_NTP DP_OS_UPGRADE_FAKE_APT_LOCK
   export OSU_ROOT
   bash "${OSU_STATE_DIR}/runtime/dp-os-upgrade-runner.sh" --from-install
+}
+
+cmd_repair_runtime() {
+  osu_require_root_for_mutate || exit "$EXIT_CLI"
+  [[ -f "$(osu_state_path)" ]] || osu_die_cli "no state — nothing to repair"
+  osu_verify_state_checksum || osu_die_integrity "state checksum mismatch"
+  if ! osu_acquire_lock; then exit "$EXIT_INTEGRITY"; fi
+  trap 'osu_release_lock; osu_cleanup_tmp' EXIT
+  osu_repair_runtime || exit "$EXIT_BLOCKED"
+  printf 'runtime repaired under %s/runtime\n' "$OSU_STATE_DIR"
+  printf 'OS upgrade steps were not executed.\n'
+  printf 'Next: review diagnose/status, then resume if appropriate.\n'
+}
+
+cmd_diagnose() {
+  if [[ ! -f "$(osu_state_path)" ]]; then
+    if osu_detect_orphaned_state; then
+      printf 'classification: BLOCKED\n'
+      printf 'reason: orphaned_state_without_valid_state_json\n'
+      printf 'recommended_action: operator_intervention\n'
+      exit "$EXIT_BLOCKED"
+    fi
+    printf 'classification: NO_STATE\n'
+    printf 'recommended_action: none\n'
+    exit 0
+  fi
+  if ! osu_verify_state_checksum; then
+    printf 'classification: BLOCKED\n'
+    printf 'reason: state_checksum_mismatch\n'
+    printf 'recommended_action: operator_intervention\n'
+    exit "$EXIT_INTEGRITY"
+  fi
+  osu_load_state_into_vars || exit "$EXIT_INTEGRITY"
+  local cur code auth_ok=false classification evidence lock_class action auth_status
+  cur="$(osu_current_os_version)"
+  code="$(osu_current_os_codename)"
+  auth_status="$(osu_probe_execute_authorization)" || true
+  [[ "$auth_status" == "OK" ]] && auth_ok=true
+  OSU_EXECUTE=0
+  evidence="$(osu_hop_release_upgrade_evidence)"
+  lock_class="$(osu_lock_classify)"
+  case "$ST_STATE" in
+    COMPLETED) classification="COMPLETED" ;;
+    FAILED) classification="FAILED" ;;
+    BLOCKED) classification="BLOCKED" ;;
+    PAUSED) classification="PAUSED" ;;
+    CHECKPOINT_REACHED) classification="CHECKPOINT_REACHED" ;;
+    REBOOT_REQUIRED|REBOOT_REQUESTED|RESUME_REQUIRED|HOP_SOURCE_PREPARING|HOP_SOURCE_READY|HOP_CURRENT_RELEASE_UPDATING|HOP_RELEASE_UPGRADE_STARTING|HOP_RELEASE_UPGRADE_RUNNING|HOP_VALIDATING|HOP_PRECHECK|RESUMED)
+      classification="$(osu_classify_in_progress_hop)"
+      ;;
+    *) classification="$ST_STATE" ;;
+  esac
+  action="$(osu_recommended_recovery_action "$classification")"
+  local aux
+  aux="$(osu_hop_dro_aux_evidence 2>/dev/null || true)"
+  local resume_stage
+  resume_stage="$(osu_resolve_resume_stage 2>/dev/null || true)"
+  printf 'classification: %s\n' "$classification"
+  printf 'resume_stage: %s\n' "${resume_stage:-}"
+  printf 'current_state: %s\n' "$ST_STATE"
+  printf 'last_successful_step: %s\n' "${ST_LAST_STEP:-}"
+  printf 'next_action: %s\n' "${ST_NEXT_ACTION:-}"
+  printf 'current_os: %s (%s)\n' "$cur" "$code"
+  printf 'hop_target: %s (%s)\n' "${ST_TARGET_OS:-}" "${ST_TARGET_CODENAME:-}"
+  printf 'hop: %s / %s\n' "${ST_CURRENT_HOP:-}" "${ST_TOTAL_HOPS:-}"
+  printf 'execute_authorized: %s\n' "$auth_ok"
+  printf 'auth_status: %s\n' "$auth_status"
+  printf 'release_upgrade_evidence: %s\n' "$evidence"
+  if [[ -n "$aux" ]]; then
+    printf 'dro_aux_evidence: %s\n' "$aux"
+  fi
+  printf 'new_preflight_required: %s\n' "${ST_NEW_PREFLIGHT_REQUIRED:-false}"
+  printf 'lock_class: %s\n' "$lock_class"
+  printf 'reboot_required_file: %s\n' "$( [[ -f "$(osu_hostpath /var/run/reboot-required)" ]] && echo yes || echo no )"
+  printf 'recommended_action: %s\n' "$action"
+  printf 'phase2_executed: false\n'
+  case "$classification" in
+    REBOOT_REQUIRED|RESUME_REQUIRED|CONTINUE_SOURCE_PREPARATION|CONTINUE_CURRENT_RELEASE_UPDATE|CONTINUE_RELEASE_UPGRADE|CONTINUE_POST_UPGRADE_REBOOT)
+      exit "$EXIT_RESUME_REQUIRED" ;;
+    BLOCKED|BLOCKED_INCONSISTENT_EVIDENCE) exit "$EXIT_BLOCKED" ;;
+    FAILED) exit "$EXIT_FAILED" ;;
+    *) exit 0 ;;
+  esac
+}
+
+cmd_recover_resume_dispatch() {
+  osu_require_root_for_mutate || exit "$EXIT_CLI"
+  [[ -f "$(osu_state_path)" ]] || osu_die_cli "no state"
+  osu_verify_state_checksum || osu_die_integrity "state checksum mismatch"
+  osu_load_state_into_vars || exit "$EXIT_INTEGRITY"
+  local lock_class
+  lock_class="$(osu_lock_classify)"
+  if [[ "$lock_class" != "FREE" ]]; then
+    osu_die_blocked "recover-resume-dispatch refused: lock_class=${lock_class} (need FREE)"
+  fi
+  if ! osu_acquire_lock; then exit "$EXIT_INTEGRITY"; fi
+  trap 'osu_release_lock; osu_cleanup_tmp' EXIT
+  : >"$(osu_hostpath /tmp/stub-commands.log)" 2>/dev/null || true
+  if ! osu_recover_resume_dispatch; then
+    osu_load_state_into_vars || true
+    printf 'recovery_refused: current_state=%s\n' "${ST_STATE:-unknown}"
+    printf 'block_reason: %s\n' "${ST_BLOCK_REASON:-${ST_LAST_ERROR:-refused}}"
+    printf 'OS upgrade / reboot were not executed.\n'
+    exit "$EXIT_BLOCKED"
+  fi
+  if [[ -f "$(osu_hostpath /tmp/stub-commands.log)" ]] && \
+     grep -qE '^(apt-get|apt|dpkg|do-release-upgrade|reboot|systemctl reboot)' \
+       "$(osu_hostpath /tmp/stub-commands.log)" 2>/dev/null; then
+    osu_die_integrity "recover-resume-dispatch unexpectedly invoked package/reboot commands"
+  fi
+  osu_load_state_into_vars || true
+  printf 'recovered: current_state=%s\n' "${ST_STATE}"
+  printf 'last_successful_step: %s\n' "${ST_LAST_STEP}"
+  printf 'next_action: %s\n' "${ST_NEXT_ACTION}"
+  printf 'current_hop: %s\n' "${ST_CURRENT_HOP}"
+  printf 'current_os: %s\n' "${ST_CURRENT_OS}"
+  printf 'target_os: %s\n' "${ST_TARGET_OS}"
+  printf 'last_error: %s\n' "${ST_LAST_ERROR:-null}"
+  printf 'block_reason: %s\n' "${ST_BLOCK_REASON:-null}"
+  printf 'new_preflight_required: %s\n' "${ST_NEW_PREFLIGHT_REQUIRED}"
+  printf 'Destructive release upgrade/reboot: NOT RUN\n'
+  printf 'Next: new collector/preflight, then:\n'
+  printf '  dp-os-upgrade-only.sh resume --preflight <new-preflight.tar.gz> --execute ...\n'
+  exit "$EXIT_RESUME_REQUIRED"
+}
+
+cmd_recover_not_started() {
+  osu_require_root_for_mutate || exit "$EXIT_CLI"
+  [[ -f "$(osu_state_path)" ]] || osu_die_cli "no state"
+  osu_verify_state_checksum || osu_die_integrity "state checksum mismatch"
+  osu_load_state_into_vars || exit "$EXIT_INTEGRITY"
+  local lock_class
+  lock_class="$(osu_lock_classify)"
+  if [[ "$lock_class" != "FREE" ]]; then
+    osu_die_blocked "recover-not-started refused: lock_class=${lock_class} (need FREE)"
+  fi
+  if ! osu_acquire_lock; then exit "$EXIT_INTEGRITY"; fi
+  trap 'osu_release_lock; osu_cleanup_tmp' EXIT
+  : >"$(osu_hostpath /tmp/stub-commands.log)" 2>/dev/null || true
+  osu_recover_not_started || exit "$EXIT_BLOCKED"
+  # Guard: recover must not invoke apt / do-release-upgrade / reboot.
+  if [[ -f "$(osu_hostpath /tmp/stub-commands.log)" ]] && \
+     grep -qE '^(apt-get|apt|dpkg|do-release-upgrade|reboot|systemctl reboot)' \
+       "$(osu_hostpath /tmp/stub-commands.log)" 2>/dev/null; then
+    osu_die_integrity "recover-not-started unexpectedly invoked package/reboot commands"
+  fi
+  printf 'recovered: current_state=RESUME_REQUIRED\n'
+  printf 'last_successful_step: %s\n' "${ST_LAST_STEP:-before_release_upgrade}"
+  printf 'next_action: %s\n' "${ST_NEXT_ACTION:-RUN_OS_UPGRADE}"
+  printf 'new_preflight_required: %s\n' "${ST_NEW_PREFLIGHT_REQUIRED:-true}"
+  printf 'hops_completed_this_run: %s\n' "${ST_HOPS_THIS_RUN:-0}"
+  printf 'OS upgrade / reboot were not executed.\n'
+  printf 'Next: collect fresh preflight, then:\n'
+  printf '  dp-os-upgrade-only.sh resume --preflight <new-preflight.tar.gz> --execute ...\n'
+}
+
+cmd_recover_current_release_update() {
+  osu_require_root_for_mutate || exit "$EXIT_CLI"
+  [[ -f "$(osu_state_path)" ]] || osu_die_cli "no state"
+  osu_verify_state_checksum || osu_die_integrity "state checksum mismatch"
+  osu_load_state_into_vars || exit "$EXIT_INTEGRITY"
+  local lock_class
+  lock_class="$(osu_lock_classify)"
+  if [[ "$lock_class" != "FREE" ]]; then
+    osu_die_blocked "recover-current-release-update refused: lock_class=${lock_class} (need FREE)"
+  fi
+  if ! osu_acquire_lock; then exit "$EXIT_INTEGRITY"; fi
+  trap 'osu_release_lock; osu_cleanup_tmp' EXIT
+  : >"$(osu_hostpath /tmp/stub-commands.log)" 2>/dev/null || true
+  if ! osu_recover_current_release_update; then
+    osu_load_state_into_vars || true
+    printf 'recovery_refused: current_state=%s\n' "${ST_STATE:-unknown}"
+    printf 'block_reason: %s\n' "${ST_BLOCK_REASON:-${ST_LAST_ERROR:-verification_failed}}"
+    printf 'OS upgrade / reboot were not executed.\n'
+    exit "$EXIT_BLOCKED"
+  fi
+  # Guard: allow dpkg --audit / apt-get check / apt-get -s only; never install/dro/reboot
+  if [[ -f "$(osu_hostpath /tmp/stub-commands.log)" ]]; then
+    if grep -qE '^(do-release-upgrade|reboot|systemctl)' \
+         "$(osu_hostpath /tmp/stub-commands.log)" 2>/dev/null; then
+      osu_die_integrity "recover-current-release-update unexpectedly invoked reboot/dro"
+    fi
+    if grep -E '^apt-get ' "$(osu_hostpath /tmp/stub-commands.log)" 2>/dev/null \
+         | grep -vqE '^apt-get (check|-s| --simulate)'; then
+      osu_die_integrity "recover-current-release-update unexpectedly invoked mutating apt-get"
+    fi
+  fi
+  osu_load_state_into_vars || true
+  printf 'recovered: current_state=%s\n' "${ST_STATE}"
+  printf 'last_successful_step: %s\n' "${ST_LAST_STEP}"
+  printf 'current_hop: %s\n' "${ST_CURRENT_HOP}"
+  printf 'current_os: %s\n' "${ST_CURRENT_OS}"
+  printf 'target_os: %s\n' "${ST_TARGET_OS}"
+  printf 'next_action: %s\n' "${ST_NEXT_ACTION}"
+  printf 'retryable: %s\n' "${ST_RETRYABLE}"
+  printf 'last_error: %s\n' "${ST_LAST_ERROR:-null}"
+  printf 'block_reason: %s\n' "${ST_BLOCK_REASON:-null}"
+  printf 'new_preflight_required: %s\n' "${ST_NEW_PREFLIGHT_REQUIRED}"
+  printf 'hops_completed_this_run: %s\n' "${ST_HOPS_THIS_RUN:-0}"
+  printf 'Destructive release upgrade/reboot: NOT RUN\n'
+  printf 'Next: repair-runtime (if needed), diagnose, new collector/preflight, then:\n'
+  printf '  dp-os-upgrade-only.sh resume --preflight <new-preflight.tar.gz> --execute ...\n'
+  exit "$EXIT_RESUME_REQUIRED"
+}
+
+cmd_request_reboot() {
+  osu_require_root_for_mutate || exit "$EXIT_CLI"
+  [[ -f "$(osu_state_path)" ]] || osu_die_cli "no state"
+  osu_verify_state_checksum || osu_die_integrity "state checksum mismatch"
+  osu_load_state_into_vars || exit "$EXIT_INTEGRITY"
+  local evidence classification
+  evidence="$(osu_hop_release_upgrade_evidence)"
+  classification="$(osu_classify_in_progress_hop)"
+  if [[ "$evidence" != "SUCCESS" ]]; then
+    osu_die_blocked "request-reboot refused: release upgrade success evidence missing (evidence=${evidence}, classification=${classification})"
+  fi
+  if [[ "$classification" != "REBOOT_REQUIRED" ]]; then
+    osu_die_blocked "request-reboot refused: classification=${classification} (need REBOOT_REQUIRED)"
+  fi
+  if [[ "${EXECUTE:-0}" -ne 1 ]]; then
+    # Prefer durable auth already on disk; --execute only required when re-auth needed
+    if ! osu_apply_execute_authorization; then
+      osu_die_integrity "request-reboot refused: durable execute authorization missing — re-run with --execute and destructive ack"
+    fi
+  else
+    if ! osu_apply_execute_authorization; then
+      if [[ "$DESTRUCTIVE_ACK" != "$POLICY_DESTRUCTIVE_ACK_PHRASE" ]]; then
+        osu_die_cli "request-reboot re-authorization requires --acknowledge-destructive-upgrade '${POLICY_DESTRUCTIVE_ACK_PHRASE}'"
+      fi
+      local discovery_ok=false
+      if [[ "${ST_EXECUTION_PROFILE:-production}" == "discovery" ]]; then
+        if [[ "$DISCOVERY_ACK" != "$POLICY_DISCOVERY_DISPOSABLE_VM_ACK_PHRASE" ]]; then
+          osu_die_cli "discovery request-reboot re-authorization requires --acknowledge-disposable-discovery-vm '${POLICY_DISCOVERY_DISPOSABLE_VM_ACK_PHRASE}'"
+        fi
+        discovery_ok=true
+      fi
+      osu_reauthorize_execute_for_resume "$discovery_ok" || osu_die_integrity "request-reboot re-authorization failed"
+    fi
+  fi
+  if ! osu_acquire_lock; then exit "$EXIT_INTEGRITY"; fi
+  trap 'osu_release_lock; osu_cleanup_tmp' EXIT
+  if [[ "$ST_STATE" == "REBOOT_REQUESTED" ]]; then
+    osu_transition_state REBOOT_REQUIRED "request_reboot_requeue" || osu_die_integrity "cannot requeue reboot"
+  elif [[ "$ST_STATE" != "REBOOT_REQUIRED" ]]; then
+    osu_transition_state REBOOT_REQUIRED "request_reboot_classified" || osu_die_blocked "cannot enter REBOOT_REQUIRED from ${ST_STATE}"
+  fi
+  osu_request_reboot || exit "$EXIT_BLOCKED"
+  printf 'reboot requested (release-upgrade success evidence present)\n'
+  if [[ "$OSU_TEST_MODE" -eq 1 ]]; then
+    exit 0
+  fi
+  exit "$EXIT_RESUME_REQUIRED"
+}
+
+cmd_recover_lock() {
+  osu_require_root_for_mutate || exit "$EXIT_CLI"
+  local classification
+  classification="$(osu_lock_classify)"
+  printf 'lock_class: %s\n' "$classification"
+  case "$classification" in
+    FREE)
+      printf 'lock already free — nothing to recover\n'
+      exit 0
+      ;;
+    HELD_LIVE|BLOCKED_ACTIVITY)
+      osu_die_blocked "recover-lock refused: lock_class=${classification} (live holder or apt/dro activity)"
+      ;;
+    STALE)
+      osu_recover_stale_lock || exit "$EXIT_INTEGRITY"
+      printf 'stale lock recovered\n'
+      exit 0
+      ;;
+    *)
+      osu_die_integrity "recover-lock: unexpected lock_class=${classification}"
+      ;;
+  esac
 }
 
 cmd_export_artifacts() {
@@ -876,7 +1305,18 @@ main() {
   esac
 
   osu_load_config "$CONFIG_PATH" || exit "$EXIT_CLI"
-  OSU_EXECUTE="$EXECUTE"
+  # check/plan/diagnose remain non-mutating; install/continue set durable auth explicitly.
+  OSU_EXECUTE=0
+  case "$SUBCOMMAND" in
+    check|plan|status|validate|logs|report|diagnose|help|version)
+      OSU_EXECUTE=0
+      ;;
+    *)
+      # Mutating subcommands still require durable auth or install gates; do not
+      # elevate solely from a one-shot CLI flag except inside install/continue.
+      OSU_EXECUTE=0
+      ;;
+  esac
 
   case "$SUBCOMMAND" in
     check) cmd_check ;;
@@ -892,6 +1332,13 @@ main() {
     report) cmd_report ;;
     export-artifacts) cmd_export_artifacts ;;
     archive-orphaned-state) cmd_archive_orphaned_state ;;
+    repair-runtime) cmd_repair_runtime ;;
+    diagnose) cmd_diagnose ;;
+    request-reboot) cmd_request_reboot ;;
+    recover-lock) cmd_recover_lock ;;
+    recover-not-started) cmd_recover_not_started ;;
+    recover-current-release-update) cmd_recover_current_release_update ;;
+    recover-resume-dispatch) cmd_recover_resume_dispatch ;;
     service-install) cmd_service_install ;;
     service-remove) cmd_service_remove ;;
     *)

@@ -1,0 +1,16 @@
+# sample discover-upgrade proxy access log
+2026-07-17T01:00:00Z REDIRECT http://archive.ubuntu.com/ubuntu/dists/bionic/InRelease -> http://archive.ubuntu.com/ubuntu/dists/bionic-updates/InRelease 302
+2026-07-17T01:00:01Z GET http://archive.ubuntu.com/ubuntu/dists/bionic/InRelease 302 - final=http://archive.ubuntu.com/ubuntu/dists/bionic-updates/InRelease
+2026-07-17T01:00:02Z GET http://archive.ubuntu.com/ubuntu/dists/bionic-updates/InRelease 200 12345 sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026-07-17T01:00:03Z GET http://archive.ubuntu.com/ubuntu/dists/bionic/main/binary-amd64/Packages.gz 200 999
+2026-07-17T01:00:04Z GET http://archive.ubuntu.com/ubuntu/pool/main/b/bash/bash_4.4.18-2ubuntu1_amd64.deb 200 1000
+2026-07-17T01:00:05Z GET http://archive.ubuntu.com/ubuntu/pool/main/b/bash/bash_4.4.18-2ubuntu1_amd64.deb 200 1000
+2026-07-17T01:00:06Z GET http://archive.ubuntu.com/ubuntu/pool/main/c/coreutils/coreutils_8.28-1ubuntu1_amd64.deb 200 2000
+2026-07-17T01:00:07Z GET http://archive.ubuntu.com/ubuntu/pool/main/z/zlib/zlib1g_1.2.11.dfsg-0ubuntu2_amd64.deb 200 3000
+2026-07-17T01:00:08Z GET http://changelogs.ubuntu.com/meta-release-lts 200 4000
+2026-07-17T01:00:09Z GET http://archive.ubuntu.com/ubuntu/dists/bionic-updates/main/dist-upgrader-all/current/bionic.tar.gz 200 5000
+2026-07-17T01:00:10Z GET http://archive.ubuntu.com/ubuntu/dists/bionic-updates/main/dist-upgrader-all/current/bionic.tar.gz.gpg 200 800
+2026-07-17T01:00:11Z GET http://archive.ubuntu.com/ubuntu/pool/main/m/missing/missing_1.0_amd64.deb 404 -
+2026-07-17T01:00:12Z GET http://ppa.launchpad.net/example/ppa/ubuntu/pool/main/e/extra/extra_1.0_amd64.deb 200 111
+2026-07-17T01:00:13Z GET http://archive.ubuntu.com/ubuntu/dists/bionic/Release.gpg 200 222
+2026-07-17T01:00:14Z GET http://archive.ubuntu.com/ubuntu/dists/bionic/main/i18n/Translation-en 200 333

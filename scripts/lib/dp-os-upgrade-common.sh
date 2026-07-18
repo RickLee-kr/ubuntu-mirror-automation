@@ -28,7 +28,7 @@ EXIT_CHECKPOINT=41
 OSU_LTS_CHAIN="16.04:xenial 18.04:bionic 20.04:focal 22.04:jammy 24.04:noble"
 
 # State machine
-OSU_STATES="NEW PREFLIGHT_ACCEPTED INITIALIZED HOP_PRECHECK HOP_SOURCE_PREPARING HOP_SOURCE_READY HOP_CURRENT_RELEASE_UPDATING HOP_RELEASE_UPGRADE_STARTING HOP_RELEASE_UPGRADE_RUNNING REBOOT_REQUIRED REBOOT_REQUESTED RESUMED HOP_VALIDATING HOP_COMPLETED CHECKPOINT_REACHED PAUSED BLOCKED FAILED COMPLETED"
+OSU_STATES="NEW PREFLIGHT_ACCEPTED INITIALIZED HOP_PRECHECK HOP_SOURCE_PREPARING HOP_SOURCE_READY HOP_CURRENT_RELEASE_UPDATING HOP_RELEASE_UPGRADE_STARTING HOP_RELEASE_UPGRADE_RUNNING REBOOT_REQUIRED REBOOT_REQUESTED RESUME_REQUIRED RESUMED HOP_VALIDATING HOP_COMPLETED CHECKPOINT_REACHED PAUSED BLOCKED FAILED COMPLETED"
 
 # Globals populated at runtime
 OSU_ROOT=""
@@ -41,7 +41,9 @@ OSU_TMP_DIR=""
 OSU_OWNED_TMP=0
 OSU_PREFLIGHT_ROOT=""
 OSU_PREFLIGHT_INPUT_TYPE=""
-OSU_EXECUTE=0
+# Default deny. Never clobber a caller-exported value on source; persistent
+# authorization in state/operator-approval is the source of truth for runners.
+: "${OSU_EXECUTE:=0}"
 OSU_TEST_MODE=0
 OSU_EFFECTIVE_USER=""
 OSU_EXECUTION_PROFILE="production"
@@ -49,6 +51,12 @@ OSU_STOP_AFTER_OS=""
 OSU_MAX_HOPS=""
 OSU_DISCOVERY_ACK=""
 OSU_HOPS_THIS_RUN=0
+ST_EXECUTE_AUTHORIZED=false
+ST_DESTRUCTIVE_ACK_VERIFIED=false
+ST_DISCOVERY_ACK_VERIFIED=false
+ST_EXECUTE_AUTHORIZED_AT=""
+ST_EXECUTE_AUTHORIZED_BY=""
+ST_APPROVAL_SHA=""
 
 # Policy (defaults; overwritten by config)
 POLICY_TARGET_OS_VERSION="24.04"
@@ -320,6 +328,67 @@ PY
   fi
 }
 
+# Extract a top-level JSON array field as compact JSON (preserves objects).
+# Prefer jq/python; never silently discard durable warning_acceptances.
+osu_extract_json_array_field() {
+  local file="$1" field="$2"
+  [[ -f "$file" ]] || { printf '[]'; return 0; }
+  if command -v jq >/dev/null 2>&1; then
+    jq -c --arg f "$field" '.[$f] // []' "$file" 2>/dev/null && return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$file" "$field" <<'PY' 2>/dev/null && return 0
+import json,sys
+with open(sys.argv[1]) as f: data=json.load(f)
+val=data.get(sys.argv[2], [])
+if not isinstance(val, list):
+    val=[]
+json.dump(val, sys.stdout, separators=(",", ":"))
+print()
+PY
+  fi
+  if command -v python >/dev/null 2>&1; then
+    python - "$file" "$field" <<'PY' 2>/dev/null && return 0
+import json,sys
+with open(sys.argv[1]) as f: data=json.load(f)
+val=data.get(sys.argv[2], [])
+if not isinstance(val, list):
+    val=[]
+json.dump(val, sys.stdout, separators=(",", ":"))
+print()
+PY
+  fi
+  # Last-resort: extract balanced array after "field":
+  local raw
+  raw="$(awk -v f="$field" '
+    BEGIN { key="\"" f "\"" }
+    {
+      line=$0
+      idx=index(line, key)
+      if (idx==0) next
+      rest=substr(line, idx+length(key))
+      sub(/^[[:space:]]*:[[:space:]]*/, "", rest)
+      if (substr(rest,1,1)!="[") next
+      depth=0
+      out=""
+      for (i=1; i<=length(rest); i++) {
+        c=substr(rest,i,1)
+        out=out c
+        if (c=="[") depth++
+        else if (c=="]") {
+          depth--
+          if (depth==0) { print out; exit }
+        }
+      }
+    }
+  ' "$file" 2>/dev/null || true)"
+  if [[ -n "$raw" ]]; then
+    printf '%s\n' "$raw"
+  else
+    printf '[]\n'
+  fi
+}
+
 osu_normalize_version() {
   local raw="${1-}" base
   if [[ -z "$raw" || "$raw" == "null" || "$raw" == "unknown" ]]; then
@@ -357,13 +426,32 @@ osu_redact_url() {
   printf '%s' "$u" | sed -E 's#(://)[^/@:]+(:[^/@]*)?@#\1***:***@#g'
 }
 
+# Join a named array with a separator. Safe for empty arrays under Bash 4.3 + set -u
+# (bare "${arr[*]}" / "${arr[@]}" are unbound when the array has no elements).
+osu_join_array() {
+  local __name="$1"
+  local __sep="${2:-,}"
+  local -n __osu_join_ref="$__name"
+  local __i __out=""
+  if ((${#__osu_join_ref[@]} == 0)); then
+    printf ''
+    return 0
+  fi
+  __out="${__osu_join_ref[0]}"
+  for ((__i = 1; __i < ${#__osu_join_ref[@]}; __i++)); do
+    __out+="${__sep}${__osu_join_ref[__i]}"
+  done
+  printf '%s' "$__out"
+}
+
 osu_is_placeholder() {
   local ref="${1-}" low list item
   [[ -z "$ref" ]] && return 0
   low="$(printf '%s' "$ref" | tr '[:upper:]' '[:lower:]')"
   list="${POLICY_REJECTED_REFERENCE_PLACEHOLDERS}"
-  IFS=',' read -r -a items <<<"$list"
-  for item in "${items[@]}"; do
+  local -a items=()
+  IFS=',' read -r -a items <<<"$list" || true
+  for item in "${items[@]+"${items[@]}"}"; do
     item="$(printf '%s' "$item" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     [[ "$low" == "$item" ]] && return 0
   done
@@ -691,48 +779,188 @@ osu_proc_starttime() {
   fi
 }
 
-osu_acquire_lock() {
-  local lockf="${OSU_LOCK_FILE}"
-  local meta
-  meta="$(osu_hostpath "${POLICY_STATE_DIR}/lock-metadata.json")"
-  mkdir -p "$(dirname "$lockf")" "$(dirname "$meta")" 2>/dev/null || true
+osu_lock_metadata_path() {
+  printf '%s' "$(osu_hostpath "${POLICY_STATE_DIR}/lock-metadata.json")"
+}
 
-  if command -v flock >/dev/null 2>&1; then
-    exec {OSU_LOCK_FD}>"$lockf" || return 1
-    if ! flock -n "$OSU_LOCK_FD"; then
-      osu_log ERROR "another dp-os-upgrade process holds the lock: $lockf"
-      return 1
-    fi
+osu_lock_read_metadata_field() {
+  local field="$1" meta
+  meta="$(osu_lock_metadata_path)"
+  [[ -f "$meta" ]] || { printf ''; return 1; }
+  osu_json_get "$meta" "$field" 2>/dev/null || true
+}
+
+# True when pid+starttime+boot_id still identify a live process.
+osu_lock_pid_is_live() {
+  local pid="$1" expected_st="$2" expected_boot="$3"
+  local cur_st cur_boot
+  [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] || return 1
+  [[ -d "$(osu_hostpath "/proc/${pid}")" ]] || return 1
+  cur_st="$(osu_proc_starttime "$pid")"
+  cur_boot="$(osu_boot_id)"
+  [[ -n "$expected_st" && -n "$cur_st" && "$cur_st" == "$expected_st" ]] || return 1
+  [[ -n "$expected_boot" && "$expected_boot" == "$cur_boot" ]] || return 1
+  return 0
+}
+
+osu_lock_pid_cmdline() {
+  local pid="$1" f
+  f="$(osu_hostpath "/proc/${pid}/cmdline")"
+  if [[ -r "$f" ]]; then
+    tr '\0' ' ' <"$f" | sed 's/[[:space:]]*$//'
   else
-    # mkdir lock fallback
-    local lockdir="${lockf}.d"
-    if ! mkdir "$lockdir" 2>/dev/null; then
-      # stale check
-      if [[ -f "${lockdir}/pid" ]]; then
-        local opid ost boot
-        opid="$(cat "${lockdir}/pid" 2>/dev/null || true)"
-        ost="$(cat "${lockdir}/starttime" 2>/dev/null || true)"
-        boot="$(cat "${lockdir}/boot_id" 2>/dev/null || true)"
-        local cur_st cur_boot
-        cur_st="$(osu_proc_starttime "$opid")"
-        cur_boot="$(osu_boot_id)"
-        if [[ -n "$opid" && -n "$ost" && "$cur_st" == "$ost" && "$boot" == "$cur_boot" ]]; then
-          osu_log ERROR "lock held by live pid $opid"
-          return 1
-        fi
-        osu_log WARN "removing stale mkdir lock"
-        rm -rf "$lockdir"
-        mkdir "$lockdir" || return 1
-      else
-        return 1
-      fi
-    fi
-    printf '%s\n' "$$" >"${lockdir}/pid"
-    printf '%s\n' "$(osu_proc_starttime "$$")" >"${lockdir}/starttime"
-    printf '%s\n' "$(osu_boot_id)" >"${lockdir}/boot_id"
+    printf ''
+  fi
+}
+
+osu_systemd_runner_active() {
+  if [[ "$OSU_TEST_MODE" -eq 1 ]]; then
+    [[ -f "$(osu_hostpath /tmp/dp-os-upgrade-systemd-active)" ]] && return 0
+    return 1
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl is-active --quiet dp-os-upgrade.service 2>/dev/null && return 0
+    systemctl is-active --quiet dp-os-upgrade-resume.service 2>/dev/null && return 0
+  fi
+  return 1
+}
+
+# Probe whether the lock file currently has an active flock holder (non-destructive if free).
+# Prints: free | held | unknown
+osu_lock_flock_probe() {
+  local lockf="${OSU_LOCK_FILE}"
+  local fd
+  if ! command -v flock >/dev/null 2>&1; then
+    printf 'unknown\n'
+    return 0
+  fi
+  [[ -e "$lockf" ]] || { printf 'free\n'; return 0; }
+  exec {fd}>"$lockf" || { printf 'unknown\n'; return 0; }
+  if flock -n "$fd" 2>/dev/null; then
+    flock -u "$fd" 2>/dev/null || true
+    eval "exec ${fd}>&-" 2>/dev/null || true
+    printf 'free\n'
+  else
+    eval "exec ${fd}>&-" 2>/dev/null || true
+    printf 'held\n'
+  fi
+}
+
+# Classify lock: FREE | HELD_LIVE | STALE | BLOCKED_ACTIVITY
+# Optional detail on stderr via osu_log.
+osu_lock_classify() {
+  local meta pid st boot cmd flock_state mkdir_live=0 meta_live=0
+  local lockf="${OSU_LOCK_FILE}"
+  local lockdir="${lockf}.d"
+  meta="$(osu_lock_metadata_path)"
+
+  if osu_upgrade_process_active || osu_apt_lock_active; then
+    printf 'BLOCKED_ACTIVITY\n'
+    return 0
   fi
 
-  local rev=0
+  flock_state="$(osu_lock_flock_probe)"
+  pid="$(osu_lock_read_metadata_field pid)"
+  st="$(osu_lock_read_metadata_field starttime)"
+  boot="$(osu_lock_read_metadata_field boot_id)"
+  cmd="$(osu_lock_read_metadata_field command)"
+
+  if [[ -n "$pid" ]] && osu_lock_pid_is_live "$pid" "$st" "$boot"; then
+    # Ignore our own pid (re-probe / nested classify while holding)
+    if [[ "$pid" != "$$" ]]; then
+      meta_live=1
+    fi
+  fi
+  if [[ -d "$lockdir" && -f "${lockdir}/pid" ]]; then
+    local mpid mst mboot
+    mpid="$(cat "${lockdir}/pid" 2>/dev/null || true)"
+    mst="$(cat "${lockdir}/starttime" 2>/dev/null || true)"
+    mboot="$(cat "${lockdir}/boot_id" 2>/dev/null || true)"
+    if [[ "$mpid" != "$$" ]] && osu_lock_pid_is_live "$mpid" "$mst" "$mboot"; then
+      mkdir_live=1
+    fi
+  fi
+
+  # Active flock or live foreign pid ⇒ held. Do not treat lock-file existence alone as held.
+  if [[ "$flock_state" == "held" || "$meta_live" -eq 1 || "$mkdir_live" -eq 1 ]]; then
+    printf 'HELD_LIVE\n'
+    return 0
+  fi
+
+  # Leftover metadata/files with no live flock/pid (pid reuse, boot_id mismatch, crash)
+  if [[ -f "$meta" || -d "$lockdir" ]]; then
+    printf 'STALE\n'
+    return 0
+  fi
+
+  printf 'FREE\n'
+}
+
+osu_backup_stale_lock_artifacts() {
+  local stamp dest meta lockf lockdir
+  stamp="$(osu_utc_stamp)"
+  meta="$(osu_lock_metadata_path)"
+  lockf="${OSU_LOCK_FILE}"
+  lockdir="${lockf}.d"
+  dest="${OSU_STATE_DIR}/lock-stale-${stamp}"
+  mkdir -p "$dest" 2>/dev/null || true
+  [[ -f "$meta" ]] && cp -a "$meta" "${dest}/lock-metadata.json" 2>/dev/null || true
+  [[ -e "$lockf" ]] && cp -a "$lockf" "${dest}/dp-os-upgrade.lock" 2>/dev/null || true
+  if [[ -d "$lockdir" ]]; then
+    cp -a "$lockdir" "${dest}/dp-os-upgrade.lock.d" 2>/dev/null || true
+  fi
+  osu_append_event "lock_stale_backed_up" "$dest"
+  printf '%s\n' "$dest"
+}
+
+# Recover stale lock metadata/files when no live holder and no apt/dro activity.
+osu_recover_stale_lock() {
+  local classification
+  classification="$(osu_lock_classify)"
+  case "$classification" in
+    FREE)
+      osu_log INFO "lock already free"
+      return 0
+      ;;
+    HELD_LIVE)
+      local pid cmd
+      pid="$(osu_lock_read_metadata_field pid)"
+      cmd="$(osu_lock_read_metadata_field command)"
+      [[ -z "$cmd" && -n "$pid" ]] && cmd="$(osu_lock_pid_cmdline "$pid")"
+      osu_log ERROR "lock held by live process pid=${pid:-unknown} cmd=${cmd:-unknown} — refusing recover-lock"
+      return 1
+      ;;
+    BLOCKED_ACTIVITY)
+      osu_log ERROR "recover-lock refused: apt/dpkg/do-release-upgrade activity present"
+      return 1
+      ;;
+    STALE)
+      if osu_systemd_runner_active; then
+        osu_log ERROR "recover-lock refused: dp-os-upgrade systemd unit is active"
+        return 1
+      fi
+      local bak
+      bak="$(osu_backup_stale_lock_artifacts)"
+      rm -f "$(osu_lock_metadata_path)" 2>/dev/null || true
+      # Only remove lock file when flock probe says free (no live holder)
+      if [[ "$(osu_lock_flock_probe)" == "free" ]]; then
+        rm -f "${OSU_LOCK_FILE}" 2>/dev/null || true
+      fi
+      rm -rf "${OSU_LOCK_FILE}.d" 2>/dev/null || true
+      osu_log INFO "stale lock recovered; evidence kept at ${bak}"
+      return 0
+      ;;
+    *)
+      osu_log ERROR "recover-lock: unexpected classification ${classification}"
+      return 1
+      ;;
+  esac
+}
+
+osu_write_lock_metadata() {
+  local meta rev=0
+  meta="$(osu_lock_metadata_path)"
+  mkdir -p "$(dirname "$meta")" 2>/dev/null || true
   if [[ -f "$(osu_hostpath "${POLICY_STATE_DIR}/state.json")" ]]; then
     rev="$(osu_json_get "$(osu_hostpath "${POLICY_STATE_DIR}/state.json")" state_revision || true)"
     rev="${rev:-0}"
@@ -749,6 +977,58 @@ osu_acquire_lock() {
 }
 EOF
   chmod 0600 "$meta" 2>/dev/null || true
+}
+
+osu_acquire_lock() {
+  local lockf="${OSU_LOCK_FILE}"
+  local pid cmd
+  mkdir -p "$(dirname "$lockf")" "$(dirname "$(osu_lock_metadata_path)")" 2>/dev/null || true
+
+  # Refuse while package-manager activity is present (do not clear under apt/dro).
+  if osu_upgrade_process_active || osu_apt_lock_active; then
+    osu_log ERROR "lock acquire refused: apt/dpkg/do-release-upgrade activity present"
+    return 1
+  fi
+
+  if command -v flock >/dev/null 2>&1; then
+    exec {OSU_LOCK_FD}>"$lockf" || return 1
+    if ! flock -n "$OSU_LOCK_FD"; then
+      pid="$(osu_lock_read_metadata_field pid)"
+      cmd="$(osu_lock_read_metadata_field command)"
+      [[ -z "$cmd" && -n "$pid" ]] && cmd="$(osu_lock_pid_cmdline "$pid")"
+      osu_log ERROR "another dp-os-upgrade process holds the lock: pid=${pid:-unknown} cmd=${cmd:-unknown} file=${lockf}"
+      eval "exec ${OSU_LOCK_FD}>&-" 2>/dev/null || true
+      OSU_LOCK_FD=""
+      return 1
+    fi
+    # We hold flock: leftover metadata from a dead holder is harmless; rewrite ours.
+  else
+    # mkdir lock fallback with pid/starttime/boot_id stale recovery
+    local lockdir="${lockf}.d"
+    if ! mkdir "$lockdir" 2>/dev/null; then
+      if [[ -f "${lockdir}/pid" ]]; then
+        local opid ost boot
+        opid="$(cat "${lockdir}/pid" 2>/dev/null || true)"
+        ost="$(cat "${lockdir}/starttime" 2>/dev/null || true)"
+        boot="$(cat "${lockdir}/boot_id" 2>/dev/null || true)"
+        if osu_lock_pid_is_live "$opid" "$ost" "$boot"; then
+          osu_log ERROR "lock held by live pid $opid"
+          return 1
+        fi
+        osu_log WARN "removing stale mkdir lock (pid reuse / boot mismatch / dead holder)"
+        osu_backup_stale_lock_artifacts >/dev/null || true
+        rm -rf "$lockdir"
+        mkdir "$lockdir" || return 1
+      else
+        return 1
+      fi
+    fi
+    printf '%s\n' "$$" >"${lockdir}/pid"
+    printf '%s\n' "$(osu_proc_starttime "$$")" >"${lockdir}/starttime"
+    printf '%s\n' "$(osu_boot_id)" >"${lockdir}/boot_id"
+  fi
+
+  osu_write_lock_metadata "$@"
   return 0
 }
 
@@ -764,6 +1044,14 @@ osu_release_lock() {
     opid="$(cat "${lockdir}/pid" 2>/dev/null || true)"
     if [[ "$opid" == "$$" ]]; then
       rm -rf "$lockdir"
+    fi
+  fi
+  local meta pid
+  meta="$(osu_lock_metadata_path)"
+  if [[ -f "$meta" ]]; then
+    pid="$(osu_json_get "$meta" pid 2>/dev/null || true)"
+    if [[ "$pid" == "$$" ]]; then
+      rm -f "$meta" 2>/dev/null || true
     fi
   fi
 }
@@ -872,6 +1160,8 @@ INITIALIZED->BLOCKED
 INITIALIZED->FAILED
 INITIALIZED->PAUSED
 HOP_PRECHECK->HOP_SOURCE_PREPARING
+HOP_PRECHECK->HOP_CURRENT_RELEASE_UPDATING
+HOP_PRECHECK->HOP_RELEASE_UPGRADE_STARTING
 HOP_PRECHECK->BLOCKED
 HOP_PRECHECK->FAILED
 HOP_PRECHECK->PAUSED
@@ -884,23 +1174,47 @@ HOP_SOURCE_READY->BLOCKED
 HOP_SOURCE_READY->FAILED
 HOP_SOURCE_READY->PAUSED
 HOP_CURRENT_RELEASE_UPDATING->HOP_RELEASE_UPGRADE_STARTING
+HOP_CURRENT_RELEASE_UPDATING->REBOOT_REQUIRED
 HOP_CURRENT_RELEASE_UPDATING->BLOCKED
 HOP_CURRENT_RELEASE_UPDATING->FAILED
 HOP_CURRENT_RELEASE_UPDATING->PAUSED
 HOP_RELEASE_UPGRADE_STARTING->HOP_RELEASE_UPGRADE_RUNNING
+HOP_RELEASE_UPGRADE_STARTING->REBOOT_REQUIRED
 HOP_RELEASE_UPGRADE_STARTING->BLOCKED
 HOP_RELEASE_UPGRADE_STARTING->FAILED
+HOP_RELEASE_UPGRADE_STARTING->RESUME_REQUIRED
 HOP_RELEASE_UPGRADE_RUNNING->REBOOT_REQUIRED
 HOP_RELEASE_UPGRADE_RUNNING->HOP_VALIDATING
 HOP_RELEASE_UPGRADE_RUNNING->FAILED
 HOP_RELEASE_UPGRADE_RUNNING->BLOCKED
+HOP_RELEASE_UPGRADE_RUNNING->RESUME_REQUIRED
+HOP_PRECHECK->REBOOT_REQUIRED
+HOP_SOURCE_PREPARING->REBOOT_REQUIRED
+HOP_SOURCE_READY->REBOOT_REQUIRED
 REBOOT_REQUIRED->REBOOT_REQUESTED
 REBOOT_REQUIRED->FAILED
 REBOOT_REQUIRED->BLOCKED
 REBOOT_REQUIRED->PAUSED
+REBOOT_REQUIRED->HOP_PRECHECK
+REBOOT_REQUIRED->HOP_CURRENT_RELEASE_UPDATING
+REBOOT_REQUIRED->HOP_RELEASE_UPGRADE_STARTING
+REBOOT_REQUIRED->RESUME_REQUIRED
 REBOOT_REQUESTED->RESUMED
+REBOOT_REQUESTED->REBOOT_REQUIRED
 REBOOT_REQUESTED->FAILED
 REBOOT_REQUESTED->BLOCKED
+REBOOT_REQUESTED->HOP_PRECHECK
+REBOOT_REQUESTED->HOP_CURRENT_RELEASE_UPDATING
+REBOOT_REQUESTED->HOP_RELEASE_UPGRADE_STARTING
+REBOOT_REQUESTED->RESUME_REQUIRED
+RESUME_REQUIRED->HOP_PRECHECK
+RESUME_REQUIRED->INITIALIZED
+RESUME_REQUIRED->HOP_SOURCE_PREPARING
+RESUME_REQUIRED->HOP_CURRENT_RELEASE_UPDATING
+RESUME_REQUIRED->HOP_RELEASE_UPGRADE_STARTING
+RESUME_REQUIRED->BLOCKED
+RESUME_REQUIRED->FAILED
+RESUME_REQUIRED->PAUSED
 RESUMED->HOP_VALIDATING
 RESUMED->FAILED
 RESUMED->BLOCKED
@@ -926,6 +1240,14 @@ BLOCKED->HOP_PRECHECK
 BLOCKED->RESUMED
 BLOCKED->INITIALIZED
 BLOCKED->FAILED
+BLOCKED->RESUME_REQUIRED
+FAILED->RESUME_REQUIRED
+FAILED->HOP_PRECHECK
+FAILED->BLOCKED
+HOP_CURRENT_RELEASE_UPDATING->RESUME_REQUIRED
+HOP_SOURCE_READY->RESUME_REQUIRED
+HOP_SOURCE_PREPARING->RESUME_REQUIRED
+HOP_PRECHECK->RESUME_REQUIRED
 "
   # pause from non-terminal
   case "$to" in
@@ -938,6 +1260,8 @@ BLOCKED->FAILED
 
 osu_state_path() { printf '%s/state.json' "$OSU_STATE_DIR"; }
 osu_state_sha_path() { printf '%s/state.json.sha256' "$OSU_STATE_DIR"; }
+osu_approval_path() { printf '%s/operator-approval.json' "$OSU_STATE_DIR"; }
+osu_approval_sha_path() { printf '%s/operator-approval.json.sha256' "$OSU_STATE_DIR"; }
 
 osu_read_state_field() {
   local field="$1"
@@ -956,6 +1280,251 @@ osu_verify_state_checksum() {
   actual="$(osu_sha256_file "$sp")"
   expected="$(tr -d ' \n\r' <"$sha_path")"
   [[ -n "$actual" && "$actual" == "$expected" ]]
+}
+
+osu_verify_approval_checksum() {
+  local ap sha_path actual expected
+  ap="$(osu_approval_path)"
+  sha_path="$(osu_approval_sha_path)"
+  [[ -f "$ap" ]] || return 1
+  [[ -f "$sha_path" ]] || return 1
+  actual="$(osu_sha256_file "$ap")"
+  expected="$(tr -d ' \n\r' <"$sha_path")"
+  [[ -n "$actual" && "$actual" == "$expected" ]]
+}
+
+# Probe durable auth without logging. Prints reason token on failure.
+# OK | NO_STATE | STATE_CHECKSUM_MISMATCH | APPROVAL_MISSING | APPROVAL_CHECKSUM_MISMATCH
+# | STATE_NOT_AUTHORIZED | DESTRUCTIVE_ACK_MISSING | DISCOVERY_ACK_MISSING
+# | APPROVAL_SHA_MISMATCH | APPROVAL_FIELD_MISMATCH
+osu_probe_execute_authorization() {
+  local ap sp auth dest_ok disc_ok pf_id expected_sha actual_sha
+  sp="$(osu_state_path)"
+  ap="$(osu_approval_path)"
+  [[ -f "$sp" ]] || { printf 'NO_STATE\n'; return 1; }
+  osu_verify_state_checksum || { printf 'STATE_CHECKSUM_MISMATCH\n'; return 1; }
+  [[ -f "$ap" ]] || { printf 'APPROVAL_MISSING\n'; return 1; }
+  osu_verify_approval_checksum || { printf 'APPROVAL_CHECKSUM_MISMATCH\n'; return 1; }
+
+  if [[ -z "${ST_STATE:-}" ]]; then
+    osu_load_state_into_vars || { printf 'NO_STATE\n'; return 1; }
+  fi
+
+  auth="${ST_EXECUTE_AUTHORIZED:-false}"
+  dest_ok="${ST_DESTRUCTIVE_ACK_VERIFIED:-false}"
+  disc_ok="${ST_DISCOVERY_ACK_VERIFIED:-false}"
+  pf_id="${ST_PREFLIGHT_ID:-}"
+  expected_sha="${ST_APPROVAL_SHA:-}"
+
+  if [[ "$auth" != "true" ]]; then
+    printf 'STATE_NOT_AUTHORIZED\n'
+    return 1
+  fi
+  if [[ "$dest_ok" != "true" ]]; then
+    printf 'DESTRUCTIVE_ACK_MISSING\n'
+    return 1
+  fi
+  if [[ "${ST_EXECUTION_PROFILE:-production}" == "discovery" && "$disc_ok" != "true" ]]; then
+    printf 'DISCOVERY_ACK_MISSING\n'
+    return 1
+  fi
+  if [[ -n "$expected_sha" ]]; then
+    actual_sha="$(osu_sha256_file "$ap")"
+    if [[ "$actual_sha" != "$expected_sha" ]]; then
+      printf 'APPROVAL_SHA_MISMATCH\n'
+      return 1
+    fi
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    local ap_auth ap_dest ap_pf
+    ap_auth="$(jq -r '.execute_authorized // false' "$ap")"
+    ap_dest="$(jq -r '.destructive_acknowledgement_verified // false' "$ap")"
+    ap_pf="$(jq -r '.preflight_id // empty' "$ap")"
+    if [[ "$ap_auth" != "true" || "$ap_dest" != "true" ]]; then
+      printf 'APPROVAL_FIELD_MISMATCH\n'
+      return 1
+    fi
+    if [[ -n "$pf_id" && -n "$ap_pf" && "$pf_id" != "$ap_pf" ]]; then
+      printf 'APPROVAL_FIELD_MISMATCH\n'
+      return 1
+    fi
+  else
+    if ! grep -q '"execute_authorized"[[:space:]]*:[[:space:]]*true' "$ap"; then
+      printf 'APPROVAL_FIELD_MISMATCH\n'
+      return 1
+    fi
+  fi
+
+  printf 'OK\n'
+  return 0
+}
+
+osu_backup_operator_approval() {
+  local reason="${1:-unspecified}"
+  local ap sha_path stamp bak
+  ap="$(osu_approval_path)"
+  sha_path="$(osu_approval_sha_path)"
+  stamp="$(osu_utc_stamp)"
+  bak="${OSU_STATE_DIR}/operator-approval.bak-${stamp}"
+  mkdir -p "$bak"
+  [[ -f "$ap" ]] && cp -a "$ap" "${bak}/operator-approval.json" 2>/dev/null || true
+  [[ -f "$sha_path" ]] && cp -a "$sha_path" "${bak}/operator-approval.json.sha256" 2>/dev/null || true
+  printf '%s\n' "$reason" >"${bak}/reason.txt"
+  osu_append_event "operator_approval_backed_up" "reason=${reason};path=${bak}"
+  printf '%s\n' "$bak"
+}
+
+# Persist install/continue/resume authorization. Call only after safety gates pass.
+# Atomic write + checksum + immediate re-verify; rolls back on verify failure.
+osu_write_operator_approval() {
+  local destructive_ok="${1:-false}"
+  local discovery_ok="${2:-false}"
+  local preflight_id="${3:-}"
+  local warnings_json="${4:-[]}"
+  local ap sha_path tmp approved_by approved_at hash
+  ap="$(osu_approval_path)"
+  sha_path="$(osu_approval_sha_path)"
+  approved_by="${SUDO_USER:-${USER:-root}}"
+  approved_at="$(osu_utc_now)"
+  mkdir -p "$OSU_STATE_DIR"
+  tmp="${ap}.tmp.$$"
+  cat >"$tmp" <<EOF
+{
+  "schema_version": "$(osu_json_escape "$OSU_SCHEMA_VERSION")",
+  "execute_authorized": true,
+  "destructive_acknowledgement_verified": $(osu_json_bool "$destructive_ok"),
+  "discovery_acknowledgement_verified": $(osu_json_bool "$discovery_ok"),
+  "approved_by": $(osu_json_str_or_null "$approved_by"),
+  "approved_at_utc": $(osu_json_str_or_null "$approved_at"),
+  "preflight_id": $(osu_json_str_or_null "$preflight_id"),
+  "execution_profile": $(osu_json_str_or_null "${OSU_EXECUTION_PROFILE:-production}"),
+  "warning_acceptances": ${warnings_json}
+}
+EOF
+  if ! osu_json_validate_file "$tmp"; then
+    rm -f "$tmp"
+    osu_log ERROR "operator-approval JSON validation failed"
+    return 1
+  fi
+  chmod 0600 "$tmp" 2>/dev/null || true
+  if [[ "$OSU_TEST_MODE" -eq 0 ]]; then
+    chown root:root "$tmp" 2>/dev/null || true
+  fi
+  sync "$tmp" 2>/dev/null || sync 2>/dev/null || true
+  mv -f "$tmp" "$ap"
+  hash="$(osu_sha256_file "$ap")"
+  printf '%s\n' "$hash" >"${sha_path}.tmp"
+  mv -f "${sha_path}.tmp" "$sha_path"
+  chmod 0640 "$sha_path" 2>/dev/null || true
+
+  # Immediate checksum re-verify before elevating authorization
+  if ! osu_verify_approval_checksum; then
+    osu_log ERROR "operator-approval checksum re-verify failed after write — authorization not granted"
+    ST_EXECUTE_AUTHORIZED=false
+    OSU_EXECUTE=0
+    return 1
+  fi
+  if [[ "$(osu_sha256_file "$ap")" != "$hash" ]]; then
+    osu_log ERROR "operator-approval hash unstable after write — authorization not granted"
+    ST_EXECUTE_AUTHORIZED=false
+    OSU_EXECUTE=0
+    return 1
+  fi
+
+  ST_EXECUTE_AUTHORIZED=true
+  ST_DESTRUCTIVE_ACK_VERIFIED="$destructive_ok"
+  ST_DISCOVERY_ACK_VERIFIED="$discovery_ok"
+  ST_EXECUTE_AUTHORIZED_AT="$approved_at"
+  ST_EXECUTE_AUTHORIZED_BY="$approved_by"
+  ST_APPROVAL_SHA="$hash"
+  osu_append_event "execute_authorized" "preflight_id=${preflight_id}"
+  return 0
+}
+
+# Verify durable authorization; set OSU_EXECUTE=1 only when state+approval match.
+# Refuses if either file is missing, checksum-mismatched, or fields disagree.
+osu_apply_execute_authorization() {
+  local reason
+  OSU_EXECUTE=0
+  reason="$(osu_probe_execute_authorization)" || true
+  if [[ "$reason" == "OK" ]]; then
+    OSU_EXECUTE=1
+    return 0
+  fi
+  case "$reason" in
+    NO_STATE) osu_log ERROR "execute auth refused: no state.json" ;;
+    STATE_CHECKSUM_MISMATCH) osu_log ERROR "execute auth refused: state checksum mismatch" ;;
+    APPROVAL_MISSING) osu_log ERROR "execute auth refused: operator-approval.json missing" ;;
+    APPROVAL_CHECKSUM_MISMATCH) osu_log ERROR "execute auth refused: approval checksum mismatch" ;;
+    STATE_NOT_AUTHORIZED) osu_log ERROR "execute auth refused: state.execute_authorized!=true" ;;
+    DESTRUCTIVE_ACK_MISSING) osu_log ERROR "execute auth refused: destructive acknowledgement not recorded" ;;
+    DISCOVERY_ACK_MISSING) osu_log ERROR "execute auth refused: discovery acknowledgement not recorded" ;;
+    APPROVAL_SHA_MISMATCH) osu_log ERROR "execute auth refused: approval sha does not match state" ;;
+    APPROVAL_FIELD_MISMATCH) osu_log ERROR "execute auth refused: approval fields disagree with state" ;;
+    *) osu_log ERROR "execute auth refused: ${reason:-unknown}" ;;
+  esac
+  return 1
+}
+
+# Resume-safe reauthorization: backup mismatched approval, atomic rewrite, verify, then authorize.
+# Call only when CLI already validated --execute + destructive (+ discovery) phrases.
+osu_reauthorize_execute_for_resume() {
+  local discovery_ok="${1:-false}"
+  local reason bak
+  reason="$(osu_probe_execute_authorization)" || true
+  if [[ "$reason" == "OK" ]]; then
+    OSU_EXECUTE=1
+    return 0
+  fi
+
+  case "$reason" in
+    STATE_CHECKSUM_MISMATCH|NO_STATE)
+      osu_log ERROR "resume re-authorization refused: ${reason}"
+      return 1
+      ;;
+    APPROVAL_CHECKSUM_MISMATCH|APPROVAL_SHA_MISMATCH)
+      osu_log WARN "existing operator-approval integrity failed (${reason}) — backing up and rewriting after explicit resume re-approval"
+      bak="$(osu_backup_operator_approval "$reason")"
+      osu_log INFO "previous operator-approval preserved at ${bak}"
+      ;;
+    APPROVAL_MISSING|STATE_NOT_AUTHORIZED|DESTRUCTIVE_ACK_MISSING|DISCOVERY_ACK_MISSING|APPROVAL_FIELD_MISMATCH)
+      osu_log INFO "durable execute authorization incomplete (${reason}) — recording new operator-approval after explicit resume re-approval"
+      if [[ -f "$(osu_approval_path)" ]]; then
+        bak="$(osu_backup_operator_approval "$reason")"
+        osu_log INFO "previous operator-approval preserved at ${bak}"
+      fi
+      ;;
+    *)
+      osu_log ERROR "resume re-authorization refused: unexpected auth status ${reason}"
+      return 1
+      ;;
+  esac
+
+  osu_write_operator_approval true "$discovery_ok" "${ST_PREFLIGHT_ID:-}" "${ST_WARNING_ACCEPTANCES:-[]}" || {
+    osu_log ERROR "failed to persist resume operator approval"
+    OSU_EXECUTE=0
+    ST_EXECUTE_AUTHORIZED=false
+    return 1
+  }
+  osu_write_state_json "$(osu_build_state_json)" || {
+    osu_log ERROR "failed to persist re-authorization in state"
+    OSU_EXECUTE=0
+    ST_EXECUTE_AUTHORIZED=false
+    return 1
+  }
+  if ! osu_apply_execute_authorization; then
+    osu_log ERROR "resume refused: re-authorization verification failed — no further steps"
+    OSU_EXECUTE=0
+    ST_EXECUTE_AUTHORIZED=false
+    return 1
+  fi
+  osu_log INFO "durable execute authorization recorded and verified for resume"
+  return 0
+}
+
+osu_execute_authorized() {
+  [[ "${OSU_EXECUTE:-0}" -eq 1 ]]
 }
 
 osu_write_state_json() {
@@ -1043,6 +1612,12 @@ osu_build_state_json() {
   "artifact_export_status": $(osu_json_str_or_null "${ST_ARTIFACT_EXPORT_STATUS:-}"),
   "hops_completed_this_run": $(osu_json_num_or_null "${ST_HOPS_THIS_RUN:-0}"),
   "next_action": $(osu_json_str_or_null "${ST_NEXT_ACTION:-}"),
+  "execute_authorized": $(osu_json_bool "${ST_EXECUTE_AUTHORIZED:-false}"),
+  "destructive_acknowledgement_verified": $(osu_json_bool "${ST_DESTRUCTIVE_ACK_VERIFIED:-false}"),
+  "discovery_acknowledgement_verified": $(osu_json_bool "${ST_DISCOVERY_ACK_VERIFIED:-false}"),
+  "execute_authorized_at_utc": $(osu_json_str_or_null "${ST_EXECUTE_AUTHORIZED_AT:-}"),
+  "execute_authorized_by": $(osu_json_str_or_null "${ST_EXECUTE_AUTHORIZED_BY:-}"),
+  "operator_approval_sha256": $(osu_json_str_or_null "${ST_APPROVAL_SHA:-}"),
   "created_at_utc": $(osu_json_str_or_null "${ST_CREATED_AT:-}"),
   "updated_at_utc": "$(osu_utc_now)"
 }
@@ -1101,13 +1676,20 @@ osu_load_state_into_vars() {
   ST_ARTIFACT_EXPORT_STATUS="$(osu_json_get "$sp" artifact_export_status)"
   ST_HOPS_THIS_RUN="$(osu_json_get "$sp" hops_completed_this_run)"
   ST_NEXT_ACTION="$(osu_json_get "$sp" next_action)"
+  ST_EXECUTE_AUTHORIZED="$(osu_json_get "$sp" execute_authorized)"
+  ST_DESTRUCTIVE_ACK_VERIFIED="$(osu_json_get "$sp" destructive_acknowledgement_verified)"
+  ST_DISCOVERY_ACK_VERIFIED="$(osu_json_get "$sp" discovery_acknowledgement_verified)"
+  ST_EXECUTE_AUTHORIZED_AT="$(osu_json_get "$sp" execute_authorized_at_utc)"
+  ST_EXECUTE_AUTHORIZED_BY="$(osu_json_get "$sp" execute_authorized_by)"
+  ST_APPROVAL_SHA="$(osu_json_get "$sp" operator_approval_sha256)"
   OSU_EXECUTION_PROFILE="${ST_EXECUTION_PROFILE:-$OSU_EXECUTION_PROFILE}"
-  # warning_acceptances kept as JSON array string via jq if available
-  if command -v jq >/dev/null 2>&1; then
-    ST_WARNING_ACCEPTANCES="$(jq -c '.warning_acceptances // []' "$sp")"
-  else
-    ST_WARNING_ACCEPTANCES='[]'
-  fi
+  # warning_acceptances must survive without jq (Xenial may lack it)
+  ST_WARNING_ACCEPTANCES="$(osu_extract_json_array_field "$sp" warning_acceptances)"
+  [[ -n "${ST_WARNING_ACCEPTANCES:-}" ]] || ST_WARNING_ACCEPTANCES='[]'
+  # Legacy states without execute_authorized field → treat as unauthorized
+  [[ -z "${ST_EXECUTE_AUTHORIZED:-}" || "${ST_EXECUTE_AUTHORIZED}" == "null" ]] && ST_EXECUTE_AUTHORIZED=false
+  [[ -z "${ST_DESTRUCTIVE_ACK_VERIFIED:-}" || "${ST_DESTRUCTIVE_ACK_VERIFIED}" == "null" ]] && ST_DESTRUCTIVE_ACK_VERIFIED=false
+  [[ -z "${ST_DISCOVERY_ACK_VERIFIED:-}" || "${ST_DISCOVERY_ACK_VERIFIED}" == "null" ]] && ST_DISCOVERY_ACK_VERIFIED=false
   return 0
 }
 
@@ -1122,8 +1704,18 @@ osu_transition_state() {
   fi
   local old="$ST_STATE"
   if ! osu_can_transition "$old" "$new_state"; then
+    # Record precisely; do not mutate state to FAILED, bump hop, or claim progress.
     osu_log ERROR "illegal state transition: ${old} -> ${new_state}"
-    osu_append_event "illegal_transition" "${old}->${new_state}"
+    osu_append_event "illegal_transition" "${old}->${new_state};last_step=${ST_LAST_STEP:-};next_action=${ST_NEXT_ACTION:-};hop=${ST_CURRENT_HOP:-0}"
+    local hop_dir
+    hop_dir="$(osu_current_hop_dir || true)"
+    if [[ -n "$hop_dir" ]]; then
+      mkdir -p "$hop_dir"
+      printf '{"ts":"%s","from":"%s","to":"%s","last_successful_step":"%s","next_action":"%s","current_hop":%s}\n' \
+        "$(osu_utc_now)" "$(osu_json_escape "$old")" "$(osu_json_escape "$new_state")" \
+        "$(osu_json_escape "${ST_LAST_STEP:-}")" "$(osu_json_escape "${ST_NEXT_ACTION:-}")" \
+        "${ST_CURRENT_HOP:-0}" >>"${hop_dir}/illegal-transitions.jsonl" 2>/dev/null || true
+    fi
     return 1
   fi
   ST_STATE="$new_state"
@@ -1918,15 +2510,16 @@ osu_validate_warning_acceptances() {
     return 1
   fi
 
-  # Build acceptance JSON
-  local user ts parts="" first=1
+  # Build acceptance JSON (include preflight_id for durable audit/checksum)
+  local user ts parts="" first=1 pfid
   user="${SUDO_USER:-${USER:-unknown}}"
   ts="$(osu_utc_now)"
+  pfid="${PF_ID:-${ST_PREFLIGHT_ID:-}}"
   parts="["
   first=1
   for id in "${need_ids[@]}"; do
     if [[ "$first" -eq 1 ]]; then first=0; else parts+=","; fi
-    parts+="{\"warning_id\":\"$(osu_json_escape "$id")\",\"user\":\"$(osu_json_escape "$user")\",\"accepted_at_utc\":\"$(osu_json_escape "$ts")\",\"approval_reference\":$(osu_json_str_or_null "$OSU_APPROVAL_REFERENCE"),\"reason\":\"explicit_cli_acceptance\"}"
+    parts+="{\"warning_id\":\"$(osu_json_escape "$id")\",\"preflight_id\":$(osu_json_str_or_null "$pfid"),\"user\":\"$(osu_json_escape "$user")\",\"accepted_at_utc\":\"$(osu_json_escape "$ts")\",\"approval_reference\":$(osu_json_str_or_null "$OSU_APPROVAL_REFERENCE"),\"reason\":\"explicit_cli_acceptance\"}"
   done
   parts+="]"
   OSU_WARNING_ACCEPTANCE_JSON="$parts"
@@ -2041,7 +2634,7 @@ osu_critical_holds_present() {
   local held crit pkg
   held="$(osu_read_held_packages)"
   IFS=',' read -r -a crit <<< "$POLICY_CRITICAL_HELD_PACKAGES"
-  for pkg in "${crit[@]}"; do
+  for pkg in "${crit[@]+"${crit[@]}"}"; do
     pkg="$(printf '%s' "$pkg" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     [[ -z "$pkg" ]] && continue
     if printf '%s\n' "$held" | grep -qxF "$pkg"; then
@@ -2423,14 +3016,14 @@ osu_live_precheck() {
     printf 'ntp_offset_ms=%s\n' "${OSU_NTP_OFFSET_MS:-}"
     printf 'ntp_raw_evidence_file=%s\n' "$ntp_raw_rel"
     printf 'ntp_detail=%s\n' "${OSU_NTP_DETAIL:-}"
-    printf 'reasons=%s\n' "$(IFS=','; echo "${reasons[*]}")"
+    printf 'reasons=%s\n' "$(osu_join_array reasons ',')"
   } >"$out_txt"
 
   local reasons_json="[]"
-  if [[ ${#reasons[@]} -gt 0 ]]; then
+  if ((${#reasons[@]} > 0)); then
     reasons_json="["
     local i=0
-    for r in "${reasons[@]}"; do
+    for r in "${reasons[@]+"${reasons[@]}"}"; do
       [[ $i -gt 0 ]] && reasons_json+=","
       reasons_json+="\"$(osu_json_escape "$r")\""
       i=$((i+1))
@@ -2462,14 +3055,31 @@ osu_live_precheck() {
 EOF
   chmod 0640 "$out_json" "$out_txt" "$OSU_NTP_RAW_FILE" 2>/dev/null || true
   LIVE_PRECHECK_STATUS="$status"
-  LIVE_PRECHECK_REASONS="$(IFS=','; echo "${reasons[*]}")"
+  LIVE_PRECHECK_REASONS="$(osu_join_array reasons ',')"
   return "$rc"
 }
 
 # ---------------------------------------------------------------------------
-# Command runner (audited)
+# Command runner (audited, append-only, PID-based completion)
 # ---------------------------------------------------------------------------
 OSU_COMMAND_SEQ=0
+# Active command finalize context (for set -e / unexpected exit)
+OSU_CMD_ACTIVE=0
+OSU_CMD_CID=""
+OSU_CMD_HOP=""
+OSU_CMD_STEP=""
+OSU_CMD_DESC=""
+OSU_CMD_REDACTED=""
+OSU_CMD_STARTED=""
+OSU_CMD_START_S=""
+OSU_CMD_TIMEOUT=""
+OSU_CMD_RETRYABLE=""
+OSU_CMD_STDOUTF=""
+OSU_CMD_STDERRF=""
+OSU_CMD_TSV=""
+OSU_CMD_PID=""
+OSU_CMD_PGID=""
+OSU_CMD_FINALIZED=0
 
 osu_cmd_tsv_path() {
   local hop_dir="${1:-}"
@@ -2489,73 +3099,340 @@ osu_ensure_commands_header() {
   fi
 }
 
+# Atomic append to commands.tsv (never rewrite/truncate existing rows).
+osu_commands_tsv_append() {
+  local tsv="$1" line="$2"
+  local lockf dir
+  dir="$(dirname "$tsv")"
+  mkdir -p "$dir"
+  lockf="${tsv}.lock"
+  if command -v flock >/dev/null 2>&1; then
+    # Clear EXIT traps in the subshell — inherited traps (e.g. test harness
+    # rm -rf WORKDIR) must not run when this short-lived locker exits.
+    # Do not toggle set -e here (would clobber caller errexit state).
+    (
+      trap - EXIT
+      flock -w 60 9 || exit 1
+      printf '%s\n' "$line" >>"$tsv"
+      exit 0
+    ) 9>"$lockf" || true
+  else
+    printf '%s\n' "$line" >>"$tsv"
+  fi
+  chmod 0640 "$tsv" 2>/dev/null || true
+}
+
+osu_cmd_ms_now() {
+  local s
+  s="$(date +%s%3N 2>/dev/null || date +%s)000"
+  printf '%s' "${s:0:13}"
+}
+
+osu_cmd_tail_file() {
+  local f="$1" n="${2:-40}"
+  [[ -f "$f" ]] || return 0
+  tail -n "$n" "$f" 2>/dev/null || true
+}
+
+# List PIDs in a process group (best-effort).
+osu_cmd_pgid_pids() {
+  local pgid="$1"
+  [[ -n "$pgid" ]] || return 0
+  if [[ -d /proc ]]; then
+    local p pg
+    for p in /proc/[0-9]*; do
+      [[ -r "$p/stat" ]] || continue
+      pg="$(awk '{print $5}' "$p/stat" 2>/dev/null || true)"
+      if [[ "$pg" == "$pgid" ]]; then
+        basename "$p"
+      fi
+    done
+  else
+    ps -o pid= -g "$pgid" 2>/dev/null || true
+  fi
+}
+
+osu_cmd_kill_process_group() {
+  local pgid="$1" cmd_pid="$2"
+  local pids="" p self_pgid
+  self_pgid="$(awk '{print $5}' "/proc/$$/stat" 2>/dev/null || printf '%s' "$$")"
+  # Never signal the orchestrator's process group.
+  if [[ -n "$pgid" && "$pgid" == "$self_pgid" ]]; then
+    pgid=""
+  fi
+  if [[ -n "$pgid" ]]; then
+    pids="$(osu_cmd_pgid_pids "$pgid" | tr '\n' ' ')"
+    kill -TERM -- "-${pgid}" 2>/dev/null || true
+  fi
+  if [[ -n "$cmd_pid" ]]; then
+    kill -TERM "$cmd_pid" 2>/dev/null || true
+    pids="${pids}${cmd_pid} "
+  fi
+  sleep 2
+  for p in $pids $cmd_pid; do
+    [[ -n "$p" ]] || continue
+    if osu_cmd_pid_alive "$p"; then
+      kill -KILL "$p" 2>/dev/null || true
+    fi
+  done
+  if [[ -n "$pgid" ]]; then
+    kill -KILL -- "-${pgid}" 2>/dev/null || true
+  fi
+  pids="$(osu_cmd_pgid_pids "$pgid" | tr '\n' ' ')"
+  printf '%s' "$pids"
+}
+
+osu_cmd_write_timeout_evidence() {
+  local cid="$1" out_dir="$2" cmd_pid="$3" pgid="$4" killed="$5"
+  local stdoutf="$6" stderrf="$7" timeout_at="$8" rc="$9"
+  local ef
+  ef="${out_dir}/${cid}.timeout.json"
+  cat >"$ef" <<EOF
+{
+  "command_id": "$(osu_json_escape "$cid")",
+  "status": "TIMEOUT",
+  "return_code": $(osu_json_num_or_null "$rc"),
+  "timed_out": true,
+  "command_pid": $(osu_json_num_or_null "$cmd_pid"),
+  "command_pgid": $(osu_json_num_or_null "$pgid"),
+  "killed_pids": "$(osu_json_escape "$killed")",
+  "timeout_at_utc": "$(osu_json_escape "$timeout_at")",
+  "stdout_tail": "$(osu_json_escape "$(osu_cmd_tail_file "$stdoutf" 60)")",
+  "stderr_tail": "$(osu_json_escape "$(osu_cmd_tail_file "$stderrf" 60)")"
+}
+EOF
+  chmod 0640 "$ef" 2>/dev/null || true
+  osu_append_event "command_timeout" "id=${cid};pid=${cmd_pid};pgid=${pgid};rc=${rc}"
+}
+
+# Finalize active command row (SUCCESS/FAILED/TIMEOUT). Safe to call twice.
+osu_cmd_finalize_row() {
+  local status="$1" rc="$2" err_class="${3:-none}" timed_out="${4:-false}"
+  local completed end_s dur line
+  [[ "${OSU_CMD_ACTIVE:-0}" -eq 1 ]] || return 0
+  [[ "${OSU_CMD_FINALIZED:-0}" -eq 0 ]] || return 0
+  OSU_CMD_FINALIZED=1
+  completed="$(osu_utc_now)"
+  end_s="$(osu_cmd_ms_now)"
+  dur=$((end_s - ${OSU_CMD_START_S:-0}))
+  [[ "$dur" -lt 0 ]] && dur=0
+  if [[ "$timed_out" == "true" && "$err_class" == "none" ]]; then
+    err_class="timeout"
+  fi
+  line="$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+    "$OSU_CMD_CID" "$OSU_CMD_HOP" "$OSU_CMD_STEP" "$OSU_CMD_DESC" "$OSU_CMD_REDACTED" \
+    "$OSU_CMD_STARTED" "$completed" "$dur" "$rc" "$OSU_CMD_TIMEOUT" \
+    "$status" "$OSU_CMD_STDOUTF" "$OSU_CMD_STDERRF" "$OSU_CMD_RETRYABLE" "$err_class")"
+  osu_commands_tsv_append "$OSU_CMD_TSV" "$line"
+  if [[ "$timed_out" == "true" ]]; then
+    osu_cmd_write_timeout_evidence "$OSU_CMD_CID" "$(dirname "$OSU_CMD_STDOUTF")" \
+      "${OSU_CMD_PID:-}" "${OSU_CMD_PGID:-}" "${OSU_CMD_KILLED_PIDS:-}" \
+      "$OSU_CMD_STDOUTF" "$OSU_CMD_STDERRF" "$completed" "$rc"
+  fi
+  OSU_CMD_ACTIVE=0
+}
+
+# Trap helper: if shell exits while a command is RUNNING, record FAILED/TIMEOUT.
+osu_cmd_exit_trap() {
+  local rc="${1:-$?}"
+  if [[ "${OSU_CMD_ACTIVE:-0}" -eq 1 && "${OSU_CMD_FINALIZED:-0}" -eq 0 ]]; then
+    if [[ -n "${OSU_CMD_PID:-}" ]] && osu_cmd_pid_alive "${OSU_CMD_PID}"; then
+      OSU_CMD_KILLED_PIDS="$(osu_cmd_kill_process_group "${OSU_CMD_PGID:-}" "${OSU_CMD_PID}")"
+      osu_cmd_finalize_row "TIMEOUT" 124 "timeout" "true"
+    else
+      # Reap if zombie; record FAILED for unexpected shell exit
+      wait "${OSU_CMD_PID}" 2>/dev/null || true
+      osu_cmd_finalize_row "FAILED" "${rc:-1}" "shell_exit" "false"
+    fi
+  fi
+}
+
+# True when PID is a live (non-zombie) process. Zombies must be treated as exited
+# so we can wait()/reap immediately — kill -0 succeeds on zombies and would hang.
+osu_cmd_pid_alive() {
+  local pid="$1" state
+  [[ -n "$pid" ]] || return 1
+  [[ -e "/proc/${pid}" ]] || return 1
+  if [[ -r "/proc/${pid}/stat" ]]; then
+    state="$(awk '{print $3}' "/proc/${pid}/stat" 2>/dev/null || true)"
+    [[ "$state" == "Z" ]] && return 1
+  fi
+  kill -0 "$pid" 2>/dev/null
+}
+
+# Wait for a specific PID; timeout based on wall clock. Does NOT wait for pipe EOF
+# from unrelated children that inherited stdout/stderr.
+# Sets: OSU_CMD_WAIT_RC OSU_CMD_WAIT_TIMED_OUT OSU_CMD_KILLED_PIDS
+# Note: never toggle `set -e` here — that would clobber the caller's errexit state
+# and make `return 124` abort a caller that had `set +e`.
+osu_cmd_wait_pid() {
+  local pid="$1" pgid="$2" timeout_s="${3:-0}"
+  local start_epoch now elapsed rc=0
+  OSU_CMD_WAIT_RC=0
+  OSU_CMD_WAIT_TIMED_OUT=false
+  OSU_CMD_KILLED_PIDS=""
+  start_epoch="$(date +%s)"
+
+  if [[ "$timeout_s" -le 0 ]]; then
+    wait "$pid" || rc=$?
+    OSU_CMD_WAIT_RC="$rc"
+    return 0
+  fi
+
+  # Poll non-zombie liveness only — never block forever in wait() while a
+  # grandchild holds FDs, and never treat zombies as still running.
+  while osu_cmd_pid_alive "$pid"; do
+    now="$(date +%s)"
+    elapsed=$((now - start_epoch))
+    if [[ "$elapsed" -ge "$timeout_s" ]]; then
+      OSU_CMD_WAIT_TIMED_OUT=true
+      OSU_CMD_KILLED_PIDS="$(osu_cmd_kill_process_group "$pgid" "$pid")"
+      wait "$pid" 2>/dev/null || true
+      OSU_CMD_WAIT_RC=124
+      return 0
+    fi
+    sleep 0.2
+  done
+  wait "$pid" 2>/dev/null || rc=$?
+  OSU_CMD_WAIT_RC="$rc"
+  return 0
+}
+
 # osu_run_command hop step desc timeout retryable -- cmd args...
+# Completion is based on the launched command PID exit status, not open pipe FDs.
 osu_run_command() {
   local hop="$1" step="$2" desc="$3" timeout="$4" retryable="$5"
   shift 5
   if [[ "${1:-}" == "--" ]]; then shift; fi
   local cmd=("$@")
-  local redacted started completed start_s end_s dur rc=0 status="RUNNING" err_class="none"
-  local out_dir stdoutf stderrf cid tsv
+  local redacted started start_s rc=0 status="RUNNING" err_class="none"
+  local out_dir stdoutf stderrf cid tsv attempt_n seq_n
+  local cmd_text cmd_pid="" pgid="" timed_out=false
+  local prev_exit_trap=""
 
   OSU_COMMAND_SEQ=$((OSU_COMMAND_SEQ + 1))
-  cid=$(printf 'cmd-%04d' "$OSU_COMMAND_SEQ")
+  attempt_n="$(printf '%03d' "${ST_ATTEMPT:-1}")"
+  seq_n="$(printf '%04d' "$OSU_COMMAND_SEQ")"
+  cid="attempt-${attempt_n}-cmd-${seq_n}"
   out_dir="${OSU_STATE_DIR}/logs"
   mkdir -p "$out_dir"
   stdoutf="${out_dir}/${cid}.stdout"
   stderrf="${out_dir}/${cid}.stderr"
+  : >"$stdoutf"
+  : >"$stderrf"
   tsv="$(osu_cmd_tsv_path "${OSU_CURRENT_HOP_DIR:-}")"
   osu_ensure_commands_header "$tsv"
 
-  redacted="$(osu_redact_url "${cmd[*]}")"
-  # Never log credentials-looking tokens
+  cmd_text="$(osu_join_array cmd ' ')"
+  redacted="$(osu_redact_url "$cmd_text")"
   redacted="$(printf '%s' "$redacted" | sed -E 's/(password|token|secret|api[_-]?key)[=:][^ ]+/\1=***/Ig')"
 
-  # Forbidden destructive extras
-  case "${cmd[*]}" in
+  case "$cmd_text" in
     *'--allow-unauthenticated'*|*'--allow-downgrades'*|*'apt-get autoremove'*|*'apt-get purge'*)
       osu_log ERROR "refusing forbidden command pattern: $redacted"
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t1\t%s\tFAILED\t%s\t%s\tfalse\tforbidden\n' \
-        "$cid" "$hop" "$step" "$desc" "$redacted" "$(osu_utc_now)" "$(osu_utc_now)" "$timeout" "$stdoutf" "$stderrf" >>"$tsv"
+      osu_commands_tsv_append "$tsv" "$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t1\t%s\tFAILED\t%s\t%s\tfalse\tforbidden' \
+        "$cid" "$hop" "$step" "$desc" "$redacted" "$(osu_utc_now)" "$(osu_utc_now)" "$timeout" "$stdoutf" "$stderrf")"
       return 1
       ;;
   esac
 
   started="$(osu_utc_now)"
-  start_s="$(date +%s%3N 2>/dev/null || date +%s)000"
-  start_s="${start_s:0:13}"
+  start_s="$(osu_cmd_ms_now)"
+
+  # Populate finalize context before RUNNING row / execution
+  OSU_CMD_ACTIVE=1
+  OSU_CMD_FINALIZED=0
+  OSU_CMD_CID="$cid"
+  OSU_CMD_HOP="$hop"
+  OSU_CMD_STEP="$step"
+  OSU_CMD_DESC="$desc"
+  OSU_CMD_REDACTED="$redacted"
+  OSU_CMD_STARTED="$started"
+  OSU_CMD_START_S="$start_s"
+  OSU_CMD_TIMEOUT="$timeout"
+  OSU_CMD_RETRYABLE="$retryable"
+  OSU_CMD_STDOUTF="$stdoutf"
+  OSU_CMD_STDERRF="$stderrf"
+  OSU_CMD_TSV="$tsv"
+  OSU_CMD_PID=""
+  OSU_CMD_PGID=""
+  OSU_CMD_KILLED_PIDS=""
+
+  # Append RUNNING before start so crash mid-command still leaves evidence
+  osu_commands_tsv_append "$tsv" "$(printf '%s\t%s\t%s\t%s\t%s\t%s\t\t0\t\t%s\tRUNNING\t%s\t%s\t%s\tnone' \
+    "$cid" "$hop" "$step" "$desc" "$redacted" "$started" "$timeout" "$stdoutf" "$stderrf" "$retryable")"
+  osu_append_event "command_started" "id=${cid};step=${step};timeout=${timeout}"
+
+  # Chain with any existing EXIT trap (e.g. lock release) so set -e still finalizes.
+  prev_exit_trap="$(trap -p EXIT 2>/dev/null || true)"
+  local prev_exit_body=""
+  if [[ "$prev_exit_trap" =~ trap\ --\ \'((\\\'|[^\'])*)\'\ EXIT ]]; then
+    prev_exit_body="${BASH_REMATCH[1]}"
+  elif [[ "$prev_exit_trap" =~ trap\ --\ \"((\\\"|[^\"])*)\"\ EXIT ]]; then
+    prev_exit_body="${BASH_REMATCH[1]}"
+  fi
+  trap 'osu_cmd_exit_trap $?; '"${prev_exit_body:-:}" EXIT
 
   if [[ "$OSU_EXECUTE" -ne 1 && "$OSU_TEST_MODE" -ne 1 ]]; then
-    # Dry path for non-execute: do not run mutating commands
     printf 'SKIPPED (no --execute)\n' >"$stdoutf"
     status="SKIPPED"; rc=0
+    osu_cmd_finalize_row "$status" "$rc" "none" "false"
+  elif ((${#cmd[@]} == 0)); then
+    osu_log ERROR "refusing empty command"
+    status="FAILED"; rc=1; err_class="empty_command"
+    osu_cmd_finalize_row "$status" "$rc" "$err_class" "false"
   else
-    set +e
-    if command -v timeout >/dev/null 2>&1 && [[ "${timeout:-0}" -gt 0 ]]; then
-      timeout "$timeout" env DEBIAN_FRONTEND=noninteractive "${cmd[@]}" >"$stdoutf" 2>"$stderrf"
-      rc=$?
-      if [[ "$rc" -eq 124 ]]; then status="TIMEOUT"; err_class="timeout"; fi
+    # New session/process group so timeout cleanup can signal the whole tree.
+    # Completion is wait(pid) — not "stdout still open from a grandchild".
+    # Do NOT use setsid -f: that forks and makes $! a short-lived parent (rc=0)
+    # while the real command keeps running — breaking timeout and exit status.
+    if command -v setsid >/dev/null 2>&1; then
+      setsid env DEBIAN_FRONTEND=noninteractive "${cmd[@]}" >"$stdoutf" 2>"$stderrf" </dev/null &
+      cmd_pid=$!
     else
-      env DEBIAN_FRONTEND=noninteractive "${cmd[@]}" >"$stdoutf" 2>"$stderrf"
-      rc=$?
+      bash -c 'exec env DEBIAN_FRONTEND=noninteractive "$@"' _ "${cmd[@]}" \
+        >"$stdoutf" 2>"$stderrf" </dev/null &
+      cmd_pid=$!
     fi
-    set -e
-    if [[ "$status" != "TIMEOUT" ]]; then
-      if [[ "$rc" -eq 0 ]]; then status="SUCCESS"
-      else status="FAILED"; err_class="command_failed"
-      fi
+    # Give the child a moment to exec so /proc/stat pgid is stable
+    sleep 0.05 2>/dev/null || true
+    OSU_CMD_PID="$cmd_pid"
+    pgid="$cmd_pid"
+    if [[ -r "/proc/${cmd_pid}/stat" ]]; then
+      pgid="$(awk '{print $5}' "/proc/${cmd_pid}/stat" 2>/dev/null || printf '%s' "$cmd_pid")"
+    fi
+    # Refuse to signal our own process group (would kill the orchestrator).
+    local self_pgid
+    self_pgid="$(awk '{print $5}' "/proc/$$/stat" 2>/dev/null || printf '%s' "$$")"
+    if [[ "$pgid" == "$self_pgid" || -z "$pgid" ]]; then
+      osu_log WARN "command pgid equals orchestrator pgid — timeout will signal PID only"
+      pgid=""
+    fi
+    OSU_CMD_PGID="$pgid"
+
+    osu_cmd_wait_pid "$cmd_pid" "$pgid" "${timeout:-0}"
+    rc="${OSU_CMD_WAIT_RC:-0}"
+    timed_out="${OSU_CMD_WAIT_TIMED_OUT:-false}"
+
+    if [[ "$timed_out" == "true" ]]; then
+      status="TIMEOUT"; err_class="timeout"; rc=124
+      osu_cmd_finalize_row "$status" "$rc" "$err_class" "true"
+    elif [[ "$rc" -eq 0 ]]; then
+      status="SUCCESS"
+      osu_cmd_finalize_row "$status" "$rc" "none" "false"
+    else
+      status="FAILED"; err_class="command_failed"
+      osu_cmd_finalize_row "$status" "$rc" "$err_class" "false"
     fi
   fi
 
-  completed="$(osu_utc_now)"
-  end_s="$(date +%s%3N 2>/dev/null || date +%s)000"
-  end_s="${end_s:0:13}"
-  dur=$((end_s - start_s))
-  [[ "$dur" -lt 0 ]] && dur=0
+  # Restore previous EXIT trap (lock release etc.)
+  if [[ -n "$prev_exit_trap" ]]; then
+    eval "$prev_exit_trap"
+  else
+    trap - EXIT
+  fi
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$cid" "$hop" "$step" "$desc" "$redacted" "$started" "$completed" "$dur" "$rc" "$timeout" \
-    "$status" "$stdoutf" "$stderrf" "$retryable" "$err_class" >>"$tsv"
   return "$rc"
 }
 
@@ -2783,23 +3660,71 @@ osu_backup_apt_sources() {
   fi
 }
 
+osu_repo_disable_dir() {
+  printf '%s/repository-backup/disabled' "$OSU_STATE_DIR"
+}
+
+osu_repo_disable_manifest() {
+  printf '%s/repository-backup/disabled-manifest.tsv' "$OSU_STATE_DIR"
+}
+
+# Move a third-party sources file out of apt's scan path (no invalid .list* suffix left behind).
+osu_disable_one_third_party_repo() {
+  local src="$1"
+  local dest_dir manifest base stamp dest hash owner mode restore_target
+  [[ -f "$src" ]] || return 1
+  dest_dir="$(osu_repo_disable_dir)"
+  manifest="$(osu_repo_disable_manifest)"
+  mkdir -p "$dest_dir" "$(dirname "$manifest")"
+  base="$(basename "$src")"
+  stamp="$(osu_utc_stamp)"
+  dest="${dest_dir}/${base}.${stamp}"
+  # Avoid collision
+  if [[ -e "$dest" ]]; then
+    dest="${dest_dir}/${base}.${stamp}.$$"
+  fi
+  hash="$(osu_sha256_file "$src")"
+  owner="$(stat -c '%u:%g' "$src" 2>/dev/null || stat -f '%u:%g' "$src" 2>/dev/null || printf '0:0')"
+  mode="$(stat -c '%a' "$src" 2>/dev/null || stat -f '%Lp' "$src" 2>/dev/null || printf '644')"
+  restore_target="$src"
+  mv -f "$src" "$dest" || return 1
+  if [[ ! -f "$manifest" ]]; then
+    printf 'original_path\tbackup_path\tsha256\towner\tmode\tdisabled_at_utc\trestore_target\n' >"$manifest"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$src" "$dest" "$hash" "$owner" "$mode" "$(osu_utc_now)" "$restore_target" >>"$manifest"
+  # Legacy map for older tooling
+  printf '%s\t%s\n' "$src" "$dest" >>"${OSU_STATE_DIR}/original-system-state/third-party-map.tsv"
+  chmod 0640 "$manifest" 2>/dev/null || true
+  osu_log INFO "disabled third-party repository (moved out of apt scan): $base -> $dest"
+  return 0
+}
+
 osu_disable_third_party_repos() {
   if [[ "$POLICY_DISABLE_THIRD_PARTY_REPOSITORIES" != "true" ]]; then
     return 0
   fi
   local lists dest mapf
   lists="$(osu_hostpath /etc/apt/sources.list.d)"
-  dest="${OSU_STATE_DIR}/original-system-state/third-party-disabled"
+  dest="$(osu_repo_disable_dir)"
   mapf="${OSU_STATE_DIR}/original-system-state/third-party-map.tsv"
-  mkdir -p "$dest"
-  : >"$mapf"
+  mkdir -p "$dest" "$(dirname "$mapf")"
+  # Append-only map; do not wipe prior disable records on re-entry
+  [[ -f "$mapf" ]] || : >"$mapf"
   [[ -d "$lists" ]] || return 0
   local f base
   for f in "$lists"/*; do
     [[ -e "$f" ]] || continue
     base="$(basename "$f")"
     case "$base" in
-      *.disabled|*.bak) continue ;;
+      *.disabled|*.bak|*.dpkg-old|*.dpkg-dist|*.save) continue ;;
+      # Legacy rename left invalid apt extensions — migrate them out of sources.list.d
+      *.disabled-by-dp-os-upgrade)
+        if [[ "$OSU_EXECUTE" -eq 1 || "$OSU_TEST_MODE" -eq 1 ]]; then
+          osu_disable_one_third_party_repo "$f" || true
+        fi
+        continue
+        ;;
     esac
     # Keep official ubuntu lists; disable others
     if grep -qiE 'archive\.ubuntu\.com|security\.ubuntu\.com|old-releases\.ubuntu\.com|/ubuntu[[:space:]]' "$f" 2>/dev/null \
@@ -2807,10 +3732,10 @@ osu_disable_third_party_repos() {
       continue
     fi
     if [[ "$OSU_EXECUTE" -eq 1 || "$OSU_TEST_MODE" -eq 1 ]]; then
-      cp -a "$f" "$dest/$base"
-      mv -f "$f" "${f}.disabled-by-dp-os-upgrade"
-      printf '%s\t%s\n' "$f" "${f}.disabled-by-dp-os-upgrade" >>"$mapf"
-      osu_log INFO "disabled third-party repository file: $base"
+      # Also keep a copy under original-system-state for forensics
+      mkdir -p "${OSU_STATE_DIR}/original-system-state/third-party-disabled"
+      cp -a "$f" "${OSU_STATE_DIR}/original-system-state/third-party-disabled/$base" 2>/dev/null || true
+      osu_disable_one_third_party_repo "$f" || osu_log WARN "failed to disable third-party repo: $base"
     else
       printf '%s\t(planned)\n' "$f" >>"$mapf"
     fi
@@ -2887,9 +3812,10 @@ osu_manage_critical_holds_if_enabled() {
   while IFS= read -r pkg; do
     [[ -z "$pkg" ]] && continue
     found=0
-    IFS=',' read -r -a allow <<< "$POLICY_CRITICAL_HOLD_ALLOWLIST"
+    local -a allow=()
+    IFS=',' read -r -a allow <<< "$POLICY_CRITICAL_HOLD_ALLOWLIST" || true
     local a
-    for a in "${allow[@]}"; do
+    for a in "${allow[@]+"${allow[@]}"}"; do
       a="$(printf '%s' "$a" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
       [[ "$a" == "$pkg" ]] && found=1 && break
     done
@@ -3252,12 +4178,683 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Reboot helpers
+# Reboot helpers / mid-hop evidence
 # ---------------------------------------------------------------------------
+osu_current_hop_dir() {
+  if [[ -n "${ST_CURRENT_HOP:-}" && -n "${ST_CURRENT_CODENAME:-}" && -n "${ST_TARGET_CODENAME:-}" ]]; then
+    printf '%s/hops/%s' "$OSU_STATE_DIR" "$(osu_hop_dirname "$ST_CURRENT_HOP" "$ST_CURRENT_CODENAME" "$ST_TARGET_CODENAME")"
+    return 0
+  fi
+  printf ''
+  return 1
+}
+
+# Normalize commands.tsv status for release-upgrade evidence.
+# Prints: SKIPPED | RUNNING | COMPLETED | FAILED | UNKNOWN
+osu_normalize_command_status() {
+  case "${1:-}" in
+    SKIPPED) printf 'SKIPPED\n' ;;
+    STARTED|RUNNING) printf 'RUNNING\n' ;;
+    COMPLETED|SUCCESS) printf 'COMPLETED\n' ;;
+    FAILED|TIMEOUT) printf 'FAILED\n' ;;
+    *) printf 'UNKNOWN\n' ;;
+  esac
+}
+
+# True when directory has current do-release-upgrade execution logs
+# (main.log / apt.log / term.log). Empty or stale directories do not count.
+osu_dist_upgrade_execution_logs_present() {
+  local dir="$1"
+  local ref_epoch="${2:-0}"
+  local f newest=0 mt
+  [[ -n "$dir" && -d "$dir" ]] || return 1
+  for f in "${dir}/main.log" "${dir}/apt.log" "${dir}/term.log"; do
+    [[ -f "$f" ]] || continue
+    mt="$(stat -c '%Y' "$f" 2>/dev/null || stat -f '%m' "$f" 2>/dev/null || echo 0)"
+    [[ "$mt" -gt "$newest" ]] && newest="$mt"
+  done
+  [[ "$newest" -gt 0 ]] || return 1
+  # Stale leftover logs from prior years/runs are not hop execution evidence.
+  if [[ "$ref_epoch" -gt 0 && "$newest" -lt "$ref_epoch" ]]; then
+    return 1
+  fi
+  return 0
+}
+
+# Reference epoch for dist-upgrade log freshness (hop/command/state start).
+osu_hop_evidence_ref_epoch() {
+  local hop_dir="${1:-}"
+  local ref=0 t parsed
+  if [[ -n "$hop_dir" && -f "${hop_dir}/commands.tsv" ]]; then
+    t="$(awk -F'\t' 'NR>1 && $6 != "" {print $6; exit}' "${hop_dir}/commands.tsv" 2>/dev/null || true)"
+    if [[ -n "$t" ]]; then
+      parsed="$(osu_parse_iso_epoch "$t" 2>/dev/null || true)"
+      [[ -n "$parsed" ]] && ref="$parsed"
+    fi
+  fi
+  if [[ "$ref" -le 0 && -n "${ST_CREATED_AT:-}" ]]; then
+    parsed="$(osu_parse_iso_epoch "${ST_CREATED_AT}" 2>/dev/null || true)"
+    [[ -n "$parsed" ]] && ref="$parsed"
+  fi
+  if [[ "$ref" -le 0 && -n "$hop_dir" && -d "$hop_dir" ]]; then
+    ref="$(stat -c '%Y' "$hop_dir" 2>/dev/null || stat -f '%m' "$hop_dir" 2>/dev/null || echo 0)"
+  fi
+  # Allow small clock skew / prep before first command row.
+  if [[ "$ref" -gt 60 ]]; then
+    ref=$((ref - 60))
+  fi
+  printf '%s\n' "$ref"
+}
+
+# Optional aux details for diagnose (duration / empty streams). One line or empty.
+osu_hop_dro_aux_evidence() {
+  local hop_dir dro_line="" dur="" stdoutf="" stderrf="" status="" rc=""
+  hop_dir="$(osu_current_hop_dir || true)"
+  [[ -n "$hop_dir" && -f "${hop_dir}/commands.tsv" ]] || return 0
+  dro_line="$(awk -F'\t' '$3 == "do-release-upgrade" {line=$0} END {print line}' \
+    "${hop_dir}/commands.tsv" 2>/dev/null || true)"
+  [[ -n "$dro_line" ]] || return 0
+  dur="$(printf '%s' "$dro_line" | cut -f8)"
+  rc="$(printf '%s' "$dro_line" | cut -f9)"
+  status="$(printf '%s' "$dro_line" | cut -f11)"
+  stdoutf="$(printf '%s' "$dro_line" | cut -f12)"
+  stderrf="$(printf '%s' "$dro_line" | cut -f13)"
+  local empty_out=1 empty_err=1
+  if [[ -n "$stdoutf" && -f "$stdoutf" ]] && [[ -s "$stdoutf" ]]; then empty_out=0; fi
+  if [[ -n "$stderrf" && -f "$stderrf" ]] && [[ -s "$stderrf" ]]; then empty_err=0; fi
+  printf 'dro_status=%s dro_rc=%s duration_ms=%s empty_stdout=%s empty_stderr=%s\n' \
+    "$status" "$rc" "${dur:-0}" "$empty_out" "$empty_err"
+}
+
+# Inspect whether the hop's do-release-upgrade actually completed.
+# Prints: SUCCESS | NOT_STARTED | FAILED | UNCLEAR
+# SKIPPED (even with return_code=0) is never success — simulation/no-execute only.
+osu_hop_release_upgrade_evidence() {
+  local cur target hop_source hop_dir result_status="" dro_status="" dro_rc="" dro_norm=""
+  local has_dro=0 has_dist_logs=0 sources_target=0 sources_source=0
+  local host_dist reboot_file=0 ref_epoch=0 all_cmds_skipped=0 cmd_rows=0
+
+  cur="$(osu_current_os_version)"
+  target="${ST_TARGET_OS:-}"
+  hop_source="${ST_CURRENT_OS:-}"
+  hop_dir="$(osu_current_hop_dir || true)"
+
+  if [[ -n "$target" && "$cur" == "$target" ]]; then
+    printf 'SUCCESS\n'
+    return 0
+  fi
+
+  if [[ -n "$hop_dir" && -f "${hop_dir}/result.json" ]]; then
+    result_status="$(osu_json_get "${hop_dir}/result.json" status 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$hop_dir" && -f "${hop_dir}/commands.tsv" ]]; then
+    local line st
+    all_cmds_skipped=1
+    while IFS= read -r line; do
+      [[ -z "$line" || "$line" == command_id* ]] && continue
+      cmd_rows=$((cmd_rows + 1))
+      st="$(printf '%s' "$line" | cut -f11)"
+      if [[ "$st" != "SKIPPED" ]]; then
+        all_cmds_skipped=0
+      fi
+      if [[ "$(printf '%s' "$line" | cut -f3)" == "do-release-upgrade" ]]; then
+        has_dro=1
+        dro_rc="$(printf '%s' "$line" | cut -f9)"
+        dro_status="$(printf '%s' "$line" | cut -f11)"
+      fi
+    done < "${hop_dir}/commands.tsv"
+    [[ "$cmd_rows" -gt 0 ]] || all_cmds_skipped=0
+  fi
+
+  ref_epoch="$(osu_hop_evidence_ref_epoch "$hop_dir")"
+  if [[ -n "$hop_dir" ]] && osu_dist_upgrade_execution_logs_present "${hop_dir}/dist-upgrade" "$ref_epoch"; then
+    has_dist_logs=1
+  fi
+  host_dist="$(osu_hostpath /var/log/dist-upgrade)"
+  if osu_dist_upgrade_execution_logs_present "$host_dist" "$ref_epoch"; then
+    has_dist_logs=1
+  fi
+
+  if [[ -f "$(osu_hostpath /var/run/reboot-required)" ]]; then
+    reboot_file=1
+  fi
+
+  if [[ -n "${ST_TARGET_CODENAME:-}" ]]; then
+    if grep -qsE "(deb|deb-src).*/${ST_TARGET_CODENAME}([[:space:]]|$)" \
+      "$(osu_hostpath /etc/apt/sources.list)" 2>/dev/null || \
+       grep -qsE "(deb|deb-src).*/${ST_TARGET_CODENAME}([[:space:]]|$)" \
+         "$(osu_hostpath /etc/apt/sources.list.d)"/*.list \
+         2>/dev/null || \
+       grep -qsE "(deb|deb-src).*/${ST_TARGET_CODENAME}([[:space:]]|$)" \
+         "$(osu_repo_disable_dir)"/* 2>/dev/null; then
+      sources_target=1
+    fi
+  fi
+  if [[ -n "${ST_CURRENT_CODENAME:-}" ]]; then
+    if grep -qsE "(deb|deb-src).*/${ST_CURRENT_CODENAME}([[:space:]]|$)" \
+      "$(osu_hostpath /etc/apt/sources.list)" 2>/dev/null || \
+       grep -qsE "(deb|deb-src).*/${ST_CURRENT_CODENAME}([[:space:]]|$)" \
+         "$(osu_hostpath /etc/apt/sources.list.d)"/*.list \
+         2>/dev/null || \
+       grep -qsE "(deb|deb-src).*/${ST_CURRENT_CODENAME}([[:space:]]|$)" \
+         "$(osu_repo_disable_dir)"/* 2>/dev/null; then
+      sources_source=1
+    fi
+  fi
+
+  if [[ "$has_dro" -eq 1 ]]; then
+    dro_norm="$(osu_normalize_command_status "$dro_status")"
+    case "$dro_norm" in
+      SKIPPED)
+        # SKIPPED + rc=0 is simulation/no-execute — never treat as completed.
+        printf 'NOT_STARTED\n'
+        return 0
+        ;;
+      FAILED)
+        printf 'FAILED\n'
+        return 0
+        ;;
+      RUNNING)
+        printf 'UNCLEAR\n'
+        return 0
+        ;;
+      COMPLETED)
+        if [[ "$dro_rc" != "0" ]]; then
+          printf 'FAILED\n'
+          return 0
+        fi
+        # Real completion requires execution logs (or equivalent sources+reboot proof).
+        if [[ "$has_dist_logs" -eq 1 ]]; then
+          printf 'SUCCESS\n'
+          return 0
+        fi
+        if [[ "$reboot_file" -eq 1 && "$sources_target" -eq 1 && "$sources_source" -eq 0 ]]; then
+          printf 'SUCCESS\n'
+          return 0
+        fi
+        printf 'UNCLEAR\n'
+        return 0
+        ;;
+      *)
+        # UNKNOWN status: never promote rc=0 alone to success.
+        if [[ "$dro_rc" == "0" ]]; then
+          printf 'UNCLEAR\n'
+          return 0
+        fi
+        printf 'FAILED\n'
+        return 0
+        ;;
+    esac
+  fi
+
+  # result.json alone never proves success. Contradictory REBOOT_REQUIRED with no
+  # execution evidence while still on hop source → NOT_STARTED.
+  if [[ "$result_status" == "FAILED" ]]; then
+    printf 'FAILED\n'
+    return 0
+  fi
+  if [[ "$result_status" == "REBOOT_REQUIRED" ]]; then
+    if [[ -n "$hop_source" && "$cur" == "$hop_source" && \
+          "$has_dist_logs" -eq 0 && "$sources_target" -eq 0 ]]; then
+      printf 'NOT_STARTED\n'
+      return 0
+    fi
+    printf 'UNCLEAR\n'
+    return 0
+  fi
+
+  if [[ "$all_cmds_skipped" -eq 1 ]]; then
+    printf 'NOT_STARTED\n'
+    return 0
+  fi
+
+  if [[ "$has_dist_logs" -eq 1 || "$sources_target" -eq 1 ]]; then
+    printf 'UNCLEAR\n'
+    return 0
+  fi
+
+  # No dro command, no target sources, still on hop source → upgrade never started
+  if [[ -n "$hop_source" && "$cur" == "$hop_source" ]]; then
+    printf 'NOT_STARTED\n'
+    return 0
+  fi
+
+  printf 'UNCLEAR\n'
+  return 0
+}
+
+# Backup hop result.json when demoting a false REBOOT_REQUIRED claim.
+osu_backup_false_reboot_result() {
+  local hop_dir stamp bak
+  hop_dir="$(osu_current_hop_dir || true)"
+  [[ -n "$hop_dir" && -f "${hop_dir}/result.json" ]] || return 0
+  stamp="$(osu_utc_stamp)"
+  bak="${hop_dir}/result.json.false-reboot-${stamp}"
+  cp -a "${hop_dir}/result.json" "$bak" || return 1
+  osu_append_event "FALSE_REBOOT_REQUIRED_DEMOTED" "result_backup=${bak}"
+  # Neutralize misleading result while keeping the backup
+  cat >"${hop_dir}/result.json" <<EOF
+{"status":"NOT_STARTED","from":"${ST_CURRENT_OS:-}","to":"${ST_TARGET_OS:-}","demoted_from":"REBOOT_REQUIRED","demoted_at":"$(osu_utc_now)"}
+EOF
+  printf '%s\n' "$bak"
+}
+
+# Atomic recover from sticky false REBOOT_* when release upgrade never started.
+# Does not run apt, do-release-upgrade, or reboot.
+osu_recover_not_started() {
+  local evidence classification lock_class hop_dir stamp state_bak result_bak=""
+  local dro_status="" dro_norm=""
+
+  [[ -f "$(osu_state_path)" ]] || { osu_log ERROR "recover-not-started: no state.json"; return 1; }
+  osu_verify_state_checksum || { osu_log ERROR "recover-not-started: state checksum mismatch"; return 1; }
+  osu_load_state_into_vars || return 1
+
+  if osu_os_upgrade_activity_present; then
+    osu_log ERROR "recover-not-started refused: apt/dpkg/do-release-upgrade/runner active"
+    return 1
+  fi
+  if osu_apt_lock_active; then
+    osu_log ERROR "recover-not-started refused: apt/dpkg lock active"
+    return 1
+  fi
+  # If this process already holds the upgrade lock, flock probe reports HELD_LIVE —
+  # treat that as acceptable. Otherwise require FREE (no foreign holder / activity).
+  lock_class="$(osu_lock_classify)"
+  if [[ -n "${OSU_LOCK_FD:-}" ]]; then
+    :
+  elif [[ "$lock_class" != "FREE" ]]; then
+    osu_log ERROR "recover-not-started refused: lock_class=${lock_class} (need FREE)"
+    return 1
+  fi
+
+  evidence="$(osu_hop_release_upgrade_evidence)"
+  if [[ "$evidence" == "SUCCESS" ]]; then
+    osu_log ERROR "recover-not-started refused: success evidence present"
+    return 1
+  fi
+  if [[ "$evidence" != "NOT_STARTED" ]]; then
+    osu_log ERROR "recover-not-started refused: evidence=${evidence} (need NOT_STARTED)"
+    return 1
+  fi
+
+  hop_dir="$(osu_current_hop_dir || true)"
+  if [[ -n "$hop_dir" && -f "${hop_dir}/commands.tsv" ]]; then
+    dro_status="$(awk -F'\t' '$3 == "do-release-upgrade" {s=$11} END {print s}' \
+      "${hop_dir}/commands.tsv" 2>/dev/null || true)"
+    if [[ -n "$dro_status" ]]; then
+      dro_norm="$(osu_normalize_command_status "$dro_status")"
+      if [[ "$dro_norm" != "SKIPPED" ]]; then
+        osu_log ERROR "recover-not-started refused: do-release-upgrade status=${dro_status} (need SKIPPED)"
+        return 1
+      fi
+    fi
+  fi
+
+  case "${ST_STATE}" in
+    REBOOT_REQUIRED|REBOOT_REQUESTED|HOP_RELEASE_UPGRADE_STARTING|HOP_RELEASE_UPGRADE_RUNNING|RESUME_REQUIRED)
+      ;;
+    *)
+      osu_log ERROR "recover-not-started refused: state=${ST_STATE} is not a false-reboot/resume candidate"
+      return 1
+      ;;
+  esac
+
+  stamp="$(osu_utc_stamp)"
+  state_bak="$(osu_state_path).bak-not-started-${stamp}"
+  cp -a "$(osu_state_path)" "$state_bak" || {
+    osu_log ERROR "recover-not-started: failed to backup state.json"
+    return 1
+  }
+  if [[ -f "$(osu_state_sha_path)" ]]; then
+    cp -a "$(osu_state_sha_path)" "${state_bak}.sha256" 2>/dev/null || true
+  fi
+  if [[ -n "$hop_dir" && -f "${hop_dir}/result.json" ]]; then
+    local rs
+    rs="$(osu_json_get "${hop_dir}/result.json" status 2>/dev/null || true)"
+    if [[ "$rs" == "REBOOT_REQUIRED" ]]; then
+      result_bak="$(osu_backup_false_reboot_result)" || {
+        osu_log ERROR "recover-not-started: failed to backup result.json"
+        return 1
+      }
+    fi
+  fi
+
+  ST_NEXT_ACTION="RUN_OS_UPGRADE"
+  ST_HOPS_THIS_RUN=0
+  ST_NEW_PREFLIGHT_REQUIRED=true
+  ST_BOOT_ID=""
+  ST_BLOCK_REASON=""
+  ST_LAST_ERROR=""
+  ST_RETRYABLE=true
+
+  if [[ "$ST_STATE" != "RESUME_REQUIRED" ]]; then
+    # step name becomes last_successful_step
+    osu_transition_state RESUME_REQUIRED "before_release_upgrade" || {
+      osu_log ERROR "recover-not-started: cannot transition to RESUME_REQUIRED"
+      return 1
+    }
+  else
+    ST_LAST_STEP="before_release_upgrade"
+    osu_write_state_json "$(osu_build_state_json)" || return 1
+    osu_append_event "recover_not_started" "already_RESUME_REQUIRED"
+  fi
+  ST_LAST_STEP="before_release_upgrade"
+  osu_write_state_json "$(osu_build_state_json)" || return 1
+  if [[ -z "$result_bak" ]]; then
+    osu_append_event "FALSE_REBOOT_REQUIRED_DEMOTED" "state_backup=${state_bak}"
+  fi
+  osu_append_event "recover_not_started" "state_backup=${state_bak};result_backup=${result_bak:-none}"
+  osu_append_hop_history "${ST_CURRENT_HOP:-0}" "${ST_CURRENT_OS:-}" "${ST_TARGET_OS:-}" \
+    "RECOVER_NOT_STARTED" "false_reboot_demoted"
+  osu_log INFO "recover-not-started: state=RESUME_REQUIRED new_preflight_required=true (no upgrade/reboot run)"
+  return 0
+}
+
+# Locate latest apt_full_upgrade stdout (attempt-aware). Searches current hop,
+# then any hop commands.tsv, then global logs/commands.tsv.
+osu_latest_apt_full_upgrade_stdout() {
+  local hop_dir tsv line stdoutf="" f
+  local -a candidates=()
+  hop_dir="$(osu_current_hop_dir || true)"
+  [[ -n "$hop_dir" && -f "${hop_dir}/commands.tsv" ]] && candidates+=("${hop_dir}/commands.tsv")
+  if [[ -d "${OSU_STATE_DIR}/hops" ]]; then
+    for f in "${OSU_STATE_DIR}/hops"/*/commands.tsv; do
+      [[ -f "$f" ]] || continue
+      [[ "$f" == "${hop_dir}/commands.tsv" ]] && continue
+      candidates+=("$f")
+    done
+  fi
+  [[ -f "${OSU_STATE_DIR}/logs/commands.tsv" ]] && candidates+=("${OSU_STATE_DIR}/logs/commands.tsv")
+  for tsv in "${candidates[@]}"; do
+    line="$(awk -F'\t' '$3 == "apt_full_upgrade" && $11 != "RUNNING" {line=$0} END {print line}' "$tsv" 2>/dev/null || true)"
+    if [[ -z "$line" ]]; then
+      line="$(awk -F'\t' '$3 == "apt_full_upgrade" {line=$0} END {print line}' "$tsv" 2>/dev/null || true)"
+    fi
+    [[ -n "$line" ]] || continue
+    stdoutf="$(printf '%s' "$line" | cut -f12)"
+    if [[ -n "$stdoutf" && -f "$stdoutf" ]]; then
+      printf '%s\n' "$stdoutf"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# True when apt_full_upgrade stdout shows unpack/setup completion evidence.
+osu_stdout_shows_current_release_complete() {
+  local f="$1"
+  [[ -f "$f" ]] || return 1
+  # Require concrete dpkg progress markers, not merely non-empty output.
+  if grep -qE '^(Unpacking|Setting up) ' "$f" 2>/dev/null \
+     && grep -qE 'Setting up .+ \(.*\) \.\.\.' "$f" 2>/dev/null; then
+    return 0
+  fi
+  # Minimal systems may have nothing to upgrade
+  if grep -qiE '0 upgraded, 0 newly installed|is already the newest|Nothing to do|0 to upgrade' "$f" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+# Run non-mutating consistency checks for current-release recovery.
+# Writes evidence under $1 (dir). Returns 0 only when all checks pass.
+osu_verify_current_release_update_complete() {
+  local evid_dir="$1"
+  local reason_f audit_f check_f sim_f stdoutf
+  local audit_out check_rc=1 sim_rc=1
+  mkdir -p "$evid_dir"
+  reason_f="${evid_dir}/block_reason.txt"
+  audit_f="${evid_dir}/dpkg-audit.txt"
+  check_f="${evid_dir}/apt-check.txt"
+  sim_f="${evid_dir}/apt-dist-upgrade-simulate.txt"
+  : >"$reason_f"
+
+  if osu_os_upgrade_activity_present; then
+    printf 'active_apt_dpkg_or_runner\n' >>"$reason_f"
+    return 1
+  fi
+  if osu_apt_lock_active; then
+    printf 'apt_lock_active\n' >>"$reason_f"
+    return 1
+  fi
+
+  set +e
+  if [[ "$OSU_TEST_MODE" -eq 1 ]]; then
+    # Honor stub log / fake markers in tests
+    dpkg --audit >"$audit_f" 2>&1
+  else
+    dpkg --audit >"$audit_f" 2>&1
+  fi
+  set -e
+  audit_out="$(cat "$audit_f" 2>/dev/null || true)"
+  if [[ -n "$(printf '%s' "$audit_out" | tr -d '[:space:]')" ]]; then
+    printf 'dpkg_audit_not_clean\n' >>"$reason_f"
+    return 1
+  fi
+
+  set +e
+  apt-get check >"$check_f" 2>&1
+  check_rc=$?
+  set -e
+  if [[ "$check_rc" -ne 0 ]]; then
+    printf 'apt_get_check_failed\n' >>"$reason_f"
+    return 1
+  fi
+
+  set +e
+  apt-get -s dist-upgrade >"$sim_f" 2>&1
+  sim_rc=$?
+  set -e
+  if [[ "$sim_rc" -ne 0 ]]; then
+    printf 'apt_dist_upgrade_simulate_failed\n' >>"$reason_f"
+    return 1
+  fi
+  if grep -qiE 'Broken packages|unmet dependencies|E: Error' "$sim_f" 2>/dev/null; then
+    printf 'apt_simulate_dependency_errors\n' >>"$reason_f"
+    return 1
+  fi
+
+  stdoutf="$(osu_latest_apt_full_upgrade_stdout 2>/dev/null || true)"
+  if [[ -z "$stdoutf" ]]; then
+    printf 'missing_apt_full_upgrade_stdout\n' >>"$reason_f"
+    return 1
+  fi
+  printf '%s\n' "$stdoutf" >"${evid_dir}/apt_full_upgrade_stdout.path"
+  if ! osu_stdout_shows_current_release_complete "$stdoutf"; then
+    printf 'stdout_lacks_unpack_setup_evidence\n' >>"$reason_f"
+    return 1
+  fi
+
+  if [[ "$(osu_hop_release_upgrade_evidence)" != "NOT_STARTED" ]]; then
+    printf 'release_upgrade_evidence_not_NOT_STARTED\n' >>"$reason_f"
+    return 1
+  fi
+
+  cat >"${evid_dir}/verification.json" <<EOF
+{
+  "verified_at_utc": "$(osu_utc_now)",
+  "dpkg_audit_clean": true,
+  "apt_check_ok": true,
+  "apt_simulate_ok": true,
+  "stdout_evidence": true,
+  "stdout_file": "$(osu_json_escape "$stdoutf")",
+  "release_upgrade_evidence": "NOT_STARTED",
+  "active_package_managers": false
+}
+EOF
+  return 0
+}
+
+# Recover state when current-release dist-upgrade finished but wrapper timed out.
+# Does not run apt install, do-release-upgrade, or reboot.
+osu_recover_current_release_update() {
+  local evidence lock_class hop_dir stamp state_bak evid_dir cur source_os
+  local reasons=""
+
+  [[ -f "$(osu_state_path)" ]] || { osu_log ERROR "recover-current-release-update: no state.json"; return 1; }
+  osu_verify_state_checksum || { osu_log ERROR "recover-current-release-update: state checksum mismatch"; return 1; }
+  osu_load_state_into_vars || return 1
+
+  if osu_os_upgrade_activity_present; then
+    osu_log ERROR "recover-current-release-update refused: apt/dpkg/do-release-upgrade/runner active"
+    return 1
+  fi
+  if osu_apt_lock_active; then
+    osu_log ERROR "recover-current-release-update refused: apt/dpkg lock active"
+    return 1
+  fi
+  lock_class="$(osu_lock_classify)"
+  if [[ -n "${OSU_LOCK_FD:-}" ]]; then
+    :
+  elif [[ "$lock_class" != "FREE" ]]; then
+    osu_log ERROR "recover-current-release-update refused: lock_class=${lock_class} (need FREE)"
+    return 1
+  fi
+
+  cur="$(osu_current_os_version)"
+  source_os="${ST_SOURCE_OS:-${ST_CURRENT_OS:-}}"
+  if [[ -z "$source_os" || "$cur" != "$source_os" ]]; then
+    osu_log ERROR "recover-current-release-update refused: current OS ${cur} != source OS ${source_os}"
+    return 1
+  fi
+
+  evidence="$(osu_hop_release_upgrade_evidence)"
+  if [[ "$evidence" != "NOT_STARTED" ]]; then
+    osu_log ERROR "recover-current-release-update refused: release_upgrade_evidence=${evidence} (need NOT_STARTED)"
+    return 1
+  fi
+
+  case "${ST_STATE}" in
+    FAILED|BLOCKED|HOP_CURRENT_RELEASE_UPDATING|HOP_SOURCE_READY|HOP_SOURCE_PREPARING|HOP_PRECHECK|RESUME_REQUIRED)
+      ;;
+    *)
+      osu_log ERROR "recover-current-release-update refused: state=${ST_STATE}"
+      return 1
+      ;;
+  esac
+
+  stamp="$(osu_utc_stamp)"
+  evid_dir="${OSU_STATE_DIR}/recovery/current-release-${stamp}"
+  mkdir -p "$evid_dir"
+  if ! osu_verify_current_release_update_complete "$evid_dir"; then
+    reasons="$(tr '\n' ',' <"${evid_dir}/block_reason.txt" 2>/dev/null | sed 's/,$//')"
+    osu_log ERROR "recover-current-release-update refused: verification failed (${reasons:-unknown})"
+    # Keep BLOCKED with precise reason; do not claim success
+    if [[ "$ST_STATE" != "BLOCKED" && "$ST_STATE" != "FAILED" ]]; then
+      osu_set_blocked "current_release_recovery_insufficient:${reasons:-unknown}" true || true
+    else
+      ST_BLOCK_REASON="current_release_recovery_insufficient:${reasons:-unknown}"
+      ST_LAST_ERROR="$ST_BLOCK_REASON"
+      ST_RETRYABLE=true
+      osu_write_state_json "$(osu_build_state_json)" || true
+    fi
+    return 1
+  fi
+
+  state_bak="$(osu_state_path).bak-current-release-${stamp}"
+  cp -a "$(osu_state_path)" "$state_bak" || {
+    osu_log ERROR "recover-current-release-update: failed to backup state.json"
+    return 1
+  }
+  if [[ -f "$(osu_state_sha_path)" ]]; then
+    cp -a "$(osu_state_sha_path)" "${state_bak}.sha256" 2>/dev/null || true
+  fi
+
+  # Normalize hop identity: hop 1 for source→first target until reboot validation
+  if [[ "${ST_CURRENT_HOP:-0}" -ne 1 ]]; then
+    osu_log WARN "recover-current-release-update: correcting current_hop ${ST_CURRENT_HOP} -> 1"
+  fi
+  ST_CURRENT_HOP=1
+  ST_HOPS_THIS_RUN=0
+  ST_CURRENT_OS="$cur"
+  ST_CURRENT_CODENAME="$(osu_current_os_codename)"
+  # Preserve planned target (e.g. 18.04); if empty, derive next LTS
+  if [[ -z "${ST_TARGET_OS:-}" ]]; then
+    local line rest
+    local -a _plan_lines=()
+    mapfile -t _plan_lines < <(osu_plan_hops "$cur" || true)
+    line="${_plan_lines[0]:-}"
+    if [[ -n "$line" && "$line" != UNSUPPORTED ]]; then
+      rest="${line#*:}"
+      rest="${rest#*>}"
+      ST_TARGET_OS="${rest%%:*}"
+      ST_TARGET_CODENAME="${rest##*:}"
+    fi
+  fi
+  ST_LAST_STEP="current_release_updated"
+  ST_NEXT_ACTION="RUN_RELEASE_UPGRADE"
+  ST_NEW_PREFLIGHT_REQUIRED=true
+  ST_LAST_ERROR=""
+  ST_BLOCK_REASON=""
+  ST_RETRYABLE=true
+  ST_BOOT_ID=""
+
+  cat >"${evid_dir}/recovery.json" <<EOF
+{
+  "recovery": "recover-current-release-update",
+  "recovered_at_utc": "$(osu_utc_now)",
+  "state_backup": "$(osu_json_escape "$state_bak")",
+  "previous_state": "$(osu_json_escape "${ST_STATE}")",
+  "current_hop": 1,
+  "current_os": "$(osu_json_escape "$cur")",
+  "target_os": "$(osu_json_escape "${ST_TARGET_OS:-}")",
+  "last_successful_step": "current_release_updated",
+  "next_action": "RUN_RELEASE_UPGRADE",
+  "destructive_ops_run": false
+}
+EOF
+
+  if [[ "$ST_STATE" != "RESUME_REQUIRED" ]]; then
+    osu_transition_state RESUME_REQUIRED "current_release_updated" || {
+      ST_STATE=RESUME_REQUIRED
+      osu_write_state_json "$(osu_build_state_json)" || return 1
+    }
+  else
+    ST_LAST_STEP="current_release_updated"
+    osu_write_state_json "$(osu_build_state_json)" || return 1
+  fi
+  # Ensure fields stick after transition
+  ST_LAST_STEP="current_release_updated"
+  ST_LAST_ERROR=""
+  ST_BLOCK_REASON=""
+  ST_RETRYABLE=true
+  ST_NEXT_ACTION="RUN_RELEASE_UPGRADE"
+  ST_NEW_PREFLIGHT_REQUIRED=true
+  ST_CURRENT_HOP=1
+  ST_HOPS_THIS_RUN=0
+  osu_write_state_json "$(osu_build_state_json)" || return 1
+
+  osu_append_event "recover_current_release_update" "state_backup=${state_bak};evidence=${evid_dir}"
+  osu_append_hop_history 1 "${ST_CURRENT_OS:-}" "${ST_TARGET_OS:-}" \
+    "RECOVER_CURRENT_RELEASE" "verified_without_rerun"
+  osu_log INFO "recover-current-release-update: RESUME_REQUIRED last_successful_step=current_release_updated current_hop=1"
+  return 0
+}
+
 osu_request_reboot() {
   # Preconditions: state must already be REBOOT_REQUIRED, flushed
   if [[ "${ST_STATE}" != "REBOOT_REQUIRED" ]]; then
     osu_log ERROR "refuse reboot: state is ${ST_STATE}, expected REBOOT_REQUIRED"
+    return 1
+  fi
+  local evidence
+  evidence="$(osu_hop_release_upgrade_evidence)"
+  if [[ "$evidence" != "SUCCESS" ]]; then
+    osu_log ERROR "reboot refused: release upgrade success evidence missing (evidence=${evidence})"
+    return 1
+  fi
+  # Authorization must be durable (state + approval), not a transient shell flag.
+  if [[ "$OSU_TEST_MODE" -ne 1 ]]; then
+    if ! osu_apply_execute_authorization; then
+      osu_log ERROR "reboot refused: durable execute authorization missing or invalid"
+      return 1
+    fi
+  else
+    OSU_EXECUTE=1
+  fi
+  if [[ "$OSU_EXECUTE" -ne 1 ]]; then
+    osu_log ERROR "reboot refused: execute not authorized"
     return 1
   fi
   sync 2>/dev/null || true
@@ -3269,10 +4866,6 @@ osu_request_reboot() {
     osu_log INFO "TEST MODE: reboot recorded, not executed"
     return 0
   fi
-  if [[ "$OSU_EXECUTE" -ne 1 ]]; then
-    osu_log INFO "reboot skipped (no --execute)"
-    return 0
-  fi
   if command -v systemctl >/dev/null 2>&1; then
     osu_run_command "${ST_CURRENT_HOP}" "reboot" "systemctl reboot" 60 false -- systemctl reboot || {
       osu_log ERROR "reboot command failed — manual reboot required"
@@ -3282,6 +4875,449 @@ osu_request_reboot() {
   else
     osu_run_command "${ST_CURRENT_HOP}" "reboot" "reboot" 60 false -- reboot || return 1
   fi
+  return 0
+}
+
+# True when hop commands.tsv has a non-SKIPPED completed/success row for step.
+osu_hop_journal_step_status() {
+  local step="$1"
+  local hop_dir line st
+  hop_dir="$(osu_current_hop_dir || true)"
+  [[ -n "$hop_dir" && -f "${hop_dir}/commands.tsv" ]] || { printf 'ABSENT\n'; return 0; }
+  st=""
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" == command_id* ]] && continue
+    if [[ "$(printf '%s' "$line" | cut -f3)" == "$step" ]]; then
+      st="$(printf '%s' "$line" | cut -f11)"
+    fi
+  done < "${hop_dir}/commands.tsv"
+  if [[ -z "$st" ]]; then
+    printf 'ABSENT\n'
+  else
+    printf '%s\n' "$st"
+  fi
+}
+
+osu_hop_journal_step_executed() {
+  local step="$1" st
+  st="$(osu_hop_journal_step_status "$step")"
+  case "$st" in
+    ABSENT|SKIPPED) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# Map resume stage → next durable state (shared by transition checks / runner).
+osu_resume_stage_target_state() {
+  case "${1:-}" in
+    CONTINUE_SOURCE_PREPARATION) printf 'HOP_SOURCE_PREPARING\n' ;;
+    CONTINUE_CURRENT_RELEASE_UPDATE) printf 'HOP_CURRENT_RELEASE_UPDATING\n' ;;
+    CONTINUE_RELEASE_UPGRADE) printf 'HOP_RELEASE_UPGRADE_STARTING\n' ;;
+    CONTINUE_POST_UPGRADE_REBOOT) printf 'REBOOT_REQUIRED\n' ;;
+    VALIDATE) printf 'HOP_VALIDATING\n' ;;
+    *) printf '\n' ;;
+  esac
+}
+
+# Canonical mid-hop / resume stage resolver.
+# release_upgrade_evidence=NOT_STARTED means only that do-release-upgrade has not
+# started — never that the whole hop or source/current-release work is incomplete.
+# Prints one of:
+#   CONTINUE_SOURCE_PREPARATION | CONTINUE_CURRENT_RELEASE_UPDATE |
+#   CONTINUE_RELEASE_UPGRADE | CONTINUE_POST_UPGRADE_REBOOT |
+#   BLOCKED_INCONSISTENT_EVIDENCE | VALIDATE | RESUME_REQUIRED | FAILED | BLOCKED
+osu_resolve_resume_stage() {
+  local cur target hop_source state evidence last_step next_action
+  local dro_st apt_du_st source_os
+
+  cur="$(osu_current_os_version)"
+  target="${ST_TARGET_OS:-}"
+  hop_source="${ST_CURRENT_OS:-}"
+  source_os="${ST_SOURCE_OS:-$hop_source}"
+  state="${ST_STATE:-}"
+  last_step="${ST_LAST_STEP:-}"
+  next_action="${ST_NEXT_ACTION:-}"
+  evidence="$(osu_hop_release_upgrade_evidence)"
+  dro_st="$(osu_hop_journal_step_status "do-release-upgrade")"
+  apt_du_st="$(osu_hop_journal_step_status "apt_full_upgrade")"
+
+  case "$state" in
+    HOP_VALIDATING|RESUMED)
+      if [[ -n "$target" && "$cur" == "$target" ]]; then
+        printf 'VALIDATE\n'
+        return 0
+      fi
+      ;;
+  esac
+
+  # OS already at hop target → post-upgrade only
+  if [[ -n "$target" && "$cur" == "$target" ]]; then
+    printf 'CONTINUE_POST_UPGRADE_REBOOT\n'
+    return 0
+  fi
+
+  case "$evidence" in
+    SUCCESS)
+      printf 'CONTINUE_POST_UPGRADE_REBOOT\n'
+      return 0
+      ;;
+    FAILED)
+      printf 'FAILED\n'
+      return 0
+      ;;
+    UNCLEAR)
+      printf 'BLOCKED_INCONSISTENT_EVIDENCE\n'
+      return 0
+      ;;
+  esac
+
+  # evidence == NOT_STARTED below — do-release-upgrade never started.
+
+  # Sticky false reboot without upgrade evidence
+  case "$state" in
+    REBOOT_REQUIRED|REBOOT_REQUESTED)
+      printf 'RESUME_REQUIRED\n'
+      return 0
+      ;;
+  esac
+
+  # Inconsistent: journal shows dro executed but evidence is NOT_STARTED
+  if [[ "$dro_st" != "ABSENT" && "$dro_st" != "SKIPPED" ]]; then
+    printf 'BLOCKED_INCONSISTENT_EVIDENCE\n'
+    return 0
+  fi
+
+  # Journal shows current-release upgrade completed but last_step not stamped —
+  # do not silently rewind; operator should recover-current-release-update.
+  if [[ "$apt_du_st" == "COMPLETED" || "$apt_du_st" == "SUCCESS" ]]; then
+    if [[ "$last_step" != "current_release_updated" ]]; then
+      printf 'BLOCKED_INCONSISTENT_EVIDENCE\n'
+      return 0
+    fi
+  fi
+
+  # Priority A: current-release update already verified complete → release upgrade only
+  if [[ "$last_step" == "current_release_updated" ]]; then
+    if [[ -n "$hop_source" && "$cur" != "$hop_source" ]]; then
+      printf 'BLOCKED_INCONSISTENT_EVIDENCE\n'
+      return 0
+    fi
+    case "$next_action" in
+      RUN_RELEASE_UPGRADE|RUN_OS_UPGRADE|"")
+        case "$state" in
+          HOP_SOURCE_PREPARING)
+            # Later step claim while still mid source-prep → do not rewind; fail closed
+            printf 'BLOCKED_INCONSISTENT_EVIDENCE\n'
+            return 0
+            ;;
+          HOP_PRECHECK|HOP_SOURCE_READY|HOP_CURRENT_RELEASE_UPDATING|HOP_RELEASE_UPGRADE_STARTING|HOP_RELEASE_UPGRADE_RUNNING|RESUME_REQUIRED|INITIALIZED|BLOCKED|FAILED)
+            printf 'CONTINUE_RELEASE_UPGRADE\n'
+            return 0
+            ;;
+        esac
+        printf 'CONTINUE_RELEASE_UPGRADE\n'
+        return 0
+        ;;
+      *)
+        printf 'BLOCKED_INCONSISTENT_EVIDENCE\n'
+        return 0
+        ;;
+    esac
+  fi
+
+  # Priority B: source preparation done, current-release update not complete
+  case "$last_step" in
+    source_ready|current_release_updating)
+      printf 'CONTINUE_CURRENT_RELEASE_UPDATE\n'
+      return 0
+      ;;
+  esac
+  case "$state" in
+    HOP_SOURCE_READY|HOP_CURRENT_RELEASE_UPDATING)
+      if [[ -n "$hop_source" && "$cur" == "$hop_source" ]]; then
+        printf 'CONTINUE_CURRENT_RELEASE_UPDATE\n'
+        return 0
+      fi
+      ;;
+  esac
+
+  # Priority C: source preparation incomplete (fresh hop or early resume)
+  case "$state" in
+    HOP_PRECHECK|HOP_SOURCE_PREPARING|INITIALIZED|RESUME_REQUIRED)
+      if [[ -n "$hop_source" && "$cur" == "$hop_source" ]]; then
+        printf 'CONTINUE_SOURCE_PREPARATION\n'
+        return 0
+      fi
+      printf 'BLOCKED_INCONSISTENT_EVIDENCE\n'
+      return 0
+      ;;
+    HOP_RELEASE_UPGRADE_STARTING|HOP_RELEASE_UPGRADE_RUNNING)
+      # Claims release-upgrade phase without current_release_updated stamp
+      printf 'RESUME_REQUIRED\n'
+      return 0
+      ;;
+  esac
+
+  if [[ -n "$source_os" && "$cur" == "$source_os" ]]; then
+    printf 'CONTINUE_SOURCE_PREPARATION\n'
+    return 0
+  fi
+
+  printf 'BLOCKED\n'
+  return 0
+}
+
+# Classify a partially-executed hop without mutating OS packages.
+# Delegates to osu_resolve_resume_stage (same rules as runner dispatcher).
+osu_classify_in_progress_hop() {
+  local stage
+  stage="$(osu_resolve_resume_stage)"
+  # Compatibility alias for callers that still expect REBOOT_REQUIRED
+  if [[ "$stage" == "CONTINUE_POST_UPGRADE_REBOOT" ]]; then
+    printf 'REBOOT_REQUIRED\n'
+    return 0
+  fi
+  printf '%s\n' "$stage"
+}
+
+# Recommended operator action for diagnose output.
+# Prints: resume | request-reboot | recover-lock | recover-not-started |
+#         recover-current-release-update | recover-resume-dispatch |
+#         operator_intervention | none
+osu_recommended_recovery_action() {
+  local classification="${1:-}"
+  local lock_class evidence last_err stage
+  lock_class="$(osu_lock_classify)"
+  if [[ "$lock_class" == "STALE" ]]; then
+    printf 'recover-lock\n'
+    return 0
+  fi
+  if [[ "$lock_class" == "HELD_LIVE" || "$lock_class" == "BLOCKED_ACTIVITY" ]]; then
+    printf 'operator_intervention\n'
+    return 0
+  fi
+  evidence="$(osu_hop_release_upgrade_evidence 2>/dev/null || true)"
+  last_err="${ST_LAST_ERROR:-}"
+  stage="${classification}"
+  if [[ -z "$stage" || "$stage" == "REBOOT_REQUIRED" ]]; then
+    :
+  fi
+  # Stuck after illegal dispatch with current-release already complete
+  if [[ "$lock_class" == "FREE" && "$evidence" == "NOT_STARTED" \
+        && "${ST_LAST_STEP:-}" == "current_release_updated" \
+        && "${ST_CURRENT_HOP:-0}" -eq 1 ]]; then
+    case "${ST_STATE:-}" in
+      HOP_PRECHECK)
+        if [[ -f "${OSU_STATE_DIR}/events.jsonl" ]] && \
+           grep -q '"event":"illegal_transition"' "${OSU_STATE_DIR}/events.jsonl" 2>/dev/null; then
+          printf 'recover-resume-dispatch\n'
+          return 0
+        fi
+        ;;
+    esac
+  fi
+  case "$classification" in
+    REBOOT_REQUIRED|CONTINUE_POST_UPGRADE_REBOOT) printf 'request-reboot\n' ;;
+    CONTINUE_RELEASE_UPGRADE|CONTINUE_CURRENT_RELEASE_UPDATE|CONTINUE_SOURCE_PREPARATION)
+      printf 'resume\n'
+      ;;
+    BLOCKED_INCONSISTENT_EVIDENCE)
+      printf 'operator_intervention\n'
+      ;;
+    RESUME_REQUIRED)
+      # Clear NOT_STARTED + sticky false reboot → recover-not-started (no upgrade run).
+      if [[ "$evidence" == "NOT_STARTED" && "$lock_class" == "FREE" ]]; then
+        case "${ST_STATE:-}" in
+          REBOOT_REQUIRED|REBOOT_REQUESTED|HOP_RELEASE_UPGRADE_STARTING|HOP_RELEASE_UPGRADE_RUNNING)
+            printf 'recover-not-started\n'
+            return 0
+            ;;
+          RESUME_REQUIRED)
+            if [[ "${ST_NEW_PREFLIGHT_REQUIRED:-false}" == "true" ]]; then
+              printf 'resume\n'
+            else
+              printf 'recover-not-started\n'
+            fi
+            return 0
+            ;;
+        esac
+      fi
+      printf 'resume\n'
+      ;;
+    BLOCKED|FAILED)
+      if [[ "$evidence" == "NOT_STARTED" && "$lock_class" == "FREE" ]] \
+         && [[ "$last_err" == *current_release* || "${ST_LAST_STEP:-}" == *current_release* || "${ST_STATE}" == "FAILED" ]]; then
+        if [[ "$(osu_current_os_version)" == "${ST_SOURCE_OS:-${ST_CURRENT_OS:-}}" ]]; then
+          printf 'recover-current-release-update\n'
+          return 0
+        fi
+      fi
+      printf 'operator_intervention\n'
+      ;;
+    *) printf 'none\n' ;;
+  esac
+}
+
+# True when commands.tsv has destructive upgrade steps after an illegal_transition event.
+osu_destructive_commands_after_illegal_transition() {
+  local events hop_dir illegal_ts="" line ts step status started
+  events="${OSU_STATE_DIR}/events.jsonl"
+  hop_dir="$(osu_current_hop_dir || true)"
+  [[ -f "$events" ]] || return 1
+  [[ -n "$hop_dir" && -f "${hop_dir}/commands.tsv" ]] || return 1
+  illegal_ts="$(awk -F'"' '/"event":"illegal_transition"/ {ts=$4} END {print ts}' "$events" 2>/dev/null || true)"
+  [[ -n "$illegal_ts" ]] || return 1
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" == command_id* ]] && continue
+    step="$(printf '%s' "$line" | cut -f3)"
+    status="$(printf '%s' "$line" | cut -f11)"
+    started="$(printf '%s' "$line" | cut -f6)"
+    case "$status" in
+      SKIPPED|ABSENT|"") continue ;;
+    esac
+    case "$step" in
+      apt_update|apt_full_upgrade|apt_fix|dpkg_configure|upgrader_core|do-release-upgrade)
+        if [[ -n "$started" && "$started" > "$illegal_ts" ]]; then
+          return 0
+        fi
+        ;;
+    esac
+  done < "${hop_dir}/commands.tsv"
+  return 1
+}
+
+# Recover stuck HOP_PRECHECK after illegal resume dispatch (no apt/dro/reboot).
+osu_recover_resume_dispatch() {
+  local evidence lock_class cur source_os stamp state_bak
+
+  [[ -f "$(osu_state_path)" ]] || { osu_log ERROR "recover-resume-dispatch: no state.json"; return 1; }
+  osu_verify_state_checksum || { osu_log ERROR "recover-resume-dispatch: state checksum mismatch"; return 1; }
+  osu_load_state_into_vars || return 1
+
+  if osu_os_upgrade_activity_present; then
+    osu_log ERROR "recover-resume-dispatch refused: apt/dpkg/do-release-upgrade/runner active"
+    return 1
+  fi
+  if osu_apt_lock_active; then
+    osu_log ERROR "recover-resume-dispatch refused: apt/dpkg lock active"
+    return 1
+  fi
+  lock_class="$(osu_lock_classify)"
+  if [[ -n "${OSU_LOCK_FD:-}" ]]; then
+    :
+  elif [[ "$lock_class" != "FREE" ]]; then
+    osu_log ERROR "recover-resume-dispatch refused: lock_class=${lock_class} (need FREE)"
+    return 1
+  fi
+
+  cur="$(osu_current_os_version)"
+  source_os="${ST_SOURCE_OS:-${ST_CURRENT_OS:-}}"
+  if [[ -z "$source_os" || "$cur" != "$source_os" ]]; then
+    osu_log ERROR "recover-resume-dispatch refused: current OS ${cur} != source OS ${source_os}"
+    return 1
+  fi
+  if [[ "${ST_CURRENT_HOP:-0}" -ne 1 ]]; then
+    osu_log ERROR "recover-resume-dispatch refused: current_hop=${ST_CURRENT_HOP} (need 1)"
+    return 1
+  fi
+  if [[ "${ST_LAST_STEP:-}" != "current_release_updated" ]]; then
+    osu_log ERROR "recover-resume-dispatch refused: last_successful_step=${ST_LAST_STEP:-} (need current_release_updated)"
+    return 1
+  fi
+  evidence="$(osu_hop_release_upgrade_evidence)"
+  if [[ "$evidence" != "NOT_STARTED" ]]; then
+    osu_log ERROR "recover-resume-dispatch refused: release_upgrade_evidence=${evidence} (need NOT_STARTED)"
+    return 1
+  fi
+  case "${ST_STATE}" in
+    HOP_PRECHECK|RESUME_REQUIRED|BLOCKED)
+      ;;
+    *)
+      osu_log ERROR "recover-resume-dispatch refused: state=${ST_STATE}"
+      return 1
+      ;;
+  esac
+  if osu_destructive_commands_after_illegal_transition; then
+    osu_log ERROR "recover-resume-dispatch refused: destructive commands recorded after illegal_transition"
+    return 1
+  fi
+
+  stamp="$(osu_utc_stamp)"
+  state_bak="$(osu_state_path).bak-resume-dispatch-${stamp}"
+  cp -a "$(osu_state_path)" "$state_bak" || {
+    osu_log ERROR "recover-resume-dispatch: failed to backup state.json"
+    return 1
+  }
+  if [[ -f "$(osu_state_sha_path)" ]]; then
+    cp -a "$(osu_state_sha_path)" "${state_bak}.sha256" 2>/dev/null || true
+  fi
+
+  local prev_state="$ST_STATE"
+  ST_LAST_STEP="current_release_updated"
+  ST_NEXT_ACTION="RUN_RELEASE_UPGRADE"
+  ST_NEW_PREFLIGHT_REQUIRED=true
+  ST_LAST_ERROR=""
+  ST_BLOCK_REASON=""
+  ST_RETRYABLE=true
+  ST_CURRENT_HOP=1
+  ST_HOPS_THIS_RUN=0
+  ST_BOOT_ID=""
+
+  if [[ "$ST_STATE" != "RESUME_REQUIRED" ]]; then
+    osu_transition_state RESUME_REQUIRED "resume_dispatch_recovered" || {
+      ST_STATE=RESUME_REQUIRED
+      osu_write_state_json "$(osu_build_state_json)" || return 1
+    }
+  else
+    osu_write_state_json "$(osu_build_state_json)" || return 1
+  fi
+  # Ensure fields stick after transition
+  ST_LAST_STEP="current_release_updated"
+  ST_NEXT_ACTION="RUN_RELEASE_UPGRADE"
+  ST_NEW_PREFLIGHT_REQUIRED=true
+  ST_LAST_ERROR=""
+  ST_BLOCK_REASON=""
+  ST_CURRENT_HOP=1
+  ST_HOPS_THIS_RUN=0
+  osu_write_state_json "$(osu_build_state_json)" || return 1
+
+  osu_append_event "RESUME_DISPATCH_RECOVERED" "state_backup=${state_bak};previous_state=${prev_state}"
+  osu_append_hop_history 1 "${ST_CURRENT_OS:-}" "${ST_TARGET_OS:-}" \
+    "RESUME_DISPATCH_RECOVERED" "no_destructive_ops"
+  osu_log INFO "recover-resume-dispatch: RESUME_REQUIRED last_successful_step=current_release_updated (no apt/dro/reboot)"
+  return 0
+}
+
+# Replace pinned runtime from current OSU_ROOT without running any upgrade step.
+osu_repair_runtime() {
+  local runtime bak stamp
+  [[ -f "$(osu_state_path)" ]] || { osu_log ERROR "repair-runtime: no state.json"; return 1; }
+  osu_verify_state_checksum || { osu_log ERROR "repair-runtime: state checksum mismatch"; return 1; }
+  osu_load_state_into_vars || return 1
+  if osu_os_upgrade_activity_present; then
+    osu_log ERROR "repair-runtime refused: apt/dpkg/do-release-upgrade/runner active"
+    return 1
+  fi
+  if osu_apt_lock_active; then
+    osu_log ERROR "repair-runtime refused: apt/dpkg lock active"
+    return 1
+  fi
+  [[ -n "${OSU_ROOT:-}" ]] || { osu_log ERROR "repair-runtime: OSU_ROOT unset"; return 1; }
+  [[ -f "${OSU_ROOT}/scripts/dp-os-upgrade-runner.sh" ]] || {
+    osu_log ERROR "repair-runtime: source runner missing under $OSU_ROOT"
+    return 1
+  }
+  runtime="${OSU_STATE_DIR}/runtime"
+  stamp="$(osu_utc_stamp)"
+  if [[ -d "$runtime" ]]; then
+    bak="${OSU_STATE_DIR}/runtime.bak-${stamp}"
+    mv "$runtime" "$bak" || { osu_log ERROR "repair-runtime: failed to archive old runtime"; return 1; }
+    osu_append_event "runtime_archived" "$bak"
+  fi
+  osu_pin_runtime || return 1
+  osu_write_state_json "$(osu_build_state_json)" || return 1
+  osu_append_event "runtime_repaired" "sha=${ST_RUNTIME_SHA}"
+  osu_log INFO "runtime repaired; previous copy kept if present; upgrade not started"
   return 0
 }
 

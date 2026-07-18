@@ -1,0 +1,8 @@
+package	version	architecture	status
+bash	4.4.18-2ubuntu1	amd64	install ok installed
+coreutils	8.28-1ubuntu1	amd64	install ok installed
+zlib1g	1.2.11.dfsg-0ubuntu2	amd64	install ok installed
+shared	1.0	amd64	install ok installed
+multiarch	1.0	amd64	install ok installed
+multiarch	2.0	i386	install ok installed
+newpkg	1.0	amd64	install ok installed

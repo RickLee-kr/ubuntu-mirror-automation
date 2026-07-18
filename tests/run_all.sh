@@ -7,7 +7,7 @@ export PATH="${HOME}/.local/bin:/usr/local/bin:${PATH}"
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 FAIL=0
-for t in test_install.sh test_validate.sh test_validate_fixture.sh test_nginx.sh test_systemd.sh test_simplified_install.sh test_dashboard.sh test_offline_mirror.sh test_collect_dp_upgrade_readiness.sh test_dp_upgrade_preflight.sh test_dp_os_upgrade.sh; do
+for t in test_install.sh test_validate.sh test_validate_fixture.sh test_nginx.sh test_systemd.sh test_simplified_install.sh test_dashboard.sh test_offline_mirror.sh test_collect_dp_upgrade_readiness.sh test_dp_upgrade_preflight.sh test_dp_os_upgrade.sh test_discover_upgrade_requirements.sh; do
   echo "======== Running $t ========"
   if bash "$t"; then
     echo "OK $t"

@@ -3,7 +3,7 @@
   "script_version": "1.0.0",
   "preflight_id": "dp-upgrade-preflight-ready-aio-synthetic",
   "started_at_utc": "2026-07-16T03:19:42Z",
-  "completed_at_utc": "2026-07-16T10:23:45Z",
+  "completed_at_utc": "2026-07-17T06:24:08Z",
   "duration_seconds": 5,
   "input": {
     "path": "synthetic",

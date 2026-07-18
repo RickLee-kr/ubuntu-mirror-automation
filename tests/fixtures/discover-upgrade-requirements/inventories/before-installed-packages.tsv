@@ -1,0 +1,7 @@
+package	version	architecture	status
+bash	4.3-14ubuntu1	amd64	install ok installed
+coreutils	8.25-2ubuntu3	amd64	install ok installed
+oldpkg	1.0	amd64	install ok installed
+shared	1.0	amd64	install ok installed
+multiarch	1.0	amd64	install ok installed
+multiarch	1.0	i386	install ok installed

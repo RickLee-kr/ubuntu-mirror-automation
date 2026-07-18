@@ -29,7 +29,9 @@ done
 
 osu_init_test_mode || exit "$EXIT_CLI"
 osu_load_config "${OSU_CONFIG_FILE:-}" || exit "$EXIT_CLI"
-OSU_EXECUTE="${OSU_EXECUTE:-1}"
+# Durable authorization (state + operator-approval) is applied in runner_init_state.
+# Do not treat a transient exported OSU_EXECUTE as sufficient on its own.
+OSU_EXECUTE=0
 
 # When running from pinned runtime, OSU_ROOT may be empty — recover from state
 if [[ -z "${OSU_ROOT:-}" ]]; then
@@ -43,6 +45,17 @@ runner_init_state() {
   osu_verify_state_checksum || { osu_log ERROR "state checksum mismatch"; exit "$EXIT_INTEGRITY"; }
   osu_load_state_into_vars || exit "$EXIT_INTEGRITY"
   osu_verify_runtime || { osu_set_blocked "runtime_checksum_changed" false; exit "$EXIT_BLOCKED"; }
+  if [[ "$OSU_TEST_MODE" -eq 1 ]]; then
+    # Test harness authorizes via install-written approval when present; else allow.
+    if ! osu_apply_execute_authorization; then
+      OSU_EXECUTE=1
+    fi
+  else
+    osu_apply_execute_authorization || {
+      osu_log ERROR "runner refused: durable execute authorization missing/invalid"
+      exit "$EXIT_INTEGRITY"
+    }
+  fi
 }
 
 # Advance OS fake version in test mode after a hop
@@ -206,6 +219,33 @@ EOF
     return 1
   fi
 
+  # Shared resume-stage resolver (same as mid-hop dispatcher / transition targets)
+  local resume_stage target_state
+  resume_stage="$(osu_resolve_resume_stage)"
+  target_state="$(osu_resume_stage_target_state "$resume_stage")"
+  osu_log INFO "hop dispatch resume_stage=${resume_stage} target_state=${target_state:-none}"
+
+  case "$resume_stage" in
+    CONTINUE_RELEASE_UPGRADE)
+      runner_continue_release_upgrade "$hop_num" "$hop_dir" "$from_ver" "$from_code" "$to_ver" "$to_code"
+      return $?
+      ;;
+    CONTINUE_CURRENT_RELEASE_UPDATE)
+      runner_continue_current_release_update "$hop_num" "$hop_dir" "$from_ver" "$from_code" "$to_ver" "$to_code"
+      return $?
+      ;;
+    BLOCKED_INCONSISTENT_EVIDENCE)
+      osu_set_blocked "inconsistent_resume_evidence" false
+      return 1
+      ;;
+    CONTINUE_SOURCE_PREPARATION|"")
+      ;;
+    *)
+      # Fresh hop / unknown stage: fall through to source preparation
+      ;;
+  esac
+
+  # Fresh install / early hop: HOP_PRECHECK -> HOP_SOURCE_PREPARING
   osu_transition_state HOP_SOURCE_PREPARING "source_preparing" || return 1
   if osu_honor_pause_boundary; then exit "$EXIT_PAUSED"; fi
 
@@ -230,10 +270,28 @@ EOF
   osu_write_source_plan "$ST_PKG_MODE" "$ST_PKG_URL" "$from_code"
   osu_transition_state HOP_SOURCE_READY "source_ready" || return 1
 
-  osu_transition_state HOP_CURRENT_RELEASE_UPDATING "current_release_updating" || return 1
+  runner_continue_current_release_update "$hop_num" "$hop_dir" "$from_ver" "$from_code" "$to_ver" "$to_code"
+  return $?
+}
+
+# Current-release apt update then release upgrade (skips repository source preparation).
+runner_continue_current_release_update() {
+  local hop_num="$1" hop_dir="$2" from_ver="$3" from_code="$4" to_ver="$5" to_code="$6"
+
+  if [[ "${ST_LAST_STEP:-}" == "current_release_updated" ]]; then
+    osu_log INFO "last_successful_step=current_release_updated — skipping current-release apt update"
+    runner_continue_release_upgrade "$hop_num" "$hop_dir" "$from_ver" "$from_code" "$to_ver" "$to_code"
+    return $?
+  fi
+
+  case "$ST_STATE" in
+    HOP_CURRENT_RELEASE_UPDATING) ;;
+    *)
+      osu_transition_state HOP_CURRENT_RELEASE_UPDATING "current_release_updating" || return 1
+      ;;
+  esac
   if osu_honor_pause_boundary; then exit "$EXIT_PAUSED"; fi
 
-  # dpkg recovery / update (via stubs in test)
   osu_run_command "$hop_num" "dpkg_configure" "dpkg --configure -a" 600 true -- dpkg --configure -a || true
   osu_run_command "$hop_num" "apt_fix" "apt-get -f install" 600 true -- apt-get -y -f install || {
     osu_set_failed "apt_fix_failed"; return 1
@@ -245,17 +303,46 @@ EOF
     "${POLICY_APT_UPDATE_TIMEOUT_SECONDS}" true -- apt-get -y dist-upgrade || {
     osu_set_failed "current_release_upgrade_failed"; return 1
   }
-  # Ensure upgrader present
+  ST_LAST_STEP="current_release_updated"
+  ST_NEXT_ACTION="RUN_RELEASE_UPGRADE"
+  osu_write_state_json "$(osu_build_state_json)" || true
+
+  runner_continue_release_upgrade "$hop_num" "$hop_dir" "$from_ver" "$from_code" "$to_ver" "$to_code"
+  return $?
+}
+
+# Release-upgrade phase only: upgrader-core + do-release-upgrade (no source prep / apt update).
+# Transition: HOP_PRECHECK (or mid states) -> HOP_RELEASE_UPGRADE_STARTING
+runner_continue_release_upgrade() {
+  local hop_num="$1" hop_dir="$2" from_ver="$3" from_code="$4" to_ver="$5" to_code="$6"
+
+  # Preserve verified current-release completion across state step labels
+  ST_LAST_STEP="current_release_updated"
+  ST_NEXT_ACTION="RUN_RELEASE_UPGRADE"
+  osu_write_state_json "$(osu_build_state_json)" || true
+  if osu_honor_pause_boundary; then exit "$EXIT_PAUSED"; fi
+
+  case "$ST_STATE" in
+    HOP_RELEASE_UPGRADE_STARTING|HOP_RELEASE_UPGRADE_RUNNING) ;;
+    *)
+      osu_transition_state HOP_RELEASE_UPGRADE_STARTING "release_upgrade_starting" || return 1
+      ST_LAST_STEP="current_release_updated"
+      ST_NEXT_ACTION="RUN_RELEASE_UPGRADE"
+      ;;
+  esac
+  osu_write_state_json "$(osu_build_state_json)" || return 1
+
   osu_run_command "$hop_num" "upgrader_core" "ensure ubuntu-release-upgrader-core" 600 true -- \
     apt-get -y install ubuntu-release-upgrader-core || true
 
   if osu_honor_pause_boundary; then exit "$EXIT_PAUSED"; fi
 
-  osu_transition_state HOP_RELEASE_UPGRADE_STARTING "release_upgrade_starting" || return 1
-  # Persist before long-running upgrade
-  osu_write_state_json "$(osu_build_state_json)" || return 1
-
-  osu_transition_state HOP_RELEASE_UPGRADE_RUNNING "release_upgrade_running" || return 1
+  if [[ "$ST_STATE" != "HOP_RELEASE_UPGRADE_RUNNING" ]]; then
+    osu_transition_state HOP_RELEASE_UPGRADE_RUNNING "release_upgrade_running" || return 1
+    ST_LAST_STEP="current_release_updated"
+    ST_NEXT_ACTION="RUN_RELEASE_UPGRADE"
+    osu_write_state_json "$(osu_build_state_json)" || true
+  fi
   if ! runner_run_do_release_upgrade "$hop_dir" "$to_code"; then
     osu_set_failed "do_release_upgrade_failed"
     return 1
@@ -280,7 +367,6 @@ EOF
 
   # In test mode, continue as if reboot happened
   if [[ "$OSU_TEST_MODE" -eq 1 ]]; then
-    # Simulate new boot id
     mkdir -p "$(dirname "$(osu_hostpath /proc/sys/kernel/random/boot_id)")"
     printf 'boot-%s\n' "$(osu_utc_stamp)" >"$(osu_hostpath /proc/sys/kernel/random/boot_id)"
     osu_transition_state RESUMED "post_reboot_resumed" || return 1
@@ -309,17 +395,102 @@ EOF
 runner_handle_reboot_resume() {
   case "$ST_STATE" in
     REBOOT_REQUESTED|REBOOT_REQUIRED)
-      local cur_boot
+      local cur_boot cur classification evidence
       cur_boot="$(osu_boot_id)"
+      cur="$(osu_current_os_version)"
+      classification="$(osu_classify_in_progress_hop)"
+      evidence="$(osu_hop_release_upgrade_evidence)"
+      osu_log INFO "reboot-resume classification=${classification} evidence=${evidence} os=${cur}"
+
+      case "$classification" in
+        FAILED)
+          osu_set_failed "release_upgrade_failed_before_reboot"
+          return 1
+          ;;
+        BLOCKED|BLOCKED_INCONSISTENT_EVIDENCE)
+          osu_set_blocked "reboot_state_without_clear_upgrade_evidence" false
+          return 1
+          ;;
+        RESUME_REQUIRED|CONTINUE_SOURCE_PREPARATION|CONTINUE_CURRENT_RELEASE_UPDATE|CONTINUE_RELEASE_UPGRADE)
+          # Sticky REBOOT_* without success evidence — demote; do not reboot or re-run dro blindly.
+          osu_log WARN "REBOOT state without release-upgrade success evidence — demoting for resume (evidence=${evidence})"
+          if [[ "$evidence" == "NOT_STARTED" ]]; then
+            local hop_dir rs
+            hop_dir="$(osu_current_hop_dir || true)"
+            if [[ -n "$hop_dir" && -f "${hop_dir}/result.json" ]]; then
+              rs="$(osu_json_get "${hop_dir}/result.json" status 2>/dev/null || true)"
+              if [[ "$rs" == "REBOOT_REQUIRED" ]]; then
+                osu_backup_false_reboot_result || true
+              fi
+            fi
+            if [[ "${ST_LAST_STEP:-}" == "current_release_updated" ]]; then
+              ST_LAST_STEP="current_release_updated"
+              ST_NEXT_ACTION="RUN_RELEASE_UPGRADE"
+            else
+              ST_LAST_STEP="before_release_upgrade"
+              ST_NEXT_ACTION="RUN_OS_UPGRADE"
+            fi
+            ST_NEW_PREFLIGHT_REQUIRED=true
+            ST_HOPS_THIS_RUN=0
+            osu_transition_state RESUME_REQUIRED "demote_false_reboot_not_started" || {
+              osu_set_blocked "cannot_demote_false_reboot_state" false
+              return 1
+            }
+            osu_log ERROR "false REBOOT demoted to RESUME_REQUIRED — run recover-not-started or resume --preflight (refusing blind dro)"
+            return 1
+          else
+            # Unclear-but-classified-resume: park in release-upgrade-starting for mid-hop review
+            osu_transition_state HOP_RELEASE_UPGRADE_STARTING "demote_false_reboot_resume" || {
+              osu_set_blocked "cannot_demote_false_reboot_state" false
+              return 1
+            }
+          fi
+          osu_write_state_json "$(osu_build_state_json)" || true
+          runner_resume_mid_hop
+          return $?
+          ;;
+        REBOOT_REQUIRED|CONTINUE_POST_UPGRADE_REBOOT)
+          ;;
+        *)
+          osu_set_blocked "unexpected_reboot_classification:${classification}" false
+          return 1
+          ;;
+      esac
+
+      if [[ "$evidence" != "SUCCESS" ]]; then
+        osu_set_blocked "reboot_refused_without_success_evidence:${evidence}" false
+        return 1
+      fi
+
       if [[ -n "${ST_BOOT_ID:-}" && "$cur_boot" == "$ST_BOOT_ID" && "$OSU_TEST_MODE" -eq 0 ]]; then
-        osu_log WARN "boot_id unchanged after REBOOT_REQUESTED — waiting for real reboot"
+        # Same boot: reboot never happened (e.g. prior auth bug) or still pending.
+        # Do not re-run do-release-upgrade; re-request reboot only with success evidence.
+        if [[ -n "${ST_TARGET_OS:-}" && "$cur" == "$ST_TARGET_OS" ]]; then
+          osu_log WARN "boot_id unchanged but OS already at ${cur} — re-requesting reboot"
+          if [[ "$ST_STATE" == "REBOOT_REQUESTED" ]]; then
+            osu_transition_state REBOOT_REQUIRED "reboot_requeue" || return 1
+          fi
+          osu_request_reboot || return 1
+          exit "$EXIT_RESUME_REQUIRED"
+        fi
+        osu_log WARN "boot_id unchanged after REBOOT_REQUESTED — waiting for real reboot (no dro re-run)"
         exit "$EXIT_RESUME_REQUIRED"
+      fi
+      if [[ "$ST_STATE" == "REBOOT_REQUIRED" && "$OSU_TEST_MODE" -eq 0 ]]; then
+        osu_request_reboot || return 1
+        exit "$EXIT_RESUME_REQUIRED"
+      fi
+      if [[ "$ST_STATE" == "REBOOT_REQUIRED" ]]; then
+        osu_request_reboot || return 1
+      fi
+      # Post-reboot path: OS must already reflect hop target
+      if [[ -n "${ST_TARGET_OS:-}" && "$cur" != "$ST_TARGET_OS" ]]; then
+        osu_set_blocked "post_reboot_os_still_${cur}_expected_${ST_TARGET_OS}" false
+        return 1
       fi
       osu_transition_state RESUMED "boot_resumed" || return 1
       osu_transition_state HOP_VALIDATING "validating_after_reboot" || return 1
       if ! osu_post_hop_validate "$ST_TARGET_OS" "$ST_TARGET_CODENAME"; then
-        # If still on old OS, do not re-run upgrade blindly
-        local cur
         cur="$(osu_current_os_version)"
         if [[ "$cur" == "$ST_CURRENT_OS" ]]; then
           osu_set_blocked "reboot_incomplete_still_on_${cur}" false
@@ -340,6 +511,137 @@ EOF
       ;;
   esac
   return 0
+}
+
+runner_resume_mid_hop() {
+  local classification evidence target_state hop_dir
+  # Same resolver as hop dispatch / transition target mapping
+  classification="$(osu_resolve_resume_stage)"
+  evidence="$(osu_hop_release_upgrade_evidence)"
+  target_state="$(osu_resume_stage_target_state "$classification")"
+  osu_log INFO "mid-hop classification=${classification} evidence=${evidence} state=${ST_STATE} os=$(osu_current_os_version) target_state=${target_state:-none}"
+  case "$classification" in
+    REBOOT_REQUIRED|CONTINUE_POST_UPGRADE_REBOOT)
+      if [[ "$evidence" != "SUCCESS" ]]; then
+        local cur
+        cur="$(osu_current_os_version)"
+        if [[ -n "${ST_TARGET_OS:-}" && "$cur" == "$ST_TARGET_OS" ]]; then
+          :
+        else
+          osu_set_blocked "classified_reboot_without_success_evidence:${evidence}" false
+          return 1
+        fi
+      fi
+      if [[ "$ST_STATE" != "REBOOT_REQUIRED" && "$ST_STATE" != "REBOOT_REQUESTED" ]]; then
+        osu_transition_state REBOOT_REQUIRED "classified_reboot_required" || {
+          osu_set_blocked "cannot_transition_to_reboot_required" false
+          return 1
+        }
+      fi
+      hop_dir="$(runner_setup_hop_dirs "$ST_CURRENT_HOP" "$ST_CURRENT_CODENAME" "$ST_TARGET_CODENAME")"
+      if [[ ! -f "${hop_dir}/result.json" ]]; then
+        cat >"${hop_dir}/result.json" <<EOF
+{"status":"REBOOT_REQUIRED","from":"${ST_CURRENT_OS}","to":"${ST_TARGET_OS}","classified":true}
+EOF
+      fi
+      osu_request_reboot || return 1
+      if [[ "$OSU_TEST_MODE" -eq 1 ]]; then
+        return 0
+      fi
+      exit "$EXIT_RESUME_REQUIRED"
+      ;;
+    VALIDATE)
+      osu_transition_state HOP_VALIDATING "classified_validate" || true
+      if osu_post_hop_validate "$ST_TARGET_OS" "$ST_TARGET_CODENAME"; then
+        hop_dir="$(runner_setup_hop_dirs "$ST_CURRENT_HOP" "$ST_CURRENT_CODENAME" "$ST_TARGET_CODENAME")"
+        runner_snapshot_after "$hop_dir"
+        ST_CURRENT_OS="$ST_TARGET_OS"
+        ST_CURRENT_CODENAME="$ST_TARGET_CODENAME"
+        osu_transition_state HOP_COMPLETED "hop_completed"
+        return 0
+      fi
+      osu_set_blocked "post_upgrade_validation_failed" false
+      return 1
+      ;;
+    CONTINUE_RELEASE_UPGRADE)
+      hop_dir="$(runner_setup_hop_dirs "$ST_CURRENT_HOP" "$ST_CURRENT_CODENAME" "$ST_TARGET_CODENAME")"
+      OSU_CURRENT_HOP_DIR="$hop_dir"
+      ST_ATTEMPT=$(( ${ST_ATTEMPT:-0} + 1 ))
+      runner_write_hop_plan "$hop_dir" "$ST_CURRENT_OS" "$ST_CURRENT_CODENAME" "$ST_TARGET_OS" "$ST_TARGET_CODENAME"
+      if [[ "$ST_STATE" == "HOP_PRECHECK" || "$ST_STATE" == "RESUME_REQUIRED" ]]; then
+        if [[ "$ST_STATE" == "RESUME_REQUIRED" ]]; then
+          osu_transition_state HOP_PRECHECK "resume_release_upgrade" || true
+        fi
+        # HOP_PRECHECK -> HOP_RELEASE_UPGRADE_STARTING (never HOP_SOURCE_PREPARING)
+        runner_continue_release_upgrade "$ST_CURRENT_HOP" "$hop_dir" \
+          "$ST_CURRENT_OS" "$ST_CURRENT_CODENAME" "$ST_TARGET_OS" "$ST_TARGET_CODENAME"
+        return $?
+      fi
+      runner_continue_release_upgrade "$ST_CURRENT_HOP" "$hop_dir" \
+        "$ST_CURRENT_OS" "$ST_CURRENT_CODENAME" "$ST_TARGET_OS" "$ST_TARGET_CODENAME"
+      return $?
+      ;;
+    CONTINUE_CURRENT_RELEASE_UPDATE)
+      hop_dir="$(runner_setup_hop_dirs "$ST_CURRENT_HOP" "$ST_CURRENT_CODENAME" "$ST_TARGET_CODENAME")"
+      OSU_CURRENT_HOP_DIR="$hop_dir"
+      ST_ATTEMPT=$(( ${ST_ATTEMPT:-0} + 1 ))
+      runner_write_hop_plan "$hop_dir" "$ST_CURRENT_OS" "$ST_CURRENT_CODENAME" "$ST_TARGET_OS" "$ST_TARGET_CODENAME"
+      if [[ "$ST_STATE" != "HOP_CURRENT_RELEASE_UPDATING" && "$ST_STATE" != "HOP_SOURCE_READY" ]]; then
+        if [[ "$ST_STATE" != "HOP_PRECHECK" ]]; then
+          osu_transition_state HOP_PRECHECK "resume_current_release" || true
+        fi
+      fi
+      if ! osu_live_precheck; then
+        case "${LIVE_PRECHECK_REASONS}" in
+          *apt_lock*|*ntp_unsynchronized*) osu_set_blocked "${LIVE_PRECHECK_REASONS}" true ;;
+          *) osu_set_blocked "${LIVE_PRECHECK_REASONS}" false ;;
+        esac
+        return 1
+      fi
+      runner_continue_current_release_update "$ST_CURRENT_HOP" "$hop_dir" \
+        "$ST_CURRENT_OS" "$ST_CURRENT_CODENAME" "$ST_TARGET_OS" "$ST_TARGET_CODENAME"
+      return $?
+      ;;
+    CONTINUE_SOURCE_PREPARATION)
+      runner_execute_hop "$ST_CURRENT_HOP" "$ST_CURRENT_OS" "$ST_CURRENT_CODENAME" "$ST_TARGET_OS" "$ST_TARGET_CODENAME"
+      return $?
+      ;;
+    BLOCKED_INCONSISTENT_EVIDENCE)
+      osu_set_blocked "inconsistent_resume_evidence" false
+      return 1
+      ;;
+    RESUME_REQUIRED)
+      if [[ "$evidence" == "NOT_STARTED" ]]; then
+        osu_log INFO "release upgrade not started — resolving resume stage without reboot"
+        if [[ "${ST_LAST_STEP:-}" == "current_release_updated" ]]; then
+          hop_dir="$(runner_setup_hop_dirs "$ST_CURRENT_HOP" "$ST_CURRENT_CODENAME" "$ST_TARGET_CODENAME")"
+          OSU_CURRENT_HOP_DIR="$hop_dir"
+          if [[ "$ST_STATE" != "HOP_PRECHECK" ]]; then
+            osu_transition_state HOP_PRECHECK "resume_not_started_release" || true
+          fi
+          runner_continue_release_upgrade "$ST_CURRENT_HOP" "$hop_dir" \
+            "$ST_CURRENT_OS" "$ST_CURRENT_CODENAME" "$ST_TARGET_OS" "$ST_TARGET_CODENAME"
+          return $?
+        fi
+        if [[ "$ST_STATE" != "HOP_PRECHECK" && "$ST_STATE" != "HOP_SOURCE_PREPARING" && "$ST_STATE" != "HOP_SOURCE_READY" && "$ST_STATE" != "HOP_CURRENT_RELEASE_UPDATING" ]]; then
+          osu_transition_state HOP_PRECHECK "resume_not_started" || true
+        fi
+        runner_execute_hop "$ST_CURRENT_HOP" "$ST_CURRENT_OS" "$ST_CURRENT_CODENAME" "$ST_TARGET_OS" "$ST_TARGET_CODENAME"
+        return $?
+      fi
+      osu_log WARN "release upgrade appears in progress/pending — not re-running do-release-upgrade"
+      osu_set_blocked "mid_hop_resume_required_manual_review" false
+      return 1
+      ;;
+    FAILED)
+      osu_set_failed "mid_hop_classification_failed"
+      return 1
+      ;;
+    *)
+      osu_set_blocked "mid_hop_requires_operator_review:${classification}" false
+      return 1
+      ;;
+  esac
 }
 
 runner_enter_checkpoint() {
@@ -404,7 +706,21 @@ runner_next_hop_or_complete() {
   to_ver="${rest%%:*}"
   to_code="${rest##*:}"
 
-  hop_num=$(( ${ST_CURRENT_HOP:-0} + 1 ))
+  # current_hop advances only after a hop completes (HOP_COMPLETED) or on first plan.
+  # Never increment when retrying/resuming an incomplete hop (e.g. HOP_PRECHECK after failure).
+  if [[ "${ST_STATE}" == "HOP_COMPLETED" || "${ST_CURRENT_HOP:-0}" -eq 0 ]]; then
+    hop_num=$(( ${ST_CURRENT_HOP:-0} + 1 ))
+  else
+    hop_num="${ST_CURRENT_HOP}"
+    osu_log INFO "reusing in-progress current_hop=${hop_num} (not incrementing before OS/boot validation)"
+    # Prefer durable hop endpoints from state when present
+    if [[ -n "${ST_CURRENT_OS:-}" && -n "${ST_TARGET_OS:-}" ]]; then
+      from_ver="$ST_CURRENT_OS"
+      from_code="${ST_CURRENT_CODENAME:-$from_code}"
+      to_ver="$ST_TARGET_OS"
+      to_code="${ST_TARGET_CODENAME:-$to_code}"
+    fi
+  fi
   if [[ "$from_ver" != "$cur" ]]; then
     osu_set_failed "lts_skip_rejected"
     exit "$EXIT_FAILED"
@@ -468,12 +784,30 @@ main() {
 
   case "$ST_STATE" in
     REBOOT_REQUESTED|REBOOT_REQUIRED)
-      runner_handle_reboot_resume || exit "$EXIT_FAILED"
+      if ! runner_handle_reboot_resume; then
+        osu_load_state_into_vars || true
+        if [[ "$ST_STATE" == "RESUME_REQUIRED" ]]; then
+          exit "$EXIT_RESUME_REQUIRED"
+        fi
+        exit "$EXIT_FAILED"
+      fi
+      osu_load_state_into_vars || true
+      # If still waiting on reboot after handle, stop; demoted hops fall through.
+      if [[ "$ST_STATE" == "REBOOT_REQUESTED" || "$ST_STATE" == "REBOOT_REQUIRED" ]]; then
+        exit "$EXIT_RESUME_REQUIRED"
+      fi
+      if [[ "$ST_STATE" == "RESUME_REQUIRED" ]]; then
+        exit "$EXIT_RESUME_REQUIRED"
+      fi
+      ;;
+    RESUME_REQUIRED)
+      osu_log ERROR "RESUME_REQUIRED — refusing runner until resume --preflight (new_preflight_required=${ST_NEW_PREFLIGHT_REQUIRED:-false})"
+      exit "$EXIT_RESUME_REQUIRED"
       ;;
   esac
 
   case "$ST_STATE" in
-    INITIALIZED|HOP_COMPLETED|RESUMED|HOP_PRECHECK|PREFLIGHT_ACCEPTED)
+    INITIALIZED|HOP_COMPLETED|RESUMED|PREFLIGHT_ACCEPTED)
       runner_next_hop_or_complete
       # Loop remaining hops in test mode
       while [[ "$(osu_current_os_version)" != "$POLICY_TARGET_OS_VERSION" ]]; do
@@ -503,12 +837,20 @@ main() {
         osu_generate_reports
       fi
       ;;
+    HOP_PRECHECK)
+      # Incomplete hop after resume --preflight: reuse current_hop (do not plan hop N+1).
+      if [[ "${ST_CURRENT_HOP:-0}" -gt 0 && -n "${ST_TARGET_OS:-}" ]]; then
+        runner_resume_mid_hop || exit "$EXIT_BLOCKED"
+      else
+        runner_next_hop_or_complete
+      fi
+      ;;
     HOP_SOURCE_PREPARING|HOP_SOURCE_READY|HOP_CURRENT_RELEASE_UPDATING|HOP_RELEASE_UPGRADE_STARTING|HOP_RELEASE_UPGRADE_RUNNING|HOP_VALIDATING)
-      # Resume mid-hop carefully — re-enter execute with current hop targets
+      # Resume mid-hop carefully — never blindly re-run do-release-upgrade
       if [[ -z "${ST_TARGET_OS:-}" ]]; then
         runner_next_hop_or_complete
       else
-        runner_execute_hop "$ST_CURRENT_HOP" "$ST_CURRENT_OS" "$ST_CURRENT_CODENAME" "$ST_TARGET_OS" "$ST_TARGET_CODENAME"
+        runner_resume_mid_hop || exit "$EXIT_BLOCKED"
       fi
       ;;
     *)

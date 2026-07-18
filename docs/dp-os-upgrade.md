@@ -100,7 +100,10 @@ Or all-at-once (all three required):
 --acknowledge-all-warnings "I_ACCEPT_ALL_PREFLIGHT_WARNINGS"
 ```
 
-Acceptances are stored under `/opt/aelladata/os-upgrade/operator-approval.json`.
+Acceptances and durable execute authorization are stored under
+`/opt/aelladata/os-upgrade/operator-approval.json` (checksummed). Install also
+records `execute_authorized` in `state.json`. Runners/reboot ignore a one-shot
+shell `OSU_EXECUTE` flag and require that durable approval.
 
 ### Freshness
 
@@ -142,15 +145,17 @@ If project-approved allowlist logic is added later, it must be tested and
 
 ## Third-party repositories
 
-Identified files under `sources.list.d` are disabled by renaming to
-`*.disabled-by-dp-os-upgrade` (originals backed up). They are **not** auto-reenabled
-after 24.04; remediation lists them for operator review.
+Identified files under `sources.list.d` are **moved** out of apt's scan path into
+`/opt/aelladata/os-upgrade/repository-backup/disabled/` with a durable manifest
+(original path, backup path, sha256, owner/mode, disabled_at, restore target).
+They are **not** left as `*.disabled-by-dp-os-upgrade` under `sources.list.d`
+(invalid apt filename extensions). They are **not** auto-reenabled after 24.04.
 
 ## State machine
 
 States include: `NEW`, `PREFLIGHT_ACCEPTED`, `INITIALIZED`, hop states
 (`HOP_PRECHECK` … `HOP_COMPLETED`), `REBOOT_REQUIRED`, `REBOOT_REQUESTED`,
-`RESUMED`, `PAUSED`, `BLOCKED`, `FAILED`, `COMPLETED`.
+`RESUME_REQUIRED`, `RESUMED`, `PAUSED`, `BLOCKED`, `FAILED`, `COMPLETED`.
 
 - Transitions only via a central allow-list.
 - `state.json` written atomically with SHA-256 sidecar.
@@ -233,6 +238,33 @@ sudo ./scripts/dp-os-upgrade-only.sh archive-orphaned-state \
 ```
 
 This moves the directory to `/opt/aelladata/os-upgrade.orphaned-<UTC timestamp>` (never deletes).
+
+Safe recovery helpers (run `diagnose` first; it prints `recommended_action`):
+
+| Action | When |
+|--------|------|
+| `recover-lock` | `lock_class=STALE` (never clears a live flock/pid holder or active apt/dro) |
+| `recover-not-started` | Sticky `REBOOT_*` / false `result.json=REBOOT_REQUIRED` while `do-release-upgrade` is `SKIPPED` / never started (`release_upgrade_evidence=NOT_STARTED`). Backs up state/result, records `FALSE_REBOOT_REQUIRED_DEMOTED`, sets `RESUME_REQUIRED` + `new_preflight_required=true`. Does **not** run apt, `do-release-upgrade`, or reboot. |
+| `recover-current-release-update` | Current-release `dist-upgrade` finished (dpkg audit clean, `apt-get check`/`-s dist-upgrade` OK, stdout unpack/setup evidence) but wrapper timed out / state `FAILED`. Sets `RESUME_REQUIRED`, `last_successful_step=current_release_updated`, `current_hop=1`. Does **not** re-run apt install / dro / reboot. |
+| `recover-resume-dispatch` | Stuck at `HOP_PRECHECK` after an illegal resume dispatch while `last_successful_step=current_release_updated`, hop=1, dro `NOT_STARTED`, lock `FREE`, and no destructive commands after the illegal transition. Backs up state, emits `RESUME_DISPATCH_RECOVERED`, restores `RESUME_REQUIRED` + `next_action=RUN_RELEASE_UPGRADE` + `new_preflight_required=true`. Does **not** run apt, `do-release-upgrade`, or reboot. |
+| `resume` | After recovery, or mid-hop continue; when `new_preflight_required=true` use `resume --preflight <new.tar.gz> --execute ...` |
+
+Resume stage resolver (`osu_resolve_resume_stage`, shared by runner + transitions) uses
+`current_state`, `last_successful_step`, `next_action`, hop/OS, `release_upgrade_evidence`,
+recovery evidence, and the latest hop command journal. `NOT_STARTED` means only that
+`do-release-upgrade` has not started — never that the whole hop is incomplete.
+
+| Stage | Meaning |
+|-------|---------|
+| `CONTINUE_SOURCE_PREPARATION` | Fresh / early hop — repository prep still required (`HOP_PRECHECK` → `HOP_SOURCE_PREPARING`) |
+| `CONTINUE_CURRENT_RELEASE_UPDATE` | Source prep done; current-release apt update not complete |
+| `CONTINUE_RELEASE_UPGRADE` | `last_successful_step=current_release_updated` + dro `NOT_STARTED` → `HOP_PRECHECK` → `HOP_RELEASE_UPGRADE_STARTING` (upgrader-core + dro only; no apt update/dist-upgrade/repo disable) |
+| `CONTINUE_POST_UPGRADE_REBOOT` | Release upgrade success evidence present |
+| `BLOCKED_INCONSISTENT_EVIDENCE` | State fields conflict with command evidence — fail closed, do not rewind |
+| `request-reboot` | Only when `release_upgrade_evidence=SUCCESS` (OS at target, or `COMPLETED`/`SUCCESS` dro with `return_code=0` plus real dist-upgrade execution logs). `SKIPPED` + `rc=0` is never success. `result.json` alone never authorizes reboot. |
+| operator intervention | `BLOCKED` / `FAILED` / live foreign lock |
+
+`resume` validates under a short-lived lock then releases before invoking the runner (avoids CLI/runner self-deadlock on `/run/lock/dp-os-upgrade.lock`). Sticky `REBOOT_REQUESTED` while still on the hop source OS without success evidence does **not** authorize reboot. Command status `SKIPPED` means not executed (simulation/no-execute), even when `return_code=0`. Empty or stale `/var/log/dist-upgrade` directories (missing/outdated `main.log`/`apt.log`/`term.log`) are not execution evidence.
 
 ## Lab E2E
 

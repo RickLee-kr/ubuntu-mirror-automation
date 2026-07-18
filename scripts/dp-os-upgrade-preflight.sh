@@ -880,8 +880,11 @@ resolve_upgrade_path() {
   local cmp_target
   cmp_target="$(pf_compare_versions "$DP_VERSION_NORM" "$POLICY_TARGET_DP_VERSION")"
 
-  local hops_txt
-  hops_txt="$(IFS=,; echo "${hops[*]-}")"
+  local hops_txt=""
+  # Bash 4.3 + set -u: empty "${hops[*]}" is unbound; length-guard before expand.
+  if ((${#hops[@]} > 0)); then
+    hops_txt="$(IFS=','; printf '%s' "${hops[*]}")"
+  fi
   PHASE1_HOPS_CSV="$hops_txt"
   if [[ ${#hops[@]} -gt 0 ]]; then
     NEXT_HOP="${hops[0]}"

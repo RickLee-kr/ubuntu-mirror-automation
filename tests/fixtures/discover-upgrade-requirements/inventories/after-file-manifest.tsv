@@ -1,0 +1,5 @@
+path	type	size	owner	group	mode	mtime	sha256	hash_skip_reason	file_origin
+/etc/hostname	file	6	root	root	644	1000	abc123		package_owned
+/etc/custom.conf	file	12	root	root	644	2000	def789		custom
+/usr/local/bin/tool	file	20	root	root	755	1000	aaa111		custom
+/etc/new.conf	file	5	root	root	644	3000	eee000		custom
