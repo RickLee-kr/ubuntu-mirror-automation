@@ -42,7 +42,7 @@ Commands:
   sync [start|stop|status|pause|resume]
   logs [--lines N|--no-follow|--progress|--raw]
   cleanup             Run apt-mirror clean.sh
-  nginx [status|test|reload|restart|recover]
+  nginx [status|test|reload|restart|migrate|recover]
   timer [status|start|stop|enable|disable]
   client [setup|validate]
   restart             Reload systemd + restart nginx
@@ -95,6 +95,19 @@ dashboard_bin() {
   printf '%s\n' "$dash"
 }
 
+cmd_status_selective_hops() {
+  local root hops_dir hop
+  root="${SELECTIVE_MIRROR_ROOT:-${BASE_PATH}/selective}"
+  hops_dir="${root}/published/hops"
+  [[ -d "$hops_dir" ]] || hops_dir="${root}/current/hops"
+  [[ -d "$hops_dir" ]] || return 0
+  echo "Hop repositories:"
+  for hop in "$hops_dir"/*; do
+    [[ -d "$hop" ]] || continue
+    printf -- '- /hops/%s/ubuntu\n' "$(basename "$hop")"
+  done
+}
+
 cmd_status() {
   local full=0
   local a
@@ -103,8 +116,9 @@ cmd_status() {
   done
 
   UM_QUIET_LOAD=1
+  um_evaluate_selective_ready 2>/dev/null || true
   um_detect_sync_health
-  local state nginx_state disk_line timer_line sync_line
+  local state nginx_state timer_line
   state="${UM_LIFECYCLE_STATE}"
 
   if systemctl is-active --quiet nginx 2>/dev/null; then
@@ -113,61 +127,71 @@ cmd_status() {
     nginx_state="Down"
   fi
 
-  if [[ -d "$BASE_PATH" ]]; then
-    local pct avail_kib avail_gib
-    pct="$(um_disk_usage_percent "$BASE_PATH" || echo "?")"
-    avail_kib="$(df -Pk "$BASE_PATH" 2>/dev/null | awk 'NR==2 {print $4}')"
-    avail_gib=$(( ${avail_kib:-0} / 1024 / 1024 ))
-    disk_line="${pct}% used, ${avail_gib} GiB free"
-  else
-    disk_line="path missing"
-  fi
-
-  case "$state" in
-    SYNC_RUNNING) sync_line="Running — ${UM_HEALTH_REASON}" ;;
-    SYNC_WAITING) sync_line="Waiting — ${UM_HEALTH_REASON}" ;;
-    SYNC_STALLED) sync_line="Stalled — ${UM_HEALTH_REASON}" ;;
-    SYNC_COMPLETE) sync_line="Complete (finalize pending)" ;;
-    SYNC_FAILED) sync_line="Failed — ${UM_HEALTH_REASON}" ;;
-    FINALIZING) sync_line="Finalizing" ;;
-    PAUSED) sync_line="Paused" ;;
-    READY) sync_line="Complete" ;;
-    STARTING) sync_line="Starting" ;;
-    INSTALLED) sync_line="Not started / pending" ;;
-    *) sync_line="$state" ;;
-  esac
-
   if systemctl is-enabled --quiet apt-mirror.timer 2>/dev/null; then
-    timer_line="Enabled"
+    timer_line="Enabled (legacy; selective does not use daily full sync)"
   else
-    timer_line="Disabled until initial sync completes"
+    timer_line="Disabled (selective profile)"
   fi
 
   local install_line="OK"
   um_is_installed || install_line="Incomplete"
 
-  local log_age mirror_bytes pkgs
-  log_age="$(um_seconds_since_log_activity)"
+  local selective_root="${SELECTIVE_MIRROR_ROOT:-${BASE_PATH}/selective}"
+  local nginx_root="${SELECTIVE_NGINX_ROOT:-${selective_root}/current}"
+  local mirror_bytes pkgs
   mirror_bytes="$(um_mirror_size_bytes_cached)"
   pkgs="$(um_package_count_cached)"
 
+  local ready_line="NO"
+  [[ "${UM_SELECTIVE_READY:-0}" == "1" ]] && ready_line="YES"
+  local verified_line="${UM_SELECTIVE_VERIFIED_FILES:-?}"
+  if [[ -n "${UM_SELECTIVE_EXPECTED_FILES:-}" ]]; then
+    verified_line="${UM_SELECTIVE_VERIFIED_FILES:-?} / ${UM_SELECTIVE_EXPECTED_FILES}"
+  fi
+  local current_tgt="${UM_SELECTIVE_CURRENT_TARGET:-}"
+  [[ -n "$current_tgt" ]] || current_tgt="$(readlink -f "${selective_root}/current" 2>/dev/null || echo missing)"
+
   cat <<EOF
+Profile: offline-upgrade-selective
 Installation: ${install_line}
 State: ${state}
 Health: ${UM_HEALTH_STATE}
 Reason: ${UM_HEALTH_REASON}
+Selective root: ${selective_root}
+Materialize: ${UM_SELECTIVE_MATERIALIZE:-NOT_RUN}
+Downloaded: ${UM_SELECTIVE_DOWNLOADED:--}
+Existing verified: ${UM_SELECTIVE_EXISTS:--}
+Expected .deb: ${UM_SELECTIVE_EXPECTED_DEB:-${pkgs}}
+Verified files: ${verified_line}
+Unresolved: ${UM_SELECTIVE_UNRESOLVED:--}
+Checksum failures: ${UM_SELECTIVE_CHECKSUM_FAILS:--}
+Pre-publish verify: ${UM_SELECTIVE_VERIFY:-NOT_RUN}
+Publish: ${UM_SELECTIVE_PUBLISH:-NOT_RUN}
+Post-publish HTTP: ${UM_SELECTIVE_POST_HTTP:-NOT_RUN}
 Nginx: ${nginx_state}
-Mirror disk: ${disk_line}
+Nginx root: ${nginx_root}
+Nginx config: ${UM_SELECTIVE_NGINX_CONFIG:--}
+Nginx HTTP: ${UM_SELECTIVE_NGINX_HTTP:--}
+Current target: ${current_tgt}
+READY: ${ready_line}
 Mirror size: $(um_format_bytes "${mirror_bytes:-0}")
 Packages: ${pkgs} .deb files
-Initial sync: ${sync_line}
-Last log activity: ${log_age}s ago
 Timer: ${timer_line}
-Mirror URL: ${MIRROR_URL}/ubuntu
+Mirror base: ${MIRROR_URL%/}/
+EOF
+  cmd_status_selective_hops
+  cat <<EOF
 Dashboard: sudo mirrorctl watch
 EOF
 
   if [[ "$full" -eq 1 ]]; then
+    local uom="${INSTALL_BIN_DIR:-/usr/local/bin}/ubuntu-offline-mirror"
+    [[ -x "$uom" ]] || uom="/usr/local/sbin/ubuntu-offline-mirror.sh"
+    [[ -x "$uom" ]] || uom="${UM_SRC_ROOT}/scripts/ubuntu-offline-mirror.sh"
+    if [[ -x "$uom" ]] || [[ -f "$uom" ]]; then
+      echo "---- selective status ----"
+      bash "$uom" status 2>/dev/null || true
+    fi
     local bin="${INSTALL_BIN_DIR}/mirror-status"
     [[ -x "$bin" ]] || bin="${INSTALL_BIN_DIR}/mirror-status.sh"
     [[ -x "$bin" ]] || bin="${UM_SRC_ROOT}/scripts/mirror-status.sh"
@@ -211,10 +235,11 @@ cmd_validate() {
 cmd_finalize() {
   need_root
   if um_is_sync_running; then
-    um_die "Initial sync is still running — wait for completion"
+    um_die "Selective materialize is still running — wait for completion"
   fi
-  if ! um_initial_sync_complete && [[ ! -f "${DIST_ROOT}/noble/Release" ]]; then
-    um_die "Initial sync does not appear complete (no noble/Release)"
+  local selective_ready="${BASE_PATH}/selective/state/READY"
+  if [[ ! -f "$selective_ready" ]]; then
+    um_die "Selective READY missing — run verify-selective + publish-selective first"
   fi
 
   mkdir -p "$LOG_DIR"
@@ -225,37 +250,20 @@ cmd_finalize() {
   }
 
   um_mark_state "finalizing"
-  log_step "[OK] Initial synchronization completed"
-  log_step "[RUNNING] Removing superseded packages"
-  if [[ -x "$CLEAN_SCRIPT" ]]; then
-    bash "$CLEAN_SCRIPT" >>"${LOG_DIR}/cleanup.log" 2>&1 || um_warn "cleanup returned non-zero"
-    log_step "[OK] Cleanup complete"
-  else
-    log_step "[WARN] clean.sh not found yet — skipping"
-  fi
-
-  log_step "[RUNNING] Enabling daily timer"
+  log_step "[OK] Selective mirror verify/publish complete"
+  log_step "[RUNNING] Ensuring apt-mirror.timer stays disabled (selective profile)"
   systemctl daemon-reload
-  systemctl enable apt-mirror.timer
-  systemctl start apt-mirror.timer
-  log_step "[OK] Daily timer enabled"
+  systemctl disable apt-mirror.timer >/dev/null 2>&1 || true
+  systemctl stop apt-mirror.timer >/dev/null 2>&1 || true
+  log_step "[OK] Daily full-sync timer disabled"
 
   um_mark_state "initial-sync-complete"
   um_mark_state "ready"
   um_clear_marker "sync-failed"
   um_clear_marker "finalizing"
+  log_step "[OK] Mirror state READY (selective)"
 
-  local code
-  code="$(curl -sS -o /dev/null --max-time "${HTTP_TIMEOUT_SEC}" -w '%{http_code}' \
-    "${MIRROR_URL}/ubuntu/dists/noble/Release" 2>/dev/null || true)"
-  if [[ "$code" == "200" ]]; then
-    log_step "[OK] noble Release endpoint HTTP 200"
-  else
-    log_step "[WARN] noble Release endpoint HTTP ${code:-000}"
-  fi
-  log_step "[OK] Mirror state READY"
-
-  printf '\nMirror is READY.\n'
+  printf '\nSelective mirror is READY.\n'
   cmd_status
 }
 
@@ -279,21 +287,34 @@ cmd_sync() {
   case "$action" in
     start)
       need_root
+      # Never invoke legacy full apt-mirror sync under selective profile.
+      if um_evaluate_selective_ready 2>/dev/null && [[ "${UM_SELECTIVE_READY:-0}" == "1" ]]; then
+        um_ok "Selective mirror already READY — not restarting materialize"
+        um_ok "Reason: ${UM_SELECTIVE_READY_REASON}"
+        um_ok "To force rematerialize: remove READY only after an intentional republish plan"
+        cmd_status
+        return 0
+      fi
       if ! um_check_sync_capacity "$BASE_PATH" "$MIRROR_MODE"; then
         um_die "Sync blocked by disk capacity / safety reserve check" 2
       fi
       if um_is_sync_running; then
-        um_ok "Sync already running"
+        um_ok "Selective materialize already running"
       else
+        # apt-mirror.service ExecStart runs materialize-selective under selective profile.
+        if [[ -f /etc/systemd/system/apt-mirror.service ]] \
+          && ! grep -q 'materialize-selective' /etc/systemd/system/apt-mirror.service 2>/dev/null; then
+          um_die "apt-mirror.service still points at legacy sync — run: sudo ./scripts/ubuntu-offline-mirror.sh migrate-selective-runtime"
+        fi
         systemctl start --no-block apt-mirror.service
         um_mark_state "sync-started"
-        um_ok "Started apt-mirror.service (mode=${MIRROR_MODE})"
+        um_ok "Started selective materialize via apt-mirror.service"
       fi
       if [[ "$mode" == "foreground" ]]; then
         cmd_watch --foreground
       else
         cat <<EOF
-Initial synchronization started in background.
+Selective materialize started in background.
 
 Attach dashboard:
   sudo mirrorctl watch
@@ -301,18 +322,20 @@ Attach dashboard:
 Check status:
   sudo mirrorctl status
 
-Follow raw logs:
+Follow logs:
   sudo mirrorctl logs
 EOF
       fi
       ;;
     stop)
       need_root
-      systemctl stop apt-mirror.service 2>/dev/null || true
-      # Resume if paused so stop can complete
       systemctl kill -s SIGCONT apt-mirror.service 2>/dev/null || true
-      pkill -f '/usr/bin/apt-mirror' 2>/dev/null || true
-      um_ok "Stop requested (explicit). Dashboard detach does not stop sync."
+      systemctl stop apt-mirror.service 2>/dev/null || true
+      # Stop selective materialize/verify helpers (never leave orphan downloads).
+      pkill -f 'ubuntu-offline-mirror\.sh[[:space:]]+(materialize-selective|verify-selective|publish-selective)' 2>/dev/null || true
+      pkill -f 'selective_mirror\.py[[:space:]]+materialize' 2>/dev/null || true
+      pkill -f '/usr/bin/perl /usr/bin/apt-mirror' 2>/dev/null || true
+      um_ok "Stop requested for selective materialize. Dashboard detach does not stop sync."
       ;;
     pause)
       need_root
@@ -411,15 +434,25 @@ cmd_logs() {
 
   case "$which" in
     sync|"")
-      if [[ "$raw" -eq 1 ]] || [[ -f "$APT_MIRROR_LOG" ]]; then
-        if [[ ! -f "$APT_MIRROR_LOG" ]]; then
-          um_warn "No sync log yet: $APT_MIRROR_LOG"
-          return 0
-        fi
+      # Prefer selective offline-mirror log, then journal, then legacy apt-mirror.log.
+      local sel_log="${LOG_FILE:-/var/log/ubuntu-offline-mirror.log}"
+      local sel_state_log="${SELECTIVE_MIRROR_ROOT:-${BASE_PATH}/selective}/logs"
+      if [[ -d "$sel_state_log" ]]; then
+        local newest
+        newest="$(ls -1t "$sel_state_log"/*.log 2>/dev/null | head -1 || true)"
+        [[ -n "$newest" ]] && sel_log="$newest"
+      fi
+      if [[ "$raw" -eq 1 ]] && [[ -f "$APT_MIRROR_LOG" ]]; then
         if [[ "$follow" -eq 1 ]]; then
           tail -n "$lines" -f "$APT_MIRROR_LOG"
         else
           tail -n "$lines" "$APT_MIRROR_LOG"
+        fi
+      elif [[ -f "$sel_log" ]]; then
+        if [[ "$follow" -eq 1 ]]; then
+          tail -n "$lines" -f "$sel_log"
+        else
+          tail -n "$lines" "$sel_log"
         fi
       else
         if [[ "$follow" -eq 1 ]]; then
@@ -447,18 +480,41 @@ cmd_cleanup() {
 
 cmd_nginx() {
   local action="${1:-status}"
+  local site_en="/etc/nginx/sites-enabled/${NGINX_SITE_NAME:-apt-mirror}"
+  local expected="${SELECTIVE_NGINX_ROOT:-${SELECTIVE_MIRROR_ROOT:-${BASE_PATH}/selective}/current}"
   case "$action" in
-    status) systemctl status nginx --no-pager || true ;;
+    status)
+      systemctl status nginx --no-pager || true
+      if [[ -e "$site_en" ]]; then
+        echo "config: $(readlink -f "$site_en" 2>/dev/null || echo "$site_en")"
+        awk '/^[[:space:]]*root /{print; exit}' "$(readlink -f "$site_en" 2>/dev/null || echo "$site_en")" 2>/dev/null || true
+        echo "expected_selective_root: $expected"
+      fi
+      ;;
     test) nginx -t ;;
     reload) need_root; nginx -t && systemctl reload nginx && um_ok "reloaded" ;;
     restart) need_root; nginx -t && systemctl restart nginx && um_ok "restarted" ;;
+    migrate)
+      need_root
+      local uom=""
+      for uom in \
+        "${UM_PROJECT_ROOT:-}/scripts/ubuntu-offline-mirror.sh" \
+        /usr/local/sbin/ubuntu-offline-mirror.sh \
+        "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ubuntu-offline-mirror.sh"
+      do
+        [[ -x "$uom" ]] && break
+        uom=""
+      done
+      [[ -n "$uom" ]] || um_die "ubuntu-offline-mirror.sh not found"
+      bash "$uom" migrate-nginx-selective
+      ;;
     recover)
       need_root
       systemctl restart nginx
       nginx -t
       um_ok "nginx recovered"
       ;;
-    *) um_die "nginx args: status|test|reload|restart|recover" ;;
+    *) um_die "nginx args: status|test|reload|restart|migrate|recover" ;;
   esac
 }
 

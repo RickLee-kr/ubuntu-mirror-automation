@@ -21,7 +21,7 @@ DATA_FSTYPE="ext4"
 DATA_MOUNT_OPTS="defaults,noatime"
 DISK_WARN_PERCENT="80"
 DISK_CRIT_PERCENT="90"
-# Minimum free GiB warning for default (minimal) sync
+# Minimum free GiB warning for default (offline-upgrade-full) sync
 MIN_FREE_GIB="350"
 # Keep at least this percent of the filesystem free after sync
 DISK_RESERVE_PERCENT="20"
@@ -31,9 +31,9 @@ PROJECTED_SIZE_GIB_FULL="700"
 UPSTREAM_MIRROR="http://archive.ubuntu.com/ubuntu"
 DEFAULT_ARCH="amd64"
 NTHREADS="20"
-# Offline upgrade mirror defaults to full (main restricted universe multiverse).
-# Installer still accepts --minimal for smaller footprints.
-MIRROR_MODE="full"
+# Offline upgrade mirror default: selective (offline-upgrade-selective).
+# full / minimal are rejected by um_resolve_mirror_mode.
+MIRROR_MODE="selective"
 UBUNTU_VERSIONS="xenial bionic focal jammy noble"
 SUITE_SUFFIXES="updates security backports"
 INCLUDE_SOURCE="false"
@@ -54,10 +54,10 @@ APT_MIRROR_LOG="/var/log/apt-mirror.log"
 APT_MIRROR_INITIAL_LOG="/var/log/apt-mirror-initial.log"
 NGINX_ACCESS_LOG="/var/log/nginx/apt-mirror-access.log"
 NGINX_ERROR_LOG="/var/log/nginx/apt-mirror-error.log"
-INSTALL_BIN_DIR="/usr/local/bin"
-INSTALL_LIB_DIR="/usr/local/lib/ubuntu-mirror"
-INSTALL_CONF_DIR="/etc/ubuntu-mirror"
-BACKUP_DIR="/var/backups/ubuntu-mirror"
+INSTALL_BIN_DIR="${INSTALL_BIN_DIR:-/usr/local/bin}"
+INSTALL_LIB_DIR="${INSTALL_LIB_DIR:-/usr/local/lib/ubuntu-mirror}"
+INSTALL_CONF_DIR="${INSTALL_CONF_DIR:-/etc/ubuntu-mirror}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/ubuntu-mirror}"
 HTTP_TIMEOUT_SEC="10"
 HEALTH_HTTP_LATENCY_WARN_MS="500"
 HEALTH_LOG_ERROR_WARN="20"
@@ -102,6 +102,9 @@ um_load_config() {
   CLEAN_SCRIPT="${CLEAN_SCRIPT:-$VAR_PATH/clean.sh}"
   UBUNTU_MIRROR_ROOT="${UBUNTU_MIRROR_ROOT:-$MIRROR_PATH/archive.ubuntu.com/ubuntu}"
   DIST_ROOT="${DIST_ROOT:-$UBUNTU_MIRROR_ROOT/dists}"
+  # Canonical selective publish pointer (nginx root + atomic symlink target parent)
+  SELECTIVE_MIRROR_ROOT="${SELECTIVE_MIRROR_ROOT:-$BASE_PATH/selective}"
+  SELECTIVE_NGINX_ROOT="${SELECTIVE_NGINX_ROOT:-$SELECTIVE_MIRROR_ROOT/current}"
 
   # Disk capacity defaults
   DISK_RESERVE_PERCENT="${DISK_RESERVE_PERCENT:-20}"
@@ -133,47 +136,60 @@ um_load_config() {
 
 um_apply_mirror_mode_components() {
   case "${MIRROR_MODE}" in
-    full|FULL)
+    selective|SELECTIVE|offline-upgrade-selective|discovery_exact|"")
+      MIRROR_MODE="selective"
+      MIRROR_COMPONENTS="main restricted universe multiverse"
+      ;;
+    full|FULL|offline-upgrade-full)
+      # Legacy label — rejected by um_resolve_mirror_mode / upgrade-profile.
       MIRROR_MODE="full"
       MIRROR_COMPONENTS="main restricted universe multiverse"
       ;;
-    minimal|MINIMAL|"")
+    minimal|MINIMAL)
       MIRROR_MODE="minimal"
       MIRROR_COMPONENTS="main restricted"
       ;;
     *)
-      um_die "Invalid MIRROR_MODE='$MIRROR_MODE' (use full|minimal)"
+      um_die "Invalid MIRROR_MODE='$MIRROR_MODE' (supported: selective / offline-upgrade-selective)"
       ;;
   esac
 }
 
 # Resolve install/runtime mode.
-# Offline upgrade mirror defaults to full. --minimal forces reduced footprint.
-# --full explicitly selects full. Config MIRROR_MODE=full is honored without --full.
+# Supported: selective (offline-upgrade-selective). full apt-mirror and minimal are rejected.
 um_resolve_mirror_mode() {
   local want_full="${1:-0}"
   local want_minimal="${2:-0}"
+  if [[ -f "${UM_PROJECT_ROOT:-}/lib/upgrade-profile.sh" ]]; then
+    # shellcheck source=lib/upgrade-profile.sh
+    source "${UM_PROJECT_ROOT}/lib/upgrade-profile.sh"
+  fi
   if [[ "$want_minimal" == "1" ]]; then
-    MIRROR_MODE="minimal"
-  elif [[ "$want_full" == "1" ]]; then
-    MIRROR_MODE="full"
-  else
-    case "${MIRROR_MODE}" in
-      full|FULL) MIRROR_MODE="full" ;;
-      minimal|MINIMAL) MIRROR_MODE="minimal" ;;
-      *) MIRROR_MODE="full" ;;
-    esac
+    um_reject_minimal_request "UNSUPPORTED_MINIMAL_PROFILE" 2>/dev/null || true
+    um_die "UNSUPPORTED_MINIMAL_PROFILE: minimal mirrors are not supported" 2
   fi
+  if [[ "$want_full" == "1" ]]; then
+    um_reject_full_sync_request "UNSUPPORTED_FULL_MIRROR_SYNC" 2>/dev/null || true
+    um_die "UNSUPPORTED_FULL_MIRROR_SYNC: use plan-selective / materialize-selective" 2
+  fi
+  case "${MIRROR_MODE}" in
+    selective|SELECTIVE|offline-upgrade-selective|discovery_exact|"")
+      MIRROR_MODE="selective"
+      ;;
+    full|FULL|offline-upgrade-full)
+      um_reject_full_sync_request "UNSUPPORTED_FULL_MIRROR_SYNC" 2>/dev/null || true
+      um_die "UNSUPPORTED_FULL_MIRROR_SYNC: MIRROR_MODE=full is not supported" 2
+      ;;
+    minimal|MINIMAL)
+      um_reject_minimal_request "UNSUPPORTED_MINIMAL_PROFILE" 2>/dev/null || true
+      um_die "UNSUPPORTED_MINIMAL_PROFILE: MIRROR_MODE=minimal is not supported" 2
+      ;;
+    *)
+      MIRROR_MODE="selective"
+      ;;
+  esac
   um_apply_mirror_mode_components
-  # Offline upgrade mirror always mirrors backports (even if a stale /etc config omitted them)
-  if [[ "$MIRROR_MODE" == "full" ]]; then
-    SUITE_SUFFIXES="updates security backports"
-  else
-    case " ${SUITE_SUFFIXES} " in
-      *" backports "*) ;;
-      *) SUITE_SUFFIXES="${SUITE_SUFFIXES:+${SUITE_SUFFIXES} }backports" ;;
-    esac
-  fi
+  SUITE_SUFFIXES="updates security backports"
 }
 
 um_persist_mirror_mode_to_conf() {
@@ -190,6 +206,386 @@ um_persist_mirror_mode_to_conf() {
   else
     printf 'SUITE_SUFFIXES="%s"\n' "$SUITE_SUFFIXES" >>"$conf"
   fi
+}
+
+# Set or append KEY="value" in a conf file (preserves unrelated keys).
+um_conf_set_key() {
+  local conf="$1" key="$2" value="$3"
+  local tmp
+  [[ -f "$conf" ]] || return 1
+  tmp="$(mktemp "${conf}.XXXXXX")"
+  if grep -qE "^${key}=" "$conf" 2>/dev/null; then
+    # shellcheck disable=SC2001
+    sed "s|^${key}=.*|${key}=\"${value}\"|" "$conf" >"$tmp"
+  else
+    cat "$conf" >"$tmp"
+    printf '\n%s="%s"\n' "$key" "$value" >>"$tmp"
+  fi
+  chmod --reference="$conf" "$tmp" 2>/dev/null || chmod 0644 "$tmp"
+  mv -f "$tmp" "$conf"
+}
+
+# Read-modify-write: add/correct selective fields; preserve operator values.
+# Returns 0 always; prints "changed" or "unchanged" on stdout when UM_CONF_MIGRATE_VERBOSE=1.
+um_migrate_selective_runtime_config() {
+  local conf="${1:-${INSTALL_CONF_DIR}/mirror.conf}"
+  local base_path sel_root seed_root mode projected
+  local before after backup=""
+  [[ -f "$conf" ]] || return 1
+
+  # shellcheck disable=SC1090
+  before="$(um_sha256_file "$conf" 2>/dev/null || true)"
+  # Parse existing BASE_PATH without sourcing whole conf (avoids side effects).
+  base_path="$(awk -F= '/^BASE_PATH=/ {gsub(/"/,"",$2); print $2; exit}' "$conf" 2>/dev/null || true)"
+  base_path="${base_path:-${BASE_PATH:-/var/spool/apt-mirror}}"
+  sel_root="$(awk -F= '/^SELECTIVE_MIRROR_ROOT=/ {gsub(/"/,"",$2); print $2; exit}' "$conf" 2>/dev/null || true)"
+  sel_root="${sel_root:-${base_path}/selective}"
+  seed_root="$(awk -F= '/^FULL_MIRROR_SEED_ROOT=/ {gsub(/"/,"",$2); print $2; exit}' "$conf" 2>/dev/null || true)"
+  seed_root="${seed_root:-${base_path}/mirror/archive.ubuntu.com/ubuntu}"
+  projected="$(awk -F= '/^PROJECTED_SIZE_GIB_SELECTIVE=/ {gsub(/"/,"",$2); print $2; exit}' "$conf" 2>/dev/null || true)"
+  projected="${projected:-20}"
+  mode="selective"
+
+  if [[ "${UM_DRY_RUN:-0}" == "1" ]]; then
+    um_dry "Would migrate selective fields in $conf"
+    return 0
+  fi
+
+  backup="$(um_backup_file "$conf" 2>/dev/null || true)"
+  um_conf_set_key "$conf" "MIRROR_MODE" "$mode" || return 1
+  um_conf_set_key "$conf" "SELECTIVE_MIRROR_ROOT" "$sel_root" || return 1
+  um_conf_set_key "$conf" "SELECTIVE_NGINX_ROOT" "${sel_root}/current" || return 1
+  um_conf_set_key "$conf" "FULL_MIRROR_SEED_ROOT" "$seed_root" || return 1
+  um_conf_set_key "$conf" "PROJECTED_SIZE_GIB_SELECTIVE" "$projected" || return 1
+  um_conf_set_key "$conf" "SUITE_SUFFIXES" "${SUITE_SUFFIXES:-updates security backports}" || return 1
+
+  after="$(um_sha256_file "$conf" 2>/dev/null || true)"
+  if [[ -n "$before" && "$before" == "$after" && -n "$backup" ]]; then
+    # No content change — drop duplicate backup if identical
+    :
+  fi
+  MIRROR_MODE="$mode"
+  SELECTIVE_MIRROR_ROOT="$sel_root"
+  SELECTIVE_NGINX_ROOT="${sel_root}/current"
+  FULL_MIRROR_SEED_ROOT="$seed_root"
+  return 0
+}
+
+# Canonical mirrorctl path policy: /usr/local/bin/mirrorctl (file),
+# /usr/local/sbin/mirrorctl → symlink to canonical.
+um_mirrorctl_canonical_path() {
+  printf '%s\n' "${INSTALL_BIN_DIR:-/usr/local/bin}/mirrorctl"
+}
+
+um_mirrorctl_aux_path() {
+  printf '%s\n' "${UM_MIRRORCTL_AUX_PATH:-/usr/local/sbin/mirrorctl}"
+}
+
+um_uom_install_path() {
+  printf '%s\n' "${UM_UOM_INSTALL_PATH:-/usr/local/sbin/ubuntu-offline-mirror.sh}"
+}
+
+um_runtime_source_root() {
+  # Prefer git checkout recorded at install, then caller UM_PROJECT_ROOT, then sibling of this lib.
+  local repo
+  if [[ -n "${UM_PROJECT_ROOT:-}" ]] && [[ -f "${UM_PROJECT_ROOT}/scripts/mirrorctl" ]]; then
+    printf '%s\n' "$UM_PROJECT_ROOT"
+    return 0
+  fi
+  if [[ -f "${INSTALL_CONF_DIR:-/etc/ubuntu-mirror}/source-repo" ]]; then
+    repo="$(tr -d '\r\n' <"${INSTALL_CONF_DIR:-/etc/ubuntu-mirror}/source-repo" 2>/dev/null || true)"
+    if [[ -n "$repo" ]] && [[ -f "${repo}/scripts/mirrorctl" ]]; then
+      printf '%s\n' "$repo"
+      return 0
+    fi
+  fi
+  if [[ -f /usr/local/lib/ubuntu-mirror/config.sh ]]; then
+    # Installed libs alone cannot provide scripts/; require checkout.
+    :
+  fi
+  return 1
+}
+
+# Returns 0 if installed runtime differs from repository sources (drift).
+um_has_runtime_drift() {
+  local src_root canon aux conf svc
+  local src_sum dst_sum
+  src_root="$(um_runtime_source_root 2>/dev/null || true)"
+  [[ -n "$src_root" ]] || return 0  # unknown source → treat as drift to force refresh path
+
+  canon="$(um_mirrorctl_canonical_path)"
+  if [[ ! -f "$canon" ]]; then
+    return 0
+  fi
+  src_sum="$(um_sha256_file "${src_root}/scripts/mirrorctl")"
+  dst_sum="$(um_sha256_file "$canon")"
+  [[ "$src_sum" == "$dst_sum" ]] || return 0
+
+  aux="$(um_mirrorctl_aux_path)"
+  if [[ -e "$aux" ]]; then
+    if [[ ! -L "$aux" ]]; then
+      return 0
+    fi
+    if [[ "$(readlink -f "$aux" 2>/dev/null || true)" != "$(readlink -f "$canon" 2>/dev/null || true)" ]]; then
+      return 0
+    fi
+  else
+    return 0
+  fi
+
+  conf="${INSTALL_CONF_DIR:-/etc/ubuntu-mirror}/mirror.conf"
+  if [[ -f "$conf" ]]; then
+    grep -qE '^MIRROR_MODE="?selective"?' "$conf" 2>/dev/null || return 0
+    grep -qE '^SELECTIVE_MIRROR_ROOT=' "$conf" 2>/dev/null || return 0
+  else
+    return 0
+  fi
+
+  if [[ ! -f "${INSTALL_LIB_DIR:-/usr/local/lib/ubuntu-mirror}/upgrade-profile.sh" ]]; then
+    return 0
+  fi
+  if [[ ! -f "${INSTALL_LIB_DIR:-/usr/local/lib/ubuntu-mirror}/selective_mirror.py" ]]; then
+    return 0
+  fi
+  src_sum="$(um_sha256_file "${src_root}/lib/state.sh")"
+  dst_sum="$(um_sha256_file "${INSTALL_LIB_DIR:-/usr/local/lib/ubuntu-mirror}/state.sh")"
+  [[ "$src_sum" == "$dst_sum" ]] || return 0
+
+  svc="${UM_SYSTEMD_DIR:-/etc/systemd/system}/apt-mirror.service"
+  if [[ -f "$svc" ]]; then
+    grep -q 'materialize-selective' "$svc" 2>/dev/null || return 0
+  fi
+
+  return 1  # no drift
+}
+
+# Atomic install helper with explicit rollback bookkeeping.
+# UM_MIGRATE_ROLLBACK_STACK holds "dest|backup" pairs (newline-separated).
+um_migrate_atomic_install() {
+  local src="$1" dest="$2" mode="${3:-0644}"
+  local tmp dir backup=""
+  [[ -f "$src" ]] || return 1
+  dir="$(dirname "$dest")"
+  mkdir -p "$dir"
+  if [[ -e "$dest" ]]; then
+    if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
+      um_info "Unchanged: $dest"
+      return 0
+    fi
+    backup="$(um_backup_file "$dest" 2>/dev/null || true)"
+  fi
+  if [[ "${UM_DRY_RUN:-0}" == "1" ]]; then
+    um_dry "Would install $src -> $dest (mode $mode)"
+    return 0
+  fi
+  tmp="${dest}.tmp.$$"
+  if ! cp "$src" "$tmp"; then
+    um_error "Failed to stage $dest"
+    rm -f "$tmp"
+    return 1
+  fi
+  chmod "$mode" "$tmp" || { rm -f "$tmp"; return 1; }
+  chown root:root "$tmp" 2>/dev/null || true
+  if ! mv -f "$tmp" "$dest"; then
+    um_error "Failed to atomically install $dest"
+    rm -f "$tmp"
+    return 1
+  fi
+  chown root:root "$dest" 2>/dev/null || true
+  chmod "$mode" "$dest" || return 1
+  if [[ -n "$backup" ]]; then
+    UM_MIGRATE_ROLLBACK_STACK+="${dest}|${backup}"$'\n'
+  fi
+  um_ok "Installed: $dest"
+}
+
+um_migrate_rollback() {
+  local line dest backup
+  [[ -n "${UM_MIGRATE_ROLLBACK_STACK:-}" ]] || return 0
+  um_warn "Rolling back selective runtime migration..."
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    dest="${line%%|*}"
+    backup="${line#*|}"
+    if [[ -n "$dest" && -n "$backup" && -e "$backup" ]]; then
+      cp -a "$backup" "$dest"
+      um_ok "Restored: $dest"
+    fi
+  done < <(printf '%s' "$UM_MIGRATE_ROLLBACK_STACK" | tac 2>/dev/null || printf '%s' "$UM_MIGRATE_ROLLBACK_STACK")
+}
+
+# Idempotent non-destructive runtime migration:
+# updates installed mirrorctl/libs/config/systemd unit only.
+# Never touches selective staging/published/READY/current.
+um_migrate_selective_runtime() {
+  local src_root canon aux conf libdir bindir confdir systemd_dir
+  local result_json rc=0
+  local src_sum dst_sum
+
+  src_root="${1:-$(um_runtime_source_root 2>/dev/null || true)}"
+  [[ -n "$src_root" ]] || {
+    um_error "Cannot locate repository source root (scripts/mirrorctl)"
+    return 1
+  }
+  [[ -f "${src_root}/scripts/mirrorctl" ]] || {
+    um_error "mirrorctl missing in source: ${src_root}/scripts/mirrorctl"
+    return 1
+  }
+  bash -n "${src_root}/scripts/mirrorctl" || {
+    um_error "mirrorctl syntax check failed"
+    return 1
+  }
+
+  # Honour caller/env overrides (tests use a fake install root).
+  bindir="${INSTALL_BIN_DIR:-/usr/local/bin}"
+  libdir="${INSTALL_LIB_DIR:-/usr/local/lib/ubuntu-mirror}"
+  confdir="${INSTALL_CONF_DIR:-/etc/ubuntu-mirror}"
+  systemd_dir="${UM_SYSTEMD_DIR:-/etc/systemd/system}"
+  [[ -n "${BACKUP_DIR:-}" ]] || BACKUP_DIR="/var/backups/ubuntu-mirror"
+  canon="${bindir}/mirrorctl"
+  aux="$(um_mirrorctl_aux_path)"
+  conf="${confdir}/mirror.conf"
+  result_json="${BASE_PATH:-/var/spool/apt-mirror}/selective/state/runtime-migration.json"
+  # Allow test roots to redirect result json
+  if [[ -n "${UM_MIGRATE_RESULT_JSON:-}" ]]; then
+    result_json="$UM_MIGRATE_RESULT_JSON"
+  fi
+
+  UM_MIGRATE_ROLLBACK_STACK=""
+  um_ok "Source root: $src_root"
+  um_ok "Canonical mirrorctl: $canon"
+
+  # Preflight checksums
+  src_sum="$(um_sha256_file "${src_root}/scripts/mirrorctl")"
+  dst_sum="$(um_sha256_file "$canon" 2>/dev/null || true)"
+  um_info "repo mirrorctl sha256: $src_sum"
+  um_info "installed mirrorctl sha256: ${dst_sum:-missing}"
+
+  if [[ "${UM_DRY_RUN:-0}" == "1" ]]; then
+    um_dry "Would migrate selective runtime from $src_root"
+    um_has_runtime_drift && um_dry "Drift detected" || um_dry "No drift (idempotent no-op likely)"
+    return 0
+  fi
+
+  # Install tools / libs (atomic + rollback bookkeeping)
+  um_migrate_atomic_install "${src_root}/scripts/mirrorctl" "$canon" 0755 || rc=1
+  um_migrate_atomic_install "${src_root}/scripts/mirror-dashboard.sh" "${bindir}/mirror-dashboard" 0755 || rc=1
+  local uom_dest
+  uom_dest="$(um_uom_install_path)"
+  mkdir -p "$(dirname "$uom_dest")"
+  um_migrate_atomic_install "${src_root}/scripts/ubuntu-offline-mirror.sh" "$uom_dest" 0755 || rc=1
+  if [[ "${UM_DRY_RUN:-0}" != "1" ]]; then
+    ln -sfn "$uom_dest" "${bindir}/ubuntu-offline-mirror" 2>/dev/null || true
+  fi
+
+  local f
+  for f in common.sh config.sh state.sh progress.sh install-menu.sh offline.sh upgrade-profile.sh; do
+    if [[ -f "${src_root}/lib/${f}" ]]; then
+      um_migrate_atomic_install "${src_root}/lib/${f}" "${libdir}/${f}" 0644 || rc=1
+    fi
+  done
+  for f in selective_mirror.py validate_selective_mirror.py validate_upgrade_profile.py \
+           derive_upgrade_requirements.py sync_by_hash.py validate_security_compat.py \
+           sync_release_upgraders.py validate_release_upgraders.py \
+           sync_legacy_releases.py validate_legacy_releases.py; do
+    if [[ -f "${src_root}/scripts/lib/${f}" ]]; then
+      um_migrate_atomic_install "${src_root}/scripts/lib/${f}" "${libdir}/${f}" 0644 || rc=1
+    fi
+  done
+  if [[ -f "${src_root}/scripts/build-selective-mirror-plan.py" ]]; then
+    um_migrate_atomic_install "${src_root}/scripts/build-selective-mirror-plan.py" \
+      "${libdir}/build-selective-mirror-plan.py" 0644 || rc=1
+  fi
+  if [[ -f "${src_root}/config/offline-upgrade-profile.json" ]]; then
+    mkdir -p "$confdir"
+    um_migrate_atomic_install "${src_root}/config/offline-upgrade-profile.json" \
+      "${confdir}/offline-upgrade-profile.json" 0644 || rc=1
+    um_migrate_atomic_install "${src_root}/config/offline-upgrade-profile.json" \
+      "${libdir}/offline-upgrade-profile.json" 0644 || rc=1
+  fi
+  if [[ -f "${src_root}/config/offline-upgrade-exceptions.json" ]]; then
+    um_migrate_atomic_install "${src_root}/config/offline-upgrade-exceptions.json" \
+      "${confdir}/offline-upgrade-exceptions.json" 0644 || rc=1
+  fi
+
+  # Normalize symlink: sbin -> bin canonical
+  if [[ "${UM_DRY_RUN:-0}" != "1" ]]; then
+    if [[ -e "$aux" && ! -L "$aux" ]]; then
+      um_backup_file "$aux" >/dev/null || true
+      rm -f "$aux"
+    fi
+    mkdir -p "$(dirname "$aux")"
+    ln -sfn "$canon" "$aux"
+    um_ok "Symlink: $aux -> $canon"
+  fi
+
+  # Config merge (preserve operator values)
+  if [[ -f "$conf" ]]; then
+    if ! um_migrate_selective_runtime_config "$conf"; then
+      rc=1
+    else
+      um_ok "Config selective fields migrated: $conf"
+    fi
+  else
+    um_warn "No runtime config at $conf — installing from source mirror.conf"
+    um_migrate_atomic_install "${src_root}/mirror.conf" "$conf" 0644 || rc=1
+    um_migrate_selective_runtime_config "$conf" || true
+  fi
+
+  # systemd unit content only (no start / no timer enable)
+  mkdir -p "$systemd_dir"
+  local svc_tmp
+  svc_tmp="$(mktemp)"
+  um_generate_systemd_service >"$svc_tmp"
+  if [[ -f "${systemd_dir}/apt-mirror.service" ]] && cmp -s "$svc_tmp" "${systemd_dir}/apt-mirror.service"; then
+    um_info "Unchanged: ${systemd_dir}/apt-mirror.service"
+    rm -f "$svc_tmp"
+  else
+    um_migrate_atomic_install "$svc_tmp" "${systemd_dir}/apt-mirror.service" 0644 || rc=1
+    rm -f "$svc_tmp"
+  fi
+
+  # Verify installed mirrorctl checksum
+  dst_sum="$(um_sha256_file "$canon" 2>/dev/null || true)"
+  if [[ "$dst_sum" != "$src_sum" ]]; then
+    um_error "Post-install checksum mismatch for mirrorctl"
+    rc=1
+  fi
+
+  # Read-only status smoke (does not mutate selective state)
+  if [[ "$rc" -eq 0 ]] && [[ -x "$canon" ]]; then
+    if ! bash -n "$canon"; then
+      um_error "Installed mirrorctl failed bash -n"
+      rc=1
+    fi
+  fi
+
+  if [[ "$rc" -ne 0 ]]; then
+    um_migrate_rollback
+    um_error "migrate-selective-runtime FAILED (rollback applied)"
+    return 1
+  fi
+
+  mkdir -p "$(dirname "$result_json")" 2>/dev/null || true
+  cat >"$result_json" <<EOF
+{
+  "migration": "selective-runtime",
+  "result": "PASS",
+  "source_root": "$(printf '%s' "$src_root" | sed 's/"/\\"/g')",
+  "canonical_mirrorctl": "$canon",
+  "mirrorctl_sha256": "$dst_sum",
+  "config": "$conf",
+  "generated_at": "$(date -Is)",
+  "destructive_ops": false,
+  "selective_state_touched": false
+}
+EOF
+  um_ok "migrate-selective-runtime PASS (mirrorctl=${dst_sum:0:12}…)"
+  um_ok "Result: $result_json"
+  # Record source-repo for future watch/dashboard preference
+  mkdir -p "$confdir"
+  printf '%s\n' "$src_root" >"${confdir}/source-repo"
+  return 0
 }
 
 um_upstream_host_path() {
@@ -262,10 +658,37 @@ EOF
   printf 'clean http://%s\n' "$host_path"
 }
 
+um_nginx_template_path() {
+  local candidates=(
+    "${UM_PROJECT_ROOT:-}/templates/nginx.conf"
+    "${INSTALL_LIB_DIR:-/usr/local/lib/ubuntu-mirror}/templates/nginx.conf"
+    "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)/templates/nginx.conf"
+  )
+  local p
+  for p in "${candidates[@]}"; do
+    [[ -n "$p" && -f "$p" ]] || continue
+    printf '%s\n' "$p"
+    return 0
+  done
+  return 1
+}
+
+um_selective_nginx_root() {
+  printf '%s\n' "${SELECTIVE_NGINX_ROOT:-${SELECTIVE_MIRROR_ROOT:-${BASE_PATH}/selective}/current}"
+}
+
+# Generate selective nginx site from templates/nginx.conf (SSOT).
+# Canonical document root: SELECTIVE_MIRROR_ROOT/current → published
 um_generate_nginx_conf() {
+  local tpl=""
+  local sel_root="${SELECTIVE_MIRROR_ROOT:-${BASE_PATH}/selective}"
+  local sel_current
+  sel_current="$(um_selective_nginx_root)"
   local listen_extra=""
   local default_flag=""
-  local offline_root="${BASE_PATH}/offline"
+  local server_name="${MIRROR_HOSTNAME:-_}"
+  local rendered
+
   if [[ "${NGINX_DEFAULT_SERVER}" == "true" ]]; then
     default_flag=" default_server"
   fi
@@ -273,26 +696,60 @@ um_generate_nginx_conf() {
     listen_extra="    listen [::]:${MIRROR_PORT}${default_flag};"
   fi
 
+  if tpl="$(um_nginx_template_path)"; then
+    rendered="$(sed \
+      -e "s|/var/spool/apt-mirror/selective/current|${sel_current}|g" \
+      -e "s|/var/spool/apt-mirror/selective|${sel_root}|g" \
+      -e "s|/var/spool/apt-mirror/client|${BASE_PATH}/client|g" \
+      -e "s|listen 80 default_server;|listen ${MIRROR_PORT}${default_flag};|g" \
+      -e "s|listen \\[::\\]:80 default_server;|listen [::]:${MIRROR_PORT}${default_flag};|g" \
+      -e "s|listen 80;|listen ${MIRROR_PORT};|g" \
+      -e "s|listen \\[::\\]:80;|listen [::]:${MIRROR_PORT};|g" \
+      -e "s|server_name _;|server_name ${server_name};|g" \
+      -e "s|/var/log/nginx/apt-mirror-access.log|${NGINX_ACCESS_LOG}|g" \
+      -e "s|/var/log/nginx/apt-mirror-error.log|${NGINX_ERROR_LOG}|g" \
+      "$tpl")"
+    if [[ "${NGINX_LISTEN_IPV6}" != "true" ]]; then
+      rendered="$(printf '%s\n' "$rendered" | sed -e '/listen \[::\]/d')"
+    fi
+    printf '%s\n' "$rendered"
+    return 0
+  fi
+
+  # Fallback when template is unavailable (should not happen in normal installs)
   cat <<EOF
-# Managed by ubuntu-mirror-server — offline upgrade mirror
+# Managed by ubuntu-mirror-server — selective offline upgrade mirror
 server {
     listen ${MIRROR_PORT}${default_flag};
 ${listen_extra}
 
-    server_name ${MIRROR_HOSTNAME};
+    server_name ${server_name};
 
-    root ${MIRROR_PATH};
+    root ${sel_current};
     autoindex on;
 
     location / {
         try_files \$uri \$uri/ =404;
     }
 
+    location /hops/ {
+        alias ${sel_current}/hops/;
+        autoindex on;
+    }
+
     location = /ubuntu {
         return 301 /ubuntu/;
     }
     location /ubuntu/ {
-        alias ${UBUNTU_MIRROR_ROOT}/;
+        alias ${sel_current}/ubuntu/;
+        autoindex on;
+    }
+
+    location = /ubuntu-security {
+        return 301 /ubuntu-security/;
+    }
+    location /ubuntu-security/ {
+        alias ${sel_current}/ubuntu/;
         autoindex on;
     }
 
@@ -300,7 +757,21 @@ ${listen_extra}
         return 301 /offline/;
     }
     location /offline/ {
-        alias ${offline_root}/;
+        alias ${sel_current}/shared/offline/;
+        autoindex off;
+        default_type text/plain;
+    }
+
+    location = /keys/ubuntu-mirror-selective.gpg {
+        alias ${sel_root}/keys/ubuntu-mirror-selective.gpg;
+        default_type application/pgp-keys;
+    }
+
+    location = /client {
+        return 301 /client/;
+    }
+    location /client/ {
+        alias ${BASE_PATH}/client/;
         autoindex on;
         default_type text/plain;
     }
@@ -315,16 +786,101 @@ ${listen_extra}
 EOF
 }
 
+# Idempotent migration of the managed apt-mirror site to selective canonical root.
+# Preserves site name + port 80; does not touch other nginx sites.
+# On nginx -t failure, restores the previous sites-available file.
+um_migrate_nginx_selective_site() {
+  local site_avail="/etc/nginx/sites-available/${NGINX_SITE_NAME}"
+  local site_en="/etc/nginx/sites-enabled/${NGINX_SITE_NAME}"
+  local expected_root
+  expected_root="$(um_selective_nginx_root)"
+  local ngx_tmp backup="" stamp site_new
+  local changed=0
+
+  ngx_tmp="$(mktemp)"
+  um_generate_nginx_conf >"$ngx_tmp"
+
+  if [[ "${UM_DRY_RUN:-0}" == "1" ]]; then
+    um_dry "Would migrate nginx site ${site_avail} → root ${expected_root}"
+    rm -f "$ngx_tmp"
+    return 0
+  fi
+
+  stamp="$(date +%Y%m%d%H%M%S)"
+  if [[ -f "$site_avail" ]] && cmp -s "$ngx_tmp" "$site_avail"; then
+    um_ok "nginx site already selective-canonical: $site_avail"
+  else
+    if [[ -f "$site_avail" ]]; then
+      backup="${site_avail}.bak.${stamp}"
+      cp -a "$site_avail" "$backup"
+      um_ok "nginx backup: $backup"
+    fi
+    # Atomic replace in the same directory as sites-available
+    site_new="${site_avail}.new.${stamp}"
+    cp "$ngx_tmp" "$site_new"
+    chmod 0644 "$site_new"
+    mv -f "$site_new" "$site_avail"
+    changed=1
+    um_ok "Installed selective nginx site: $site_avail (root ${expected_root})"
+  fi
+
+  ln -sfn "$site_avail" "$site_en"
+  if [[ ! -L "$site_en" ]] || [[ "$(readlink -f "$site_en")" != "$(readlink -f "$site_avail")" ]]; then
+    rm -f "$ngx_tmp"
+    um_error "sites-enabled link failed: $site_en"
+    return 1
+  fi
+  um_ok "sites-enabled: $site_en -> $(readlink -f "$site_en")"
+
+  if [[ "${NGINX_DISABLE_DEFAULT}" == "true" ]] && [[ -e /etc/nginx/sites-enabled/default ]]; then
+    rm -f /etc/nginx/sites-enabled/default
+    um_ok "Disabled nginx default site"
+    changed=1
+  fi
+
+  if ! command -v nginx >/dev/null 2>&1; then
+    rm -f "$ngx_tmp"
+    um_error "nginx binary not found"
+    return 1
+  fi
+
+  if ! nginx -t; then
+    um_error "nginx -t failed after selective site update"
+    if [[ -n "$backup" && -f "$backup" ]]; then
+      cp -a "$backup" "$site_avail"
+      um_warn "Restored previous nginx site from $backup"
+      nginx -t >/dev/null 2>&1 || true
+    fi
+    rm -f "$ngx_tmp"
+    return 1
+  fi
+  um_ok "nginx -t passed (selective root ${expected_root})"
+
+  if [[ "$changed" -eq 1 ]]; then
+    if systemctl is-active --quiet nginx 2>/dev/null; then
+      systemctl reload nginx
+      um_ok "nginx reloaded"
+    else
+      um_warn "nginx not active — config migrated; start nginx before publish-selective"
+    fi
+  fi
+
+  rm -f "$ngx_tmp"
+  return 0
+}
+
 um_generate_systemd_service() {
+  # SSOT aligned with templates/apt-mirror.service (selective materialize).
   cat <<EOF
 [Unit]
-Description=Ubuntu Offline Mirror Sync Service
+Description=Ubuntu Selective Offline Mirror Materialize Service
 After=network-online.target
 Wants=network-online.target
+Conflicts=apt-mirror-full.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/ubuntu-offline-mirror.sh sync
+ExecStart=/usr/local/sbin/ubuntu-offline-mirror.sh materialize-selective
 StandardOutput=journal
 StandardError=journal
 User=root

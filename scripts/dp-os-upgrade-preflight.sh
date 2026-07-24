@@ -728,14 +728,8 @@ check_required_evidence() {
     require_file "$need" || critical_missing+=("$need")
   done
 
-  # Critical summary fields
+  # Critical summary fields (Phase 1 OS-only: DP product version is not required)
   [[ -n "$OS_VERSION" ]] || critical_missing+=("os.version_id")
-  if [[ -z "$DP_VERSION_RAW" ]]; then
-    # Allow evidence file to supply later; still flag if file empty of versions
-    if ! grep -qE '[0-9]+\.[0-9]+' "${COLLECTION_ROOT}/dp/version-evidence.txt" 2>/dev/null; then
-      critical_missing+=("dp.version")
-    fi
-  fi
 
   if [[ ${#critical_missing[@]} -gt 0 ]]; then
     add_check REQUIRED_EVIDENCE_PRESENT integrity FAIL BLOCKER \
@@ -788,67 +782,55 @@ resolve_upgrade_path() {
       ;;
   esac
 
-  # DP version detection / support
+  # DP version: Phase 1 diagnostic only (never BLOCKER). OS hops resolve from OS alone.
   local dp_status
   dp_status="$(pf_json_get "${COLLECTION_ROOT}/summary.json" dp.version_status)"
   if [[ "$dp_status" == "conflicting" ]]; then
-    add_check DP_VERSION_DETECTED path FAIL BLOCKER \
-      "conflicting raw=${DP_VERSION_RAW}" "single consistent version" \
-      "DP version evidence conflicts; refusing to guess" \
-      "Resolve conflicting version sources and re-collect" \
-      "summary.json" "dp.version_status"
-    add_check DP_VERSION_SUPPORTED path FAIL BLOCKER \
-      "unknown" ">= ${POLICY_MIN_SUPPORTED_DP_VERSION}" \
-      "Cannot validate DP version due to conflict" \
-      "Resolve version conflict first" \
-      "summary.json" "dp.version"
-    return
-  fi
-
-  if [[ -z "$DP_VERSION_RAW" || -z "$DP_VERSION_NORM" ]]; then
-    add_check DP_VERSION_DETECTED path FAIL BLOCKER \
-      "unknown" "detectable DP version" \
-      "DP version could not be determined" \
-      "Ensure DP packages/version evidence are present and re-collect" \
-      "summary.json" "dp.version"
-    add_check DP_VERSION_SUPPORTED path FAIL BLOCKER \
-      "unknown" ">= ${POLICY_MIN_SUPPORTED_DP_VERSION}" \
-      "DP version unknown" \
-      "Provide detectable DP version evidence" \
-      "summary.json" "dp.version"
-    return
-  fi
-
-  add_check DP_VERSION_DETECTED path PASS INFO \
-    "raw=${DP_VERSION_RAW} normalized=${DP_VERSION_NORM}" "detectable version" \
-    "DP version detected and normalized" \
-    "none" "summary.json" "dp.version"
-
-  local cmp
-  cmp="$(pf_compare_versions "$DP_VERSION_NORM" "$POLICY_MIN_SUPPORTED_DP_VERSION")"
-  if [[ "$cmp" == "lt" ]]; then
-    add_check DP_VERSION_SUPPORTED path FAIL BLOCKER \
-      "$DP_VERSION_NORM" ">= ${POLICY_MIN_SUPPORTED_DP_VERSION}" \
-      "DP version is below the minimum supported start version" \
-      "Upgrade DP software to at least ${POLICY_MIN_SUPPORTED_DP_VERSION} before OS hops (out of scope for this tool)" \
-      "summary.json" "dp.version"
-    return
-  elif [[ "$cmp" == "unknown" ]]; then
-    add_check DP_VERSION_SUPPORTED path FAIL BLOCKER \
-      "$DP_VERSION_NORM" ">= ${POLICY_MIN_SUPPORTED_DP_VERSION}" \
-      "Could not compare DP version" \
-      "Inspect version evidence manually" \
-      "summary.json" "dp.version"
-    return
-  else
+    add_check DP_VERSION_DETECTED path PASS INFO \
+      "conflicting raw=${DP_VERSION_RAW}" "informational in Phase 1" \
+      "DP version evidence conflicts; ignored by Phase 1 OS-only policy (DP_VERSION_GATE=SKIPPED_PHASE1_OS_ONLY)" \
+      "none" "summary.json" "dp.version_status"
     add_check DP_VERSION_SUPPORTED path PASS INFO \
-      "$DP_VERSION_NORM" ">= ${POLICY_MIN_SUPPORTED_DP_VERSION}" \
-      "DP version meets minimum supported start" \
+      "skipped" "not gated in Phase 1" \
+      "DP_VERSION_GATE=SKIPPED_PHASE1_OS_ONLY" \
       "none" "summary.json" "dp.version"
-    SUPPORTED_START=true
+  elif [[ -z "$DP_VERSION_RAW" || -z "$DP_VERSION_NORM" ]]; then
+    add_check DP_VERSION_DETECTED path PASS INFO \
+      "unknown" "optional in Phase 1" \
+      "DP version undetermined; Phase 1 continues (DP_VERSION_GATE=SKIPPED_PHASE1_OS_ONLY)" \
+      "none" "summary.json" "dp.version"
+    add_check DP_VERSION_SUPPORTED path PASS INFO \
+      "skipped" "not gated in Phase 1" \
+      "DP_VERSION_GATE=SKIPPED_PHASE1_OS_ONLY" \
+      "none" "summary.json" "dp.version"
+  else
+    add_check DP_VERSION_DETECTED path PASS INFO \
+      "raw=${DP_VERSION_RAW} normalized=${DP_VERSION_NORM}" "detectable version" \
+      "DP version detected (informational; not a Phase 1 gate)" \
+      "none" "summary.json" "dp.version"
+    local cmp
+    cmp="$(pf_compare_versions "$DP_VERSION_NORM" "$POLICY_MIN_SUPPORTED_DP_VERSION")"
+    if [[ "$cmp" == "lt" ]]; then
+      add_check DP_VERSION_SUPPORTED path PASS INFO \
+        "$DP_VERSION_NORM" "Phase 1 does not gate on DP min version" \
+        "DP below former minimum ${POLICY_MIN_SUPPORTED_DP_VERSION}; ignored (DP_VERSION_GATE=SKIPPED_PHASE1_OS_ONLY)" \
+        "none" "summary.json" "dp.version"
+    elif [[ "$cmp" == "unknown" ]]; then
+      add_check DP_VERSION_SUPPORTED path PASS INFO \
+        "$DP_VERSION_NORM" "Phase 1 does not gate on DP version compare" \
+        "DP_VERSION_GATE=SKIPPED_PHASE1_OS_ONLY" \
+        "none" "summary.json" "dp.version"
+    else
+      add_check DP_VERSION_SUPPORTED path PASS INFO \
+        "$DP_VERSION_NORM" ">= ${POLICY_MIN_SUPPORTED_DP_VERSION}" \
+        "DP version meets former minimum (informational)" \
+        "none" "summary.json" "dp.version"
+    fi
   fi
+  # Phase 1 supported start is OS-series based, not DP product version.
+  SUPPORTED_START=true
 
-  # Phase 1 hops
+  # Phase 1 hops (OS series only)
   case "$os" in
     16.04)
       PHASE1_REQUIRED=true
@@ -934,11 +916,6 @@ resolve_upgrade_path() {
       "summary.json" "dp.version"
   fi
 }
-
-# Fix double UPGRADE_PATH_RESOLVED — use POST_OS_DP_REVALIDATION instead
-# We'll patch resolve_upgrade_path: replace the last add_check WARN with different ID.
-# Actually looking at the code I already have a problem - two add_check with same ID.
-# Let me fix in a follow-up sed. For now continue writing rest of script carefully.
 
 # ---------------------------------------------------------------------------
 # Individual check groups
@@ -1786,72 +1763,34 @@ check_ntp() {
 }
 
 check_role_cluster() {
+  # Phase 1 OS-only: topology/role is diagnostic INFO, never BLOCKER.
   case "$ROLE_CANON" in
     AIO|DL_MASTER|DA_MASTER|MASTER|WORKER)
-      add_check DP_ROLE role PASS INFO "$ROLE_CANON" "known supported role" \
-        "DP role is recognized" "none" "summary.json" "dp.role"
+      add_check DP_ROLE role PASS INFO "$ROLE_CANON" "known role (informational)" \
+        "DP role recognized; DP_TOPOLOGY_GATE=SKIPPED_PHASE1_OS_ONLY" \
+        "none" "summary.json" "dp.role"
+      ;;
+    ""|UNKNOWN|UNDETERMINED)
+      add_check DP_ROLE role PASS INFO "${ROLE_CANON:-UNDETERMINED}" "optional in Phase 1" \
+        "DP topology undetermined; ignored (DP_TOPOLOGY_GATE=SKIPPED_PHASE1_OS_ONLY)" \
+        "none" "summary.json" "dp.role"
       ;;
     *)
-      add_check DP_ROLE role FAIL BLOCKER "${ROLE_CANON}" "AIO|DL_MASTER|DA_MASTER|MASTER|WORKER" \
-        "DP role unknown" "Ensure role evidence is present and re-collect" \
-        "summary.json" "dp.role"
+      add_check DP_ROLE role PASS INFO "${ROLE_CANON}" "informational in Phase 1" \
+        "DP role '${ROLE_CANON}' recorded; not gated (DP_TOPOLOGY_GATE=SKIPPED_PHASE1_OS_ONLY)" \
+        "none" "summary.json" "dp.role"
       ;;
   esac
 
-  if [[ "$ROLE_CANON" == "AIO" ]]; then
-    add_check CLUSTER_CONFIGURATION role PASS INFO \
-      "cluster_detected=${CLUSTER_DETECTED} workers=${WORKER_IPS_CSV:-none}" \
-      "AIO may have internal cluster services" \
-      "AIO with cluster_detected=${CLUSTER_DETECTED} is acceptable (internal k8s/services possible)" \
-      "none" "summary.json" "dp.cluster_detected"
-    if [[ -z "$WORKER_IPS_CSV" ]]; then
-      add_check WORKER_CONFIGURATION role PASS INFO "[]" "empty OK for AIO" \
-        "AIO with empty worker_ips is normal" \
-        "none" "summary.json" "dp.worker_ips"
-    else
-      add_check WORKER_CONFIGURATION role WARN WARNING "$WORKER_IPS_CSV" "usually empty for AIO" \
-        "AIO has worker_ips listed; verify topology" \
-        "Confirm whether external workers must be upgraded separately" \
-        "summary.json" "dp.worker_ips"
-    fi
-  elif [[ "$ROLE_CANON" == "WORKER" ]]; then
-    add_check CLUSTER_CONFIGURATION role WARN WARNING "WORKER" "run from master for orchestration" \
-      "Preflight on a worker node; orchestration typically runs from master/AIO" \
-      "Run collector+preflight on the master/AIO unless worker-local checks are intentional" \
-      "summary.json" "dp.role"
-    add_check WORKER_CONFIGURATION role PASS INFO "worker_node" "worker" \
-      "Role is WORKER" "none" "summary.json" "dp.role"
-  else
-    # master-like
-    add_check CLUSTER_CONFIGURATION role PASS INFO \
-      "cluster_detected=${CLUSTER_DETECTED}" "master topology" \
-      "Master-like role detected" "none" "summary.json" "dp.role"
-    local evidence_workers=""
-    if [[ -f "${COLLECTION_ROOT}/dp/worker-ips.txt" ]]; then
-      evidence_workers="$(grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' "${COLLECTION_ROOT}/dp/worker-ips.txt" 2>/dev/null | paste -sd, - || true)"
-    fi
-    if [[ -z "$WORKER_IPS_CSV" && -n "$evidence_workers" ]]; then
-      add_check WORKER_CONFIGURATION role FAIL BLOCKER \
-        "summary=[] evidence=${evidence_workers}" "summary worker_ips must list known workers" \
-        "Master role has external worker evidence but summary worker_ips is empty" \
-        "Re-collect so worker_ips is populated, or fix cluster inventory" \
-        "dp/worker-ips.txt" "workers"
-    elif [[ -z "$WORKER_IPS_CSV" && "$CLUSTER_DETECTED" == "true" ]]; then
-      add_check WORKER_CONFIGURATION role WARN WARNING \
-        "empty with cluster_detected=true" "explicit worker list or documented single-node" \
-        "Master/cluster without worker_ips; treat as single-node only if that is the supported topology" \
-        "Confirm worker inventory; if workers exist, re-collect with worker IPs" \
-        "summary.json" "dp.worker_ips"
-    elif [[ -n "$WORKER_IPS_CSV" ]]; then
-      add_check WORKER_CONFIGURATION role PASS INFO "$WORKER_IPS_CSV" "worker list present" \
-        "Worker IPs present for master role" \
-        "Ensure each worker is snapshotted and upgraded as required" \
-        "summary.json" "dp.worker_ips"
-    else
-      add_check WORKER_CONFIGURATION role PASS INFO "single_node_or_no_workers" "OK if supported" \
-        "No external workers listed" "none" "summary.json" "dp.worker_ips"
-    fi
-  fi
+  add_check CLUSTER_CONFIGURATION role PASS INFO \
+    "cluster_detected=${CLUSTER_DETECTED} role=${ROLE_CANON:-UNDETERMINED} workers=${WORKER_IPS_CSV:-none}" \
+    "not gated in Phase 1" \
+    "Cluster/topology evidence is informational only for OS-only Phase 1" \
+    "none" "summary.json" "dp.cluster_detected"
+  add_check WORKER_CONFIGURATION role PASS INFO \
+    "${WORKER_IPS_CSV:-none}" "not gated in Phase 1" \
+    "Worker inventory ignored by Phase 1 OS-only policy" \
+    "none" "summary.json" "dp.worker_ips"
 }
 
 check_upgrade_state() {

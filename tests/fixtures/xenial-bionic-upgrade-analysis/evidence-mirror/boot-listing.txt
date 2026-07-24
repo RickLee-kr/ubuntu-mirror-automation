@@ -1,0 +1,2 @@
+initrd.img-4.4.0-210-generic
+vmlinuz-4.15.0-20-generic

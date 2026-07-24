@@ -266,14 +266,30 @@ render_dashboard() {
   printf '%s┌──────────────── Ubuntu Mirror Installation ────────────────┐%s\n' "$C_BOLD" "$C_RESET"
   printf '│ %-12s %-45s │\n' "Host" "${host:0:45}"
   printf '│ %-12s %-45s │\n' "Mirror URL" "${MIRROR_URL}/ubuntu"
+  local profile_label="offline-upgrade-full"
+  local profile_support="supported"
+  local overall_ready="${UM_LIFECYCLE_STATE}"
+  if [[ "${MIRROR_MODE}" == "minimal" ]]; then
+    profile_label="minimal (UNSUPPORTED)"
+    profile_support="BLOCKED"
+    overall_ready="BLOCKED"
+    hc="$(health_color FAILED 2>/dev/null || printf '%s' "$hc")"
+  fi
+  local ready_json="${BASE_PATH}/offline/readiness-validation.json"
+  if [[ -f "$ready_json" ]] && command -v python3 >/dev/null 2>&1; then
+    overall_ready="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("overall","?"))' "$ready_json" 2>/dev/null || echo "$overall_ready")"
+  fi
+  printf '│ %-12s %-45s │\n' "Profile" "${profile_label:0:45}"
   printf '│ %-12s %-45s │\n' "Mode" "${MIRROR_MODE}"
+  printf '│ %-12s %-45s │\n' "Supported" "${profile_support:0:45}"
   printf '│ %-12s %-45s │\n' "Attachment" "${DASH_ATTACH}"
   printf '│ %-12s %-45s │\n' "Phase" "Initial synchronization"
-  printf '│ %-12s %s%-45s%s │\n' "State" "$hc" "${UM_LIFECYCLE_STATE}" "$C_RESET"
+  printf '│ %-12s %s%-45s%s │\n' "State" "$hc" "${overall_ready}" "$C_RESET"
   printf '│ %-12s %-45s │\n' "Health" "${UM_HEALTH_STATE}"
   printf '│ %-12s %-45s │\n' "Elapsed" "$elapsed"
   printf '│ %-12s %-45s │\n' "Versions" "${UBUNTU_VERSIONS:0:45}"
   printf '│ %-12s %-45s │\n' "Components" "${MIRROR_COMPONENTS:0:45}"
+  printf '│ %-12s %-45s │\n' "Pockets" "base updates security backports"
   printf '├────────────────────────────────────────────────────────────┤\n'
   printf '│ %-12s %-45s │\n' "Current stage" "${stage:0:45}"
   printf '│ %-12s %-45s │\n' "Current source" "${UM_CUR_HOST:-${UPSTREAM_MIRROR##*://}}"

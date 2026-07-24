@@ -4,7 +4,7 @@
 #
 # Commands:
 #   init | before-hop | start-recording | stop-recording
-#   after-hop | finalize-hop | status | validate | restore-apt-proxy
+#   after-hop | finalize-hop | repair-hop | export-hop | status | validate | restore-apt-proxy
 #
 # Compatible with Bash 4.3+ / Ubuntu 16.04 base utilities (+ python3).
 # shellcheck disable=SC2034
@@ -33,6 +33,8 @@ Usage:
   discover-upgrade-requirements.sh stop-recording [--output-dir DIR]
   discover-upgrade-requirements.sh after-hop [--output-dir DIR]
   discover-upgrade-requirements.sh finalize-hop [--output-dir DIR]
+  discover-upgrade-requirements.sh repair-hop [--output-dir DIR]
+  discover-upgrade-requirements.sh export-hop --output-dir DIR --repo-dir DIR
   discover-upgrade-requirements.sh status [--output-dir DIR]
   discover-upgrade-requirements.sh validate [--output-dir DIR]
   discover-upgrade-requirements.sh restore-apt-proxy [--output-dir DIR]
@@ -57,6 +59,15 @@ Typical flow:
     --output-dir /opt/aelladata/test-run
   sudo ./scripts/discover-upgrade-requirements.sh finalize-hop \
     --output-dir /opt/aelladata/test-run
+
+  # Re-download unresolved URLs without re-running upgrade/after-hop:
+  sudo ./scripts/discover-upgrade-requirements.sh repair-hop \
+    --output-dir /opt/aelladata/test-run
+
+  # Export PASS manifests into the Cursor workspace (no hop name argument):
+  sudo ./scripts/discover-upgrade-requirements.sh export-hop \
+    --output-dir /opt/aelladata/test-run \
+    --repo-dir /home/aella/ubuntu-mirror-automation
 
   # Later commands may omit --output-dir only when exactly one active run exists.
   # After a crash during recording, restore APT proxy with restore-apt-proxy.
@@ -385,6 +396,64 @@ cmd_validate() {
   dur_py validate --hop-dir "$(dur_hop_dir)" --hop "$DUR_HOP" --from-os "$DUR_FROM_OS" --to-os "$DUR_TO_OS"
 }
 
+cmd_repair_hop() {
+  _parse_output_dir "$@"
+  dur_load_active_or_die
+  local hop_dir
+  hop_dir="$(dur_hop_dir)"
+  [[ -f "${hop_dir}/unresolved-packages.tsv" || -f "${hop_dir}/unresolved-files.tsv" ]] || \
+    dur_die "repair-hop requires unresolved-*.tsv (run finalize-hop or build-manifests first)"
+
+  # Do not delete or overwrite before/after/runtime evidence trees; only append
+  # recovered objects + repair-access.log and regenerate manifests.
+  dur_log INFO "repair-hop: re-downloading unresolved URLs for ${DUR_HOP}"
+  if ! dur_py repair-hop --hop-dir "$hop_dir" --hop "$DUR_HOP"; then
+    dur_die "repair-hop download/manifest rebuild failed"
+  fi
+
+  dur_log INFO "repair-hop: validating ${DUR_HOP}"
+  if ! dur_py validate --hop-dir "$hop_dir" --hop "$DUR_HOP" --from-os "$DUR_FROM_OS" --to-os "$DUR_TO_OS"; then
+    dur_log ERROR "repair-hop validation FAILED (some URLs may still be unresolved)"
+    printf 'repair-hop complete with VALIDATION FAIL\n'
+    printf '  %s\n' "${hop_dir}/validation.txt"
+    printf '  %s\n' "${hop_dir}/unresolved-packages.tsv"
+    printf '  %s\n' "${hop_dir}/unresolved-files.tsv"
+    return 1
+  fi
+  printf 'repair-hop PASS\n'
+  printf '  %s\n' "${hop_dir}/validation.txt"
+  printf '  %s\n' "${hop_dir}/evidence.json"
+  return 0
+}
+
+cmd_export_hop() {
+  local repo_dir=""
+  DUR_OUTPUT_DIR_CLI=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --output-dir) DUR_OUTPUT_DIR_CLI="${2:-}"; shift 2 ;;
+      --repo-dir) repo_dir="${2:-}"; shift 2 ;;
+      -h|--help) usage; return 0 ;;
+      *) dur_die "unknown export-hop option: $1" ;;
+    esac
+  done
+  [[ -n "${DUR_OUTPUT_DIR_CLI:-}" ]] || dur_die "export-hop requires --output-dir DIR"
+  [[ -n "${repo_dir:-}" ]] || dur_die "export-hop requires --repo-dir DIR"
+  [[ -d "$DUR_OUTPUT_DIR_CLI" ]] || dur_die "export-hop --output-dir not a directory: $DUR_OUTPUT_DIR_CLI"
+  [[ -d "$repo_dir" ]] || dur_die "export-hop --repo-dir not a directory: $repo_dir"
+
+  dur_require_python || exit 1
+  DUR_OUTPUT_DIR="$DUR_OUTPUT_DIR_CLI"
+  dur_log INFO "export-hop: output-dir=${DUR_OUTPUT_DIR} repo-dir=${repo_dir}"
+  if ! dur_py export-hop --output-dir "$DUR_OUTPUT_DIR" --repo-dir "$repo_dir"; then
+    dur_die "export-hop failed (existing workspace export left unchanged)"
+  fi
+  printf 'export-hop complete\n'
+  printf '  artifacts: %s/artifacts/upgrade-discovery\n' "$repo_dir"
+  printf '  index: %s/artifacts/upgrade-discovery/index.tsv\n' "$repo_dir"
+  return 0
+}
+
 _parse_output_dir() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -408,6 +477,8 @@ main() {
     stop-recording) cmd_stop_recording "$@" ;;
     after-hop) cmd_after_hop "$@" ;;
     finalize-hop) cmd_finalize_hop "$@" ;;
+    repair-hop) cmd_repair_hop "$@" ;;
+    export-hop) cmd_export_hop "$@" ;;
     status) cmd_status "$@" ;;
     validate) cmd_validate "$@" ;;
     restore-apt-proxy) cmd_restore_apt_proxy "$@" ;;

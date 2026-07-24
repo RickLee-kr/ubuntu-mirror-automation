@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "description": "Explicit exceptions for suite/pocket/component combinations that Ubuntu does not publish. Do not use to skip discovery-required pairs.",
+  "unpublished_pairs": []
+}

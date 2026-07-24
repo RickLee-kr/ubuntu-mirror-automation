@@ -222,8 +222,18 @@ um_disk_write_sectors() {
 }
 
 um_mirror_size_bytes_cached() {
+  local f bytes=0 ready_size
+  # Selective READY total_size is authoritative (avoid legacy progress.jsonl / full-mirror du).
+  if declare -F um_is_selective_profile >/dev/null 2>&1 && um_is_selective_profile 2>/dev/null; then
+    ready_size="$(um_ready_field total_size 2>/dev/null || true)"
+    if [[ "${ready_size:-}" =~ ^[0-9]+$ ]] && [[ "$ready_size" -gt 0 ]]; then
+      printf '%s\n' "$ready_size"
+      return
+    fi
+    um_sample_mirror_size_bytes
+    return
+  fi
   # Prefer last progress.jsonl mirror_size event; fall back to live sample.
-  local f bytes=0
   f="$(um_progress_jsonl_path)"
   if [[ -f "$f" ]] && [[ -s "$f" ]]; then
     bytes="$(awk -F'"bytes":' '
@@ -241,10 +251,31 @@ um_mirror_size_bytes_cached() {
   um_sample_mirror_size_bytes
 }
 
+um_selective_published_root() {
+  local sel cur
+  sel="${SELECTIVE_MIRROR_ROOT:-${BASE_PATH:-/var/spool/apt-mirror}/selective}"
+  cur="${sel}/current"
+  if [[ -L "$cur" ]] || [[ -d "$cur" ]]; then
+    readlink -f "$cur" 2>/dev/null || printf '%s\n' "${sel}/published"
+    return
+  fi
+  printf '%s\n' "${sel}/published"
+}
+
 um_sample_mirror_size_bytes() {
-  local root="${1:-${MIRROR_PATH:-${BASE_PATH:-/var/spool/apt-mirror}/mirror}}"
-  local base="${BASE_PATH:-/var/spool/apt-mirror}"
+  local root base
+  if declare -F um_is_selective_profile >/dev/null 2>&1 && um_is_selective_profile 2>/dev/null; then
+    root="${1:-$(um_selective_published_root)}"
+  else
+    root="${1:-${MIRROR_PATH:-${BASE_PATH:-/var/spool/apt-mirror}/mirror}}"
+  fi
+  base="${BASE_PATH:-/var/spool/apt-mirror}"
   if [[ -d "$root" ]]; then
+    # Selective: always du the published/current tree (never whole BASE_PATH mount).
+    if declare -F um_is_selective_profile >/dev/null 2>&1 && um_is_selective_profile 2>/dev/null; then
+      du -sb "$root" 2>/dev/null | awk '{print $1}'
+      return
+    fi
     # Prefer df used-bytes when BASE_PATH is a dedicated mount (avoids multi-minute du).
     if findmnt -n "$base" >/dev/null 2>&1; then
       df -PB1 "$base" 2>/dev/null | awk 'NR==2 {print $3+0; exit}'
@@ -258,10 +289,14 @@ um_sample_mirror_size_bytes() {
 
 um_package_count_cached() {
   local f count=0 ready_count
-  # Prefer offline READY (written at sync end) — avoids multi-minute find on large mirrors.
+  # Prefer READY package_count — avoids multi-minute find on large mirrors.
   ready_count="$(um_ready_field package_count 2>/dev/null || true)"
   if [[ "${ready_count:-}" =~ ^[0-9]+$ ]] && [[ "${ready_count}" -gt 0 ]]; then
     printf '%s\n' "$ready_count"
+    return
+  fi
+  if declare -F um_is_selective_profile >/dev/null 2>&1 && um_is_selective_profile 2>/dev/null; then
+    um_sample_package_count
     return
   fi
   f="$(um_progress_jsonl_path)"
@@ -282,7 +317,17 @@ um_package_count_cached() {
 }
 
 um_sample_package_count() {
-  local root="${1:-${UBUNTU_MIRROR_ROOT:-${BASE_PATH:-/var/spool/apt-mirror}/mirror/archive.ubuntu.com/ubuntu}}"
+  local root
+  if declare -F um_is_selective_profile >/dev/null 2>&1 && um_is_selective_profile 2>/dev/null; then
+    root="${1:-$(um_selective_published_root)}"
+    if [[ -d "$root" ]]; then
+      find "$root" -type f -name '*.deb' 2>/dev/null | wc -l
+      return
+    fi
+    echo 0
+    return
+  fi
+  root="${1:-${UBUNTU_MIRROR_ROOT:-${BASE_PATH:-/var/spool/apt-mirror}/mirror/archive.ubuntu.com/ubuntu}}"
   if [[ -d "$root/pool" ]]; then
     find "$root/pool" -type f -name '*.deb' 2>/dev/null | wc -l
   else
@@ -500,9 +545,26 @@ um_detect_sync_health() {
     if [[ "$process_alive" -eq 0 ]] \
       || [[ "$active_state" != "active" && "$active_state" != "activating" ]]; then
       UM_LIFECYCLE_STATE="READY"
-      UM_HEALTH_STATE="COMPLETE"
-      UM_HEALTH_REASON="Mirror state READY"
+      if declare -F um_is_selective_profile >/dev/null 2>&1 && um_is_selective_profile 2>/dev/null; then
+        UM_HEALTH_STATE="HEALTHY"
+        UM_HEALTH_REASON="${UM_SELECTIVE_READY_REASON:-Selective mirror verified and published}"
+      else
+        UM_HEALTH_STATE="COMPLETE"
+        UM_HEALTH_REASON="Mirror state READY"
+      fi
       return
+    fi
+  fi
+  # Selective profile with incomplete gates: surface precise reason (never legacy INSTALLED).
+  if declare -F um_is_selective_profile >/dev/null 2>&1 && um_is_selective_profile 2>/dev/null; then
+    if [[ "$process_alive" -eq 0 ]]; then
+      um_evaluate_selective_ready 2>/dev/null || true
+      if [[ -f "$(um_selective_ready_path 2>/dev/null || true)" ]]; then
+        UM_LIFECYCLE_STATE="SYNC_COMPLETE"
+        UM_HEALTH_STATE="WARNING"
+        UM_HEALTH_REASON="${UM_SELECTIVE_READY_REASON:-selective READY gates incomplete}"
+        return
+      fi
     fi
   fi
 

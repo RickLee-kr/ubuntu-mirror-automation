@@ -30,7 +30,7 @@ assert_contains "$list" "focal" "includes focal"
 assert_contains "$list" "jammy" "includes jammy"
 assert_contains "$list" "noble" "includes noble"
 assert_contains "$list" "set nthreads     20" "nthreads 20"
-assert_contains "$list" "main restricted universe multiverse" "full default components"
+assert_contains "$list" "main restricted universe multiverse" "selective components"
 assert_contains "$list" "xenial-backports" "includes backports"
 if printf '%s\n' "$list" | grep -Eiq '^[[:space:]]*deb-src|[[:space:]]i386[[:space:]]'; then
   echo "  FAIL: default mode must not include i386/deb-src directives"
@@ -38,18 +38,22 @@ if printf '%s\n' "$list" | grep -Eiq '^[[:space:]]*deb-src|[[:space:]]i386[[:spa
 else
   echo "  PASS: default excludes i386/deb-src directives"
 fi
-[[ "$MIRROR_MODE" == "full" ]] && echo "  PASS: MIRROR_MODE=full" || { echo "  FAIL: mode=$MIRROR_MODE"; FAIL=1; }
+[[ "$MIRROR_MODE" == "selective" ]] && echo "  PASS: MIRROR_MODE=selective" || { echo "  FAIL: mode=$MIRROR_MODE"; FAIL=1; }
 
-echo "[test] minimal mode via resolve"
-um_resolve_mirror_mode 0 1
-list_min="$(um_generate_mirror_list)"
-assert_contains "$list_min" "main restricted" "minimal components"
-if printf '%s\n' "$list_min" | grep -E '^deb ' | grep -q 'universe'; then
-  echo "  FAIL: minimal deb lines must not include universe"
-  FAIL=1
+echo "[test] minimal mode via resolve is rejected"
+set +e
+( um_resolve_mirror_mode 0 1 ) >/tmp/um-min-resolve.out 2>&1
+min_rc=$?
+set -e
+if [[ "$min_rc" -ne 0 ]]; then
+  echo "  PASS: --minimal resolve rejected (rc=$min_rc)"
 else
-  echo "  PASS: minimal deb lines exclude universe"
+  echo "  FAIL: --minimal resolve should die"
+  FAIL=1
 fi
+grep -q 'UNSUPPORTED_MINIMAL_PROFILE' /tmp/um-min-resolve.out \
+  && echo "  PASS: UNSUPPORTED_MINIMAL_PROFILE message" \
+  || { echo "  FAIL: missing UNSUPPORTED_MINIMAL_PROFILE"; FAIL=1; }
 um_load_config "${ROOT}/mirror.conf"
 
 echo "[test] full mode via config"
@@ -88,14 +92,21 @@ else
 fi
 rm -rf "$CAP_DIR"
 
-echo "[test] resolve mode defaults to full from config"
-MIRROR_MODE="full"
+echo "[test] resolve mode defaults to selective; full/minimal rejected"
+um_load_config "${ROOT}/mirror.conf"
 um_resolve_mirror_mode 0 0
-[[ "$MIRROR_MODE" == "full" ]] && echo "  PASS: config full kept" || { echo "  FAIL: $MIRROR_MODE"; FAIL=1; }
-um_resolve_mirror_mode 1 0
-[[ "$MIRROR_MODE" == "full" ]] && echo "  PASS: --full → full" || { echo "  FAIL: $MIRROR_MODE"; FAIL=1; }
-um_resolve_mirror_mode 0 1
-[[ "$MIRROR_MODE" == "minimal" ]] && echo "  PASS: --minimal → minimal" || { echo "  FAIL: $MIRROR_MODE"; FAIL=1; }
+[[ "$MIRROR_MODE" == "selective" ]] && echo "  PASS: config selective kept" || { echo "  FAIL: $MIRROR_MODE"; FAIL=1; }
+set +e
+( MIRROR_MODE=full; um_resolve_mirror_mode 0 0 ) >/tmp/um-full-resolve.out 2>&1
+full_rc=$?
+( um_resolve_mirror_mode 1 0 ) >/tmp/um-full-flag.out 2>&1
+full_flag_rc=$?
+( um_resolve_mirror_mode 0 1 ) >/tmp/um-min2.out 2>&1
+min2_rc=$?
+set -e
+[[ "$full_rc" -ne 0 ]] && echo "  PASS: MIRROR_MODE=full rejected" || { echo "  FAIL: full still accepted"; FAIL=1; }
+[[ "$full_flag_rc" -ne 0 ]] && echo "  PASS: --full → rejected" || { echo "  FAIL: --full accepted"; FAIL=1; }
+[[ "$min2_rc" -ne 0 ]] && echo "  PASS: --minimal → rejected" || { echo "  FAIL: minimal still accepted"; FAIL=1; }
 um_load_config "${ROOT}/mirror.conf"
 
 echo "[test] nginx + systemd generators"
@@ -104,9 +115,10 @@ um_load_config "${ROOT}/mirror.conf"
 ngx="$(um_generate_nginx_conf)"
 assert_contains "$ngx" "location /ubuntu/" "nginx /ubuntu/ location"
 assert_contains "$ngx" "location /offline/" "nginx /offline/ location"
-assert_contains "$ngx" "alias ${UBUNTU_MIRROR_ROOT}/" "nginx alias path"
+assert_contains "$ngx" "selective/current" "nginx selective canonical root"
+assert_contains "$ngx" "location /hops/" "nginx /hops/ location"
 svc="$(um_generate_systemd_service)"
-assert_contains "$svc" "ubuntu-offline-mirror.sh sync" "service ExecStart offline sync"
+assert_contains "$svc" "materialize-selective" "service ExecStart materialize-selective"
 tim="$(um_generate_systemd_timer)"
 assert_contains "$tim" "OnCalendar=" "timer OnCalendar"
 assert_contains "$tim" "RandomizedDelaySec=" "timer RandomizedDelaySec"

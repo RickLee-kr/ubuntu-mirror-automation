@@ -326,7 +326,9 @@ fi
 
 # Simulate upgrade traffic + package cache + logs (no real apt)
 cp "${FIXTURES}/access-logs/sample-proxy-access.log" "${HOP_DIR}/runtime/proxy-access.log"
+mkdir -p "${HOP_DIR}/runtime/deb-cache"
 cp "${FIXTURES}/debs/"*.deb "${HOP_DIR}/runtime/deb-cache/"
+python3 "${FIXTURES}/seed_complete_captures.py" "$HOP_DIR" "$FIXTURES"
 cp "${FIXTURES}/packages-index/Packages" "${HOP_DIR}/metadata/Packages"
 printf 'Start-Date: 2026-07-17\nCommandline: apt dist-upgrade\nEnd-Date: 2026-07-17\n' >>"${DUR_HOST_ROOT}/var/log/apt/history.log"
 printf 'apt term log slice\n' >>"${DUR_HOST_ROOT}/var/log/apt/term.log"
@@ -381,6 +383,9 @@ for f in required-packages.tsv required-files.tsv required-urls.tsv evidence.jso
 done
 
 grep -q 'VALIDATION: PASS' "${HOP_DIR}/validation.txt" && pass "validation PASS" || fail "validation PASS"
+grep -q 'required_packages=' "${HOP_DIR}/validation.txt" && pass "validation metrics required_packages" || fail "validation metrics required_packages"
+grep -q 'captured_http_200=' "${HOP_DIR}/validation.txt" && pass "validation metrics captured_http_200" || fail "validation metrics captured_http_200"
+grep -q 'unresolved_packages=0' "${HOP_DIR}/validation.txt" && pass "validation unresolved_packages=0" || fail "validation unresolved_packages=0"
 
 # required-packages columns
 hdr="$(head -1 "${HOP_DIR}/required-packages.tsv")"
@@ -405,12 +410,7 @@ if grep -q $'^xenial-to-bionic\textra\t' "${HOP_DIR}/required-packages.tsv"; the
   inst="$(awk -F'\t' 'NR>1 && $2=="extra" {print $16; exit}' "${HOP_DIR}/required-packages.tsv")"
   [[ "$inst" == "false" ]] && pass "downloaded but not installed preserved" || fail "downloaded but not installed flag ($inst)"
 else
-  # extra may be unresolved if no local deb — still must appear as requested/unresolved
-  if grep -q 'extra_1.0_amd64.deb' "${HOP_DIR}/unresolved-packages.tsv" || grep -q 'extra' "${HOP_DIR}/required-packages.tsv"; then
-    pass "downloaded but not installed preserved (unresolved/required)"
-  else
-    fail "extra package missing from manifests"
-  fi
+  fail "extra package missing from manifests"
 fi
 
 # zlib downloaded and installed
@@ -482,7 +482,9 @@ fi
 # Complete hop2 minimally and ensure no cross contamination
 cp "${FIXTURES}/access-logs/sample-proxy-access.log" "${HOP2}/runtime/proxy-access.log"
 # rewrite hop field expectations by using build with hop name bionic-to-focal
+mkdir -p "${HOP2}/runtime/deb-cache"
 cp "${FIXTURES}/debs/"*.deb "${HOP2}/runtime/deb-cache/"
+python3 "${FIXTURES}/seed_complete_captures.py" "$HOP2" "$FIXTURES"
 bash "$SCRIPT" stop-recording --output-dir "$OUT2" >/dev/null
 cp "${FIXTURES}/inventories/after-installed-packages.tsv" "${DUR_HOST_ROOT}/tmp/installed-packages.tsv"
 bash "$SCRIPT" after-hop --output-dir "$OUT2" >/dev/null
@@ -823,10 +825,21 @@ if grep -q 'sha256=' "${HOPL}/runtime/proxy-access.log" && \
 else
   fail "proxy-access.log has sha256 + local cached path"
 fi
-if [[ -f "${HOPL}/runtime/deb-cache/bash_4.4.18-2ubuntu1_amd64.deb" ]]; then
-  pass "downloaded .deb preserved in runtime/deb-cache"
+# URL-hash object store (not basename); APT client cache delete must not matter
+LP="$(awk '/bash_4.4.18-2ubuntu1_amd64.deb/ && /local_path=/ {
+  for(i=1;i<=NF;i++) if($i ~ /^local_path=/) { sub(/^local_path=/,"",$i); print $i; exit }
+}' "${HOPL}/runtime/proxy-access.log")"
+if [[ -n "$LP" && -f "$LP" ]]; then
+  pass "downloaded .deb preserved in URL-hash recorder store"
 else
-  fail "downloaded .deb preserved in runtime/deb-cache"
+  fail "downloaded .deb preserved in URL-hash recorder store (lp=$LP)"
+fi
+# Simulate APT deleting its own download immediately after install
+rm -f "${EMPTY_CACHE}/bash_4.4.18-2ubuntu1_amd64.deb"
+if [[ -f "$LP" ]]; then
+  pass "recorder copy survives APT cache deletion"
+else
+  fail "recorder copy survives APT cache deletion"
 fi
 bash "$SCRIPT" stop-recording --output-dir "$OUTL" >/dev/null
 kill "$ORIGIN_PID" 2>/dev/null || true
@@ -941,7 +954,9 @@ bash "$SCRIPT" before-hop --output-dir "$OUTFNL" >/dev/null
 bash "$SCRIPT" start-recording --output-dir "$OUTFNL" >/dev/null
 HOPFNL="${OUTFNL}/upgrade-discovery/xenial-to-bionic"
 cp "${FIXTURES}/access-logs/sample-proxy-access.log" "${HOPFNL}/runtime/proxy-access.log"
+mkdir -p "${HOPFNL}/runtime/deb-cache"
 cp "${FIXTURES}/debs/"*.deb "${HOPFNL}/runtime/deb-cache/"
+python3 "${FIXTURES}/seed_complete_captures.py" "$HOPFNL" "$FIXTURES"
 cp "${FIXTURES}/packages-index/Packages" "${HOPFNL}/metadata/Packages"
 bash "$SCRIPT" stop-recording --output-dir "$OUTFNL" >/dev/null
 bash "$SCRIPT" after-hop --output-dir "$OUTFNL" >/dev/null
@@ -1088,6 +1103,1140 @@ phase_fb="$(python3 -c 'import json; print(json.load(open("'"${OUTFB}/upgrade-di
 [[ "$phase_fb" != "finalized" ]] && pass "build failure does not set finalized" || fail "build failure does not set finalized (got $phase_fb)"
 # before/after evidence untouched (directory still there as we left it; installed packages intact)
 [[ -f "${HOPFB}/before/installed-packages.tsv" ]] && pass "build failure leaves before inventory" || fail "build failure leaves before inventory"
+
+# ---------------------------------------------------------------------------
+# Atomic capture / collision / redirect / 304 / self-test / unresolved FAIL / repair
+# ---------------------------------------------------------------------------
+export DUR_DRY_RECORDING=1
+CAP="${WORKDIR}/capture-cases"
+CAPHOST="${WORKDIR}/capture-host"
+mkdir -p \
+  "${CAPHOST}/etc/apt/apt.conf.d" \
+  "${CAPHOST}/etc/apt/sources.list.d" \
+  "${CAPHOST}/var/log/apt" \
+  "${CAPHOST}/var/lib/dpkg" \
+  "${CAPHOST}/usr/local" \
+  "${CAPHOST}/opt/aelladata" \
+  "${CAPHOST}/tmp"
+printf 'NAME="Ubuntu"\nVERSION_ID="18.04"\n' >"${CAPHOST}/etc/os-release"
+cp "${FIXTURES}/inventories/before-installed-packages.tsv" "${CAPHOST}/tmp/installed-packages.tsv"
+: >"${CAPHOST}/var/log/apt/history.log"
+: >"${CAPHOST}/var/log/apt/term.log"
+: >"${CAPHOST}/var/log/dpkg.log"
+export DUR_HOST_ROOT="$CAPHOST"
+bash "$SCRIPT" init --from 18.04 --to 20.04 --output-dir "$CAP" >/dev/null
+bash "$SCRIPT" before-hop --output-dir "$CAP" >/dev/null
+bash "$SCRIPT" start-recording --output-dir "$CAP" >/dev/null
+HOPCAP="${CAP}/upgrade-discovery/bionic-to-focal"
+CACHE="${HOPCAP}/runtime/deb-cache"
+mkdir -p "$CACHE"
+
+# Live mini origin for redirect + multi InRelease basename + by-hash + upgrader
+ORIGIN2="${WORKDIR}/origin2"
+mkdir -p "${ORIGIN2}/dists/a" "${ORIGIN2}/dists/b" "${ORIGIN2}/by-hash/SHA256" \
+  "${ORIGIN2}/upgrader" "${ORIGIN2}/pool"
+echo 'inrelease-a' >"${ORIGIN2}/dists/a/InRelease"
+echo 'inrelease-b' >"${ORIGIN2}/dists/b/InRelease"
+echo 'byhash' >"${ORIGIN2}/by-hash/SHA256/deadbeef"
+echo 'upgrader-tar' >"${ORIGIN2}/upgrader/focal.tar.gz"
+echo 'upgrader-gpg' >"${ORIGIN2}/upgrader/focal.tar.gz.gpg"
+cp "${FIXTURES}/debs/bash_4.4.18-2ubuntu1_amd64.deb" "${ORIGIN2}/pool/"
+# redirect target
+echo 'final-body' >"${ORIGIN2}/final.dat"
+ORIGIN2_PORT_FILE="${WORKDIR}/origin2.port"
+(
+  cd "$ORIGIN2"
+  python3 - "$ORIGIN2_PORT_FILE" <<'PY'
+from __future__ import print_function
+import sys
+from http.server import SimpleHTTPRequestHandler
+from socketserver import TCPServer
+class H(SimpleHTTPRequestHandler):
+    def log_message(self, *a):
+        return
+    def do_GET(self):
+        if self.path.startswith('/redir'):
+            self.send_response(302)
+            self.send_header('Location', '/final.dat')
+            self.end_headers()
+            return
+        if self.path.startswith('/not-modified'):
+            self.send_response(304)
+            self.end_headers()
+            return
+        return SimpleHTTPRequestHandler.do_GET(self)
+class S(TCPServer):
+    allow_reuse_address = True
+httpd = S(("127.0.0.1", 0), H)
+open(sys.argv[1], "w").write(str(httpd.server_address[1]))
+httpd.serve_forever()
+PY
+) &
+ORIGIN2_PID=$!
+ORIGIN2_PORT=""
+for _ in $(seq 1 50); do
+  [[ -s "$ORIGIN2_PORT_FILE" ]] && ORIGIN2_PORT="$(cat "$ORIGIN2_PORT_FILE")" && break
+  sleep 0.05
+done
+unset DUR_DRY_RECORDING
+DUR_PROXY_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+export DUR_PROXY_PORT
+# Restart recording with live proxy for capture tests
+bash "$SCRIPT" stop-recording --output-dir "$CAP" >/dev/null 2>&1 || true
+# New hop dir for live capture
+CAPL="${WORKDIR}/capture-live"
+export DUR_HOST_ROOT="$CAPHOST"
+bash "$SCRIPT" init --from 18.04 --to 20.04 --output-dir "$CAPL" >/dev/null
+bash "$SCRIPT" before-hop --output-dir "$CAPL" >/dev/null
+bash "$SCRIPT" start-recording --output-dir "$CAPL" >/dev/null
+HOPCL="${CAPL}/upgrade-discovery/bionic-to-focal"
+PROXY_PORT="$DUR_PROXY_PORT"
+
+fetch_via_proxy() {
+  local url="$1"
+  python3 - "$PROXY_PORT" "$url" <<'PY'
+from __future__ import print_function
+import sys
+from http.client import HTTPConnection
+port, url = sys.argv[1], sys.argv[2]
+conn = HTTPConnection("127.0.0.1", int(port), timeout=30)
+conn.request("GET", url)
+resp = conn.getresponse()
+data = resp.read()
+conn.close()
+print(resp.status, len(data))
+PY
+}
+
+BASE="http://127.0.0.1:${ORIGIN2_PORT}"
+fetch_via_proxy "${BASE}/dists/a/InRelease" >/dev/null
+fetch_via_proxy "${BASE}/dists/b/InRelease" >/dev/null
+fetch_via_proxy "${BASE}/by-hash/SHA256/deadbeef" >/dev/null
+fetch_via_proxy "${BASE}/upgrader/focal.tar.gz" >/dev/null
+fetch_via_proxy "${BASE}/upgrader/focal.tar.gz.gpg" >/dev/null
+fetch_via_proxy "${BASE}/pool/bash_4.4.18-2ubuntu1_amd64.deb" >/dev/null
+fetch_via_proxy "${BASE}/redir" >/dev/null
+fetch_via_proxy "${BASE}/not-modified" >/dev/null
+
+LOGCL="${HOPCL}/runtime/proxy-access.log"
+# basename collision: two InRelease URLs -> distinct local_path
+lp_a="$(awk -v u="${BASE}/dists/a/InRelease" '$0 ~ u && /local_path=/ {
+  for(i=1;i<=NF;i++) if($i ~ /^local_path=/){sub(/^local_path=/,"",$i); print $i; exit}}' "$LOGCL")"
+lp_b="$(awk -v u="${BASE}/dists/b/InRelease" '$0 ~ u && /local_path=/ {
+  for(i=1;i<=NF;i++) if($i ~ /^local_path=/){sub(/^local_path=/,"",$i); print $i; exit}}' "$LOGCL")"
+if [[ -n "$lp_a" && -n "$lp_b" && "$lp_a" != "$lp_b" && -f "$lp_a" && -f "$lp_b" ]]; then
+  pass "identical basename InRelease URLs do not collide"
+else
+  fail "identical basename InRelease URLs do not collide (a=$lp_a b=$lp_b)"
+fi
+grep -q 'by-hash/SHA256/deadbeef' "$LOGCL" && grep -q 'local_path=' <<<"$(grep 'by-hash' "$LOGCL")" \
+  && pass "by-hash response captured" || fail "by-hash response captured"
+grep -q 'focal.tar.gz' "$LOGCL" && grep -q 'focal.tar.gz.gpg' "$LOGCL" \
+  && pass "release upgrader tar/gpg captured" || fail "release upgrader tar/gpg captured"
+if grep -q 'redirects=' "$LOGCL" && grep -q 'final=' <<<"$(grep '/redir' "$LOGCL")" && \
+   grep -q 'local_path=' <<<"$(grep '/redir' "$LOGCL")"; then
+  pass "redirect preserves final body"
+else
+  fail "redirect preserves final body"
+fi
+# 304 without prior body => unresolved after manifests
+if grep -q ' 304 ' "$LOGCL"; then
+  pass "HTTP 304 logged"
+else
+  fail "HTTP 304 logged"
+fi
+# self-test must not appear in required manifests
+bash "$SCRIPT" stop-recording --output-dir "$CAPL" >/dev/null
+cp "${FIXTURES}/inventories/before-installed-packages.tsv" "${HOPCL}/before/installed-packages.tsv"
+cp "${FIXTURES}/inventories/after-installed-packages.tsv" "${HOPCL}/after/installed-packages.tsv"
+cp "${FIXTURES}/inventories/before-file-manifest.tsv" "${HOPCL}/before/file-manifest.tsv"
+cp "${FIXTURES}/inventories/after-file-manifest.tsv" "${HOPCL}/after/file-manifest.tsv"
+echo -e 'path\thash\tpackage' >"${HOPCL}/before/conffiles.tsv"
+echo -e 'path\thash\tpackage' >"${HOPCL}/after/conffiles.tsv"
+: >"${HOPCL}/runtime/apt-history.log"
+: >"${HOPCL}/runtime/apt-term.log"
+: >"${HOPCL}/runtime/dpkg.log"
+mkdir -p "${HOPCL}/runtime/dist-upgrade"
+python3 "$PY" build-manifests --hop-dir "$HOPCL" --hop bionic-to-focal >/dev/null
+if ! grep -q 'dur-recorder-self-test\|dur-proxy-self-test' "${HOPCL}/required-urls.tsv" \
+   && ! grep -q 'dur-recorder-self-test\|dur-proxy-self-test' "${HOPCL}/required-files.tsv"; then
+  pass "self-test excluded from manifests"
+else
+  fail "self-test excluded from manifests"
+fi
+# 304 without body must be unresolved
+if grep -q 'http_304_without_stored_body\|not-modified' "${HOPCL}/unresolved-files.tsv"; then
+  pass "HTTP 304 without body => unresolved"
+else
+  fail "HTTP 304 without body => unresolved"
+  cat "${HOPCL}/unresolved-files.tsv" || true
+fi
+# unresolved => validation FAIL
+set +e
+python3 "$PY" validate --hop-dir "$HOPCL" --hop bionic-to-focal --from-os 18.04 --to-os 20.04 >/dev/null
+rc_val=$?
+set -e
+if [[ "$rc_val" -ne 0 ]] && grep -q 'VALIDATION: FAIL' "${HOPCL}/validation.txt"; then
+  pass "unresolved => validation FAIL"
+else
+  fail "unresolved => validation FAIL"
+fi
+kill "$ORIGIN2_PID" 2>/dev/null || true
+wait "$ORIGIN2_PID" 2>/dev/null || true
+
+# repair-hop recovers unresolved from a local origin
+REPAIR_OUT="${WORKDIR}/repair-out"
+export DUR_DRY_RECORDING=1
+export DUR_HOST_ROOT="$CAPHOST"
+bash "$SCRIPT" init --from 18.04 --to 20.04 --output-dir "$REPAIR_OUT" >/dev/null
+bash "$SCRIPT" before-hop --output-dir "$REPAIR_OUT" >/dev/null
+bash "$SCRIPT" start-recording --output-dir "$REPAIR_OUT" >/dev/null
+HOPR="${REPAIR_OUT}/upgrade-discovery/bionic-to-focal"
+bash "$SCRIPT" stop-recording --output-dir "$REPAIR_OUT" >/dev/null
+bash "$SCRIPT" after-hop --output-dir "$REPAIR_OUT" >/dev/null
+cp "${FIXTURES}/inventories/before-installed-packages.tsv" "${HOPR}/before/installed-packages.tsv"
+cp "${FIXTURES}/inventories/after-installed-packages.tsv" "${HOPR}/after/installed-packages.tsv"
+cp "${FIXTURES}/inventories/before-file-manifest.tsv" "${HOPR}/before/file-manifest.tsv"
+cp "${FIXTURES}/inventories/after-file-manifest.tsv" "${HOPR}/after/file-manifest.tsv"
+echo -e 'path\thash\tpackage' >"${HOPR}/before/conffiles.tsv"
+echo -e 'path\thash\tpackage' >"${HOPR}/after/conffiles.tsv"
+# Incomplete recording: one package URL without capture
+ORIGIN3="${WORKDIR}/origin3"
+mkdir -p "$ORIGIN3"
+cp "${FIXTURES}/debs/zlib1g_1.2.11.dfsg-0ubuntu2_amd64.deb" \
+  "${ORIGIN3}/zlib1g_1.2.11.dfsg-0ubuntu2_amd64.deb"
+ORIGIN3_PORT_FILE="${WORKDIR}/origin3.port"
+(
+  cd "$ORIGIN3"
+  python3 - "$ORIGIN3_PORT_FILE" <<'PY'
+from __future__ import print_function
+import sys
+from http.server import SimpleHTTPRequestHandler
+from socketserver import TCPServer
+class Q(SimpleHTTPRequestHandler):
+    def log_message(self, *a): return
+class S(TCPServer):
+    allow_reuse_address = True
+httpd = S(("127.0.0.1", 0), Q)
+open(sys.argv[1], "w").write(str(httpd.server_address[1]))
+httpd.serve_forever()
+PY
+) &
+ORIGIN3_PID=$!
+ORIGIN3_PORT=""
+for _ in $(seq 1 50); do
+  [[ -s "$ORIGIN3_PORT_FILE" ]] && ORIGIN3_PORT="$(cat "$ORIGIN3_PORT_FILE")" && break
+  sleep 0.05
+done
+ZURL="http://127.0.0.1:${ORIGIN3_PORT}/zlib1g_1.2.11.dfsg-0ubuntu2_amd64.deb"
+printf '2026-07-17T02:00:00Z GET %s 200 3000\n' "$ZURL" >"${HOPR}/runtime/proxy-access.log"
+python3 "$PY" build-manifests --hop-dir "$HOPR" --hop bionic-to-focal >/dev/null
+before_unres="$(awk 'NR>1{c++} END{print c+0}' "${HOPR}/unresolved-packages.tsv")"
+[[ "$before_unres" -ge 1 ]] && pass "repair fixture has unresolved packages" || fail "repair fixture has unresolved packages"
+# Preserve before inventory marker
+cp "${HOPR}/before/installed-packages.tsv" "${WORKDIR}/before-packages.before-repair"
+set +e
+bash "$SCRIPT" repair-hop --output-dir "$REPAIR_OUT" >"${WORKDIR}/repair.out" 2>"${WORKDIR}/repair.err"
+rc_repair=$?
+set -e
+after_unres="$(awk 'NR>1{c++} END{print c+0}' "${HOPR}/unresolved-packages.tsv")"
+if [[ "$after_unres" -lt "$before_unres" ]] && grep -q 'local_path=' "${HOPR}/runtime/repair-access.log"; then
+  pass "repair-hop recovers unresolved downloads"
+else
+  fail "repair-hop recovers unresolved downloads (before=$before_unres after=$after_unres)"
+  cat "${WORKDIR}/repair.err" || true
+fi
+if cmp -s "${WORKDIR}/before-packages.before-repair" "${HOPR}/before/installed-packages.tsv"; then
+  pass "repair-hop does not overwrite before evidence"
+else
+  fail "repair-hop does not overwrite before evidence"
+fi
+# SHA256 of repaired object matches log
+if python3 - "$HOPR" <<'PY'
+from __future__ import print_function
+import hashlib, os, sys
+hop = sys.argv[1]
+log = os.path.join(hop, "runtime", "repair-access.log")
+for line in open(log, encoding="utf-8", errors="surrogateescape"):
+    if "local_path=" not in line or "sha256=" not in line:
+        continue
+    parts = line.split()
+    sha = lp = ""
+    for p in parts:
+        if p.startswith("sha256="):
+            sha = p.split("=", 1)[1]
+        if p.startswith("local_path="):
+            lp = p.split("=", 1)[1]
+    if not lp or not os.path.isfile(lp):
+        sys.exit(2)
+    h = hashlib.sha256(open(lp, "rb").read()).hexdigest()
+    if h != sha:
+        sys.exit(3)
+    print("ok", sha)
+    sys.exit(0)
+sys.exit(4)
+PY
+then
+  pass "repair-hop SHA256 verification"
+else
+  fail "repair-hop SHA256 verification"
+fi
+# evidence marks post-hop recovery
+grep -q 'recovered_post_hop' "${HOPR}/evidence.json" && pass "evidence recovered_post_hop" || fail "evidence recovered_post_hop"
+kill "$ORIGIN3_PID" 2>/dev/null || true
+wait "$ORIGIN3_PID" 2>/dev/null || true
+
+# repair-hop: first 304 + no stored body => unconditional GET + cache-bust nonce => 200
+REPAIR304_OUT="${WORKDIR}/repair-304-out"
+export DUR_DRY_RECORDING=1
+export DUR_HOST_ROOT="$CAPHOST"
+bash "$SCRIPT" init --from 18.04 --to 20.04 --output-dir "$REPAIR304_OUT" >/dev/null
+bash "$SCRIPT" before-hop --output-dir "$REPAIR304_OUT" >/dev/null
+bash "$SCRIPT" start-recording --output-dir "$REPAIR304_OUT" >/dev/null
+HOP304="${REPAIR304_OUT}/upgrade-discovery/bionic-to-focal"
+bash "$SCRIPT" stop-recording --output-dir "$REPAIR304_OUT" >/dev/null
+bash "$SCRIPT" after-hop --output-dir "$REPAIR304_OUT" >/dev/null
+# Identical inventories so validation can PASS with a single metadata URL.
+cp "${FIXTURES}/inventories/before-installed-packages.tsv" "${HOP304}/before/installed-packages.tsv"
+cp "${FIXTURES}/inventories/before-installed-packages.tsv" "${HOP304}/after/installed-packages.tsv"
+cp "${FIXTURES}/inventories/before-file-manifest.tsv" "${HOP304}/before/file-manifest.tsv"
+cp "${FIXTURES}/inventories/before-file-manifest.tsv" "${HOP304}/after/file-manifest.tsv"
+echo -e 'path\thash\tpackage' >"${HOP304}/before/conffiles.tsv"
+echo -e 'path\thash\tpackage' >"${HOP304}/after/conffiles.tsv"
+ORIGIN304="${WORKDIR}/origin304"
+mkdir -p "${ORIGIN304}/ubuntu/dists/bionic"
+BODY304='InRelease-body-after-unconditional-retry'
+printf '%s\n' "$BODY304" >"${ORIGIN304}/ubuntu/dists/bionic/InRelease"
+ORIGIN304_PORT_FILE="${WORKDIR}/origin304.port"
+ORIGIN304_HDR_FILE="${WORKDIR}/origin304.headers"
+: >"$ORIGIN304_HDR_FILE"
+(
+  python3 - "$ORIGIN304" "$ORIGIN304_PORT_FILE" "$ORIGIN304_HDR_FILE" <<'PY'
+from __future__ import print_function
+import os, sys
+from http.server import BaseHTTPRequestHandler
+from socketserver import TCPServer
+root, port_file, hdr_file = sys.argv[1], sys.argv[2], sys.argv[3]
+counts = {}
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        return
+    def do_GET(self):
+        raw = self.path
+        path = raw.split('?', 1)[0]
+        query = raw.split('?', 1)[1] if '?' in raw else ''
+        counts[path] = counts.get(path, 0) + 1
+        n = counts[path]
+        with open(hdr_file, 'a', encoding='utf-8') as fh:
+            fh.write(
+                'n=%d path=%s raw=%s inm=%r ims=%r ir=%r cc=%r pragma=%r ae=%r\n' % (
+                    n, path, raw,
+                    self.headers.get('If-None-Match'),
+                    self.headers.get('If-Modified-Since'),
+                    self.headers.get('If-Range'),
+                    self.headers.get('Cache-Control'),
+                    self.headers.get('Pragma'),
+                    self.headers.get('Accept-Encoding'),
+                )
+            )
+        if path.endswith('/InRelease'):
+            has_nonce = 'dur_repair_nonce=' in query
+            if n == 1:
+                # First request must be the clean original URL (no cache-bust).
+                if has_nonce:
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(b'unexpected nonce on first request')
+                    return
+                self.send_response(304)
+                self.end_headers()
+                return
+            # Second request: require nonce; without it keep returning 304
+            # (mirrors archive.ubuntu.com ignoring plain no-cache GETs).
+            if not has_nonce:
+                self.send_response(304)
+                self.end_headers()
+                return
+            if (self.headers.get('If-None-Match')
+                    or self.headers.get('If-Modified-Since')
+                    or self.headers.get('If-Range')):
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'conditional headers present')
+                return
+            if self.headers.get('Cache-Control') != 'no-cache, no-store, max-age=0':
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'bad Cache-Control')
+                return
+            if self.headers.get('Pragma') != 'no-cache':
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'bad Pragma')
+                return
+            if self.headers.get('Accept-Encoding') != 'identity':
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'bad Accept-Encoding')
+                return
+            body_path = os.path.join(root, path.lstrip('/'))
+            with open(body_path, 'rb') as bf:
+                data = bf.read()
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        self.send_response(404)
+        self.end_headers()
+class S(TCPServer):
+    allow_reuse_address = True
+httpd = S(("127.0.0.1", 0), H)
+open(port_file, "w").write(str(httpd.server_address[1]))
+httpd.serve_forever()
+PY
+) &
+ORIGIN304_PID=$!
+ORIGIN304_PORT=""
+for _ in $(seq 1 50); do
+  [[ -s "$ORIGIN304_PORT_FILE" ]] && ORIGIN304_PORT="$(cat "$ORIGIN304_PORT_FILE")" && break
+  sleep 0.05
+done
+INREL_URL="http://127.0.0.1:${ORIGIN304_PORT}/ubuntu/dists/bionic/InRelease"
+printf '2026-07-17T03:00:00Z GET %s 304 0\n' "$INREL_URL" >"${HOP304}/runtime/proxy-access.log"
+python3 "$PY" build-manifests --hop-dir "$HOP304" --hop bionic-to-focal >/dev/null
+before_uf="$(awk 'NR>1{c++} END{print c+0}' "${HOP304}/unresolved-files.tsv")"
+if [[ "$before_uf" -eq 1 ]] && grep -q 'http_304_without_stored_body' "${HOP304}/unresolved-files.tsv"; then
+  pass "repair-304 fixture: unresolved InRelease without body"
+else
+  fail "repair-304 fixture: unresolved InRelease without body (count=$before_uf)"
+  cat "${HOP304}/unresolved-files.tsv" || true
+fi
+set +e
+bash "$SCRIPT" repair-hop --output-dir "$REPAIR304_OUT" >"${WORKDIR}/repair304.out" 2>"${WORKDIR}/repair304.err"
+rc_repair304=$?
+set -e
+after_uf="$(awk 'NR>1{c++} END{print c+0}' "${HOP304}/unresolved-files.tsv")"
+after_up="$(awk 'NR>1{c++} END{print c+0}' "${HOP304}/unresolved-packages.tsv")"
+if [[ "$after_uf" -eq 0 && "$after_up" -eq 0 ]]; then
+  pass "repair-hop 304 retry clears unresolved (files=0 packages=0)"
+else
+  fail "repair-hop 304 retry clears unresolved (files=$after_uf packages=$after_up)"
+  cat "${WORKDIR}/repair304.err" || true
+  cat "${HOP304}/runtime/repair-access.log" || true
+fi
+if grep -q " 200 " "${HOP304}/runtime/repair-access.log" \
+   && grep -q 'local_path=' "${HOP304}/runtime/repair-access.log" \
+   && grep -q 'sha256=' "${HOP304}/runtime/repair-access.log"; then
+  pass "repair-hop 304 retry stored body with sha256"
+else
+  fail "repair-hop 304 retry stored body with sha256"
+  cat "${HOP304}/runtime/repair-access.log" || true
+fi
+# First request: clean path; second: cache-bust nonce + unconditional headers
+if grep -q "n=1 path=/ubuntu/dists/bionic/InRelease raw=/ubuntu/dists/bionic/InRelease " "$ORIGIN304_HDR_FILE"; then
+  pass "repair-hop 304 first request has no query"
+else
+  fail "repair-hop 304 first request has no query"
+  cat "$ORIGIN304_HDR_FILE" || true
+fi
+if grep -q "n=2 path=/ubuntu/dists/bionic/InRelease raw=/ubuntu/dists/bionic/InRelease?dur_repair_nonce=" "$ORIGIN304_HDR_FILE" \
+   && grep -q "n=2 .* cc='no-cache, no-store, max-age=0' pragma='no-cache' ae='identity'" "$ORIGIN304_HDR_FILE"; then
+  pass "repair-hop 304 retry sent nonce + unconditional headers"
+else
+  fail "repair-hop 304 retry sent nonce + unconditional headers"
+  cat "$ORIGIN304_HDR_FILE" || true
+fi
+if grep -q '\[INFO\] repair-hop: url=.* status=304 unconditional=false' "${WORKDIR}/repair304.err" \
+   && grep -q '\[INFO\] repair-hop: url=.*dur_repair_nonce=.* status=200 unconditional=true' "${WORKDIR}/repair304.err"; then
+  pass "repair-hop 304 retry INFO logs per attempt"
+else
+  fail "repair-hop 304 retry INFO logs per attempt"
+  cat "${WORKDIR}/repair304.err" || true
+fi
+if python3 - "$HOP304" "$BODY304" "$INREL_URL" <<'PY'
+from __future__ import print_function
+import hashlib, json, os, sys
+hop, expected_body, original_url = sys.argv[1], sys.argv[2] + "\n", sys.argv[3]
+log = os.path.join(hop, "runtime", "repair-access.log")
+sha = lp = ""
+for line in open(log, encoding="utf-8", errors="surrogateescape"):
+    if "local_path=" not in line or "sha256=" not in line:
+        continue
+    for p in line.split():
+        if p.startswith("sha256="):
+            sha = p.split("=", 1)[1]
+        if p.startswith("local_path="):
+            lp = p.split("=", 1)[1]
+if not lp or not os.path.isfile(lp):
+    sys.exit(2)
+data = open(lp, "rb").read()
+if data != expected_body.encode("utf-8"):
+    sys.exit(3)
+h = hashlib.sha256(data).hexdigest()
+if h != sha:
+    sys.exit(4)
+meta_path = lp + ".meta.json"
+if not os.path.isfile(meta_path):
+    sys.exit(5)
+meta = json.loads(open(meta_path, encoding="utf-8").read())
+if not meta.get("recovered_post_hop") or meta.get("checksum_source") != "post_hop_download":
+    sys.exit(6)
+if meta.get("original_url") != original_url:
+    sys.exit(7)
+if "dur_repair_nonce=" not in (meta.get("final_url") or ""):
+    sys.exit(8)
+# Object key must be derived from original_url (no nonce).
+key = hashlib.sha256(original_url.encode("utf-8")).hexdigest()
+if not lp.endswith(key) and os.path.basename(lp) != key:
+    sys.exit(9)
+print("ok", sha)
+sys.exit(0)
+PY
+then
+  pass "repair-hop 304 retry SHA256 + original_url/final_url/nonce key"
+else
+  fail "repair-hop 304 retry SHA256 + original_url/final_url/nonce key"
+fi
+grep -q '"recovered_post_hop": true' "${HOP304}/evidence.json" \
+  && grep -q 'post_hop_download' "${HOP304}/evidence.json" \
+  && pass "repair-hop 304 retry evidence markers" \
+  || fail "repair-hop 304 retry evidence markers"
+if [[ "$rc_repair304" -eq 0 ]] && grep -q 'VALIDATION: PASS' "${HOP304}/validation.txt"; then
+  pass "repair-hop 304 retry validation PASS"
+else
+  fail "repair-hop 304 retry validation PASS (rc=$rc_repair304)"
+  cat "${HOP304}/validation.txt" || true
+  cat "${WORKDIR}/repair304.err" || true
+fi
+kill "$ORIGIN304_PID" 2>/dev/null || true
+wait "$ORIGIN304_PID" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# export-hop: workspace artifact export
+# ---------------------------------------------------------------------------
+seed_export_hop() {
+  # seed_export_hop OUT HOP FROM TO [required_packages_rows]
+  local out="$1" hop="$2" from_os="$3" to_os="$4"
+  local pkg_rows="${5:-2}"
+  local hd="${out}/upgrade-discovery/${hop}"
+  mkdir -p "$hd" \
+    "${hd}/runtime/deb-cache/aa/bb" \
+    "${hd}/before" \
+    "${hd}/after"
+  cat >"${out}/upgrade-discovery/.discovery-state.json" <<EOF
+{
+  "schema_version": "1",
+  "output_dir": "${out}",
+  "from_os": "${from_os}",
+  "to_os": "${to_os}",
+  "hop": "${hop}",
+  "phase": "finalized"
+}
+EOF
+  cat >"${hd}/run.json" <<EOF
+{
+  "hop": "${hop}",
+  "from_os": "${from_os}",
+  "to_os": "${to_os}",
+  "phase": "finalized"
+}
+EOF
+  printf 'hop\tpackage\tversion\tarchitecture\n' >"${hd}/required-packages.tsv"
+  local i
+  for i in $(seq 1 "$pkg_rows"); do
+    printf '%s\tpkg%s\t1.0-%s\tamd64\n' "$hop" "$i" "$i" >>"${hd}/required-packages.tsv"
+  done
+  # UTF-8 / non-ASCII field preserved verbatim in export
+  printf 'hop\tfile_type\tfilename\toriginal_url\tfinal_url\tlocal_path\tsize_bytes\tsha256\thttp_status\trequest_count\tevidence_source\n' \
+    >"${hd}/required-files.tsv"
+  printf '%s\tinrelease\tInRelease\thttp://example.test/utf8/경로/InRelease\thttp://example.test/utf8/경로/InRelease\t/opt/aelladata/abs/path/InRelease\t12\tabc\t200\t1\tproxy_access_log\n' \
+    "$hop" >>"${hd}/required-files.tsv"
+  printf 'hop\trequested_at\tmethod\toriginal_url\tfinal_url\thttp_status\tsize_bytes\tsha256\tlocal_path\n' \
+    >"${hd}/required-urls.tsv"
+  printf '%s\t2026-07-18T00:00:00Z\tGET\thttp://example.test/a\thttp://example.test/a\t200\t1\tx\t/opt/aelladata/abs/a\n' \
+    "$hop" >>"${hd}/required-urls.tsv"
+  printf 'hop\tpackage\tversion\tarchitecture\toriginal_url\tfinal_url\treason\n' \
+    >"${hd}/unresolved-packages.tsv"
+  printf 'hop\tfile_type\tfilename\toriginal_url\tfinal_url\treason\n' \
+    >"${hd}/unresolved-files.tsv"
+  printf 'hop\toriginal_url\tfinal_url\thttp_status\treason\tfile_type\n' \
+    >"${hd}/failed-requests.tsv"
+  cat >"${hd}/evidence.json" <<EOF
+{
+  "hop": "${hop}",
+  "required_packages": ${pkg_rows},
+  "resolved_packages": ${pkg_rows},
+  "required_files": 1,
+  "resolved_files": 1,
+  "required_urls": 1,
+  "unresolved_packages": 0,
+  "unresolved_files": 0,
+  "failed_requests": 0,
+  "captured_http_200": 3,
+  "captured_bytes": 99,
+  "recovered_post_hop": false,
+  "checksum_source": "original_capture"
+}
+EOF
+  cat >"${hd}/validation.txt" <<EOF
+VALIDATION: PASS
+hop=${hop}
+from_os=${from_os}
+to_os=${to_os}
+required_packages=${pkg_rows}
+resolved_packages=${pkg_rows}
+unresolved_packages=0
+required_files=1
+resolved_files=1
+unresolved_files=0
+failed_requests=0
+failures: none
+EOF
+  # Large payloads that must NEVER be exported
+  printf 'FAKEDEB' >"${hd}/runtime/deb-cache/aa/bb/deadbeef.deb"
+  printf 'FAKEDEB' >"${hd}/should-not-export.deb"
+  mkdir -p "${hd}/runtime/payload"
+  printf 'BODY' >"${hd}/runtime/payload/InRelease"
+}
+
+REPO_EXPORT="${WORKDIR}/repo-export"
+mkdir -p "$REPO_EXPORT"
+EXPORT_OUT="${WORKDIR}/export-src-bionic"
+seed_export_hop "$EXPORT_OUT" "bionic-to-focal" "18.04" "20.04" 2
+# Snapshot source evidence before export
+cp "${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/required-packages.tsv" \
+  "${WORKDIR}/src-required-packages.before"
+cp "${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/evidence.json" \
+  "${WORKDIR}/src-evidence.before"
+cp "${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/required-files.tsv" \
+  "${WORKDIR}/src-required-files.before"
+
+set +e
+bash "$SCRIPT" export-hop --output-dir "$EXPORT_OUT" --repo-dir "$REPO_EXPORT" \
+  >"${WORKDIR}/export1.out" 2>"${WORKDIR}/export1.err"
+rc_export1=$?
+set -e
+EXP1="${REPO_EXPORT}/artifacts/upgrade-discovery/bionic-to-focal"
+if [[ "$rc_export1" -eq 0 && -d "$EXP1" ]]; then
+  pass "export-hop PASS result succeeds"
+else
+  fail "export-hop PASS result succeeds (rc=$rc_export1)"
+  cat "${WORKDIR}/export1.err" || true
+fi
+[[ -d "$EXP1" ]] && pass "export-hop creates hop directory" || fail "export-hop creates hop directory"
+missing_export=""
+for f in required-packages.tsv required-files.tsv required-urls.tsv \
+  unresolved-packages.tsv unresolved-files.tsv failed-requests.tsv \
+  evidence.json validation.txt export-summary.json checksums.sha256; do
+  [[ -f "${EXP1}/${f}" ]] || missing_export="${missing_export} ${f}"
+done
+[[ -z "$missing_export" ]] && pass "export-hop copies all required files" \
+  || fail "export-hop copies all required files (missing:$missing_export)"
+if cmp -s "${WORKDIR}/src-required-packages.before" \
+     "${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/required-packages.tsv" \
+   && cmp -s "${WORKDIR}/src-evidence.before" \
+     "${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/evidence.json" \
+   && cmp -s "${WORKDIR}/src-required-files.before" \
+     "${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/required-files.tsv"; then
+  pass "export-hop does not modify source evidence"
+else
+  fail "export-hop does not modify source evidence"
+fi
+# Absolute paths preserved in exported copy
+if grep -q '/opt/aelladata/abs/path/InRelease' "${EXP1}/required-files.tsv" \
+   && grep -q 'utf8/경로/InRelease' "${EXP1}/required-files.tsv"; then
+  pass "export-hop preserves absolute paths and UTF-8"
+else
+  fail "export-hop preserves absolute paths and UTF-8"
+fi
+if python3 - "$EXP1" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1] + "/export-summary.json", encoding="utf-8"))
+assert s["schema_version"] == 1
+assert s["hop"] == "bionic-to-focal"
+assert s["from_os"] == "18.04" and s["to_os"] == "20.04"
+assert s["validation"] == "PASS"
+assert s["required_packages"] == 2
+assert s["required_files"] == 1
+assert s["required_urls"] == 1
+assert s["unresolved_packages"] == 0
+assert s["unresolved_files"] == 0
+assert s["resolved_files"] == 1
+assert s["required_files"] == s["resolved_files"] + s["unresolved_files"]
+assert s["failed_requests"] == 0
+assert s["failed_requests_total"] == 0
+assert s["failed_requests_blocking"] == 0
+assert s["failed_requests_non_blocking"] == 0
+assert s.get("non_blocking_failure_reasons") == {}
+assert s.get("historical_non_required_failures", 0) == 0
+assert s["recovered_post_hop"] is False
+assert s["checksum_source"] == "original_capture"
+assert s["captured_http_200"] == 3
+assert s["captured_bytes"] == 99
+assert "source_output_dir" in s and s["source_output_dir"]
+print("ok")
+PY
+then
+  pass "export-summary.json row counts and fields"
+else
+  fail "export-summary.json row counts and fields"
+fi
+if (cd "$EXP1" && sha256sum -c checksums.sha256 >/dev/null); then
+  pass "checksums.sha256 verifies"
+else
+  fail "checksums.sha256 verifies"
+fi
+IDX="${REPO_EXPORT}/artifacts/upgrade-discovery/index.tsv"
+[[ -f "$IDX" ]] && pass "index.tsv created" || fail "index.tsv created"
+
+# Re-export same hop with updated package count — no duplicate index rows
+seed_export_hop "$EXPORT_OUT" "bionic-to-focal" "18.04" "20.04" 5
+# Keep a marker file in prior export to ensure atomic replace removes old extras
+printf 'stale' >"${EXP1}/stale-should-vanish.txt"
+set +e
+bash "$SCRIPT" export-hop --output-dir "$EXPORT_OUT" --repo-dir "$REPO_EXPORT" \
+  >"${WORKDIR}/export2.out" 2>"${WORKDIR}/export2.err"
+rc_export2=$?
+set -e
+[[ "$rc_export2" -eq 0 ]] || { fail "export-hop re-export succeeds"; cat "${WORKDIR}/export2.err" || true; }
+hop_rows="$(awk -F'\t' 'NR>1 && $1=="bionic-to-focal"{c++} END{print c+0}' "$IDX")"
+[[ "$hop_rows" -eq 1 ]] && pass "index.tsv one row per hop on re-export" \
+  || fail "index.tsv one row per hop on re-export (rows=$hop_rows)"
+req_pkgs="$(python3 -c 'import json; print(json.load(open("'"$EXP1"'/export-summary.json"))["required_packages"])')"
+[[ "$req_pkgs" == "5" ]] && pass "index/summary updated on re-export" \
+  || fail "index/summary updated on re-export (required_packages=$req_pkgs)"
+[[ ! -f "${EXP1}/stale-should-vanish.txt" ]] && pass "re-export atomically replaces hop dir" \
+  || fail "re-export atomically replaces hop dir"
+
+# Second hop + sort order
+EXPORT_OUT_X="${WORKDIR}/export-src-xenial"
+seed_export_hop "$EXPORT_OUT_X" "xenial-to-bionic" "16.04" "18.04" 1
+bash "$SCRIPT" export-hop --output-dir "$EXPORT_OUT_X" --repo-dir "$REPO_EXPORT" >/dev/null
+EXPORT_OUT_F="${WORKDIR}/export-src-focal"
+seed_export_hop "$EXPORT_OUT_F" "focal-to-jammy" "20.04" "22.04" 1
+bash "$SCRIPT" export-hop --output-dir "$EXPORT_OUT_F" --repo-dir "$REPO_EXPORT" >/dev/null
+EXPORT_OUT_J="${WORKDIR}/export-src-jammy"
+seed_export_hop "$EXPORT_OUT_J" "jammy-to-noble" "22.04" "24.04" 1
+bash "$SCRIPT" export-hop --output-dir "$EXPORT_OUT_J" --repo-dir "$REPO_EXPORT" >/dev/null
+order="$(awk -F'\t' 'NR>1{print $1}' "$IDX" | tr '\n' ',')"
+if [[ "$order" == "xenial-to-bionic,bionic-to-focal,focal-to-jammy,jammy-to-noble," ]]; then
+  pass "index.tsv hop sort order fixed"
+else
+  fail "index.tsv hop sort order fixed (got=$order)"
+fi
+
+# Idempotent: third export of bionic unchanged checksums
+sum_before="$(sha256sum "${EXP1}/checksums.sha256" | awk '{print $1}')"
+bash "$SCRIPT" export-hop --output-dir "$EXPORT_OUT" --repo-dir "$REPO_EXPORT" >/dev/null
+sum_after="$(sha256sum "${EXP1}/checksums.sha256" | awk '{print $1}')"
+# exported_at_utc changes => checksums.sha256 changes; verify content still validates
+if (cd "$EXP1" && sha256sum -c checksums.sha256 >/dev/null); then
+  pass "export-hop repeated run remains valid (idempotent verify)"
+else
+  fail "export-hop repeated run remains valid (idempotent verify)"
+fi
+# Manifest body files (excluding summary timestamp) stay byte-identical across re-export
+# of unchanged source — re-seed same 5-row source already done; compare packages tsv
+if cmp -s "${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/required-packages.tsv" \
+     "${EXP1}/required-packages.tsv"; then
+  pass "export-hop idempotent manifest copy"
+else
+  fail "export-hop idempotent manifest copy"
+fi
+
+# Rejection: validation FAIL — existing export must remain
+cp -a "$EXP1" "${WORKDIR}/export-bionic-backup"
+printf 'VALIDATION: FAIL\nfailures:\n  - boom\n' \
+  >"${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/validation.txt"
+set +e
+bash "$SCRIPT" export-hop --output-dir "$EXPORT_OUT" --repo-dir "$REPO_EXPORT" \
+  >"${WORKDIR}/export-fail.out" 2>"${WORKDIR}/export-fail.err"
+rc_fail=$?
+set -e
+[[ "$rc_fail" -ne 0 ]] && pass "export-hop rejects validation FAIL" \
+  || fail "export-hop rejects validation FAIL"
+if diff -qr "${WORKDIR}/export-bionic-backup" "$EXP1" >/dev/null; then
+  pass "export-hop keeps prior export on FAIL"
+else
+  fail "export-hop keeps prior export on FAIL"
+fi
+if ! find "${REPO_EXPORT}/artifacts/upgrade-discovery" -maxdepth 1 -type d -name '.staging-*' | grep -q .; then
+  pass "export-hop leaves no staging dir on FAIL"
+else
+  fail "export-hop leaves no staging dir on FAIL"
+  find "${REPO_EXPORT}/artifacts/upgrade-discovery" -maxdepth 1 -type d -name '.staging-*' || true
+fi
+
+# Restore PASS validation for further reject tests
+seed_export_hop "$EXPORT_OUT" "bionic-to-focal" "18.04" "20.04" 5
+cp -a "$EXP1" "${WORKDIR}/export-bionic-backup2"
+
+# unresolved-packages nonempty
+printf 'bionic-to-focal\tp\t1\tamd64\thttp://x\thttp://x\treason\n' \
+  >>"${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/unresolved-packages.tsv"
+set +e
+bash "$SCRIPT" export-hop --output-dir "$EXPORT_OUT" --repo-dir "$REPO_EXPORT" \
+  >/dev/null 2>"${WORKDIR}/export-unres-pkg.err"
+rc_up=$?
+set -e
+[[ "$rc_up" -ne 0 ]] && grep -q 'unresolved-packages' "${WORKDIR}/export-unres-pkg.err" \
+  && pass "export-hop rejects unresolved-packages rows" \
+  || fail "export-hop rejects unresolved-packages rows"
+diff -qr "${WORKDIR}/export-bionic-backup2" "$EXP1" >/dev/null \
+  && pass "prior export kept after unresolved-packages reject" \
+  || fail "prior export kept after unresolved-packages reject"
+
+# unresolved-files nonempty
+seed_export_hop "$EXPORT_OUT" "bionic-to-focal" "18.04" "20.04" 5
+printf 'bionic-to-focal\tinrelease\tInRelease\thttp://x\thttp://x\thttp_304_without_stored_body\n' \
+  >>"${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/unresolved-files.tsv"
+# false PASS text with unresolved rows
+set +e
+bash "$SCRIPT" export-hop --output-dir "$EXPORT_OUT" --repo-dir "$REPO_EXPORT" \
+  >/dev/null 2>"${WORKDIR}/export-unres-file.err"
+rc_uf=$?
+set -e
+[[ "$rc_uf" -ne 0 ]] && grep -q 'unresolved-files' "${WORKDIR}/export-unres-file.err" \
+  && pass "export-hop rejects unresolved-files rows" \
+  || fail "export-hop rejects unresolved-files rows"
+
+# ---------------------------------------------------------------------------
+# stale by-hash 404: excluded from required manifests on rebuild, then export OK
+# ---------------------------------------------------------------------------
+STALE_OUT="${WORKDIR}/stale-byhash-rebuild"
+export DUR_DRY_RECORDING=1
+export DUR_HOST_ROOT="$CAPHOST"
+bash "$SCRIPT" init --from 18.04 --to 20.04 --output-dir "$STALE_OUT" >/dev/null
+bash "$SCRIPT" before-hop --output-dir "$STALE_OUT" >/dev/null
+bash "$SCRIPT" start-recording --output-dir "$STALE_OUT" >/dev/null
+HOP_STALE="${STALE_OUT}/upgrade-discovery/bionic-to-focal"
+bash "$SCRIPT" stop-recording --output-dir "$STALE_OUT" >/dev/null
+bash "$SCRIPT" after-hop --output-dir "$STALE_OUT" >/dev/null
+cp "${FIXTURES}/inventories/before-installed-packages.tsv" "${HOP_STALE}/before/installed-packages.tsv"
+cp "${FIXTURES}/inventories/before-installed-packages.tsv" "${HOP_STALE}/after/installed-packages.tsv"
+cp "${FIXTURES}/inventories/before-file-manifest.tsv" "${HOP_STALE}/before/file-manifest.tsv"
+cp "${FIXTURES}/inventories/before-file-manifest.tsv" "${HOP_STALE}/after/file-manifest.tsv"
+echo -e 'path\thash\tpackage' >"${HOP_STALE}/before/conffiles.tsv"
+echo -e 'path\thash\tpackage' >"${HOP_STALE}/after/conffiles.tsv"
+: >"${HOP_STALE}/runtime/apt-history.log"
+: >"${HOP_STALE}/runtime/apt-term.log"
+: >"${HOP_STALE}/runtime/dpkg.log"
+mkdir -p "${HOP_STALE}/runtime/dist-upgrade"
+STALE_INREL='http://archive.ubuntu.com/ubuntu/dists/bionic/InRelease'
+STALE_BYHASH='http://archive.ubuntu.com/ubuntu/dists/bionic-updates/main/binary-amd64/by-hash/SHA256/stalebeefcafe'
+# Seed successful InRelease capture + access log with stale by-hash 404
+python3 - "$HOP_STALE" "$STALE_INREL" "$STALE_BYHASH" <<'PY'
+from __future__ import print_function
+import hashlib, json, os, sys
+hop, inrel, byhash = sys.argv[1], sys.argv[2], sys.argv[3]
+cache = os.path.join(hop, "runtime", "deb-cache")
+body = b"InRelease-secured-body\n"
+key = hashlib.sha256(inrel.encode("utf-8")).hexdigest()
+directory = os.path.join(cache, key[0:2], key[2:4])
+os.makedirs(directory, exist_ok=True)
+path = os.path.join(directory, key)
+open(path, "wb").write(body)
+sha = hashlib.sha256(body).hexdigest()
+meta = {
+    "original_url": inrel, "final_url": inrel, "redirect_chain": [inrel],
+    "http_status": 200, "content_length": len(body), "size_bytes": len(body),
+    "sha256": sha, "local_path": path,
+}
+open(path + ".meta.json", "w", encoding="utf-8").write(json.dumps(meta, indent=2) + "\n")
+log = os.path.join(hop, "runtime", "proxy-access.log")
+open(log, "w", encoding="utf-8").write(
+    "2026-07-19T00:00:00Z GET %s 200 %d local_path=%s sha256=%s\n"
+    "2026-07-19T00:00:01Z GET %s 404 0\n" % (inrel, len(body), path, sha, byhash)
+)
+open(os.path.join(hop, "runtime", "recording-started-at.txt"), "w").write("2026-07-19T00:00:00Z\n")
+PY
+# Confirm preconditions would include by-hash in raw URL log before rebuild semantics
+if grep -q "$STALE_BYHASH" "${HOP_STALE}/runtime/proxy-access.log" \
+   && grep -q ' 404 ' "${HOP_STALE}/runtime/proxy-access.log"; then
+  pass "stale by-hash fixture: access log has by-hash 404"
+else
+  fail "stale by-hash fixture: access log has by-hash 404"
+fi
+python3 "$PY" build-manifests --hop-dir "$HOP_STALE" --hop bionic-to-focal >/dev/null
+set +e
+python3 "$PY" validate --hop-dir "$HOP_STALE" --hop bionic-to-focal --from-os 18.04 --to-os 20.04 \
+  >"${WORKDIR}/stale-validate.out" 2>"${WORKDIR}/stale-validate.err"
+rc_stale_val=$?
+set -e
+if [[ "$rc_stale_val" -eq 0 ]] && grep -q 'VALIDATION: PASS' "${HOP_STALE}/validation.txt"; then
+  pass "stale by-hash rebuild validation PASS"
+else
+  fail "stale by-hash rebuild validation PASS (rc=$rc_stale_val)"
+  cat "${HOP_STALE}/validation.txt" || true
+  cat "${WORKDIR}/stale-validate.err" || true
+fi
+if ! grep -q "$STALE_BYHASH" "${HOP_STALE}/required-files.tsv" \
+   && ! grep -q "$STALE_BYHASH" "${HOP_STALE}/required-urls.tsv" \
+   && grep -q "$STALE_BYHASH" "${HOP_STALE}/failed-requests.tsv" \
+   && ! grep -q "$STALE_BYHASH" "${HOP_STALE}/unresolved-files.tsv"; then
+  pass "stale by-hash removed from required-files/urls, kept in failed-requests"
+else
+  fail "stale by-hash removed from required-files/urls, kept in failed-requests"
+  grep -n "$STALE_BYHASH" "${HOP_STALE}/required-files.tsv" "${HOP_STALE}/required-urls.tsv" \
+    "${HOP_STALE}/failed-requests.tsv" "${HOP_STALE}/unresolved-files.tsv" || true
+fi
+if grep -q "$STALE_INREL" "${HOP_STALE}/required-files.tsv"; then
+  pass "stale by-hash rebuild keeps secured InRelease in required-files"
+else
+  fail "stale by-hash rebuild keeps secured InRelease in required-files"
+fi
+if python3 - "$HOP_STALE" <<'PY'
+import json, sys
+hd = sys.argv[1]
+ev = json.load(open(hd + "/evidence.json", encoding="utf-8"))
+assert ev["failed_requests"] == 1
+assert ev.get("historical_non_required_failures") == 1
+assert ev.get("historical_non_required_failure_reasons") == {"stale_by_hash_404": 1}
+assert ev["unresolved_files"] == 0
+assert ev["required_files"] == ev["resolved_files"]
+assert ev["required_files"] == ev["resolved_files"] + ev["unresolved_files"]
+# failed-requests row preserved
+rows = open(hd + "/failed-requests.tsv", encoding="utf-8").read().splitlines()
+assert any("by_hash" in r and "404" in r for r in rows[1:])
+print("ok")
+PY
+then
+  pass "stale by-hash evidence historical_non_required + count identity"
+else
+  fail "stale by-hash evidence historical_non_required + count identity"
+fi
+# .deb 404 must remain in required manifests (not stripped) and stay blocking
+STALE_DEB_OUT="${WORKDIR}/stale-deb-not-stripped"
+bash "$SCRIPT" init --from 18.04 --to 20.04 --output-dir "$STALE_DEB_OUT" >/dev/null
+bash "$SCRIPT" before-hop --output-dir "$STALE_DEB_OUT" >/dev/null
+bash "$SCRIPT" start-recording --output-dir "$STALE_DEB_OUT" >/dev/null
+HOP_DEB="${STALE_DEB_OUT}/upgrade-discovery/bionic-to-focal"
+bash "$SCRIPT" stop-recording --output-dir "$STALE_DEB_OUT" >/dev/null
+bash "$SCRIPT" after-hop --output-dir "$STALE_DEB_OUT" >/dev/null
+cp "${FIXTURES}/inventories/before-installed-packages.tsv" "${HOP_DEB}/before/installed-packages.tsv"
+cp "${FIXTURES}/inventories/before-installed-packages.tsv" "${HOP_DEB}/after/installed-packages.tsv"
+cp "${FIXTURES}/inventories/before-file-manifest.tsv" "${HOP_DEB}/before/file-manifest.tsv"
+cp "${FIXTURES}/inventories/before-file-manifest.tsv" "${HOP_DEB}/after/file-manifest.tsv"
+echo -e 'path\thash\tpackage' >"${HOP_DEB}/before/conffiles.tsv"
+echo -e 'path\thash\tpackage' >"${HOP_DEB}/after/conffiles.tsv"
+: >"${HOP_DEB}/runtime/apt-history.log"
+: >"${HOP_DEB}/runtime/apt-term.log"
+: >"${HOP_DEB}/runtime/dpkg.log"
+mkdir -p "${HOP_DEB}/runtime/dist-upgrade"
+DEB404='http://archive.ubuntu.com/ubuntu/pool/main/b/bash/bash_9.9.9_amd64.deb'
+python3 - "$HOP_DEB" "$STALE_INREL" "$DEB404" <<'PY'
+from __future__ import print_function
+import hashlib, json, os, sys
+hop, inrel, deb = sys.argv[1], sys.argv[2], sys.argv[3]
+cache = os.path.join(hop, "runtime", "deb-cache")
+body = b"InRelease-secured-body\n"
+key = hashlib.sha256(inrel.encode("utf-8")).hexdigest()
+directory = os.path.join(cache, key[0:2], key[2:4])
+os.makedirs(directory, exist_ok=True)
+path = os.path.join(directory, key)
+open(path, "wb").write(body)
+sha = hashlib.sha256(body).hexdigest()
+meta = {
+    "original_url": inrel, "final_url": inrel, "redirect_chain": [inrel],
+    "http_status": 200, "content_length": len(body), "size_bytes": len(body),
+    "sha256": sha, "local_path": path,
+}
+open(path + ".meta.json", "w", encoding="utf-8").write(json.dumps(meta, indent=2) + "\n")
+open(os.path.join(hop, "runtime", "proxy-access.log"), "w", encoding="utf-8").write(
+    "2026-07-19T00:00:00Z GET %s 200 %d local_path=%s sha256=%s\n"
+    "2026-07-19T00:00:01Z GET %s 404 0\n" % (inrel, len(body), path, sha, deb)
+)
+open(os.path.join(hop, "runtime", "recording-started-at.txt"), "w").write("2026-07-19T00:00:00Z\n")
+PY
+python3 "$PY" build-manifests --hop-dir "$HOP_DEB" --hop bionic-to-focal >/dev/null
+if grep -q "$DEB404" "${HOP_DEB}/failed-requests.tsv" \
+   && grep -q "$DEB404" "${HOP_DEB}/required-urls.tsv"; then
+  pass "package .deb 404 kept in required-urls/failed-requests (not stripped)"
+else
+  fail "package .deb 404 kept in required-urls/failed-requests (not stripped)"
+fi
+# export path for rebuilt stale by-hash hop
+cp "${HOP_STALE}/failed-requests.tsv" "${WORKDIR}/src-failed-requests.before"
+REPO_STALE="${WORKDIR}/repo-stale-byhash"
+mkdir -p "$REPO_STALE"
+set +e
+bash "$SCRIPT" export-hop --output-dir "$STALE_OUT" --repo-dir "$REPO_STALE" \
+  >"${WORKDIR}/export-byhash.out" 2>"${WORKDIR}/export-byhash.err"
+rc_byhash=$?
+set -e
+EXP_BY="${REPO_STALE}/artifacts/upgrade-discovery/bionic-to-focal"
+if [[ "$rc_byhash" -eq 0 ]]; then
+  pass "export-hop allows stale by-hash 404 when unresolved=0"
+else
+  fail "export-hop allows stale by-hash 404 when unresolved=0 (rc=$rc_byhash)"
+  cat "${WORKDIR}/export-byhash.err" || true
+  cat "${HOP_STALE}/validation.txt" || true
+fi
+if cmp -s "${WORKDIR}/src-failed-requests.before" "${EXP_BY}/failed-requests.tsv"; then
+  pass "export-hop preserves failed-requests.tsv (stale by-hash)"
+else
+  fail "export-hop preserves failed-requests.tsv (stale by-hash)"
+fi
+if python3 - "$EXP_BY" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1] + "/export-summary.json", encoding="utf-8"))
+assert s["failed_requests"] == 1
+assert s["failed_requests_total"] == 1
+assert s["failed_requests_blocking"] == 0
+assert s["failed_requests_non_blocking"] == 1
+assert s["non_blocking_failure_reasons"] == {"stale_by_hash_404": 1}
+assert s["required_files"] == s["resolved_files"] + s["unresolved_files"]
+assert s.get("historical_non_required_failures") == 1
+assert s.get("historical_non_required_failure_reasons") == {"stale_by_hash_404": 1}
+print("ok")
+PY
+then
+  pass "export-summary classifies stale by-hash as non-blocking"
+else
+  fail "export-summary classifies stale by-hash as non-blocking"
+fi
+IDX_STALE="${REPO_STALE}/artifacts/upgrade-discovery/index.tsv"
+if python3 - "$IDX_STALE" <<'PY'
+import sys
+path = sys.argv[1]
+lines = open(path, encoding="utf-8").read().splitlines()
+hdr = lines[0].split("\t")
+needed = [
+    "failed_requests", "failed_requests_total",
+    "failed_requests_blocking", "failed_requests_non_blocking",
+]
+for col in needed:
+    assert col in hdr, col
+row = None
+for line in lines[1:]:
+    parts = line.split("\t")
+    if parts and parts[0] == "bionic-to-focal":
+        row = dict(zip(hdr, parts))
+        break
+assert row is not None
+assert row["failed_requests"] == "1"
+assert row["failed_requests_total"] == "1"
+assert row["failed_requests_blocking"] == "0"
+assert row["failed_requests_non_blocking"] == "1"
+print("ok")
+PY
+then
+  pass "index.tsv failed-request classification columns"
+else
+  fail "index.tsv failed-request classification columns"
+fi
+
+# package .deb 404 => export refused (and not treated as historical strip)
+seed_export_hop "$EXPORT_OUT" "bionic-to-focal" "18.04" "20.04" 5
+printf 'bionic-to-focal\thttp://example.test/pool/p_1_amd64.deb\thttp://example.test/pool/p_1_amd64.deb\t404\tHTTP 404\tdeb\n' \
+  >>"${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/failed-requests.tsv"
+set +e
+bash "$SCRIPT" export-hop --output-dir "$EXPORT_OUT" --repo-dir "$REPO_EXPORT" \
+  >/dev/null 2>"${WORKDIR}/export-failed-deb.err"
+rc_fr_deb=$?
+set -e
+[[ "$rc_fr_deb" -ne 0 ]] && grep -q 'blocking_failed_requests' "${WORKDIR}/export-failed-deb.err" \
+  && pass "export-hop rejects package .deb 404" \
+  || fail "export-hop rejects package .deb 404"
+
+# release upgrader tar.gz 404 => export refused
+seed_export_hop "$EXPORT_OUT" "bionic-to-focal" "18.04" "20.04" 5
+printf 'bionic-to-focal\thttp://archive.ubuntu.com/ubuntu/dists/bionic-updates/main/dist-upgrader-all/current/bionic.tar.gz\thttp://archive.ubuntu.com/ubuntu/dists/bionic-updates/main/dist-upgrader-all/current/bionic.tar.gz\t404\tHTTP 404\trelease_upgrader\n' \
+  >>"${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/failed-requests.tsv"
+set +e
+bash "$SCRIPT" export-hop --output-dir "$EXPORT_OUT" --repo-dir "$REPO_EXPORT" \
+  >/dev/null 2>"${WORKDIR}/export-failed-upgrader.err"
+rc_fr_up=$?
+set -e
+[[ "$rc_fr_up" -ne 0 ]] && grep -q 'blocking_failed_requests' "${WORKDIR}/export-failed-upgrader.err" \
+  && pass "export-hop rejects release upgrader tar.gz 404" \
+  || fail "export-hop rejects release upgrader tar.gz 404"
+
+# by-hash 404 that remains unresolved-files => export refused (not stripped)
+seed_export_hop "$EXPORT_OUT" "bionic-to-focal" "18.04" "20.04" 5
+BYHASH_UNRES='http://archive.ubuntu.com/ubuntu/dists/bionic/main/binary-amd64/by-hash/SHA256/unresolvedbeef'
+printf 'bionic-to-focal\t%s\t%s\t404\tHTTP 404\tby_hash\n' "$BYHASH_UNRES" "$BYHASH_UNRES" \
+  >>"${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/failed-requests.tsv"
+printf 'bionic-to-focal\tby_hash\tSHA256\t%s\t%s\thttp_404\n' "$BYHASH_UNRES" "$BYHASH_UNRES" \
+  >>"${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/unresolved-files.tsv"
+# Also keep URL in required-files to show it is not auto-stripped when unresolved
+printf 'bionic-to-focal\tby_hash\tSHA256\t%s\t%s\t\t0\t\t404\t1\tproxy_access_log\n' \
+  "$BYHASH_UNRES" "$BYHASH_UNRES" \
+  >>"${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/required-files.tsv"
+set +e
+bash "$SCRIPT" export-hop --output-dir "$EXPORT_OUT" --repo-dir "$REPO_EXPORT" \
+  >/dev/null 2>"${WORKDIR}/export-byhash-unres.err"
+rc_bh_un=$?
+set -e
+[[ "$rc_bh_un" -ne 0 ]] && grep -qE 'unresolved-files|blocking_failed_requests|count_mismatch' "${WORKDIR}/export-byhash-unres.err" \
+  && pass "export-hop rejects by-hash 404 linked to unresolved-files" \
+  || fail "export-hop rejects by-hash 404 linked to unresolved-files"
+
+# 500 failure linked to final unresolved => export refused
+seed_export_hop "$EXPORT_OUT" "bionic-to-focal" "18.04" "20.04" 5
+FAIL500='http://example.test/ubuntu/dists/bionic/InRelease'
+printf 'bionic-to-focal\t%s\t%s\t500\tHTTP 500\tinrelease\n' "$FAIL500" "$FAIL500" \
+  >>"${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/failed-requests.tsv"
+printf 'bionic-to-focal\tinrelease\tInRelease\t%s\t%s\thttp_500\n' "$FAIL500" "$FAIL500" \
+  >>"${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/unresolved-files.tsv"
+set +e
+bash "$SCRIPT" export-hop --output-dir "$EXPORT_OUT" --repo-dir "$REPO_EXPORT" \
+  >/dev/null 2>"${WORKDIR}/export-failed-500.err"
+rc_fr_500=$?
+set -e
+[[ "$rc_fr_500" -ne 0 ]] && grep -qE 'unresolved-files|blocking_failed_requests' "${WORKDIR}/export-failed-500.err" \
+  && pass "export-hop rejects 500 linked to unresolved" \
+  || fail "export-hop rejects 500 linked to unresolved"
+
+# missing required manifest
+seed_export_hop "$EXPORT_OUT" "bionic-to-focal" "18.04" "20.04" 5
+rm -f "${EXPORT_OUT}/upgrade-discovery/bionic-to-focal/required-urls.tsv"
+set +e
+bash "$SCRIPT" export-hop --output-dir "$EXPORT_OUT" --repo-dir "$REPO_EXPORT" \
+  >/dev/null 2>"${WORKDIR}/export-missing.err"
+rc_miss=$?
+set -e
+[[ "$rc_miss" -ne 0 ]] && grep -q 'missing:required-urls.tsv' "${WORKDIR}/export-missing.err" \
+  && pass "export-hop rejects missing manifest" \
+  || fail "export-hop rejects missing manifest"
+
+# No .deb / runtime/deb-cache in any export tree
+if find "${REPO_EXPORT}/artifacts/upgrade-discovery" \( -name '*.deb' -o -path '*/runtime/*' -o -path '*/deb-cache/*' \) | grep -q .; then
+  fail "export-hop excludes .deb and runtime/deb-cache"
+  find "${REPO_EXPORT}/artifacts/upgrade-discovery" \( -name '*.deb' -o -path '*/runtime/*' -o -path '*/deb-cache/*' \) || true
+else
+  pass "export-hop excludes .deb and runtime/deb-cache"
+fi
+
+# non-ASCII output-dir path
+EXPORT_UTF="${WORKDIR}/export-src-유니코드"
+seed_export_hop "$EXPORT_UTF" "bionic-to-focal" "18.04" "20.04" 1
+REPO_UTF="${WORKDIR}/repo-유니코드"
+mkdir -p "$REPO_UTF"
+set +e
+bash "$SCRIPT" export-hop --output-dir "$EXPORT_UTF" --repo-dir "$REPO_UTF" \
+  >"${WORKDIR}/export-utf.out" 2>"${WORKDIR}/export-utf.err"
+rc_utf=$?
+set -e
+if [[ "$rc_utf" -eq 0 ]] \
+   && [[ -f "${REPO_UTF}/artifacts/upgrade-discovery/bionic-to-focal/export-summary.json" ]] \
+   && (cd "${REPO_UTF}/artifacts/upgrade-discovery/bionic-to-focal" && sha256sum -c checksums.sha256 >/dev/null); then
+  pass "export-hop handles non-ASCII paths"
+else
+  fail "export-hop handles non-ASCII paths (rc=$rc_utf)"
+  cat "${WORKDIR}/export-utf.err" || true
+fi
+
+# No leftover staging after success path either
+if ! find "${REPO_EXPORT}/artifacts/upgrade-discovery" "${REPO_UTF}/artifacts/upgrade-discovery" \
+     -maxdepth 1 -type d \( -name '.staging-*' -o -name '.replace-*' -o -name '.old-*' \) 2>/dev/null \
+     | grep -q .; then
+  pass "export-hop leaves no staging/replace/old dirs"
+else
+  fail "export-hop leaves no staging/replace/old dirs"
+fi
 
 # ---------------------------------------------------------------------------
 unset DUR_HOST_ROOT DUR_DRY_RECORDING DUR_PROXY_PORT DUR_PROXY_PY

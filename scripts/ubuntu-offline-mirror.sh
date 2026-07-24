@@ -123,6 +123,11 @@ SYNC_ENDED=""
 SNAPSHOT_ID=""
 TMP_DIR=""
 LOCK_FD=""
+LOCK_HELD=0
+LOCK_COMMAND=""
+LOCK_HOP=""
+LOCK_MODE=""
+LOCK_ACQUIRED_AT=""
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -151,12 +156,121 @@ error() { log ERROR "$*"; }
 die() { error "$*"; exit 1; }
 ok() { log OK "$*"; }
 
+# Global exclusive lock (advisory flock). Exclusivity is the open FD + flock,
+# not the mere presence of LOCK_FILE. Metadata is diagnostic only.
+_uom_lock_meta_path() {
+  printf '%s\n' "${LOCK_FILE}.meta"
+}
+
+_uom_write_lock_meta() {
+  local meta tmp
+  meta="$(_uom_lock_meta_path)"
+  tmp="${meta}.tmp.$$"
+  {
+    printf 'pid=%s\n' "$$"
+    printf 'started_at=%s\n' "${LOCK_ACQUIRED_AT:-$(iso_now)}"
+    printf 'command=%s\n' "${LOCK_COMMAND:-unknown}"
+    printf 'hop=%s\n' "${LOCK_HOP:-}"
+    printf 'hostname=%s\n' "$(hostname 2>/dev/null || printf 'unknown')"
+    printf 'lock_mode=%s\n' "${LOCK_MODE:-STANDALONE}"
+  } >"$tmp"
+  mv -f "$tmp" "$meta"
+}
+
+_uom_read_lock_meta_field() {
+  local key="$1" meta
+  meta="$(_uom_lock_meta_path)"
+  [[ -f "$meta" ]] || return 1
+  awk -F= -v k="$key" '$1==k {print substr($0, index($0,"=")+1); exit}' "$meta" 2>/dev/null
+}
+
+release_global_lock() {
+  if [[ "${LOCK_HELD:-0}" != "1" ]] && [[ -z "${LOCK_FD:-}" ]]; then
+    return 0
+  fi
+  local meta="$(_uom_lock_meta_path)"
+  if [[ -n "${LOCK_FD:-}" ]]; then
+    flock -u "$LOCK_FD" 2>/dev/null || true
+    eval "exec ${LOCK_FD}>&-" 2>/dev/null || true
+    LOCK_FD=""
+  fi
+  LOCK_HELD=0
+  rm -f "$meta" 2>/dev/null || true
+  info "LOCK_RELEASED=PASS"
+}
+
+acquire_global_lock_once() {
+  # Acquire the global lock exactly once per process.
+  # Re-open/{LOCK_FD} reuse must never happen: bash allocates a *new* FD on
+  # each `exec {var}>file`, leaving the previous FD (and flock) open — that
+  # caused FAIL on verify/publish nested under refresh-hop-selective.
+  local cmd="${1:-unknown}"
+  local hop="${2:-}"
+  local mode="${3:-STANDALONE}"
+  local new_fd="" meta owner_pid active_cmd active_hop
+
+  if [[ "${LOCK_HELD:-0}" == "1" ]]; then
+    error "FAIL_SELECTIVE_ORCHESTRATION_REENTRANT_LOCK"
+    error "PARENT_COMMAND=${LOCK_COMMAND:-unknown}"
+    error "CHILD_COMMAND=${cmd}"
+    [[ -n "${LOCK_HOP:-}" ]] && error "PARENT_HOP=${LOCK_HOP}"
+    [[ -n "$hop" ]] && error "CHILD_HOP=${hop}"
+    error "LOCK_PATH=${LOCK_FILE}"
+    die "Reentrant global lock acquire refused (same process already holds ${LOCK_FILE})"
+  fi
+
+  mkdir -p "$(dirname "$LOCK_FILE")"
+  # Fresh empty varname → bash allocates one new FD; never reuse LOCK_FD here.
+  exec {new_fd}>"$LOCK_FILE"
+  if ! flock -n "$new_fd"; then
+    eval "exec ${new_fd}>&-" 2>/dev/null || true
+    meta="$(_uom_lock_meta_path)"
+    owner_pid="$(_uom_read_lock_meta_field pid || true)"
+    active_cmd="$(_uom_read_lock_meta_field command || true)"
+    active_hop="$(_uom_read_lock_meta_field hop || true)"
+    error "FAIL_SELECTIVE_MIRROR_LOCK_BUSY"
+    error "LOCK_PATH=${LOCK_FILE}"
+    if [[ -n "$owner_pid" ]]; then
+      error "LOCK_OWNER_PID=${owner_pid}"
+    fi
+    if [[ -n "$active_cmd" ]]; then
+      error "ACTIVE_COMMAND=${active_cmd}"
+    fi
+    if [[ -n "$active_hop" ]]; then
+      error "ACTIVE_HOP=${active_hop}"
+    fi
+    die "Another ubuntu-offline-mirror process holds ${LOCK_FILE}"
+  fi
+
+  # Stale metadata with no flock owner: overwrite after successful acquire.
+  LOCK_FD="$new_fd"
+  LOCK_HELD=1
+  LOCK_COMMAND="$cmd"
+  LOCK_HOP="$hop"
+  LOCK_MODE="$mode"
+  LOCK_ACQUIRED_AT="$(iso_now)"
+  _uom_write_lock_meta
+  ok "LOCK_ACQUIRED=PASS LOCK_MODE=${LOCK_MODE} command=${cmd}${hop:+ hop=${hop}}"
+}
+
+# Legacy alias used by non-selective commands (sync, freeze, …).
+acquire_lock() {
+  acquire_global_lock_once "${1:-ubuntu-offline-mirror}" "${2:-}" "${3:-STANDALONE}"
+}
+
 cleanup_tmp() {
   if [[ -n "${TMP_DIR:-}" ]] && [[ -d "${TMP_DIR}" ]]; then
     rm -rf "${TMP_DIR}"
   fi
 }
-trap cleanup_tmp EXIT
+
+cleanup_on_exit() {
+  release_global_lock
+  cleanup_tmp
+}
+trap cleanup_on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 invalidate_ready() {
   if [[ -f "$READY_MARKER" ]]; then
@@ -165,6 +279,118 @@ invalidate_ready() {
     warn "READY marker invalidated"
   fi
   rm -f /var/lib/ubuntu-mirror/ready /var/lib/ubuntu-mirror/initial-sync-complete 2>/dev/null || true
+}
+
+resolve_validate_upgrade_profile_py() {
+  local cand
+  for cand in \
+    "${PROJECT_ROOT}/scripts/lib/validate_upgrade_profile.py" \
+    "/usr/local/lib/ubuntu-mirror/validate_upgrade_profile.py" \
+    "${SCRIPT_DIR}/lib/validate_upgrade_profile.py"
+  do
+    if [[ -f "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_upgrade_profile_json() {
+  local cand
+  for cand in \
+    "${PROJECT_ROOT}/config/offline-upgrade-profile.json" \
+    "/etc/ubuntu-mirror/offline-upgrade-profile.json" \
+    "/usr/local/lib/ubuntu-mirror/offline-upgrade-profile.json"
+  do
+    if [[ -f "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+assert_upgrade_profile_allowed() {
+  # Block minimal / incomplete configs before any download work.
+  local conf mode
+  conf="/etc/ubuntu-mirror/mirror.conf"
+  [[ -f "$conf" ]] || conf="${PROJECT_ROOT}/mirror.conf"
+  if [[ -f "$conf" ]]; then
+    mode="$(awk -F= '/^MIRROR_MODE=/{gsub(/"/, "", $2); print $2; exit}' "$conf" 2>/dev/null || true)"
+    case "${mode}" in
+      minimal|MINIMAL)
+        cat >&2 <<EOF
+ERROR: Minimal mirror profiles are not supported.
+
+Required profile: offline-upgrade-selective
+Selection mode: discovery_exact
+
+error_code=UNSUPPORTED_MINIMAL_PROFILE
+No sync was started.
+EOF
+        return 1
+        ;;
+      full|FULL|offline-upgrade-full)
+        cat >&2 <<EOF
+ERROR: Full apt-mirror sync is not part of offline-upgrade-selective.
+
+Use: plan-selective → materialize-selective → verify-selective → publish-selective
+
+error_code=UNSUPPORTED_FULL_MIRROR_SYNC
+No sync was started.
+EOF
+        return 1
+        ;;
+    esac
+  fi
+  local py profile ml
+  py="$(resolve_validate_upgrade_profile_py)" || {
+    warn "validate_upgrade_profile.py missing — skipping pre-sync profile gate"
+    return 0
+  }
+  profile="$(resolve_upgrade_profile_json)" || return 0
+  ml="/etc/apt/mirror.list"
+  [[ -f "$ml" ]] || ml="${PROJECT_ROOT}/templates/mirror.list"
+  mkdir -p "$OFFLINE_DIR"
+  set +e
+  python3 "$py" check-profile \
+    --mirror-root "$MIRROR_ROOT" \
+    --profile "$profile" \
+    --mirror-list "$ml" \
+    --mirror-conf "${conf}" \
+    --project-root "$PROJECT_ROOT" \
+    --result-json "${OFFLINE_DIR}/upgrade-profile-check.json"
+  local rc=$?
+  set -e
+  return "$rc"
+}
+
+validate_upgrade_profile_gate() {
+  local py profile
+  py="$(resolve_validate_upgrade_profile_py)" || {
+    error "validate_upgrade_profile.py not found"
+    return 1
+  }
+  profile="$(resolve_upgrade_profile_json)" || {
+    error "offline-upgrade-profile.json not found"
+    return 1
+  }
+  mkdir -p "$OFFLINE_DIR"
+  set +e
+  python3 "$py" validate \
+    --mirror-root "$MIRROR_ROOT" \
+    --ubuntu-root "$UBUNTU_ROOT" \
+    --profile "$profile" \
+    --mirror-list "${MIRROR_LIST_PATH:-/etc/apt/mirror.list}" \
+    --mirror-conf "${MIRROR_CONF_PATH:-/etc/ubuntu-mirror/mirror.conf}" \
+    --project-root "$PROJECT_ROOT" \
+    --result-json "${OFFLINE_DIR}/readiness-validation.json" \
+    --skip-external-gates \
+    "$@" 2>&1 | tee -a "$LOG_FILE"
+  local rc=${PIPESTATUS[0]}
+  set -e
+  return "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -199,13 +425,7 @@ assert_url_allowed() {
   fi
 }
 
-acquire_lock() {
-  mkdir -p "$(dirname "$LOCK_FILE")"
-  exec {LOCK_FD}>"$LOCK_FILE"
-  if ! flock -n "$LOCK_FD"; then
-    die "Another ubuntu-offline-mirror process holds ${LOCK_FILE}"
-  fi
-}
+# (lock helpers defined near logging; see acquire_global_lock_once)
 
 # ---------------------------------------------------------------------------
 # Disk / mount checks
@@ -588,12 +808,18 @@ verify_http_endpoints() {
     /offline/manifest.json
     /offline/SHA256SUMS
   )
-  # Suite metadata samples
+  # Suite metadata samples (archive prefix)
   local suite
   # shellcheck disable=SC2086
   while IFS= read -r suite; do
     paths+=("/ubuntu/dists/${suite}/InRelease")
   done < <(uom_all_suites "$UBUNTU_RELEASES" "$SUITE_SUFFIXES")
+
+  # Security pocket via distinct /ubuntu-security/ prefix (same on-disk tree)
+  local release
+  for release in $UBUNTU_RELEASES; do
+    paths+=("/ubuntu-security/dists/${release}-security/InRelease")
+  done
 
   local dist
   for dist in $UPGRADER_DISTS; do
@@ -629,6 +855,165 @@ verify_http_endpoints() {
 
   # READY may be absent during mid-sync verify failure path — optional here
   return "$rc"
+}
+
+resolve_validate_security_py() {
+  local cand
+  for cand in \
+    "${PROJECT_ROOT}/scripts/lib/validate_security_compat.py" \
+    "/usr/local/lib/ubuntu-mirror/validate_security_compat.py" \
+    "${SCRIPT_DIR}/lib/validate_security_compat.py"
+  do
+    if [[ -f "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_sync_release_upgraders_py() {
+  local cand
+  for cand in \
+    "${PROJECT_ROOT}/scripts/lib/sync_release_upgraders.py" \
+    "/usr/local/lib/ubuntu-mirror/sync_release_upgraders.py" \
+    "${SCRIPT_DIR}/lib/sync_release_upgraders.py"
+  do
+    if [[ -f "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_sync_legacy_releases_py() {
+  local cand
+  for cand in \
+    "${PROJECT_ROOT}/scripts/lib/sync_legacy_releases.py" \
+    "/usr/local/lib/ubuntu-mirror/sync_legacy_releases.py" \
+    "${SCRIPT_DIR}/lib/sync_legacy_releases.py"
+  do
+    if [[ -f "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+run_release_upgraders_tool() {
+  local cmd="$1"
+  shift || true
+  local py result_json
+  py="$(resolve_sync_release_upgraders_py)" || die "sync_release_upgraders.py not found"
+  result_json="${OFFLINE_DIR}/release-upgrader-validation.json"
+  mkdir -p "$OFFLINE_DIR"
+  info "release-upgrader ${cmd}: starting (result -> ${result_json})"
+  set +e
+  python3 "$py" "$cmd" \
+    --mirror-root "$MIRROR_ROOT" \
+    --ubuntu-root "$UBUNTU_ROOT" \
+    --public-base-url "$PUBLIC_BASE_URL" \
+    --meta-release-url "$META_RELEASE_URL" \
+    --upgrader-dists "$UPGRADER_DISTS" \
+    --meta-chain-dists "$META_CHAIN_DISTS" \
+    --keyring "$UBUNTU_KEYRING" \
+    --allowed-hosts "$(allowlist_hosts)" \
+    --connect-timeout "${CURL_CONNECT_TIMEOUT}" \
+    --max-time "${CURL_MAX_TIME}" \
+    --retries "${CURL_RETRIES}" \
+    --result-json "$result_json" \
+    "$@" 2>&1 | tee -a "$LOG_FILE"
+  local rc=${PIPESTATUS[0]}
+  set -e
+  return "$rc"
+}
+
+sync_release_upgraders_py() {
+  run_release_upgraders_tool sync
+}
+
+validate_release_upgraders_py() {
+  local -a extra=()
+  if systemctl is-active --quiet nginx 2>/dev/null; then
+    extra+=(--http-base "${VERIFY_HTTP_BASE}")
+  fi
+  run_release_upgraders_tool validate "${extra[@]}"
+}
+
+validate_security_compat() {
+  local py
+  local -a args
+  py="$(resolve_validate_security_py)" || {
+    warn "validate_security_compat.py not found — skipping security compat check"
+    return 0
+  }
+  require_cmds python3
+  mkdir -p "$OFFLINE_DIR"
+  args=(
+    --mirror-root "$MIRROR_ROOT"
+    --ubuntu-root "$UBUNTU_ROOT"
+    --require-by-hash
+    --result-json "${OFFLINE_DIR}/security-validation.json"
+  )
+  if systemctl is-active --quiet nginx 2>/dev/null; then
+    args+=(--http-base "${VERIFY_HTTP_BASE}")
+  fi
+  if [[ -d "${PROJECT_ROOT}/artifacts/upgrade-discovery" ]]; then
+    args+=(--discovery-root "${PROJECT_ROOT}/artifacts/upgrade-discovery")
+  fi
+  info "security repository compatibility check"
+  set +e
+  python3 "$py" "${args[@]}" 2>&1 | tee -a "$LOG_FILE"
+  local rc=${PIPESTATUS[0]}
+  set -e
+  return "$rc"
+}
+
+run_legacy_releases_tool() {
+  local cmd="$1"
+  shift || true
+  local py
+  py="$(resolve_sync_legacy_releases_py)" || die "sync_legacy_releases.py not found"
+  require_cmds python3
+  mkdir -p "$OFFLINE_DIR"
+  local -a args=(
+    "$cmd"
+    --mirror-root "$MIRROR_ROOT"
+    --ubuntu-root "$UBUNTU_ROOT"
+    --series xenial
+    --target-series bionic
+    --suite-suffixes "$SUITE_SUFFIXES"
+    --components "$COMPONENTS"
+    --arch "$DEFAULT_ARCH"
+    --connect-timeout "${CURL_CONNECT_TIMEOUT}"
+    --max-time "${CURL_MAX_TIME}"
+    --retries "${CURL_RETRIES}"
+    --result-json "${OFFLINE_DIR}/legacy-release-validation.json"
+    --xenial-result-json "${OFFLINE_DIR}/xenial-validation.json"
+  )
+  if [[ -d "${PROJECT_ROOT}/artifacts/upgrade-discovery" ]]; then
+    args+=(--discovery-root "${PROJECT_ROOT}/artifacts/upgrade-discovery")
+  fi
+  info "legacy-releases ${cmd}: starting (result -> ${OFFLINE_DIR}/legacy-release-validation.json)"
+  set +e
+  python3 "$py" "${args[@]}" "$@" 2>&1 | tee -a "$LOG_FILE"
+  local rc=${PIPESTATUS[0]}
+  set -e
+  return "$rc"
+}
+
+sync_legacy_releases_py() {
+  run_legacy_releases_tool sync-validate
+}
+
+validate_legacy_releases_py() {
+  run_legacy_releases_tool validate
+}
+
+restore_legacy_releases_py() {
+  run_legacy_releases_tool restore-live
 }
 
 apt_update_test_release() {
@@ -853,9 +1238,36 @@ write_manifest() {
 }
 
 write_ready_marker() {
-  local pkg_count total_h
+  local pkg_count total_h req_sum content_sum profile_name schema_ver
   pkg_count="$(find "$UBUNTU_ROOT" -type f -name '*.deb' 2>/dev/null | wc -l | tr -d ' ')"
   total_h="$(du -sh "$MIRROR_ROOT" 2>/dev/null | awk '{print $1}')"
+  profile_name="offline-upgrade-full"
+  schema_ver="1"
+  req_sum=""
+  content_sum=""
+  local req_json="${PROJECT_ROOT}/artifacts/upgrade-discovery/analysis/offline-upgrade-requirements.json"
+  if [[ -f "$req_json" ]]; then
+    req_sum="$(sha256sum "$req_json" 2>/dev/null | awk '{print $1}')"
+  fi
+  if [[ -d "${DIST_ROOT}" ]]; then
+    content_sum="$(
+      find "$DIST_ROOT" -maxdepth 2 \( -name InRelease -o -name Release \) -type f -printf '%P %s %T@\n' 2>/dev/null \
+        | sort | sha256sum | awk '{print $1}'
+    )"
+  fi
+  local profile_json
+  profile_json="$(resolve_upgrade_profile_json 2>/dev/null || true)"
+  if [[ -n "$profile_json" ]] && command -v python3 >/dev/null 2>&1; then
+    profile_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("profile_name","offline-upgrade-full"))' "$profile_json" 2>/dev/null || echo offline-upgrade-full)"
+    schema_ver="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("schema_version",1))' "$profile_json" 2>/dev/null || echo 1)"
+  fi
+  local xenial_id="" meta_id=""
+  if [[ -f "${OFFLINE_DIR}/xenial-validation.json" ]]; then
+    xenial_id="$(jq -r '.active_snapshot_id // .snapshot_id // empty' "${OFFLINE_DIR}/xenial-validation.json" 2>/dev/null || true)"
+  fi
+  if [[ -f "${OFFLINE_DIR}/release-upgrader-validation.json" ]]; then
+    meta_id="$(jq -r '.meta_release_snapshot_id // .snapshot_id // empty' "${OFFLINE_DIR}/release-upgrader-validation.json" 2>/dev/null || true)"
+  fi
   mkdir -p "$OFFLINE_DIR"
   cat >"$READY_MARKER" <<EOF
 generated_at=$(iso_now)
@@ -872,6 +1284,19 @@ upgrader_gpg=verified
 manifest=${MANIFEST_JSON}
 sha256sums=${SHA256SUMS}
 snapshot_id=${SNAPSHOT_ID}
+profile_name=${profile_name}
+schema_version=${schema_ver}
+overall=READY
+requirement_manifest_checksum=${req_sum}
+mirror_content_manifest_checksum=${content_sum}
+active_xenial_snapshot_id=${xenial_id}
+meta_release_snapshot_id=${meta_id}
+gate_repository_profile=PASS
+gate_repository_payload=PASS
+gate_by_hash=PASS
+gate_security_compat=PASS
+gate_release_upgraders=PASS
+gate_legacy_xenial=PASS
 EOF
   # Keep mirrorctl/state markers in sync with offline READY
   mkdir -p /var/lib/ubuntu-mirror 2>/dev/null || true
@@ -924,74 +1349,519 @@ maybe_run_clean() {
 }
 
 # ---------------------------------------------------------------------------
+# Supplemental by-hash sync / validate / stale cleanup
+# ---------------------------------------------------------------------------
+resolve_sync_by_hash_py() {
+  local cand
+  for cand in \
+    "${PROJECT_ROOT}/scripts/lib/sync_by_hash.py" \
+    "/usr/local/lib/ubuntu-mirror/sync_by_hash.py" \
+    "${SCRIPT_DIR}/lib/sync_by_hash.py"
+  do
+    if [[ -f "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+run_by_hash_tool() {
+  local cmd="$1"
+  shift
+  local py
+  py="$(resolve_sync_by_hash_py)" || die "sync_by_hash.py not found"
+  require_cmds python3
+  local result_json="${OFFLINE_DIR}/by-hash-${cmd}.json"
+  case "$cmd" in
+    sync-validate) result_json="${OFFLINE_DIR}/by-hash-validation.json" ;;
+    validate) result_json="${OFFLINE_DIR}/by-hash-validation.json" ;;
+    sync) result_json="${OFFLINE_DIR}/by-hash-sync.json" ;;
+    cleanup) result_json="${OFFLINE_DIR}/by-hash-cleanup.json" ;;
+  esac
+  mkdir -p "$OFFLINE_DIR"
+  info "by-hash ${cmd}: starting (result -> ${result_json})"
+  set +e
+  python3 "$py" "$cmd" \
+    --mirror-root "$MIRROR_ROOT" \
+    --ubuntu-root "$UBUNTU_ROOT" \
+    --upstream-base-url "$UPSTREAM_BASE_URL" \
+    --default-arch "${DEFAULT_ARCH}" \
+    --connect-timeout "${CURL_CONNECT_TIMEOUT}" \
+    --max-time "${CURL_MAX_TIME}" \
+    --retries "${CURL_RETRIES}" \
+    --result-json "$result_json" \
+    "$@" 2>&1 | tee -a "$LOG_FILE"
+  local rc=${PIPESTATUS[0]}
+  set -e
+  return "$rc"
+}
+
+sync_by_hash_indexes() {
+  run_by_hash_tool sync
+}
+
+validate_by_hash_indexes() {
+  run_by_hash_tool validate
+}
+
+# Sync + validate + safe stale cleanup (only removes unreferenced by-hash files)
+sync_validate_cleanup_by_hash() {
+  run_by_hash_tool sync-validate
+}
+
+# ---------------------------------------------------------------------------
+# Selective mirror paths / helpers
+# ---------------------------------------------------------------------------
+SELECTIVE_MIRROR_ROOT="${SELECTIVE_MIRROR_ROOT:-${MIRROR_ROOT}/selective}"
+FULL_MIRROR_SEED_ROOT="${FULL_MIRROR_SEED_ROOT:-${MIRROR_PATH}}"
+DISCOVERY_ROOT="${DISCOVERY_ROOT:-${PROJECT_ROOT}/artifacts/upgrade-discovery}"
+SELECTIVE_PLAN="${SELECTIVE_PLAN:-${DISCOVERY_ROOT}/analysis/selective-mirror-plan.json}"
+
+resolve_selective_mirror_py() {
+  local cand
+  for cand in \
+    "${PROJECT_ROOT}/scripts/lib/selective_mirror.py" \
+    "/usr/local/lib/ubuntu-mirror/selective_mirror.py"
+  do
+    [[ -f "$cand" ]] && { printf '%s\n' "$cand"; return 0; }
+  done
+  return 1
+}
+
+resolve_validate_selective_py() {
+  local cand
+  for cand in \
+    "${PROJECT_ROOT}/scripts/lib/validate_selective_mirror.py" \
+    "/usr/local/lib/ubuntu-mirror/validate_selective_mirror.py"
+  do
+    [[ -f "$cand" ]] && { printf '%s\n' "$cand"; return 0; }
+  done
+  return 1
+}
+
+resolve_build_selective_plan_py() {
+  local cand
+  for cand in \
+    "${PROJECT_ROOT}/scripts/build-selective-mirror-plan.py" \
+    "/usr/local/lib/ubuntu-mirror/build-selective-mirror-plan.py"
+  do
+    [[ -f "$cand" ]] && { printf '%s\n' "$cand"; return 0; }
+  done
+  return 1
+}
+
+# Write refresh-hop-selective orchestration state (diagnostic / resume).
+_uom_write_refresh_state() {
+  local phase="$1"
+  local hop="${2:-}"
+  local failure_code="${3:-}"
+  local failure_summary="${4:-}"
+  local state_dir="${SELECTIVE_MIRROR_ROOT}/state"
+  local out="${state_dir}/refresh-orchestration.json"
+  local tmp="${out}.tmp.$$"
+  local plan_ck="" disc_ck="" started="" pub_gen=""
+  mkdir -p "$state_dir" 2>/dev/null || true
+  if [[ -f "$SELECTIVE_PLAN" ]]; then
+    plan_ck="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('plan_checksum') or '')" "$SELECTIVE_PLAN" 2>/dev/null || true)"
+    disc_ck="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('discovery_artifact_checksum') or '')" "$SELECTIVE_PLAN" 2>/dev/null || true)"
+  fi
+  if [[ -f "$out" ]]; then
+    started="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('started_at') or '')" "$out" 2>/dev/null || true)"
+  fi
+  [[ -n "$started" ]] || started="$(iso_now)"
+  if [[ -d "${SELECTIVE_MIRROR_ROOT}/published" ]]; then
+    pub_gen="$(readlink -f "${SELECTIVE_MIRROR_ROOT}/published" 2>/dev/null || printf '%s' "${SELECTIVE_MIRROR_ROOT}/published")"
+  fi
+  if ! python3 -c "
+import json, sys, datetime, os
+out, phase, hop, started, plan_ck, disc_ck, staging, pub_gen, fcode, fsum = sys.argv[1:11]
+doc = {
+  'command': 'refresh-hop-selective',
+  'hop': hop,
+  'phase': phase,
+  'started_at': started,
+  'updated_at': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S+00:00'),
+  'plan_checksum': plan_ck,
+  'discovery_checksum': disc_ck,
+  'staging_root': staging,
+  'published_generation': pub_gen,
+  'failure_code': fcode,
+  'failure_summary': fsum,
+}
+tmp = out + '.tmp.' + str(os.getpid())
+with open(tmp, 'w') as fh:
+    json.dump(doc, fh, indent=2, sort_keys=True)
+    fh.write('\n')
+os.rename(tmp, out)
+" "$out" "$phase" "$hop" "$started" "$plan_ck" "$disc_ck" \
+    "${SELECTIVE_MIRROR_ROOT}/staging" "$pub_gen" "$failure_code" "$failure_summary" 2>/dev/null; then
+    printf '{"command":"refresh-hop-selective","hop":"%s","phase":"%s","updated_at":"%s"}\n' \
+      "$hop" "$phase" "$(iso_now)" >"$tmp"
+    mv -f "$tmp" "$out" 2>/dev/null || true
+  fi
+  info "REFRESH_PHASE=${phase}${hop:+ hop=${hop}}"
+}
+
+cmd_plan_selective_impl() {
+  require_cmds python3
+  local py
+  py="$(resolve_build_selective_plan_py)" || die "build-selective-mirror-plan.py not found"
+  mkdir -p "${DISCOVERY_ROOT}/analysis"
+  mkdir -p "${SELECTIVE_MIRROR_ROOT}/state" 2>/dev/null || true
+
+  # Pocket provenance indexes (Packages only — not pool, not publish).
+  # Prefer dedicated pocket-indexes tree; fall back to full-mirror seed if present.
+  local pocket_root="${POCKET_INDEX_ROOT:-${DISCOVERY_ROOT}/analysis/pocket-indexes/ubuntu}"
+  local fetch_py="${PROJECT_ROOT}/scripts/fetch-pocket-packages-indexes.py"
+  if [[ ! -f "${pocket_root}/dists/bionic/main/binary-amd64/Packages" ]]; then
+    if [[ -f "${FULL_MIRROR_SEED_ROOT}/dists/bionic/main/binary-amd64/Packages" ]] \
+       || [[ -f "${FULL_MIRROR_SEED_ROOT}/dists/bionic/main/binary-amd64/Packages.gz" ]]; then
+      pocket_root="$FULL_MIRROR_SEED_ROOT"
+      log "Using full-mirror seed as pocket-index-root: ${pocket_root}"
+    elif [[ -f "$fetch_py" ]]; then
+      log "Fetching Packages indexes for pocket provenance → ${pocket_root}"
+      python3 "$fetch_py" --out-root "$pocket_root" --series bionic \
+        || die "pocket Packages index fetch FAIL (required for provenance; refusing suite=bionic default)"
+    else
+      die "pocket-index-root missing Packages and fetch helper not found: ${pocket_root}"
+    fi
+  else
+    log "Using pocket-index-root: ${pocket_root}"
+  fi
+
+  log "Building selective mirror plan from ${DISCOVERY_ROOT}"
+  set +e
+  python3 "$py" \
+    --discovery-root "$DISCOVERY_ROOT" \
+    --seed-root "$FULL_MIRROR_SEED_ROOT" \
+    --pocket-index-root "$pocket_root" \
+    --output-dir "${DISCOVERY_ROOT}/analysis" \
+    --profile-name offline-upgrade-selective
+  local rc=$?
+  set -e
+  if [[ -f "$SELECTIVE_PLAN" ]]; then
+    cp -f "$SELECTIVE_PLAN" "${SELECTIVE_MIRROR_ROOT}/state/plan.json" 2>/dev/null || true
+  fi
+  [[ "$rc" -eq 0 ]] || die "plan-selective FAIL"
+  ok "plan-selective PASS → ${SELECTIVE_PLAN}"
+}
+
+cmd_plan_selective() {
+  # plan is read-mostly; no global lock required for standalone use
+  cmd_plan_selective_impl "$@"
+}
+
+cmd_materialize_selective_impl() {
+  require_cmds python3
+  local py hop_arg=() reuse_args=()
+  py="$(resolve_selective_mirror_py)" || { error "selective_mirror.py not found"; return 1; }
+  [[ -f "$SELECTIVE_PLAN" ]] || { error "plan missing; run plan-selective first: $SELECTIVE_PLAN"; return 1; }
+  rm -f "${SELECTIVE_MIRROR_ROOT}/state/READY" 2>/dev/null || true
+  local debug_args=()
+  if [[ "${SELECTIVE_MIRROR_DEBUG:-${UM_DEBUG:-0}}" =~ ^(1|true|yes|on)$ ]]; then
+    debug_args+=(--debug)
+  fi
+  if [[ -n "${1:-}" ]]; then
+    hop_arg+=(--hop "$1")
+    info "REQUESTED_HOP=$1"
+  fi
+  # Optional SHA256-verified reuse roots (e.g. quarantined staging); never moves published.
+  local rr
+  for rr in ${SELECTIVE_REUSE_ROOTS:-}; do
+    [[ -n "$rr" ]] || continue
+    reuse_args+=(--reuse-root "$rr")
+  done
+  # --allow-resume: reuse PASS staging when plan/discovery provenance matches
+  # (avoids re-downloading multi-GB trees after orchestration interrupt).
+  # --hop limits acquisition to that hop only (does not materialize the full chain).
+  python3 "$py" materialize \
+    --plan "$SELECTIVE_PLAN" \
+    --selective-root "$SELECTIVE_MIRROR_ROOT" \
+    --allow-resume \
+    "${hop_arg[@]}" \
+    "${reuse_args[@]}" \
+    "${debug_args[@]}" \
+    || { error "materialize-selective FAIL (see stderr and ${SELECTIVE_MIRROR_ROOT}/state/failed-downloads.json)"; return 1; }
+  ok "materialize-selective complete (not published)"
+  return 0
+}
+
+cmd_quarantine_staging_selective_impl() {
+  require_cmds python3
+  local py evidence_dir="${1:-}"
+  py="$(resolve_selective_mirror_py)" || { error "selective_mirror.py not found"; return 1; }
+  local args=(quarantine-staging --selective-root "$SELECTIVE_MIRROR_ROOT")
+  if [[ -n "$evidence_dir" ]]; then
+    args+=(--evidence-dir "$evidence_dir")
+  fi
+  python3 "$py" "${args[@]}" \
+    || { error "quarantine-staging-selective FAIL"; return 1; }
+  ok "quarantine-staging-selective PASS (staging renamed; not deleted)"
+  return 0
+}
+
+cmd_quarantine_staging_selective() {
+  acquire_global_lock_once "quarantine-staging-selective" "" "STANDALONE"
+  cmd_quarantine_staging_selective_impl "$@" || die "quarantine-staging-selective FAIL"
+}
+
+cmd_materialize_selective() {
+  acquire_global_lock_once "materialize-selective" "" "STANDALONE"
+  cmd_materialize_selective_impl "$@" || die "materialize-selective FAIL"
+}
+
+cmd_verify_selective_impl() {
+  require_cmds python3
+  local py hop="${1:-}"
+  py="$(resolve_validate_selective_py)" || { error "validate_selective_mirror.py not found"; return 1; }
+  [[ -f "$SELECTIVE_PLAN" ]] || { error "plan missing; run plan-selective first"; return 1; }
+  mkdir -p "${SELECTIVE_MIRROR_ROOT}/state" 2>/dev/null || true
+  cp -f "$SELECTIVE_PLAN" "${SELECTIVE_MIRROR_ROOT}/state/plan.json" 2>/dev/null || true
+  # Pre-publish only: validates staging. Never depends on production nginx
+  # or selective/current (those are post-publish smoke tests inside publish-selective).
+  local args=(
+    --plan "$SELECTIVE_PLAN"
+    --selective-root "$SELECTIVE_MIRROR_ROOT"
+    --mirror-root "$MIRROR_ROOT"
+    --phase pre_publish
+    --result-json "${SELECTIVE_MIRROR_ROOT}/state/verify-result.json"
+  )
+  if [[ -n "$hop" ]]; then
+    args+=(--hop "$hop")
+    info "VERIFY_HOP=$hop"
+  fi
+  # Isolated APT against staging file:// repos (default on; set VERIFY_SELECTIVE_APT=0 to skip)
+  if [[ "${VERIFY_SELECTIVE_APT:-1}" != "0" ]]; then
+    args+=(--run-apt)
+  fi
+  python3 "$py" "${args[@]}" || { error "verify-selective FAIL (pre-publish / staging)"; return 1; }
+  ok "verify-selective PASS (pre-publish; not published; READY not written)"
+  return 0
+}
+
+cmd_verify_selective() {
+  acquire_global_lock_once "verify-selective" "" "STANDALONE"
+  cmd_verify_selective_impl "$@" || die "verify-selective FAIL (pre-publish / staging)"
+}
+
+cmd_publish_selective_impl() {
+  require_cmds python3
+  local py
+  py="$(resolve_selective_mirror_py)" || { error "selective_mirror.py not found"; return 1; }
+  [[ -f "$SELECTIVE_PLAN" ]] || { error "plan missing; run plan-selective first"; return 1; }
+  # Atomic publish + post-publish concrete HTTP endpoint smoke + READY
+  # Preflight (inside selective_mirror.py): effective nginx root must be
+  # SELECTIVE_MIRROR_ROOT/current or SELECTIVE_NGINX_EFFECTIVE_ROOT_MISMATCH.
+  python3 "$py" publish \
+    --selective-root "$SELECTIVE_MIRROR_ROOT" \
+    --plan "$SELECTIVE_PLAN" \
+    --http-base "${VERIFY_HTTP_BASE}" \
+    || { error "publish-selective FAIL"; return 1; }
+  ok "publish-selective complete (post-publish HTTP PASS; READY written)"
+  return 0
+}
+
+cmd_publish_selective() {
+  acquire_global_lock_once "publish-selective" "" "STANDALONE"
+  cmd_publish_selective_impl "$@" || die "publish-selective FAIL"
+}
+
+cmd_quarantine_hop_selective_impl() {
+  # Mark a contaminated hop NOT_READY/QUARANTINED without destroying other hops.
+  require_cmds python3
+  local hop="${1:-}"
+  [[ -n "$hop" ]] || die "usage: quarantine-hop-selective <hop>  (e.g. xenial-to-bionic)"
+  PYTHONPATH="${PROJECT_ROOT}/scripts/lib${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 -c "
+import json, sys
+from validate_selective_mirror import quarantine_hop
+r = quarantine_hop(sys.argv[1], sys.argv[2], reason='FAIL_SOURCE_SUITE_TARGET_PACKAGE_CONTAMINATION')
+print(json.dumps(r, indent=2))
+" "$SELECTIVE_MIRROR_ROOT" "$hop" || die "quarantine-hop-selective FAIL"
+  ok "quarantine-hop-selective: ${hop} → QUARANTINED (READY cleared; other hops untouched)"
+}
+
+cmd_quarantine_hop_selective() {
+  cmd_quarantine_hop_selective_impl "$@"
+}
+
+cmd_refresh_hop_selective_impl() {
+  # Internal: assumes global lock already held. Never re-executes this script / public cmds.
+  local hop="${1:-xenial-to-bionic}"
+  log "refresh-hop-selective: hop=${hop} (selective only; no full mirror)"
+  info "LOCK_MODE=OUTER_ORCHESTRATION"
+
+  # Quarantine existing contaminated publish of this hop before rematerialize.
+  if [[ -d "${SELECTIVE_MIRROR_ROOT}/published/hops/${hop}" ]] \
+    || [[ -d "${SELECTIVE_MIRROR_ROOT}/current/hops/${hop}" ]]; then
+    _uom_write_refresh_state "QUARANTINED" "$hop"
+    cmd_quarantine_hop_selective_impl "$hop" || true
+  fi
+
+  _uom_write_refresh_state "PLAN_READY" "$hop"
+  cmd_plan_selective_impl
+
+  info "REFRESH_PHASE=MATERIALIZE"
+  if ! cmd_materialize_selective_impl "$hop"; then
+    _uom_write_refresh_state "FAILED" "$hop" "SELECTIVE_MATERIALIZE_FAILED" \
+      "materialize-selective failed"
+    die "materialize-selective FAIL"
+  fi
+  _uom_write_refresh_state "MATERIALIZED" "$hop"
+  info "REFRESH_PHASE=VERIFY"
+  if ! cmd_verify_selective_impl "$hop"; then
+    _uom_write_refresh_state "FAILED" "$hop" "SELECTIVE_PREPUBLISH_VERIFY_FAILED" \
+      "verify-selective failed; publish skipped; quarantine retained"
+    die "verify-selective FAIL — publish skipped; quarantine retained"
+  fi
+  info "VERIFY_RESULT=PASS"
+  _uom_write_refresh_state "VERIFIED" "$hop"
+
+  info "REFRESH_PHASE=PUBLISH"
+  if ! cmd_publish_selective_impl; then
+    _uom_write_refresh_state "FAILED" "$hop" "SELECTIVE_PUBLISH_FAILED" \
+      "publish-selective failed; quarantine retained"
+    die "publish-selective FAIL — quarantine retained"
+  fi
+  info "PUBLISH_RESULT=PASS"
+  _uom_write_refresh_state "PUBLISHED" "$hop"
+  ok "refresh-hop-selective complete for ${hop} (READY only if verify+publish PASS)"
+}
+
+cmd_refresh_hop_selective() {
+  # Official single orchestration: one global lock for the entire hop refresh.
+  # Calls *_impl only — never re-enters public entry points / re-executes this script.
+  local hop="${1:-xenial-to-bionic}"
+  acquire_global_lock_once "refresh-hop-selective" "$hop" "OUTER_ORCHESTRATION"
+  cmd_refresh_hop_selective_impl "$hop"
+}
+
+cmd_migrate_selective_runtime() {
+  # Refresh installed CLI/libs/config only. Never touch selective READY/published.
+  require_cmds python3 sha256sum
+  if [[ "$(id -u)" -ne 0 ]] && [[ "${UM_ALLOW_NONROOT_MIGRATE:-0}" != "1" ]]; then
+    die "migrate-selective-runtime requires root (or UM_ALLOW_NONROOT_MIGRATE=1 for tests)"
+  fi
+  # Prefer checkout that contains this script when invoked from the repo.
+  local src_root=""
+  if [[ -f "${SCRIPT_DIR}/../scripts/mirrorctl" ]] && [[ -f "${SCRIPT_DIR}/../lib/config.sh" ]]; then
+    src_root="$(cd "${SCRIPT_DIR}/.." && pwd)"
+  elif [[ -f "${PROJECT_ROOT}/scripts/mirrorctl" ]]; then
+    src_root="$PROJECT_ROOT"
+  fi
+  if [[ -n "$src_root" ]] && [[ -f "${src_root}/lib/config.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${src_root}/lib/common.sh"
+    # shellcheck source=/dev/null
+    source "${src_root}/lib/config.sh"
+  elif [[ -f /usr/local/lib/ubuntu-mirror/config.sh ]]; then
+    # shellcheck source=/dev/null
+    source /usr/local/lib/ubuntu-mirror/common.sh
+    # shellcheck source=/dev/null
+    source /usr/local/lib/ubuntu-mirror/config.sh
+  else
+    die "config.sh not found for migrate-selective-runtime"
+  fi
+  if [[ -z "$src_root" ]]; then
+    src_root="$(um_runtime_source_root 2>/dev/null || true)"
+  fi
+  [[ -n "$src_root" ]] || die "Cannot locate repository checkout (need scripts/mirrorctl). Set /etc/ubuntu-mirror/source-repo"
+  UM_PROJECT_ROOT="$src_root"
+  um_migrate_selective_runtime "$src_root" || die "migrate-selective-runtime FAIL"
+  ok "migrate-selective-runtime complete (selective repository untouched)"
+}
+
+cmd_migrate_nginx_selective() {
+  # Idempotent legacy → selective nginx site migration (no publish).
+  if [[ -f "${PROJECT_ROOT}/lib/config.sh" ]]; then
+    # shellcheck source=../lib/config.sh
+    source "${PROJECT_ROOT}/lib/common.sh"
+    # shellcheck source=../lib/config.sh
+    source "${PROJECT_ROOT}/lib/config.sh"
+  elif [[ -f /usr/local/lib/ubuntu-mirror/config.sh ]]; then
+    # shellcheck source=/dev/null
+    source /usr/local/lib/ubuntu-mirror/common.sh
+    # shellcheck source=/dev/null
+    source /usr/local/lib/ubuntu-mirror/config.sh
+  else
+    die "config.sh not found for nginx migration"
+  fi
+  UM_PROJECT_ROOT="${UM_PROJECT_ROOT:-$PROJECT_ROOT}"
+  um_load_config "${UM_CONFIG_PATH:-${PROJECT_ROOT}/mirror.conf}" 2>/dev/null || \
+    um_load_config "${PROJECT_ROOT}/mirror.conf"
+  SELECTIVE_MIRROR_ROOT="${SELECTIVE_MIRROR_ROOT:-${MIRROR_ROOT}/selective}"
+  SELECTIVE_NGINX_ROOT="${SELECTIVE_NGINX_ROOT:-${SELECTIVE_MIRROR_ROOT}/current}"
+  um_migrate_nginx_selective_site || die "migrate-nginx-selective FAIL"
+  local root
+  root="$(um_selective_nginx_root)"
+  ok "migrate-nginx-selective complete (effective root target: ${root})"
+  if command -v nginx >/dev/null 2>&1; then
+    nginx -T 2>/dev/null | grep -E '^\s*root\s+' | head -5 || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 cmd_sync() {
-  require_cmds curl flock gpgv jq sha256sum findmnt df stat file tee
-  acquire_lock
-  TMP_DIR="$(mktemp -d /tmp/uom-XXXXXX)"
-  SYNC_STARTED="$(iso_now)"
-  SNAPSHOT_ID="snap-$(date +%Y%m%d-%H%M%S)-$(hostname -s 2>/dev/null || echo host)"
-  invalidate_ready
-
-  check_mirror_mount
-  check_disk_space
-  mkdir -p "$MIRROR_PATH" "$SKEL_PATH" "$VAR_PATH" "$OFFLINE_DIR" "$ANNOUNCE_DIR"
-
-  if ! run_apt_mirror; then
-    die "apt-mirror failed"
+  if [[ -f "${PROJECT_ROOT}/lib/upgrade-profile.sh" ]]; then
+    # shellcheck source=../lib/upgrade-profile.sh
+    source "${PROJECT_ROOT}/lib/upgrade-profile.sh"
+    um_load_upgrade_profile 2>/dev/null || true
+    if [[ "${UM_UPGRADE_PROFILE_NAME:-}" == "offline-upgrade-selective" ]] || \
+       [[ "${UM_UPGRADE_SELECTION_MODE:-}" == "discovery_exact" ]]; then
+      um_reject_full_sync_request "UNSUPPORTED_FULL_MIRROR_SYNC" || true
+      die "sync blocked under selective profile; use plan-selective → materialize-selective → verify-selective → publish-selective"
+    fi
   fi
-  ok "apt-mirror completed"
+  die "sync-full-legacy is disabled; existing full mirror seed is preserved at ${FULL_MIRROR_SEED_ROOT:-$MIRROR_PATH}"
+}
 
-  sync_release_upgraders
-  build_local_meta
-  verify_all_upgraders || die "Release upgrader GPG verification failed"
-
-  if ! verify_all_suites_fs; then
-    die "Suite filesystem verification failed"
-  fi
-
-  write_sha256sums
-  write_manifest
-  chmod 0644 "$SHA256SUMS" "$MANIFEST_JSON" 2>/dev/null || true
-  # Ensure freshly downloaded upgraders/meta are world-readable for nginx
-  find "$OFFLINE_DIR" -type f -exec chmod 0644 {} +
-  for dist in $UPGRADER_DISTS; do
-    find "$(upgrader_dir_for "$dist")" -type f -exec chmod 0644 {} + 2>/dev/null || true
-  done
-
-  if systemctl is-active --quiet nginx 2>/dev/null; then
-    verify_http_endpoints || die "HTTP endpoint verification failed"
-    verify_apt_all_releases || die "Isolated apt-get update verification failed"
-  else
-    warn "nginx not active — skipping HTTP/apt verification (filesystem checks passed)"
-  fi
-
-  if ! maybe_run_clean; then
-    die "clean.sh failed"
-  fi
-
-  SYNC_ENDED="$(iso_now)"
-  jq -n --arg s "$SYNC_STARTED" --arg e "$SYNC_ENDED" --arg id "$SNAPSHOT_ID" --arg r ok \
-    '{started:$s,ended:$e,snapshot_id:$id,result:$r}' >"$SYNC_STATE"
-
-  write_ready_marker
-  ok "sync complete — READY"
+cmd_sync_full_legacy() {
+  die "sync-full-legacy intentionally disabled (no apt-mirror auto-run). Seed preserved."
 }
 
 cmd_verify() {
-  require_cmds curl gpgv jq sha256sum file apt-get apt-cache
+  # Selective profile: verify-selective is the primary gate.
+  if [[ -f "${PROJECT_ROOT}/lib/upgrade-profile.sh" ]]; then
+    # shellcheck source=../lib/upgrade-profile.sh
+    source "${PROJECT_ROOT}/lib/upgrade-profile.sh"
+    um_load_upgrade_profile 2>/dev/null || true
+    if [[ "${UM_UPGRADE_PROFILE_NAME:-}" == "offline-upgrade-selective" ]] || \
+       [[ "${UM_UPGRADE_SELECTION_MODE:-}" == "discovery_exact" ]]; then
+      cmd_verify_selective "$@"
+      return $?
+    fi
+  fi
+  require_cmds curl gpgv jq sha256sum file apt-get apt-cache python3
   acquire_lock
   TMP_DIR="$(mktemp -d /tmp/uom-XXXXXX)"
   invalidate_ready
 
   local rc=0
-  verify_all_upgraders || rc=1
+  assert_upgrade_profile_allowed || rc=1
   verify_all_suites_fs || rc=1
-  [[ -f "$META_LOCAL" ]] || { error "missing $META_LOCAL"; rc=1; }
-  [[ -f "$META_UPSTREAM" ]] || { error "missing $META_UPSTREAM"; rc=1; }
-  if [[ -f "$META_LOCAL" ]]; then
-    uom_local_meta_urls_ok "$META_LOCAL" "$PUBLIC_BASE_URL" || rc=1
+  validate_upgrade_profile_gate || rc=1
+
+  if ! validate_by_hash_indexes; then
+    error "by-hash validation failed"
+    rc=1
+  fi
+
+  if ! validate_security_compat; then
+    error "security repository compatibility failed"
+    rc=1
+  fi
+
+  if ! validate_release_upgraders_py; then
+    error "release upgrader validation failed"
+    rc=1
+  fi
+
+  if ! validate_legacy_releases_py; then
+    error "legacy release validation failed"
+    rc=1
   fi
 
   if ! systemctl is-active --quiet nginx 2>/dev/null; then
@@ -1006,7 +1876,7 @@ cmd_verify() {
   fi
 
   if [[ "$rc" -ne 0 ]]; then
-    die "verify failed"
+    die "verify failed — READY not written (overall=BLOCKED)"
   fi
 
   SYNC_STARTED="$(jq -r '.started // empty' "$SYNC_STATE" 2>/dev/null || true)"
@@ -1017,65 +1887,127 @@ cmd_verify() {
   ok "verify passed — READY refreshed"
 }
 
+cmd_sync_by_hash() {
+  require_cmds python3 curl sha256sum
+  acquire_lock
+  TMP_DIR="$(mktemp -d /tmp/uom-XXXXXX)"
+  mkdir -p "$OFFLINE_DIR"
+  sync_by_hash_indexes || die "by-hash sync failed"
+  ok "by-hash sync complete"
+}
+
+cmd_validate_by_hash() {
+  require_cmds python3 sha256sum
+  acquire_lock
+  TMP_DIR="$(mktemp -d /tmp/uom-XXXXXX)"
+  mkdir -p "$OFFLINE_DIR"
+  validate_by_hash_indexes || die "by-hash validation failed"
+  ok "by-hash validation PASS"
+}
+
 cmd_status() {
-  echo "=== Ubuntu Offline Mirror Status ==="
+  echo "=== Ubuntu Offline Mirror Status (selective) ==="
   echo "Hostname:        $(hostname -f 2>/dev/null || hostname)"
   echo "PUBLIC_BASE_URL: $PUBLIC_BASE_URL"
   echo "MIRROR_ROOT:     $MIRROR_ROOT"
+  echo "SELECTIVE_ROOT:  ${SELECTIVE_MIRROR_ROOT}"
+  echo "SEED_ROOT:       ${FULL_MIRROR_SEED_ROOT}"
   echo "Mount:           $(path_fs_target "$MIRROR_ROOT") <- $(path_fs_source "$MIRROR_ROOT")"
   echo "Disk:            $(df -h "$MIRROR_ROOT" 2>/dev/null | awk 'NR==2 {printf "used=%s avail=%s (%s)", $3,$4,$5}')"
-  if [[ -d "$MIRROR_ROOT" ]]; then
-    echo "Mirror size:     $(du -sh "$MIRROR_ROOT" 2>/dev/null | awk '{print $1}')"
-    echo ".deb count:      $(find "$UBUNTU_ROOT" -type f -name '*.deb' 2>/dev/null | wc -l | tr -d ' ')"
+  local profile_name="offline-upgrade-selective"
+  if [[ -f "${PROJECT_ROOT}/lib/upgrade-profile.sh" ]]; then
+    # shellcheck source=../lib/upgrade-profile.sh
+    source "${PROJECT_ROOT}/lib/upgrade-profile.sh"
+    um_load_upgrade_profile 2>/dev/null || true
+    profile_name="${UM_UPGRADE_PROFILE_NAME:-$profile_name}"
   fi
-  if [[ -f "$SYNC_STATE" ]]; then
-    echo "Last sync:       $(cat "$SYNC_STATE")"
+  echo "profile_name:    $profile_name"
+  if [[ -f "$SELECTIVE_PLAN" ]]; then
+    python3 - "$SELECTIVE_PLAN" "${SELECTIVE_MIRROR_ROOT}" <<'PY' 2>/dev/null || true
+import json, os, sys
+plan=json.load(open(sys.argv[1]))
+root=sys.argv[2]
+state=os.path.join(root,'state')
+c=plan.get('counts') or {}
+s=plan.get('sizes') or {}
+
+def load_first(*names):
+    for n in names:
+        p=os.path.join(state,n)
+        if os.path.isfile(p):
+            return json.load(open(p))
+    return {}
+
+mat=load_first('materialize.json')
+ver=load_first('verify-result.json','verify.json')
+pub=load_first('publish-result.json','publish.json')
+failed=load_first('failed-downloads.json')
+stats=mat.get('stats') or {}
+expected=int(c.get('unique_deb_sha256') or 0)
+downloaded=int(stats.get('downloaded') or 0)
+exists=int(stats.get('exists') or 0)
+reused=int(stats.get('hardlink') or 0)+int(stats.get('reflink') or 0)+int(stats.get('copy') or 0)
+verified='NOT_RUN'
+if ver:
+    verified=ver.get('verified_files', ver.get('verified_deb_count', ver.get('validation_result')))
+pre=ver.get('validation_result') if ver else 'NOT_RUN'
+pub_st=pub.get('validation_result') if pub else 'NOT_RUN'
+post='NOT_RUN'
+if pub:
+    post=(pub.get('gates') or {}).get('post_publish_http') or pub.get('validation_result') or 'NOT_RUN'
+ready=os.path.isfile(os.path.join(state,'READY'))
+cur=os.path.join(root,'current')
+cur_tgt=os.readlink(cur) if os.path.islink(cur) else ('published' if os.path.isdir(os.path.join(root,'published')) else '-')
+last_err='-'
+if failed.get('error_code') or failed.get('exception_message'):
+    last_err=failed.get('error_code') or failed.get('exception_message')
+elif pub.get('errors'):
+    last_err=pub['errors'][0]
+elif ver.get('errors'):
+    last_err=ver['errors'][0]
+print('plan_validation:        %s' % plan.get('validation_result'))
+print('materialize:            %s' % (mat.get('validation_result') or 'NOT_RUN'))
+print('pre_publish_verify:     %s' % pre)
+print('publish:                %s' % pub_st)
+print('post_publish_http:      %s' % post)
+print('READY:                  %s' % ('YES' if ready else 'NO'))
+print('current_published:      %s' % cur_tgt)
+print('rollback_status:        %s' % (pub.get('rollback_result') or ('performed' if pub.get('rollback_performed') else 'none')))
+print('plan_checksum:          %s' % (plan.get('plan_checksum') or ver.get('plan_checksum') or ver.get('selective_plan_checksum') or '-'))
+print('discovery_checksum:     %s' % (plan.get('discovery_artifact_checksum') or ver.get('discovery_artifact_checksum') or '-'))
+print('last_error:             %s' % last_err)
+print('expected_file_count:    %s' % expected)
+print('downloaded_count:       %s' % downloaded)
+print('verified_count:         %s' % verified)
+print('skipped_existing_count: %s' % exists)
+print('reused_seed_count:      %s' % reused)
+print('failed_count:           %s' % (1 if failed else 0))
+print('unresolved_count:       %s' % c.get('unresolved_deb_payloads'))
+print('downloaded_bytes:       %s' % stats.get('bytes_downloaded', s.get('download_bytes')))
+print('total_expected_bytes:   %s' % s.get('unique_deb_bytes'))
+print('selected_package_count: %s' % c.get('unique_packages_by_name_arch_version'))
+print('validation_result:      %s' % (ver.get('validation_result') or plan.get('validation_result')))
+PY
   else
-    echo "Last sync:       (none)"
+    echo "plan:             missing (run plan-selective)"
   fi
-  if pgrep -f '/usr/bin/apt-mirror' >/dev/null 2>&1 || systemctl is-active --quiet apt-mirror.service 2>/dev/null; then
-    echo "Process:         apt-mirror RUNNING"
-  else
-    echo "Process:         idle"
+  if [[ -d "${SELECTIVE_MIRROR_ROOT}/published" ]]; then
+    echo "published size:  $(du -sh "${SELECTIVE_MIRROR_ROOT}/published" 2>/dev/null | awk '{print $1}')"
+  elif [[ -d "${SELECTIVE_MIRROR_ROOT}/staging" ]]; then
+    echo "staging size:    $(du -sh "${SELECTIVE_MIRROR_ROOT}/staging" 2>/dev/null | awk '{print $1}')"
   fi
-  if [[ -f "$READY_MARKER" ]]; then
-    echo "READY:           yes ($READY_MARKER)"
+  if [[ -d "$FULL_MIRROR_SEED_ROOT" ]]; then
+    echo "seed present:    yes (preserved; not deleted by automation)"
   else
-    echo "READY:           no"
-  fi
-  if [[ -f "$FROZEN_MARKER" ]]; then
-    echo "FROZEN:          yes ($FROZEN_MARKER)"
-  else
-    echo "FROZEN:          no"
+    echo "seed present:    no"
   fi
   echo "nginx:           $(systemctl is-active nginx 2>/dev/null || echo unknown)"
   if systemctl list-timers apt-mirror.timer --no-pager 2>/dev/null | grep -q apt-mirror; then
-    echo "Timer next:      $(systemctl list-timers apt-mirror.timer --no-pager 2>/dev/null | awk 'NR==2 {print $1,$2,$3,$4}')"
+    echo "Timer:           present (should be disabled under selective profile)"
     echo "Timer enabled:   $(systemctl is-enabled apt-mirror.timer 2>/dev/null || echo unknown)"
   else
     echo "Timer:           not registered / inactive"
   fi
-  echo
-  echo "--- Suites ---"
-  local suite
-  # shellcheck disable=SC2086
-  while IFS= read -r suite; do
-    if suite_has_release_meta "$suite"; then
-      printf '  %-22s OK  Valid-Until=%s\n' "$suite" "$(valid_until_of_suite "$suite")"
-    else
-      printf '  %-22s MISSING\n' "$suite"
-    fi
-  done < <(uom_all_suites "$UBUNTU_RELEASES" "$SUITE_SUFFIXES")
-  echo
-  echo "--- Release upgraders ---"
-  local dist
-  for dist in $UPGRADER_DISTS; do
-    if verify_upgrader_gpg "$dist" >/dev/null 2>&1; then
-      printf '  %-10s GPG OK\n' "$dist"
-    else
-      printf '  %-10s MISSING/FAIL\n' "$dist"
-    fi
-  done
 }
 
 cmd_freeze() {
@@ -1094,9 +2026,13 @@ cmd_freeze() {
   # Release lock before nested verify? We hold lock — call verify internals directly
   invalidate_ready
   local rc=0
-  verify_all_upgraders || rc=1
+  assert_upgrade_profile_allowed || rc=1
   verify_all_suites_fs || rc=1
-  [[ -f "$META_LOCAL" ]] || rc=1
+  validate_upgrade_profile_gate || rc=1
+  validate_by_hash_indexes || rc=1
+  validate_security_compat || rc=1
+  validate_release_upgraders_py || rc=1
+  validate_legacy_releases_py || rc=1
   if systemctl is-active --quiet nginx; then
     write_sha256sums
     write_manifest
@@ -1165,31 +2101,405 @@ usage() {
   cat <<EOF
 Usage: ${SCRIPT_NAME} <command>
 
-Commands:
-  sync         Full sync: apt-mirror + upgraders + meta + verify + READY
-  verify       Offline local verification (no external network required for checks)
-  status       Show mirror / upgrader / READY / timer status
-  freeze       Verify, disable timer, write FROZEN marker for air-gap move
-  sha256-all   Expensive full-tree SHA256 (optional)
+Primary (offline-upgrade-selective):
+  plan-selective            Analyze discovery → selective-mirror-plan.json (no copy/download)
+  materialize-selective [hop]  materialize plan (optional hop limits to one hop)
+  quarantine-staging-selective [evidence-dir]
+                            atomic quarantine of provenance-mismatch staging (no delete)
+  verify-selective          Pre-publish staging gates (no production nginx / READY)
+  publish-selective         Atomic publish + post-publish HTTP smoke + READY
+  quarantine-hop-selective  Mark one hop QUARANTINED/NOT_READY (no tree destroy)
+  refresh-hop-selective     Quarantine+plan+materialize+verify+publish (one hop refresh)
+  migrate-nginx-selective   Migrate managed apt-mirror site → selective/current root
+  migrate-selective-runtime Refresh installed mirrorctl/libs/config (no sync/publish)
+  status                    Selective profile counts, sizes, READY
+  verify                    Alias → verify-selective under selective profile
+
+Blocked / legacy:
+  sync                      Blocked under selective (UNSUPPORTED_FULL_MIRROR_SYNC)
+  sync-full-legacy          Disabled (preserves existing 2.2TB seed)
+
+Also available:
+  check-profile / validate-profile / migrate-profile
+  sync-release-upgraders / validate-release-upgraders
+  sync-legacy-releases / validate-legacy-releases / freeze-xenial-snapshot
+  sync-by-hash / validate-by-hash   (legacy full-tree helpers; not READY gates)
+  freeze / sha256-all
+  build-client-xenial-to-bionic
+  build-client-bionic-to-focal
+  build-client-focal-to-jammy
+  build-client-jammy-to-noble
+                          Render single-file DP client upgrade script + manifest
+                          into artifacts/client/ (and optional /var/spool/apt-mirror/client)
+                          Does not rematerialize/publish or change READY.
 
 Config: /etc/default/ubuntu-offline-mirror
-Log:    ${LOG_FILE}
+Profile SSOT: config/offline-upgrade-profile.json (offline-upgrade-selective)
+Selective root: ${SELECTIVE_MIRROR_ROOT}
+Seed (read-only): ${FULL_MIRROR_SEED_ROOT}
+Plan: ${SELECTIVE_PLAN}
 
-Scope INCLUDED: Ubuntu amd64 binary packages (main/restricted/universe/multiverse),
-                kernels/headers, release upgraders for bionic/focal/jammy/noble.
-Scope EXCLUDED: i386, deb-src, Ubuntu Pro/ESM, PPAs, Docker/NVIDIA external repos,
-                Snap, vendor private APT repos.
+Included: discovery-exact .deb payloads, generated Packages/Release/InRelease,
+          local GPG signing, meta-release-lts, release upgraders, security URL alias.
+Excluded: full apt-mirror sync, Translation/DEP-11/CNF/Contents, official by-hash set,
+          i386, deb-src, Ubuntu Pro/ESM, PPAs.
 EOF
+}
+
+cmd_build_client_xenial_to_bionic() {
+  require_cmds python3 gpg gpgv curl sha256sum
+  local py mirror_base out_dir skip_sign=0 deploy_nginx=0
+  py="${PROJECT_ROOT}/scripts/lib/build_client_xenial_to_bionic.py"
+  [[ -f "$py" ]] || die "build_client_xenial_to_bionic.py not found"
+  mirror_base="${PUBLIC_BASE_URL:-}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --mirror-base)
+        mirror_base="${2:-}"; shift 2 || die "--mirror-base requires URL" ;;
+      --mirror-base=*)
+        mirror_base="${1#*=}"; shift ;;
+      --skip-sign)
+        # Unsigned test builds are isolated under artifacts/client-unsigned-test
+        # and never written to artifacts/client or nginx.
+        skip_sign=1; shift ;;
+      --deploy-nginx)
+        deploy_nginx=1; shift ;;
+      *)
+        die "unknown build-client argument: $1" ;;
+    esac
+  done
+  if [[ -z "$mirror_base" || "$mirror_base" == "http://ubuntu-mirror.local" ]]; then
+    if [[ -f /etc/default/ubuntu-offline-mirror ]]; then
+      # shellcheck disable=SC1091
+      mirror_base="$(set +u; # shellcheck source=/dev/null
+        source /etc/default/ubuntu-offline-mirror
+        printf '%s' "${PUBLIC_BASE_URL:-}")"
+    fi
+  fi
+  [[ -n "$mirror_base" && "$mirror_base" != "http://ubuntu-mirror.local" ]] \
+    || die "PUBLIC_BASE_URL / --mirror-base required (got '${mirror_base}')"
+  if [[ "$skip_sign" -eq 1 ]]; then
+    out_dir="${PROJECT_ROOT}/artifacts/client-unsigned-test"
+  else
+    out_dir="${PROJECT_ROOT}/artifacts/client"
+  fi
+  mkdir -p "$out_dir"
+  info "Building xenial→bionic client script (mirror_base=${mirror_base} skip_sign=${skip_sign})"
+  local args=(
+    --project-root "$PROJECT_ROOT"
+    --mirror-base "$mirror_base"
+    --selective-root "${SELECTIVE_MIRROR_ROOT:-${MIRROR_ROOT}/selective}"
+    --output-dir "$out_dir"
+  )
+  [[ "$skip_sign" -eq 1 ]] && args+=(--skip-sign)
+  # Production nginx publish is opt-in and still goes through signature gates
+  # inside the builder; prefer scripts/deploy-client-xenial-to-bionic-atomic.sh.
+  if [[ "$deploy_nginx" -eq 1 ]]; then
+    [[ "$skip_sign" -eq 0 ]] || die "--deploy-nginx incompatible with --skip-sign"
+    args+=(--deploy-nginx-root "${MIRROR_ROOT}/client")
+  fi
+  python3 "$py" "${args[@]}"
+  ok "client artifact ready under ${out_dir}"
+  if [[ -f "${out_dir}/dp-offline-upgrade-xenial-to-bionic.sh.sha256" ]]; then
+    cat "${out_dir}/dp-offline-upgrade-xenial-to-bionic.sh.sha256"
+  fi
+}
+
+
+cmd_build_client_bionic_to_focal() {
+  require_cmds python3 gpg gpgv curl sha256sum
+  local py mirror_base out_dir skip_sign=0 deploy_nginx=0
+  py="${PROJECT_ROOT}/scripts/lib/build_client_bionic_to_focal.py"
+  [[ -f "$py" ]] || die "build_client_bionic_to_focal.py not found"
+  mirror_base="${PUBLIC_BASE_URL:-}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --mirror-base)
+        mirror_base="${2:-}"; shift 2 || die "--mirror-base requires URL" ;;
+      --mirror-base=*)
+        mirror_base="${1#*=}"; shift ;;
+      --skip-sign)
+        # Unsigned test builds are isolated under artifacts/client-unsigned-test
+        # and never written to artifacts/client or nginx.
+        skip_sign=1; shift ;;
+      --deploy-nginx)
+        deploy_nginx=1; shift ;;
+      *)
+        die "unknown build-client argument: $1" ;;
+    esac
+  done
+  if [[ -z "$mirror_base" || "$mirror_base" == "http://ubuntu-mirror.local" ]]; then
+    if [[ -f /etc/default/ubuntu-offline-mirror ]]; then
+      # shellcheck disable=SC1091
+      mirror_base="$(set +u; # shellcheck source=/dev/null
+        source /etc/default/ubuntu-offline-mirror
+        printf '%s' "${PUBLIC_BASE_URL:-}")"
+    fi
+  fi
+  [[ -n "$mirror_base" && "$mirror_base" != "http://ubuntu-mirror.local" ]] \
+    || die "PUBLIC_BASE_URL / --mirror-base required (got '${mirror_base}')"
+  if [[ "$skip_sign" -eq 1 ]]; then
+    out_dir="${PROJECT_ROOT}/artifacts/client-unsigned-test"
+  else
+    out_dir="${PROJECT_ROOT}/artifacts/client"
+  fi
+  mkdir -p "$out_dir"
+  info "Building bionic→focal client script (mirror_base=${mirror_base} skip_sign=${skip_sign})"
+  local args=(
+    --project-root "$PROJECT_ROOT"
+    --mirror-base "$mirror_base"
+    --selective-root "${SELECTIVE_MIRROR_ROOT:-${MIRROR_ROOT}/selective}"
+    --output-dir "$out_dir"
+  )
+  [[ "$skip_sign" -eq 1 ]] && args+=(--skip-sign)
+  # Production nginx publish is opt-in and still goes through signature gates
+  # inside the builder; prefer scripts/deploy-client-bionic-to-focal-atomic.sh.
+  if [[ "$deploy_nginx" -eq 1 ]]; then
+    [[ "$skip_sign" -eq 0 ]] || die "--deploy-nginx incompatible with --skip-sign"
+    args+=(--deploy-nginx-root "${MIRROR_ROOT}/client")
+  fi
+  python3 "$py" "${args[@]}"
+  ok "client artifact ready under ${out_dir}"
+  if [[ -f "${out_dir}/dp-offline-upgrade-bionic-to-focal.sh.sha256" ]]; then
+    cat "${out_dir}/dp-offline-upgrade-bionic-to-focal.sh.sha256"
+  fi
+}
+
+cmd_build_client_focal_to_jammy() {
+  require_cmds python3 gpg gpgv curl sha256sum
+  local py mirror_base out_dir skip_sign=0 deploy_nginx=0
+  py="${PROJECT_ROOT}/scripts/lib/build_client_focal_to_jammy.py"
+  [[ -f "$py" ]] || die "build_client_focal_to_jammy.py not found"
+  mirror_base="${PUBLIC_BASE_URL:-}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --mirror-base)
+        mirror_base="${2:-}"; shift 2 || die "--mirror-base requires URL" ;;
+      --mirror-base=*)
+        mirror_base="${1#*=}"; shift ;;
+      --skip-sign)
+        # Unsigned test builds are isolated under artifacts/client-unsigned-test
+        # and never written to artifacts/client or nginx.
+        skip_sign=1; shift ;;
+      --deploy-nginx)
+        deploy_nginx=1; shift ;;
+      *)
+        die "unknown build-client argument: $1" ;;
+    esac
+  done
+  if [[ -z "$mirror_base" || "$mirror_base" == "http://ubuntu-mirror.local" ]]; then
+    if [[ -f /etc/default/ubuntu-offline-mirror ]]; then
+      # shellcheck disable=SC1091
+      mirror_base="$(set +u; # shellcheck source=/dev/null
+        source /etc/default/ubuntu-offline-mirror
+        printf '%s' "${PUBLIC_BASE_URL:-}")"
+    fi
+  fi
+  [[ -n "$mirror_base" && "$mirror_base" != "http://ubuntu-mirror.local" ]] \
+    || die "PUBLIC_BASE_URL / --mirror-base required (got '${mirror_base}')"
+  if [[ "$skip_sign" -eq 1 ]]; then
+    out_dir="${PROJECT_ROOT}/artifacts/client-unsigned-test"
+  else
+    out_dir="${PROJECT_ROOT}/artifacts/client"
+  fi
+  mkdir -p "$out_dir"
+  info "Building focal→jammy client script (mirror_base=${mirror_base} skip_sign=${skip_sign})"
+  local args=(
+    --project-root "$PROJECT_ROOT"
+    --mirror-base "$mirror_base"
+    --selective-root "${SELECTIVE_MIRROR_ROOT:-${MIRROR_ROOT}/selective}"
+    --output-dir "$out_dir"
+  )
+  [[ "$skip_sign" -eq 1 ]] && args+=(--skip-sign)
+  # Production nginx publish is opt-in and still goes through signature gates
+  # inside the builder; prefer scripts/deploy-client-focal-to-jammy-atomic.sh.
+  if [[ "$deploy_nginx" -eq 1 ]]; then
+    [[ "$skip_sign" -eq 0 ]] || die "--deploy-nginx incompatible with --skip-sign"
+    args+=(--deploy-nginx-root "${MIRROR_ROOT}/client")
+  fi
+  python3 "$py" "${args[@]}"
+  ok "client artifact ready under ${out_dir}"
+  if [[ -f "${out_dir}/dp-offline-upgrade-focal-to-jammy.sh.sha256" ]]; then
+    cat "${out_dir}/dp-offline-upgrade-focal-to-jammy.sh.sha256"
+  fi
+}
+
+cmd_build_client_jammy_to_noble() {
+  require_cmds python3 gpg gpgv curl sha256sum
+  local py mirror_base out_dir skip_sign=0 deploy_nginx=0
+  py="${PROJECT_ROOT}/scripts/lib/build_client_jammy_to_noble.py"
+  [[ -f "$py" ]] || die "build_client_jammy_to_noble.py not found"
+  mirror_base="${PUBLIC_BASE_URL:-}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --mirror-base)
+        mirror_base="${2:-}"; shift 2 || die "--mirror-base requires URL" ;;
+      --mirror-base=*)
+        mirror_base="${1#*=}"; shift ;;
+      --skip-sign)
+        # Unsigned test builds are isolated under artifacts/client-unsigned-test
+        # and never written to artifacts/client or nginx.
+        skip_sign=1; shift ;;
+      --deploy-nginx)
+        deploy_nginx=1; shift ;;
+      *)
+        die "unknown build-client argument: $1" ;;
+    esac
+  done
+  if [[ -z "$mirror_base" || "$mirror_base" == "http://ubuntu-mirror.local" ]]; then
+    if [[ -f /etc/default/ubuntu-offline-mirror ]]; then
+      # shellcheck disable=SC1091
+      mirror_base="$(set +u; # shellcheck source=/dev/null
+        source /etc/default/ubuntu-offline-mirror
+        printf '%s' "${PUBLIC_BASE_URL:-}")"
+    fi
+  fi
+  [[ -n "$mirror_base" && "$mirror_base" != "http://ubuntu-mirror.local" ]] \
+    || die "PUBLIC_BASE_URL / --mirror-base required (got '${mirror_base}')"
+  if [[ "$skip_sign" -eq 1 ]]; then
+    out_dir="${PROJECT_ROOT}/artifacts/client-unsigned-test"
+  else
+    out_dir="${PROJECT_ROOT}/artifacts/client"
+  fi
+  mkdir -p "$out_dir"
+  info "Building jammy→noble client script (mirror_base=${mirror_base} skip_sign=${skip_sign})"
+  local args=(
+    --project-root "$PROJECT_ROOT"
+    --mirror-base "$mirror_base"
+    --selective-root "${SELECTIVE_MIRROR_ROOT:-${MIRROR_ROOT}/selective}"
+    --output-dir "$out_dir"
+  )
+  [[ "$skip_sign" -eq 1 ]] && args+=(--skip-sign)
+  # Production nginx publish is opt-in and still goes through signature gates
+  # inside the builder; prefer scripts/deploy-client-jammy-to-noble-atomic.sh.
+  if [[ "$deploy_nginx" -eq 1 ]]; then
+    [[ "$skip_sign" -eq 0 ]] || die "--deploy-nginx incompatible with --skip-sign"
+    args+=(--deploy-nginx-root "${MIRROR_ROOT}/client")
+  fi
+  python3 "$py" "${args[@]}"
+  ok "client artifact ready under ${out_dir}"
+  if [[ -f "${out_dir}/dp-offline-upgrade-jammy-to-noble.sh.sha256" ]]; then
+    cat "${out_dir}/dp-offline-upgrade-jammy-to-noble.sh.sha256"
+  fi
+}
+
+cmd_check_profile() {
+  require_cmds python3
+  assert_upgrade_profile_allowed || die "profile check FAIL"
+  ok "profile check PASS"
+}
+
+cmd_validate_profile() {
+  require_cmds python3
+  acquire_lock
+  mkdir -p "$OFFLINE_DIR"
+  validate_upgrade_profile_gate || die "validate-profile FAIL"
+  ok "validate-profile PASS"
+}
+
+cmd_migrate_profile() {
+  require_cmds python3
+  local py profile
+  py="$(resolve_validate_upgrade_profile_py)" || die "validate_upgrade_profile.py not found"
+  profile="$(resolve_upgrade_profile_json)" || die "offline-upgrade-profile.json not found"
+  mkdir -p "$OFFLINE_DIR"
+  local args=()
+  local a
+  for a in "$@"; do
+    args+=("$a")
+  done
+  set +e
+  python3 "$py" migrate-profile \
+    --mirror-root "$MIRROR_ROOT" \
+    --profile "$profile" \
+    --mirror-list /etc/apt/mirror.list \
+    --mirror-conf /etc/ubuntu-mirror/mirror.conf \
+    --project-root "$PROJECT_ROOT" \
+    --result-json "${OFFLINE_DIR}/profile-migration.json" \
+    "${args[@]}"
+  local rc=$?
+  set -e
+  [[ "$rc" -eq 0 ]] || die "migrate-profile failed"
+  ok "migrate-profile finished (sync not started)"
+}
+
+cmd_sync_legacy_releases() {
+  require_cmds python3 curl
+  acquire_lock
+  TMP_DIR="$(mktemp -d /tmp/uom-XXXXXX)"
+  mkdir -p "$OFFLINE_DIR"
+  sync_legacy_releases_py || die "legacy release sync failed"
+  ok "legacy release sync complete"
+}
+
+cmd_validate_legacy_releases() {
+  require_cmds python3
+  acquire_lock
+  TMP_DIR="$(mktemp -d /tmp/uom-XXXXXX)"
+  mkdir -p "$OFFLINE_DIR"
+  validate_legacy_releases_py || die "legacy release validation failed"
+  ok "legacy release validation PASS"
+}
+
+cmd_freeze_xenial_snapshot() {
+  require_cmds python3
+  acquire_lock
+  TMP_DIR="$(mktemp -d /tmp/uom-XXXXXX)"
+  mkdir -p "$OFFLINE_DIR"
+  run_legacy_releases_tool freeze-snapshot || die "freeze-xenial-snapshot failed"
+  ok "Xenial active snapshot frozen"
+}
+
+cmd_sync_release_upgraders() {
+  require_cmds python3 curl gpgv
+  acquire_lock
+  TMP_DIR="$(mktemp -d /tmp/uom-XXXXXX)"
+  mkdir -p "$OFFLINE_DIR" "$ANNOUNCE_DIR"
+  sync_release_upgraders_py || die "release upgrader sync failed"
+  ok "release upgrader sync complete"
+}
+
+cmd_validate_release_upgraders() {
+  require_cmds python3 gpgv
+  acquire_lock
+  TMP_DIR="$(mktemp -d /tmp/uom-XXXXXX)"
+  mkdir -p "$OFFLINE_DIR"
+  validate_release_upgraders_py || die "release upgrader validation failed"
+  ok "release upgrader validation PASS"
 }
 
 main() {
   local cmd="${1:-}"
   case "$cmd" in
+    plan-selective) shift; cmd_plan_selective "$@" ;;
+    materialize-selective) shift; cmd_materialize_selective "$@" ;;
+    verify-selective) shift; cmd_verify_selective "$@" ;;
+    publish-selective) shift; cmd_publish_selective "$@" ;;
+    quarantine-hop-selective) shift; cmd_quarantine_hop_selective "$@" ;;
+    quarantine-staging-selective) shift; cmd_quarantine_staging_selective "$@" ;;
+    refresh-hop-selective) shift; cmd_refresh_hop_selective "$@" ;;
+    migrate-nginx-selective) shift; cmd_migrate_nginx_selective "$@" ;;
+    migrate-selective-runtime) shift; cmd_migrate_selective_runtime "$@" ;;
     sync) shift; cmd_sync "$@" ;;
+    sync-full-legacy) shift; cmd_sync_full_legacy "$@" ;;
     verify) shift; cmd_verify "$@" ;;
+    check-profile) shift; cmd_check_profile "$@" ;;
+    validate-profile) shift; cmd_validate_profile "$@" ;;
+    migrate-profile) shift; cmd_migrate_profile "$@" ;;
+    sync-by-hash) shift; cmd_sync_by_hash "$@" ;;
+    validate-by-hash) shift; cmd_validate_by_hash "$@" ;;
+    sync-release-upgraders) shift; cmd_sync_release_upgraders "$@" ;;
+    validate-release-upgraders) shift; cmd_validate_release_upgraders "$@" ;;
+    sync-legacy-releases) shift; cmd_sync_legacy_releases "$@" ;;
+    validate-legacy-releases) shift; cmd_validate_legacy_releases "$@" ;;
+    freeze-xenial-snapshot) shift; cmd_freeze_xenial_snapshot "$@" ;;
     status) shift; cmd_status "$@" ;;
     freeze) shift; cmd_freeze "$@" ;;
     sha256-all) shift; cmd_sha256_all "$@" ;;
+    build-client-xenial-to-bionic) shift; cmd_build_client_xenial_to_bionic "$@" ;;
+    build-client-bionic-to-focal) shift; cmd_build_client_bionic_to_focal "$@" ;;
+    build-client-focal-to-jammy) shift; cmd_build_client_focal_to_jammy "$@" ;;
+    build-client-jammy-to-noble) shift; cmd_build_client_jammy_to_noble "$@" ;;
     -h|--help|help|"") usage; [[ -n "$cmd" ]] || exit 1; exit 0 ;;
     *) die "Unknown command: $cmd (see --help)" ;;
   esac

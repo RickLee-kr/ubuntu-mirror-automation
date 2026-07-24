@@ -30,7 +30,7 @@ Automate the **Ubuntu Mirror Server - Complete Setup Guide** (Stellar Cyber) int
 
 ## Config flow
 
-1. Operator edits `mirror.conf` (versions, mode full/minimal, threads, disk, port).
+1. Operator edits `mirror.conf` (versions, threads, disk, port). `MIRROR_MODE` must be `full` / `offline-upgrade-full` (`minimal` is rejected).
 2. `install.sh` generates `/etc/apt/mirror.list`, nginx site, systemd units from config.
 3. Helpers install to `/usr/local/bin` and libs to `/usr/local/lib/ubuntu-mirror`.
 4. `validate.sh` / `mirrorctl` / `mirror-status.sh` read the same config.

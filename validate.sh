@@ -340,6 +340,231 @@ check_health() {
   fi
 }
 
+check_upgrade_profile() {
+  if [[ "$UM_MODE" == "install" ]]; then
+    # Still reject minimal config during install validation
+    :
+  fi
+  local py=""
+  if [[ -f "${UM_PROJECT_ROOT}/scripts/lib/validate_upgrade_profile.py" ]]; then
+    py="${UM_PROJECT_ROOT}/scripts/lib/validate_upgrade_profile.py"
+  elif [[ -f /usr/local/lib/ubuntu-mirror/validate_upgrade_profile.py ]]; then
+    py=/usr/local/lib/ubuntu-mirror/validate_upgrade_profile.py
+  fi
+  if [[ -z "$py" ]]; then
+    um_result WARNING "upgrade profile" "validate_upgrade_profile.py not installed"
+    return
+  fi
+  local profile=""
+  if [[ -f "${UM_PROJECT_ROOT}/config/offline-upgrade-profile.json" ]]; then
+    profile="${UM_PROJECT_ROOT}/config/offline-upgrade-profile.json"
+  elif [[ -f /etc/ubuntu-mirror/offline-upgrade-profile.json ]]; then
+    profile=/etc/ubuntu-mirror/offline-upgrade-profile.json
+  fi
+  local out rc
+  out="$(mktemp)"
+  set +e
+  if [[ "$UM_MODE" == "install" ]]; then
+    python3 "$py" check-profile \
+      --mirror-root "${BASE_PATH}" \
+      --profile "${profile}" \
+      --mirror-list /etc/apt/mirror.list \
+      --mirror-conf "${UM_CONFIG_PATH}" \
+      --project-root "${UM_PROJECT_ROOT}" \
+      --result-json "${BASE_PATH}/offline/upgrade-profile-check.json" \
+      >"$out" 2>&1
+  else
+    python3 "$py" validate \
+      --mirror-root "${BASE_PATH}" \
+      --profile "${profile}" \
+      --mirror-list /etc/apt/mirror.list \
+      --mirror-conf "${UM_CONFIG_PATH}" \
+      --project-root "${UM_PROJECT_ROOT}" \
+      --skip-external-gates \
+      --result-json "${BASE_PATH}/offline/readiness-validation.json" \
+      >"$out" 2>&1
+  fi
+  rc=$?
+  set -e
+  if [[ "$rc" -eq 0 ]]; then
+    um_result PASS "upgrade profile" "offline-upgrade-full"
+  else
+    if grep -q 'UNSUPPORTED_MINIMAL_PROFILE\|minimal_detected=True' "$out"; then
+      um_result FAIL "upgrade profile" "UNSUPPORTED_MINIMAL_PROFILE — minimal not allowed"
+    else
+      um_result FAIL "upgrade profile" "INCOMPLETE_UPGRADE_PROFILE (see offline/*-validation.json)"
+    fi
+    if [[ "$UM_QUIET" != "1" ]]; then
+      cat "$out" >&2 || true
+    fi
+  fi
+  rm -f "$out"
+}
+
+check_by_hash() {
+  if [[ "$UM_MODE" == "install" ]]; then
+    return 0
+  fi
+  local py=""
+  local offline_bin=""
+  if [[ -f "${UM_PROJECT_ROOT}/scripts/lib/sync_by_hash.py" ]]; then
+    py="${UM_PROJECT_ROOT}/scripts/lib/sync_by_hash.py"
+  elif [[ -f /usr/local/lib/ubuntu-mirror/sync_by_hash.py ]]; then
+    py=/usr/local/lib/ubuntu-mirror/sync_by_hash.py
+  fi
+  if [[ -z "$py" ]]; then
+    um_result WARNING "by-hash validation" "sync_by_hash.py not installed"
+    return
+  fi
+  if [[ ! -d "${DIST_ROOT:-}" ]]; then
+    um_result FAIL "by-hash validation" "DIST_ROOT missing"
+    return
+  fi
+  local out rc
+  out="$(mktemp)"
+  set +e
+  python3 "$py" validate \
+    --mirror-root "${BASE_PATH}" \
+    --ubuntu-root "$(dirname "${DIST_ROOT}")" \
+    --quiet >"$out" 2>&1
+  rc=$?
+  set -e
+  if [[ "$rc" -eq 0 ]] && grep -q 'validation_result=PASS' "$out"; then
+    local present missing
+    present="$(awk -F= '/^present_by_hash_files=/{print $2}' "$out")"
+    missing="$(awk -F= '/^missing_by_hash_files=/{print $2}' "$out")"
+    um_result PASS "by-hash validation" "PASS present=${present:-?} missing=${missing:-0}"
+  else
+    um_result FAIL "by-hash validation" "FAIL (see sync_by_hash validate / offline/by-hash-validation.json)"
+    if [[ "$UM_QUIET" != "1" ]]; then
+      cat "$out" >&2 || true
+    fi
+  fi
+  rm -f "$out"
+}
+
+check_security_compat() {
+  if [[ "$UM_MODE" == "install" ]]; then
+    return 0
+  fi
+  local py=""
+  if [[ -f "${UM_PROJECT_ROOT}/scripts/lib/validate_security_compat.py" ]]; then
+    py="${UM_PROJECT_ROOT}/scripts/lib/validate_security_compat.py"
+  elif [[ -f /usr/local/lib/ubuntu-mirror/validate_security_compat.py ]]; then
+    py=/usr/local/lib/ubuntu-mirror/validate_security_compat.py
+  fi
+  if [[ -z "$py" ]]; then
+    um_result WARNING "security repository" "validate_security_compat.py not installed"
+    return
+  fi
+  local out rc discovery=()
+  out="$(mktemp)"
+  if [[ -d "${UM_PROJECT_ROOT}/artifacts/upgrade-discovery" ]]; then
+    discovery=(--discovery-root "${UM_PROJECT_ROOT}/artifacts/upgrade-discovery")
+  fi
+  set +e
+  python3 "$py" \
+    --mirror-root "${BASE_PATH}" \
+    --ubuntu-root "$(dirname "${DIST_ROOT}")" \
+    --http-base "${MIRROR_URL}" \
+    "${discovery[@]}" \
+    --require-by-hash \
+    --quiet >"$out" 2>&1
+  rc=$?
+  set -e
+  if [[ "$rc" -eq 0 ]] && grep -q 'validation_result=PASS' "$out"; then
+    local suites
+    suites="$(awk -F= '/^security_suites_found=/{print $2}' "$out")"
+    um_result PASS "security repository" "PASS suites=${suites:-?}"
+  else
+    um_result FAIL "security repository" "FAIL (see offline/security-validation.json)"
+    if [[ "$UM_QUIET" != "1" ]]; then
+      cat "$out" >&2 || true
+    fi
+  fi
+  rm -f "$out"
+}
+
+check_release_upgraders() {
+  if [[ "$UM_MODE" == "install" ]]; then
+    return 0
+  fi
+  local py=""
+  if [[ -f "${UM_PROJECT_ROOT}/scripts/lib/sync_release_upgraders.py" ]]; then
+    py="${UM_PROJECT_ROOT}/scripts/lib/sync_release_upgraders.py"
+  elif [[ -f /usr/local/lib/ubuntu-mirror/sync_release_upgraders.py ]]; then
+    py=/usr/local/lib/ubuntu-mirror/sync_release_upgraders.py
+  fi
+  if [[ -z "$py" ]]; then
+    um_result WARNING "release upgraders" "sync_release_upgraders.py not installed"
+    return
+  fi
+  local out rc
+  out="$(mktemp)"
+  set +e
+  python3 "$py" validate \
+    --mirror-root "${BASE_PATH}" \
+    --ubuntu-root "$(dirname "${DIST_ROOT}")" \
+    --public-base-url "${MIRROR_URL}" \
+    --http-base "${MIRROR_URL}" \
+    --quiet >"$out" 2>&1
+  rc=$?
+  set -e
+  if [[ "$rc" -eq 0 ]] && grep -q 'validation_result=PASS' "$out"; then
+    local present
+    present="$(awk -F= '/^upgrader_tarballs_present=/{print $2}' "$out")"
+    um_result PASS "release upgraders" "PASS tarballs=${present:-?}"
+  else
+    um_result FAIL "release upgraders" "FAIL (see offline/release-upgrader-validation.json)"
+    if [[ "$UM_QUIET" != "1" ]]; then
+      cat "$out" >&2 || true
+    fi
+  fi
+  rm -f "$out"
+}
+
+check_legacy_releases() {
+  if [[ "$UM_MODE" == "install" ]]; then
+    return 0
+  fi
+  local py=""
+  if [[ -f "${UM_PROJECT_ROOT}/scripts/lib/sync_legacy_releases.py" ]]; then
+    py="${UM_PROJECT_ROOT}/scripts/lib/sync_legacy_releases.py"
+  elif [[ -f /usr/local/lib/ubuntu-mirror/sync_legacy_releases.py ]]; then
+    py=/usr/local/lib/ubuntu-mirror/sync_legacy_releases.py
+  fi
+  if [[ -z "$py" ]]; then
+    um_result WARNING "legacy Xenial" "sync_legacy_releases.py not installed"
+    return
+  fi
+  local out rc discovery=()
+  out="$(mktemp)"
+  if [[ -d "${UM_PROJECT_ROOT}/artifacts/upgrade-discovery" ]]; then
+    discovery=(--discovery-root "${UM_PROJECT_ROOT}/artifacts/upgrade-discovery")
+  fi
+  set +e
+  python3 "$py" validate \
+    --mirror-root "${BASE_PATH}" \
+    --ubuntu-root "$(dirname "${DIST_ROOT}")" \
+    --series xenial \
+    --target-series bionic \
+    "${discovery[@]}" \
+    --quiet >"$out" 2>&1
+  rc=$?
+  set -e
+  if [[ "$rc" -eq 0 ]] && grep -q 'validation_result=PASS' "$out"; then
+    local status
+    status="$(awk -F= '/^source_status=/{print $2}' "$out")"
+    um_result PASS "legacy Xenial" "PASS source_status=${status:-COMPLETE}"
+  else
+    um_result FAIL "legacy Xenial" "FAIL (see offline/legacy-release-validation.json / xenial-validation.json)"
+    if [[ "$UM_QUIET" != "1" ]]; then
+      cat "$out" >&2 || true
+    fi
+  fi
+  rm -f "$out"
+}
+
 main() {
   parse_args "$@"
   um_setup_trap
@@ -363,11 +588,16 @@ main() {
   check_systemd_service
   check_systemd_timer
   check_permissions
+  check_upgrade_profile
 
   if [[ "$UM_MODE" == "operational" ]]; then
     check_mirror_url_reachable
     check_ubuntu_versions
     check_http_status
+    check_by_hash
+    check_security_compat
+    check_release_upgraders
+    check_legacy_releases
     check_logs
     check_health
   else

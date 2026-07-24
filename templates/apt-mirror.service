@@ -1,11 +1,12 @@
 [Unit]
-Description=Ubuntu Offline Mirror Sync Service
+Description=Ubuntu Selective Offline Mirror Materialize Service
 After=network-online.target
 Wants=network-online.target
+Conflicts=apt-mirror-full.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/ubuntu-offline-mirror.sh sync
+ExecStart=/usr/local/sbin/ubuntu-offline-mirror.sh materialize-selective
 StandardOutput=journal
 StandardError=journal
 User=root

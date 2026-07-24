@@ -261,6 +261,19 @@ um_detect_primary_ip() {
 
 um_command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+um_sha256_file() {
+  # um_sha256_file <path> → hex digest or empty
+  local path="${1:-}"
+  [[ -n "$path" && -f "$path" ]] || { printf '\n'; return 1; }
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" 2>/dev/null | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" 2>/dev/null | awk '{print $1}'
+  else
+    openssl dgst -sha256 "$path" 2>/dev/null | awk '{print $NF}'
+  fi
+}
+
 um_path_mounted() {
   local path="$1"
   findmnt -n -T "$path" >/dev/null 2>&1
@@ -290,13 +303,19 @@ um_df_avail_kib() {
 # subtract whatever is already present under BASE_PATH.
 
 um_projected_mirror_gib() {
-  local mode="${1:-${MIRROR_MODE:-minimal}}"
+  local mode="${1:-${MIRROR_MODE:-selective}}"
   case "$mode" in
-    full|FULL)
-      printf '%s\n' "${PROJECTED_SIZE_GIB_FULL:-700}"
+    selective|SELECTIVE|offline-upgrade-selective|discovery_exact)
+      printf '%s\n' "${PROJECTED_SIZE_GIB_SELECTIVE:-20}"
+      ;;
+    full|FULL|offline-upgrade-full)
+      printf '%s\n' "${PROJECTED_SIZE_GIB_FULL:-900}"
+      ;;
+    minimal|MINIMAL)
+      printf '%s\n' "${PROJECTED_SIZE_GIB_MINIMAL:-320}"
       ;;
     *)
-      printf '%s\n' "${PROJECTED_SIZE_GIB_MINIMAL:-320}"
+      printf '%s\n' "${PROJECTED_SIZE_GIB_SELECTIVE:-20}"
       ;;
   esac
 }
@@ -313,7 +332,7 @@ um_existing_mirror_gib() {
 
 um_remaining_download_gib() {
   local projected existing remaining
-  projected="$(um_projected_mirror_gib "${1:-${MIRROR_MODE:-minimal}}")"
+  projected="$(um_projected_mirror_gib "${1:-${MIRROR_MODE:-full}}")"
   existing="$(um_existing_mirror_gib "${2:-${BASE_PATH:-/var/spool/apt-mirror}}")"
   remaining=$((projected - existing))
   if [[ "$remaining" -lt 0 ]]; then remaining=0; fi
@@ -333,7 +352,7 @@ um_disk_reserve_gib() {
 # Print a human capacity report; return 0 if sync is allowed, 1 if blocked.
 um_check_sync_capacity() {
   local path="${1:-${BASE_PATH:-/var/spool/apt-mirror}}"
-  local mode="${2:-${MIRROR_MODE:-minimal}}"
+  local mode="${2:-${MIRROR_MODE:-full}}"
   local total_kib avail_kib total_gib avail_gib
   local projected remaining reserve usable
   local reserve_pct="${DISK_RESERVE_PERCENT:-20}"
@@ -367,26 +386,26 @@ um_check_sync_capacity() {
   # Never allow a sync that would consume the safety reserve.
   if [[ "$remaining" -gt "$usable" ]]; then
     um_error "Projected download (${remaining} GiB) exceeds usable space (${usable} GiB)"
-    um_error "Refusing to start sync — free disk or use minimal mode (default)."
-    if [[ "$mode" == "full" || "$mode" == "FULL" ]]; then
-      um_error "Full mode (~${projected} GiB) is not safe on this disk with a ${reserve_pct}% reserve."
-      um_error "Use: sudo ./install.sh   # minimal (main + restricted)"
-      um_error "Or expand storage before: sudo ./install.sh --full"
+    um_error "Refusing to start sync — free disk or expand storage."
+    if [[ "$mode" == "full" || "$mode" == "FULL" || "$mode" == "offline-upgrade-full" ]]; then
+      um_error "offline-upgrade-full (~${projected} GiB) is not safe on this disk with a ${reserve_pct}% reserve."
+      um_error "Minimal mirrors are unsupported (UNSUPPORTED_MINIMAL_PROFILE)."
+      um_error "Expand storage, then: sudo ./install.sh --full"
     fi
     return 1
   fi
 
   # Extra guard: ~1TB class disks must not run full unless clearly enough headroom
   # (usable already enforced above; this message clarifies operator intent).
-  if [[ "$mode" == "full" || "$mode" == "FULL" ]] && [[ "$total_gib" -le 1100 ]]; then
+  if [[ "$mode" == "full" || "$mode" == "FULL" || "$mode" == "offline-upgrade-full" ]] && [[ "$total_gib" -le 1100 ]]; then
     local free_after=$(( avail_gib - remaining ))
     local free_after_pct=0
     if [[ "$total_gib" -gt 0 ]]; then
       free_after_pct=$(( free_after * 100 / total_gib ))
     fi
     if [[ "$free_after_pct" -lt "$reserve_pct" ]]; then
-      um_error "Full mode on ~1TB disk would leave ~${free_after_pct}% free (< ${reserve_pct}% reserve)"
-      um_error "Refusing full sync. Default minimal mode is required on this disk size."
+      um_error "offline-upgrade-full on ~1TB disk would leave ~${free_after_pct}% free (< ${reserve_pct}% reserve)"
+      um_error "Refusing sync. Expand storage; minimal mode is not supported."
       return 1
     fi
   fi

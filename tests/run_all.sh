@@ -7,9 +7,16 @@ export PATH="${HOME}/.local/bin:/usr/local/bin:${PATH}"
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 FAIL=0
-for t in test_install.sh test_validate.sh test_validate_fixture.sh test_nginx.sh test_systemd.sh test_simplified_install.sh test_dashboard.sh test_offline_mirror.sh test_collect_dp_upgrade_readiness.sh test_dp_upgrade_preflight.sh test_dp_os_upgrade.sh test_discover_upgrade_requirements.sh; do
+for t in test_install.sh test_validate.sh test_validate_fixture.sh test_nginx.sh test_systemd.sh test_simplified_install.sh test_dashboard.sh test_offline_mirror.sh test_upgrade_profile.py test_selective_mirror.py test_selective_orchestration_lock.sh test_selective_runtime_migration.py test_sync_by_hash.py test_security_compat.py test_release_upgraders.py test_legacy_releases.py test_analyze_upgrade_discovery.py test_collect_dp_upgrade_readiness.sh test_dp_upgrade_preflight.sh test_dp_os_upgrade.sh test_discover_upgrade_requirements.sh test_dp_offline_upgrade_xenial_to_bionic.sh test_dp_offline_upgrade_bionic_to_focal.sh test_dp_offline_upgrade_focal_to_jammy.sh test_dp_offline_upgrade_jammy_to_noble.sh test_client_manifest_signing.sh test_distupgrade_config_ascii.sh test_distupgrade_source_compat.py test_prepare_backup_staging.sh; do
   echo "======== Running $t ========"
-  if bash "$t"; then
+  if [[ "$t" == *.py ]]; then
+    if python3 "$t"; then
+      echo "OK $t"
+    else
+      echo "FAIL $t"
+      FAIL=1
+    fi
+  elif bash "$t"; then
     echo "OK $t"
   else
     echo "FAIL $t"

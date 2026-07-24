@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "profile": "offline-upgrade-selective",
+  "hop": "focal-to-jammy",
+  "source_codename": "focal",
+  "target_codename": "jammy",
+  "source_version": "20.04",
+  "target_version": "22.04",
+  "mirror_base": "http://221.139.249.111",
+  "repository_base": "http://221.139.249.111/hops/focal-to-jammy/ubuntu",
+  "suites": [
+    "focal",
+    "focal-updates",
+    "focal-security",
+    "focal-backports",
+    "jammy",
+    "jammy-updates",
+    "jammy-security",
+    "jammy-backports"
+  ],
+  "source_suites": [
+    "focal",
+    "focal-updates",
+    "focal-security",
+    "focal-backports"
+  ],
+  "target_suites": [
+    "jammy",
+    "jammy-updates",
+    "jammy-security",
+    "jammy-backports"
+  ],
+  "components": [
+    "main",
+    "universe"
+  ],
+  "repository_key_fingerprint": "D1FF722556ED95F5E779BAE66B1BA1673A997CA5",
+  "key_sha256": "d1ef6724347f11355a0fbc8a1dec9cf69e8e8647c5ccd06fbc2f952bcb177d60",
+  "manifest_key_fingerprint": "C786FE9887290E2CF759271DFDD38BE958EABD4A",
+  "manifest_key_sha256": "d398cbadb5d87b1d01978ce1499feb7436c0c81859314f96298b0adddc3ec079",
+  "keyring_install_path": "/etc/apt/trusted.gpg.d/stellar-offline-focal-to-jammy.gpg",
+  "meta_release_url": "http://221.139.249.111/client/focal-to-jammy/meta-release-lts",
+  "meta_release_sha256": "277ead1130f5a5b766788bdbdd79870c0ce150df4110b19476d9186a57fb27e7",
+  "upgrader_tar_url": "http://221.139.249.111/offline/release-upgraders/jammy/jammy.tar.gz",
+  "upgrader_tar_sha256": "706b20fe7cbd610e744f854c25c26ef8d5fcc66ecfcfc7ceb41993907b7bee83",
+  "upgrader_gpg_url": "http://221.139.249.111/offline/release-upgraders/jammy/jammy.tar.gz.gpg",
+  "upgrader_gpg_sha256": "722ba7c8f5ae524ebd5b84482fa4f2ca41059c58013d128dc04447f009bf8f70",
+  "sample_deb_url": "http://221.139.249.111/hops/focal-to-jammy/ubuntu/pool/main/a/acl/acl_2.3.1-1_amd64.deb",
+  "plan_checksum": "8eb3d478e2d40e7a19510239fcbf6e2e6824b2587e6e7172d60ef01e8920b157",
+  "discovery_checksum": "d08f76a4e87bbaabc82b2aea3f552d26b9ece53be83735a74dffdfd70a816b56",
+  "confirm_phrase": "UPGRADE-FOCAL-TO-JAMMY",
+  "generated_at": "2026-07-24T09:53:20Z",
+  "announcements": {
+    "ReleaseAnnouncement": "98ad1d85906c69851771f003dcb470d559caed2e12f5bacba152915b7e239f69",
+    "ReleaseAnnouncement.html": "a8240cf725d60b57917e26d1324f5640e39b31cf4c6d91fef1a948e55191d08a"
+  }
+}

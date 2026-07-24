@@ -28,36 +28,41 @@ UM_FROM_MENU=0
 # Sync attach mode: auto | foreground | background
 # auto = attach dashboard when TTY, else background
 UM_SYNC_MODE="auto"
+UM_SELECTIVE=0
 
 usage() {
   cat <<'EOF'
 Usage: sudo ./install.sh [OPTIONS]
 
-Install and start an Ubuntu Mirror Server.
+Install and start an Ubuntu Mirror Server for closed-network
+Ubuntu 16.04 → 24.04 offline upgrades.
+
+Supported profile: offline-upgrade-selective
+  Selection:  discovery-exact payloads from artifacts/upgrade-discovery
+  Layout:     hop-separated snapshots under SELECTIVE_MIRROR_ROOT
+  Releases:   xenial → bionic → focal → jammy → noble
 
 Interactive (default on a TTY):
   sudo ./install.sh
-    Opens a menu to choose minimal/full mode, monitor sync,
-    delete existing mirror data, or quit.
+    Opens a menu to install selective mirror tooling, run plan-selective,
+    monitor status, or quit.
 
 Non-interactive / scripted:
-  sudo ./install.sh --minimal
-  sudo ./install.sh --full
+  sudo ./install.sh --selective
   sudo ./install.sh --non-interactive
 
-Default mode is minimal (main + restricted only, ~320 GiB projected).
-Full mode (universe + multiverse, ~700 GiB) requires explicit --full
-or menu option 2.
+Full apt-mirror sync and minimal mirrors are NOT supported.
+  --full / --minimal exit with UNSUPPORTED_* and do not start sync.
 
 Options:
   --help              Show this help
   --config PATH       Use a custom mirror.conf
   --dry-run           Show planned actions without changing the system
-  --no-sync           Install and validate but do not start initial sync
-  --foreground        Start sync and keep the live dashboard attached
-  --background        Start sync and return to the shell immediately
-  --full              Mirror main restricted universe multiverse (explicit)
-  --minimal           Mirror main + restricted only (skip menu)
+  --no-sync           Install and validate but do not start plan-selective
+  --foreground        Keep status attached after install
+  --background        Return to the shell immediately
+  --selective         Explicit offline-upgrade-selective profile (default)
+  --full              Rejected (UNSUPPORTED_FULL_MIRROR_SYNC)
   --menu              Force interactive menu (TTY required)
   --no-menu           Skip menu even on a TTY
   --non-interactive   Alias for --no-menu + background-friendly defaults
@@ -67,10 +72,7 @@ Options:
 Examples:
   sudo ./install.sh
   sudo ./install.sh --menu
-  sudo ./install.sh --background
-  sudo ./install.sh --foreground
-  sudo ./install.sh --full
-  sudo ./install.sh --dry-run
+  sudo ./install.sh --selective --dry-run
   sudo ./install.sh --no-sync
 EOF
 }
@@ -87,8 +89,21 @@ parse_args() {
       --no-sync) UM_NO_SYNC=1; shift ;;
       --foreground) UM_SYNC_MODE="foreground"; shift ;;
       --background) UM_SYNC_MODE="background"; shift ;;
-      --full) UM_FULL=1; UM_MINIMAL=0; shift ;;
-      --minimal) UM_MINIMAL=1; UM_FULL=0; shift ;;
+      --selective|--full)
+        if [[ "$1" == "--full" ]]; then
+          # shellcheck source=lib/upgrade-profile.sh
+          source "${UM_PROJECT_ROOT}/lib/upgrade-profile.sh"
+          um_reject_full_sync_request "UNSUPPORTED_FULL_MIRROR_SYNC" || true
+          exit 2
+        fi
+        UM_FULL=0; UM_MINIMAL=0; UM_SELECTIVE=1; shift
+        ;;
+      --minimal)
+        # shellcheck source=lib/upgrade-profile.sh
+        source "${UM_PROJECT_ROOT}/lib/upgrade-profile.sh"
+        um_reject_minimal_request "UNSUPPORTED_MINIMAL_PROFILE" || true
+        exit 2
+        ;;
       --menu) UM_FORCE_MENU=1; shift ;;
       --no-menu) UM_NO_MENU=1; shift ;;
       --verbose) UM_VERBOSE=1; shift ;;
@@ -255,6 +270,9 @@ phase2_packages() {
     curl
     ca-certificates
     gpgv
+    gnupg
+    apt-utils
+    dpkg-dev
     ubuntu-keyring
     coreutils
     util-linux
@@ -264,13 +282,14 @@ phase2_packages() {
     whiptail
   )
   if [[ "$UM_DRY_RUN" == "1" ]]; then
+    um_dry "Would install apt-mirror nginx curl whiptail apt-utils gnupg dpkg-dev"
     um_dry "Would install: ${pkgs[*]}"
     um_dry "SKIPPED: requires installed package (apt-mirror, nginx)"
     return 0
   fi
 
   local need=0 p
-  for p in apt-mirror nginx curl gpgv jq xz gzip flock sha256sum; do
+  for p in apt-mirror nginx curl gpgv jq xz gzip flock sha256sum apt-ftparchive dpkg-deb gpg; do
     um_command_exists "$p" || need=1
   done
   # gpgv package provides gpgv; ubuntu-keyring provides keyring file
@@ -285,7 +304,7 @@ phase2_packages() {
   fi
 
   local c
-  for c in apt-mirror nginx curl gpgv jq xz gzip flock sha256sum findmnt; do
+  for c in apt-mirror nginx curl gpgv jq xz gzip flock sha256sum findmnt apt-ftparchive dpkg-deb gpg; do
     um_command_exists "$c" || um_die "Required command missing after install: $c"
   done
   [[ -f /usr/share/keyrings/ubuntu-archive-keyring.gpg ]] \
@@ -333,22 +352,24 @@ phase3_config() {
     rm -f "$tmp"
     um_die "Generated mirror.list missing required backports suites"
   fi
-  if [[ -f /etc/apt/mirror.list ]] && cmp -s "$tmp" /etc/apt/mirror.list; then
+  if [[ "$UM_DRY_RUN" == "1" ]]; then
+    # Always emit the plan line (even when content already matches).
+    um_dry "Would write /etc/apt/mirror.list"
+    if [[ -f /etc/apt/mirror.list ]] && cmp -s "$tmp" /etc/apt/mirror.list; then
+      vlog "Unchanged content: /etc/apt/mirror.list"
+    fi
+    rm -f "$tmp"
+  elif [[ -f /etc/apt/mirror.list ]] && cmp -s "$tmp" /etc/apt/mirror.list; then
     vlog "Unchanged: /etc/apt/mirror.list"
     rm -f "$tmp"
   else
     if [[ -f /etc/apt/mirror.list ]]; then
       um_backup_file /etc/apt/mirror.list >/dev/null || true
     fi
-    if [[ "$UM_DRY_RUN" == "1" ]]; then
-      um_dry "Would write /etc/apt/mirror.list"
-      rm -f "$tmp"
-    else
-      install -m 0644 "$tmp" /etc/apt/mirror.list
-      rm -f "$tmp"
-      um_ok "Installed /etc/apt/mirror.list"
-      UM_CHANGES=1
-    fi
+    install -m 0644 "$tmp" /etc/apt/mirror.list
+    rm -f "$tmp"
+    um_ok "Installed /etc/apt/mirror.list"
+    UM_CHANGES=1
   fi
 
   # Offline mirror defaults
@@ -372,37 +393,21 @@ phase3_config() {
     um_dry "Would install /etc/default/ubuntu-offline-mirror"
   fi
 
-  # nginx site
-  local site_avail="/etc/nginx/sites-available/${NGINX_SITE_NAME}"
-  local site_en="/etc/nginx/sites-enabled/${NGINX_SITE_NAME}"
+  # nginx site — selective canonical root (SELECTIVE_MIRROR_ROOT/current)
+  # Idempotent migration: timestamp backup → atomic replace → nginx -t → reload
   local ngx_tmp
   ngx_tmp="$(mktemp)"
   um_generate_nginx_conf >"$ngx_tmp"
   UM_NGINX_TMP="$ngx_tmp"
 
-  if [[ -f "$site_avail" ]] && cmp -s "$ngx_tmp" "$site_avail"; then
-    vlog "Unchanged: $site_avail"
-  else
-    if [[ -f "$site_avail" ]]; then
-      um_backup_file "$site_avail" >/dev/null || true
-    fi
-    if [[ "$UM_DRY_RUN" == "1" ]]; then
-      um_dry "Would configure nginx ($site_avail)"
-    else
-      install -m 0644 "$ngx_tmp" "$site_avail"
-      um_ok "Installed $site_avail"
-      UM_CHANGES=1
-    fi
-  fi
-
   if [[ "$UM_DRY_RUN" == "1" ]]; then
-    um_dry "Would enable nginx site symlink"
+    um_dry "Would migrate nginx site to root $(um_selective_nginx_root)"
   else
-    ln -sfn "$site_avail" "$site_en"
-    if [[ "${NGINX_DISABLE_DEFAULT}" == "true" ]] && [[ -e /etc/nginx/sites-enabled/default ]]; then
-      rm -f /etc/nginx/sites-enabled/default
-      um_ok "Disabled nginx default site"
+    if um_migrate_nginx_selective_site; then
       UM_CHANGES=1
+      um_ok "nginx selective site ready (root $(um_selective_nginx_root))"
+    else
+      um_die "nginx selective site migration failed"
     fi
   fi
 
@@ -470,19 +475,67 @@ install_mgmt_tools() {
   um_install_file "${UM_PROJECT_ROOT}/lib/progress.sh" "${INSTALL_LIB_DIR}/progress.sh" 0644
   um_install_file "${UM_PROJECT_ROOT}/lib/install-menu.sh" "${INSTALL_LIB_DIR}/install-menu.sh" 0644
   um_install_file "${UM_PROJECT_ROOT}/lib/offline.sh" "${INSTALL_LIB_DIR}/offline.sh" 0644
+  um_install_file "${UM_PROJECT_ROOT}/scripts/lib/sync_by_hash.py" "${INSTALL_LIB_DIR}/sync_by_hash.py" 0644
+  um_install_file "${UM_PROJECT_ROOT}/scripts/lib/validate_security_compat.py" "${INSTALL_LIB_DIR}/validate_security_compat.py" 0644
+  um_install_file "${UM_PROJECT_ROOT}/scripts/lib/sync_release_upgraders.py" "${INSTALL_LIB_DIR}/sync_release_upgraders.py" 0644
+  um_install_file "${UM_PROJECT_ROOT}/scripts/lib/validate_release_upgraders.py" "${INSTALL_LIB_DIR}/validate_release_upgraders.py" 0644
+  um_install_file "${UM_PROJECT_ROOT}/scripts/lib/sync_legacy_releases.py" "${INSTALL_LIB_DIR}/sync_legacy_releases.py" 0644
+  um_install_file "${UM_PROJECT_ROOT}/scripts/lib/validate_legacy_releases.py" "${INSTALL_LIB_DIR}/validate_legacy_releases.py" 0644
+  um_install_file "${UM_PROJECT_ROOT}/scripts/lib/validate_upgrade_profile.py" "${INSTALL_LIB_DIR}/validate_upgrade_profile.py" 0644
+  um_install_file "${UM_PROJECT_ROOT}/scripts/lib/derive_upgrade_requirements.py" "${INSTALL_LIB_DIR}/derive_upgrade_requirements.py" 0644
+  um_install_file "${UM_PROJECT_ROOT}/scripts/lib/selective_mirror.py" "${INSTALL_LIB_DIR}/selective_mirror.py" 0644
+  um_install_file "${UM_PROJECT_ROOT}/scripts/lib/validate_selective_mirror.py" "${INSTALL_LIB_DIR}/validate_selective_mirror.py" 0644
+  um_install_file "${UM_PROJECT_ROOT}/scripts/build-selective-mirror-plan.py" "${INSTALL_LIB_DIR}/build-selective-mirror-plan.py" 0644
+  um_install_file "${UM_PROJECT_ROOT}/lib/upgrade-profile.sh" "${INSTALL_LIB_DIR}/upgrade-profile.sh" 0644
+  mkdir -p "${INSTALL_LIB_DIR}/templates"
+  um_install_file "${UM_PROJECT_ROOT}/templates/nginx.conf" "${INSTALL_LIB_DIR}/templates/nginx.conf" 0644
+  um_install_file "${UM_PROJECT_ROOT}/config/offline-upgrade-profile.json" "${INSTALL_CONF_DIR}/offline-upgrade-profile.json" 0644
+  um_install_file "${UM_PROJECT_ROOT}/config/offline-upgrade-exceptions.json" "${INSTALL_CONF_DIR}/offline-upgrade-exceptions.json" 0644
+  um_install_file "${UM_PROJECT_ROOT}/config/offline-upgrade-profile.json" "${INSTALL_LIB_DIR}/offline-upgrade-profile.json" 0644
+
+  # Selective storage layout (staging stays unpublished until publish-selective)
+  mkdir -p \
+    "${BASE_PATH}/selective/staging" \
+    "${BASE_PATH}/selective/snapshots" \
+    "${BASE_PATH}/selective/published" \
+    "${BASE_PATH}/selective/state" \
+    "${BASE_PATH}/selective/logs" \
+    "${BASE_PATH}/selective/keys"
+  # Ensure current pointer exists only after publish; do not expose staging.
+  if [[ ! -e "${BASE_PATH}/selective/current" ]] && [[ -d "${BASE_PATH}/selective/published" ]]; then
+    # Placeholder empty published tree is fine; nginx 404s until publish.
+    ln -sfn published "${BASE_PATH}/selective/current" 2>/dev/null || true
+  fi
 
   # Remember git checkout path so `mirrorctl watch` picks up git pull without reinstall
   mkdir -p "${INSTALL_CONF_DIR}"
   printf '%s\n' "${UM_PROJECT_ROOT}" >"${INSTALL_CONF_DIR}/source-repo"
 
   if [[ -f "${INSTALL_CONF_DIR}/mirror.conf" ]] && [[ "$UM_FORCE" != "1" ]]; then
-    vlog "Keeping existing ${INSTALL_CONF_DIR}/mirror.conf"
+    vlog "Keeping existing ${INSTALL_CONF_DIR}/mirror.conf (merging selective fields)"
+    # Preserve operator values; add/correct selective profile keys only.
+    um_migrate_selective_runtime_config "${INSTALL_CONF_DIR}/mirror.conf" || true
     um_persist_mirror_mode_to_conf "${INSTALL_CONF_DIR}/mirror.conf"
   else
     um_install_file "${UM_CONFIG_PATH}" "${INSTALL_CONF_DIR}/mirror.conf" 0644
+    um_migrate_selective_runtime_config "${INSTALL_CONF_DIR}/mirror.conf" || true
     um_persist_mirror_mode_to_conf "${INSTALL_CONF_DIR}/mirror.conf"
   fi
+  # Canonical: /usr/local/bin/mirrorctl ; aux symlink: /usr/local/sbin/mirrorctl
+  if [[ -e /usr/local/sbin/mirrorctl && ! -L /usr/local/sbin/mirrorctl ]]; then
+    um_backup_file /usr/local/sbin/mirrorctl >/dev/null || true
+    rm -f /usr/local/sbin/mirrorctl
+  fi
   ln -sfn "${INSTALL_BIN_DIR}/mirrorctl" /usr/local/sbin/mirrorctl 2>/dev/null || true
+
+  # Drift guard: installed mirrorctl must match repository after install.
+  local src_sum dst_sum
+  src_sum="$(um_sha256_file "${UM_PROJECT_ROOT}/scripts/mirrorctl")"
+  dst_sum="$(um_sha256_file "${INSTALL_BIN_DIR}/mirrorctl")"
+  if [[ "$src_sum" != "$dst_sum" ]]; then
+    um_die "Installed mirrorctl checksum drift after install (${dst_sum} != ${src_sum})"
+  fi
+  um_ok "mirrorctl installed (sha256=${src_sum:0:12}…) canonical=${INSTALL_BIN_DIR}/mirrorctl"
 }
 
 # ---------------------------------------------------------------------------
@@ -605,16 +658,21 @@ phase5_services() {
 
   systemctl daemon-reload
   systemctl enable nginx >/dev/null
-  systemctl restart nginx
-  if ! systemctl is-active --quiet nginx; then
-    um_die "nginx failed to start"
+  # When selective READY already exists, avoid bouncing nginx (publish already validated).
+  if um_is_mirror_ready 2>/dev/null && systemctl is-active --quiet nginx; then
+    um_ok "nginx already running — not restarted (selective READY preserved)"
+  else
+    systemctl restart nginx
+    if ! systemctl is-active --quiet nginx; then
+      um_die "nginx failed to start"
+    fi
+    um_ok "nginx running on port ${MIRROR_PORT}"
   fi
-  um_ok "nginx running on port ${MIRROR_PORT}"
 
-  # Explicitly keep timer disabled until finalize
+  # Explicitly keep timer disabled (selective profile never uses daily full sync)
   systemctl disable apt-mirror.timer >/dev/null 2>&1 || true
   systemctl stop apt-mirror.timer >/dev/null 2>&1 || true
-  um_ok "apt-mirror.timer installed but disabled until initial sync completes"
+  um_ok "apt-mirror.timer installed but disabled (selective profile)"
   um_mark_state "installed"
 }
 
@@ -678,21 +736,36 @@ phase6_sync() {
     return 0
   fi
 
-  if um_initial_sync_complete || um_is_mirror_ready; then
-    um_ok "Initial sync already completed — not restarting"
-    return 0
-  fi
-
   local attach_mode already_running=0
   attach_mode="$(um_resolve_sync_attach_mode)"
+
+  # Reject minimal / incomplete profiles before any sync work.
+  if [[ -f "${UM_PROJECT_ROOT}/lib/upgrade-profile.sh" ]]; then
+    # shellcheck source=lib/upgrade-profile.sh
+    source "${UM_PROJECT_ROOT}/lib/upgrade-profile.sh"
+    um_load_upgrade_profile 2>/dev/null || true
+    if ! um_assert_supported_mirror_mode "${MIRROR_MODE}"; then
+      um_die "UNSUPPORTED_MINIMAL_PROFILE / incomplete upgrade profile" 2
+    fi
+  fi
 
   # Pre-sync capacity gate (projected size vs available minus reserve)
   phase "Phase 6a: Pre-sync capacity check"
   if [[ "$UM_DRY_RUN" == "1" ]]; then
     um_check_sync_capacity "$BASE_PATH" "$MIRROR_MODE" || um_dry "Capacity check would block sync"
-    um_dry "Would start initial synchronization (systemctl start --no-block)"
+    um_dry "Would start initial synchronization: plan-selective (no apt-mirror)"
     um_dry "Would attach mode: ${attach_mode}"
-    um_dry "Mirror mode: ${MIRROR_MODE} (components: ${MIRROR_COMPONENTS})"
+    um_dry "Mirror mode: ${MIRROR_MODE} (selective discovery-exact)"
+    um_dry "Profile: offline-upgrade-selective"
+    um_dry "Next: materialize-selective → verify-selective → publish-selective (manual)"
+    if um_initial_sync_complete || um_is_mirror_ready; then
+      um_dry "Note: host already READY/sync-complete; real run would not restart sync"
+    fi
+    return 0
+  fi
+
+  if um_initial_sync_complete || um_is_mirror_ready; then
+    um_ok "Initial selective plan/READY already present — not restarting"
     return 0
   fi
 
@@ -700,44 +773,20 @@ phase6_sync() {
     um_die "Initial sync blocked by disk capacity / safety reserve check" 2
   fi
 
-  if um_is_sync_running; then
-    um_ok "Initial synchronization is already running"
-    already_running=1
-  fi
-
-  if [[ "$already_running" -eq 0 ]]; then
-    um_clear_marker "sync-failed"
-    # Non-blocking: never freeze the installer on a multi-hour sync
-    systemctl start --no-block apt-mirror.service
-
-    local _i ok=0
-    for _i in 1 2 3 4 5; do
-      sleep 1
-      if um_is_sync_running \
-        || systemctl is-active --quiet apt-mirror.service 2>/dev/null \
-        || systemctl show -p ActiveState --value apt-mirror.service 2>/dev/null | grep -qE 'active|activating' \
-        || [[ -f "$APT_MIRROR_LOG" ]]; then
-        ok=1
-        break
-      fi
-    done
-
-    if [[ "$ok" -eq 1 ]]; then
+  # Selective profile: run plan-selective only (never apt-mirror / publish).
+  local uom="${UM_PROJECT_ROOT}/scripts/ubuntu-offline-mirror.sh"
+  if [[ -x "$uom" ]] || [[ -f "$uom" ]]; then
+    um_ok "Running plan-selective (discovery analysis; no download/publish)"
+    if bash "$uom" plan-selective; then
       um_mark_state "sync-started"
-      um_ok "apt-mirror.service starting (mode=${MIRROR_MODE})"
-      um_ok "Raw log: ${APT_MIRROR_LOG}"
-      um_ok "Dashboard: sudo mirrorctl watch"
+      um_ok "plan-selective complete"
+      um_ok "Next (manual): ubuntu-offline-mirror.sh materialize-selective"
+      um_ok "Then: verify-selective → publish-selective"
     else
-      local st
-      st="$(systemctl show -p Result --value apt-mirror.service 2>/dev/null || true)"
-      if [[ "$st" == "success" ]]; then
-        um_ok "apt-mirror.service completed quickly (check logs)"
-      else
-        um_warn "Could not confirm sync process — check: journalctl -u apt-mirror.service"
-        um_warn "Then: sudo mirrorctl status"
-        return 0
-      fi
+      um_warn "plan-selective failed — run: sudo $uom plan-selective"
     fi
+  else
+    um_warn "ubuntu-offline-mirror.sh not found — skip plan-selective"
   fi
 
   # Non-interactive / CI: never emit TUI controls into redirected logs
@@ -815,19 +864,26 @@ cleanup_temps() {
 }
 
 run_install_pipeline() {
-  # Idempotent fast path (real run only): already installed, config current, sync running
+  # Idempotent fast path (real run only): already installed, NO runtime drift, READY/syncing.
   # Skipped when operator came from the interactive menu with an explicit install choice.
+  # IMPORTANT: selective READY alone must not skip tool/config refresh when checksums drift.
   if [[ "$UM_FROM_MENU" != "1" ]] && [[ "$UM_DRY_RUN" != "1" ]] && [[ "$UM_FORCE" != "1" ]] && um_is_installed; then
-    local gen
-    gen="$(mktemp)"; um_generate_mirror_list >"$gen"
-    if cmp -s "$gen" /etc/apt/mirror.list 2>/dev/null; then
-      if um_is_sync_running || um_is_mirror_ready || um_initial_sync_complete; then
-        rm -f "$gen"
-        phase7_summary
-        return 0
+    UM_PROJECT_ROOT="${UM_PROJECT_ROOT}"
+    if ! um_has_runtime_drift; then
+      local gen
+      gen="$(mktemp)"; um_generate_mirror_list >"$gen"
+      if cmp -s "$gen" /etc/apt/mirror.list 2>/dev/null; then
+        if um_is_sync_running || um_is_mirror_ready || um_initial_sync_complete; then
+          rm -f "$gen"
+          um_ok "Runtime tools/config already current — skipping reinstall (READY preserved)"
+          phase7_summary
+          return 0
+        fi
       fi
+      rm -f "$gen"
+    else
+      um_warn "Runtime drift detected (mirrorctl/libs/config/systemd) — refreshing install without restarting selective sync"
     fi
-    rm -f "$gen"
   fi
 
   phase1_preflight
@@ -847,14 +903,25 @@ main() {
   um_setup_trap
   um_register_cleanup cleanup_temps
 
-  # --force re-install from the checkout: prefer project mirror.conf over stale /etc copy
-  if [[ -z "${UM_CONFIG_ARG}" ]] && [[ "${UM_FORCE}" == "1" ]] \
-    && [[ -f "${UM_PROJECT_ROOT}/mirror.conf" ]]; then
+  # Prefer project mirror.conf over a stale /etc copy for --force and --dry-run
+  # from the checkout (avoids host MIRROR_MODE=minimal poisoning dry-run plans).
+  if [[ -z "${UM_CONFIG_ARG}" ]] \
+    && [[ -f "${UM_PROJECT_ROOT}/mirror.conf" ]] \
+    && { [[ "${UM_FORCE}" == "1" ]] || [[ "${UM_DRY_RUN}" == "1" ]]; }; then
     UM_CONFIG_ARG="${UM_PROJECT_ROOT}/mirror.conf"
   fi
 
   UM_QUIET_LOAD=0
   um_load_config "$UM_CONFIG_ARG"
+  # shellcheck source=lib/upgrade-profile.sh
+  source "${UM_PROJECT_ROOT}/lib/upgrade-profile.sh"
+  um_load_upgrade_profile 2>/dev/null || true
+
+  # Legacy host configs may still say MIRROR_MODE=full while selective READY exists.
+  # Prefer selective whenever selective state/profile is present.
+  if um_is_selective_profile 2>/dev/null || [[ "${UM_SELECTIVE}" == "1" ]]; then
+    MIRROR_MODE="selective"
+  fi
 
   um_set_log_file "${LOG_DIR}/install.log"
   um_ensure_log_dir
@@ -882,12 +949,13 @@ main() {
     done
   fi
 
-  # Non-menu path: resolve mode from CLI flags (default = config / full for offline)
+  # Non-menu path: resolve mode from CLI flags (default = selective)
   if [[ "$UM_FULL" == "1" ]]; then
     um_resolve_mirror_mode 1 0
   elif [[ "$UM_MINIMAL" == "1" ]]; then
     um_resolve_mirror_mode 0 1
   else
+    MIRROR_MODE="selective"
     um_resolve_mirror_mode 0 0
   fi
 

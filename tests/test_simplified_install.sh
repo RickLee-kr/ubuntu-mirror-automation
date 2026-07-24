@@ -27,10 +27,15 @@ echo "[test_default_install_flow] help lists simplified options only"
 HELP="$(bash "${ROOT}/install.sh" --help)"
 echo "$HELP" | grep -q -- '--dry-run' || fail "missing --dry-run"
 echo "$HELP" | grep -q -- '--no-sync' || fail "missing --no-sync"
-echo "$HELP" | grep -q -- '--full' || fail "missing --full"
-echo "$HELP" | grep -q -- '--minimal' || fail "missing --minimal"
+echo "$HELP" | grep -q -- '--selective' || fail "missing --selective"
 echo "$HELP" | grep -q -- '--menu' || fail "missing --menu"
 echo "$HELP" | grep -q -- '--verbose' || fail "missing --verbose"
+echo "$HELP" | grep -q 'offline-upgrade-selective' || fail "missing offline-upgrade-selective profile"
+echo "$HELP" | grep -q 'NOT supported' || fail "help should state full/minimal is NOT supported"
+# --minimal must not appear as a supported Options: flag line
+if echo "$HELP" | grep -E '^[[:space:]]*--minimal[[:space:]]'; then
+  fail "help still advertises --minimal as supported option"
+fi
 if echo "$HELP" | grep -q -- '--start-sync'; then fail "deprecated --start-sync still in help"; fi
 if echo "$HELP" | grep -Eq -- '--validate([[:space:]]|$)'; then fail "deprecated --validate still in help"; fi
 # --non-interactive is a supported automation alias (skips menu)
@@ -134,10 +139,10 @@ else
   fail "timer not explicitly disabled"
 fi
 svc="$(um_generate_systemd_service)"
-if echo "$svc" | grep -q 'ubuntu-offline-mirror.sh sync'; then
-  pass "service uses offline sync wrapper"
+if echo "$svc" | grep -q 'materialize-selective'; then
+  pass "service uses materialize-selective"
 else
-  fail "offline sync ExecStart missing"
+  fail "materialize-selective ExecStart missing"
 fi
 
 # ---------------------------------------------------------------------------
@@ -167,25 +172,30 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-echo "[test_minimal_option]"
-if bash "${ROOT}/install.sh" --help | grep -q -- '--minimal'; then
-  pass "--minimal accepted"
-else
-  fail "--minimal"
-fi
+echo "[test_minimal_option_rejected]"
+set +e
+OUT_MIN="$(bash "${ROOT}/install.sh" --minimal 2>&1)"
+RC_MIN=$?
+set -e
+[[ "$RC_MIN" -ne 0 ]] || fail "--minimal must exit non-zero"
+echo "$OUT_MIN" | grep -q 'UNSUPPORTED_MINIMAL_PROFILE' || fail "--minimal must report UNSUPPORTED_MINIMAL_PROFILE"
+echo "$OUT_MIN" | grep -q 'No sync was started' || fail "--minimal must state sync was not started"
+pass "--minimal rejected (UNSUPPORTED_MINIMAL_PROFILE)"
 
 # ---------------------------------------------------------------------------
-echo "[test_default_is_full_offline]"
-OUT="$(bash "${ROOT}/install.sh" --dry-run --no-menu 2>&1 || true)"
-echo "$OUT" | grep -q 'Mirror mode: full' || fail "default dry-run should report full mode for offline mirror"
-echo "$OUT" | grep -qE 'universe' || fail "default full should mention universe"
-pass "default is full (offline upgrade)"
-OUT_MIN="$(bash "${ROOT}/install.sh" --dry-run --no-menu --minimal 2>&1 || true)"
-echo "$OUT_MIN" | grep -q 'Mirror mode: minimal' || fail "--minimal should select minimal mode"
-pass "--minimal selects minimal mode"
-OUT_FULL="$(bash "${ROOT}/install.sh" --dry-run --no-menu --full 2>&1 || true)"
-echo "$OUT_FULL" | grep -q 'Mirror mode: full' || fail "--full should select full mode"
-pass "--full selects full mode"
+echo "[test_default_is_selective_offline]"
+OUT="$(bash "${ROOT}/install.sh" --dry-run --no-menu --config "${ROOT}/mirror.conf" 2>&1 || true)"
+echo "$OUT" | grep -q 'Mirror mode: selective' || fail "default dry-run should report selective mode"
+echo "$OUT" | grep -q 'offline-upgrade-selective\|Profile: offline-upgrade-selective' \
+  || fail "dry-run should mention offline-upgrade-selective profile"
+pass "default is selective (offline upgrade)"
+set +e
+OUT_FULL="$(bash "${ROOT}/install.sh" --dry-run --no-menu --full --config "${ROOT}/mirror.conf" 2>&1)"
+RC_FULL=$?
+set -e
+[[ "$RC_FULL" -ne 0 ]] || fail "--full must exit non-zero"
+echo "$OUT_FULL" | grep -q 'UNSUPPORTED_FULL_MIRROR_SYNC' || fail "--full must report UNSUPPORTED_FULL_MIRROR_SYNC"
+pass "--full rejected (UNSUPPORTED_FULL_MIRROR_SYNC)"
 
 # ---------------------------------------------------------------------------
 echo "[test_capacity_check_in_install]"

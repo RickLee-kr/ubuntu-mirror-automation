@@ -157,12 +157,17 @@ n2="$(pf_normalize_version '6.4.0+build123')"
 n3="$(pf_normalize_version '6.5.0-12')"
 [[ "$n3" == "6.5.0" ]] && pass "normalize 6.5.0-12" || fail "normalize dash: $n3"
 
-# 14. DP 6.1 blocked
+# 14. DP 6.1 is informational in Phase 1 OS-only (not BLOCKER)
 run_pf "$WORKDIR/dp61" \
   --collection "$FIX/dp61-blocked" --package-source-mode direct --bringup-mode online \
   --snapshot-reference "snap-ok" || true
-[[ "$RC" -eq 20 ]] && grep -q 'DP_VERSION_SUPPORTED' "$RESDIR/checks.tsv" && \
-  grep DP_VERSION_SUPPORTED "$RESDIR/checks.tsv" | grep -q FAIL && pass "DP 6.1.x blocked" || fail "DP 6.1"
+if grep -q 'DP_VERSION_SUPPORTED' "$RESDIR/checks.tsv" \
+   && ! grep DP_VERSION_SUPPORTED "$RESDIR/checks.tsv" | grep -q FAIL \
+   && grep DP_VERSION_SUPPORTED "$RESDIR/checks.tsv" | grep -q PASS; then
+  pass "DP 6.1.x not blocked in Phase 1 OS-only"
+else
+  fail "DP 6.1 unexpectedly blocked or missing check"
+fi
 
 # 15. Ubuntu 16.04 → 4 hops
 run_pf "$WORKDIR/hops16" \
@@ -298,9 +303,9 @@ grep XENIAL_REPOSITORY "$RESDIR/checks.tsv" | grep -q 'old-releases=404\|old-rel
 # 35. AIO + empty workers PASS
 grep WORKER_CONFIGURATION "$WORKDIR/mountwarn/$(basename "$(find "$WORKDIR/mountwarn" -maxdepth 1 -type d \( -name 'dp-os-upgrade-preflight-*' -o -name 'dp-upgrade-preflight-*' \))")/checks.tsv" | grep -q PASS && pass "AIO empty workers PASS" || fail "aio workers"
 
-# 36. master workers missing BLOCKED
+# 36. master workers missing — Phase 1 informational (not BLOCKER)
 run_pf "$WORKDIR/mwmiss" --collection "$FIX/master-workers-missing" --package-source-mode direct --bringup-mode offline --snapshot-reference snap-ok || true
-grep WORKER_CONFIGURATION "$RESDIR/checks.tsv" | grep -q FAIL && pass "master workers missing BLOCKED" || fail "master workers"
+grep WORKER_CONFIGURATION "$RESDIR/checks.tsv" | grep -q PASS && pass "master workers missing informational PASS" || fail "master workers"
 
 # 37. no upgrade state → NEW_RUN PASS
 grep UPGRADE_STATE "$WORKDIR/mountwarn/$(basename "$(find "$WORKDIR/mountwarn" -maxdepth 1 -type d \( -name 'dp-os-upgrade-preflight-*' -o -name 'dp-upgrade-preflight-*' \))")/checks.tsv" | grep -q PASS && pass "no upgrade state NEW_RUN PASS" || fail "new run"
@@ -419,11 +424,11 @@ assert ids["WORKER_CONFIGURATION"]["status"]=="PASS"
 assert ids["UPGRADE_STATE"]["status"]=="PASS"
 PY
 
-# 60. unknown / conflicting DP
+# 60. unknown / conflicting DP — Phase 1 informational (not BLOCKER)
 run_pf "$WORKDIR/unk" --collection "$FIX/unknown-dp-version" --package-source-mode direct --bringup-mode online --snapshot-reference snap-ok || true
-grep DP_VERSION_DETECTED "$RESDIR/checks.tsv" | grep -q FAIL && pass "unknown DP blocked" || fail "unknown dp"
+grep DP_VERSION_DETECTED "$RESDIR/checks.tsv" | grep -q PASS && pass "unknown DP informational PASS" || fail "unknown dp"
 run_pf "$WORKDIR/conf" --collection "$FIX/conflicting-dp-version" --package-source-mode direct --bringup-mode online --snapshot-reference snap-ok || true
-grep DP_VERSION_DETECTED "$RESDIR/checks.tsv" | grep -q FAIL && pass "conflicting DP blocked" || fail "conflict dp"
+grep DP_VERSION_DETECTED "$RESDIR/checks.tsv" | grep -q PASS && pass "conflicting DP informational PASS" || fail "conflict dp"
 
 
 # --- OS-only / discovery profile additions ---

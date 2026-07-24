@@ -1,0 +1,10 @@
+package	version
+libc6	2.23-0ubuntu11.3
+libc-bin	2.23-0ubuntu11.3
+systemd	229-4ubuntu21.31
+udev	229-4ubuntu21.31
+libsystemd0	229-4ubuntu21.31
+libudev1	229-4ubuntu21.31
+apt	1.2.35
+dpkg	1.18.4ubuntu1.7
+aella-cm-master	6.5.0

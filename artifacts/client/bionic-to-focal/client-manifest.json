@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "profile": "offline-upgrade-selective",
+  "hop": "bionic-to-focal",
+  "source_codename": "bionic",
+  "target_codename": "focal",
+  "source_version": "18.04",
+  "target_version": "20.04",
+  "mirror_base": "http://221.139.249.111",
+  "repository_base": "http://221.139.249.111/hops/bionic-to-focal/ubuntu",
+  "suites": [
+    "bionic",
+    "bionic-updates",
+    "bionic-security",
+    "bionic-backports",
+    "focal",
+    "focal-updates",
+    "focal-security",
+    "focal-backports"
+  ],
+  "source_suites": [
+    "bionic",
+    "bionic-updates",
+    "bionic-security",
+    "bionic-backports"
+  ],
+  "target_suites": [
+    "focal",
+    "focal-updates",
+    "focal-security",
+    "focal-backports"
+  ],
+  "components": [
+    "main",
+    "universe"
+  ],
+  "repository_key_fingerprint": "D1FF722556ED95F5E779BAE66B1BA1673A997CA5",
+  "key_sha256": "d1ef6724347f11355a0fbc8a1dec9cf69e8e8647c5ccd06fbc2f952bcb177d60",
+  "manifest_key_fingerprint": "C786FE9887290E2CF759271DFDD38BE958EABD4A",
+  "manifest_key_sha256": "d398cbadb5d87b1d01978ce1499feb7436c0c81859314f96298b0adddc3ec079",
+  "keyring_install_path": "/etc/apt/trusted.gpg.d/stellar-offline-bionic-to-focal.gpg",
+  "meta_release_url": "http://221.139.249.111/client/bionic-to-focal/meta-release-lts",
+  "meta_release_sha256": "bbd547c5337f8dbd6e3285b7a8311acc204a357c17ab5f183e4d04a77cf427fd",
+  "upgrader_tar_url": "http://221.139.249.111/offline/release-upgraders/focal/focal.tar.gz",
+  "upgrader_tar_sha256": "67a4e95eaa32296ad8623741e437d4a51b7c5ea4958f1de654243ba1653e9cdb",
+  "upgrader_gpg_url": "http://221.139.249.111/offline/release-upgraders/focal/focal.tar.gz.gpg",
+  "upgrader_gpg_sha256": "cbad93ff76d0c4f1d811120b63da4fd89d9fb6d25433eb298ce69f20ad75075f",
+  "sample_deb_url": "http://221.139.249.111/hops/bionic-to-focal/ubuntu/pool/main/a/acl/acl_2.2.53-6_amd64.deb",
+  "plan_checksum": "8eb3d478e2d40e7a19510239fcbf6e2e6824b2587e6e7172d60ef01e8920b157",
+  "discovery_checksum": "d08f76a4e87bbaabc82b2aea3f552d26b9ece53be83735a74dffdfd70a816b56",
+  "confirm_phrase": "UPGRADE-BIONIC-TO-FOCAL",
+  "generated_at": "2026-07-24T03:33:40Z",
+  "announcements": {
+    "ReleaseAnnouncement": "82de413648e36336570e20c29862e68ea5d66b02ba9e083f24f8070d5b644318",
+    "ReleaseAnnouncement.html": "729aebb66263771197cef507837bb22cf1c9c58615f698b60541d4674ed737ab"
+  }
+}

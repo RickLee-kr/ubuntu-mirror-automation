@@ -98,6 +98,10 @@ rewritten="$(uom_rewrite_url "http://archive.ubuntu.com/ubuntu/dists/bionic-upda
 [[ "$rewritten" == "http://mirror.local/ubuntu/dists/bionic-updates/main/dist-upgrader-all/current/bionic.tar.gz" ]] \
   && pass "rewrite archive URL" || fail "rewrite: $rewritten"
 
+sec_rewritten="$(uom_rewrite_url "http://security.ubuntu.com/ubuntu/dists/jammy-security/InRelease" "http://mirror.local")"
+[[ "$sec_rewritten" == "http://mirror.local/ubuntu-security/dists/jammy-security/InRelease" ]] \
+  && pass "rewrite security URL to /ubuntu-security" || fail "security rewrite: $sec_rewritten"
+
 if uom_rewrite_url "http://evil.example/x" "http://mirror.local" >/dev/null 2>&1; then
   fail "rewrite should reject unknown host"
 else
@@ -135,6 +139,27 @@ bash -n "${ROOT}/lib/offline.sh"
 bash -n "${ROOT}/scripts/run-apt-mirror.sh"
 pass "bash -n"
 
+echo "[test] by-hash CLI wiring"
+grep -q 'sync-by-hash' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing sync-by-hash command"
+grep -q 'validate-by-hash' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing validate-by-hash command"
+grep -q 'sync_validate_cleanup_by_hash' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing by-hash in sync flow"
+[[ -f "${ROOT}/scripts/lib/sync_by_hash.py" ]] || fail "missing sync_by_hash.py"
+python3 -m py_compile "${ROOT}/scripts/lib/sync_by_hash.py"
+pass "by-hash CLI + py_compile"
+
+echo "[test] release-upgrader CLI wiring"
+grep -q 'sync-release-upgraders' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing sync-release-upgraders"
+grep -q 'sync-legacy-releases' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing sync-legacy-releases"
+grep -q 'validate-legacy-releases' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing validate-legacy-releases"
+grep -q 'freeze-xenial-snapshot' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing freeze-xenial-snapshot"
+grep -q 'validate-release-upgraders' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing validate-release-upgraders"
+grep -q 'sync_release_upgraders_py' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing py sync in flow"
+[[ -f "${ROOT}/scripts/lib/sync_release_upgraders.py" ]] || fail "missing sync_release_upgraders.py"
+[[ -f "${ROOT}/scripts/lib/validate_release_upgraders.py" ]] || fail "missing validate_release_upgraders.py"
+python3 -m py_compile "${ROOT}/scripts/lib/sync_release_upgraders.py"
+python3 -m py_compile "${ROOT}/scripts/lib/validate_release_upgraders.py"
+pass "release-upgrader CLI + py_compile"
+
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -x "${ROOT}/lib/offline.sh" && pass "shellcheck offline.sh" || fail "shellcheck offline.sh"
 else
@@ -154,10 +179,14 @@ grep -q 'set defaultarch  amd64' "${ROOT}/templates/mirror.list" && pass "defaul
 grep -q 'noble-backports' "${ROOT}/templates/mirror.list" && pass "noble-backports" || fail "backports"
 
 echo "[test] systemd/nginx templates"
-grep -q 'ubuntu-offline-mirror.sh sync' "${ROOT}/templates/apt-mirror.service" && pass "service ExecStart" || fail "service ExecStart"
+grep -q 'materialize-selective' "${ROOT}/templates/apt-mirror.service" && pass "service ExecStart" || fail "service ExecStart"
 grep -q 'RandomizedDelaySec' "${ROOT}/templates/apt-mirror.timer" && pass "timer delay" || fail "timer delay"
 grep -q 'location /offline/' "${ROOT}/templates/nginx.conf" && pass "nginx offline" || fail "nginx offline"
 grep -q 'location /ubuntu/' "${ROOT}/templates/nginx.conf" && pass "nginx ubuntu/" || fail "nginx ubuntu/"
+grep -q 'location /ubuntu-security/' "${ROOT}/templates/nginx.conf" && pass "nginx ubuntu-security/" || fail "nginx ubuntu-security/"
+grep -q 'server_name security.ubuntu.com' "${ROOT}/templates/nginx.conf" && pass "nginx security Host vhost" || fail "nginx security Host"
+grep -q 'server_name old-releases.ubuntu.com' "${ROOT}/templates/nginx.conf" && pass "nginx old-releases Host vhost" || fail "nginx old-releases Host"
+grep -q 'sync_legacy_releases' "${ROOT}/scripts/ubuntu-offline-mirror.sh" && pass "legacy sync wired" || fail "legacy sync wiring"
 
 # Simulate READY invalidation logic
 READY="${WORKDIR}/READY"

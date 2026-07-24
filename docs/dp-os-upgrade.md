@@ -1,6 +1,9 @@
 # DP OS Upgrade (Phase 1 OS-only)
 
-Phase 1 upgrades Ubuntu LTS hops only (16.04→24.04). Phase 2 DP Python/Py3 bringup is a **separate** workflow and is never executed by these tools.
+Phase 1 upgrades Ubuntu LTS hops only (16.04→24.04) in **OS-only** mode.
+DP product install, topology, containers, and service health are **not** Phase 1 requirements
+(an uninstalled DP image is a valid input). Phase 2 DP product validation/bringup is a
+**separate** workflow and is never executed by these tools.
 
 Execution profiles:
 - `production` (default): snapshot/backup required; may run the full remaining hop chain

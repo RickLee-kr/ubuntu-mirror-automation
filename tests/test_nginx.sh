@@ -16,16 +16,32 @@ trap 'rm -rf "$TMPDIR_TEST"' EXIT
 
 um_generate_nginx_conf >"${TMPDIR_TEST}/apt-mirror.conf"
 
-# Structural checks
+# Structural checks — selective canonical root
 grep -q 'listen' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
 grep -q 'location /ubuntu/' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
+grep -q 'location /ubuntu-security/' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
 grep -q 'location /offline/' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
+grep -q 'location /hops/' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
+grep -q 'location /client/' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
+grep -q 'selective/current' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
+grep -q 'server_name security.ubuntu.com' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
+grep -q 'server_name archive.ubuntu.com' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
+grep -q 'server_name old-releases.ubuntu.com' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
 grep -q 'autoindex on' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
 grep -q 'alias ' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
+# Must not point at legacy full-mirror spool
+if grep -qE 'root[[:space:]]+/var/spool/apt-mirror/mirror[[:space:]]*;' "${TMPDIR_TEST}/apt-mirror.conf"; then
+  echo "  FAIL: generated nginx still uses legacy mirror root"
+  FAIL=1
+fi
 
 # Template file exists and matches guide essentials
 grep -q 'location /ubuntu/' "${ROOT}/templates/nginx.conf" || FAIL=1
+grep -q 'location /ubuntu-security/' "${ROOT}/templates/nginx.conf" || FAIL=1
 grep -q 'location /offline/' "${ROOT}/templates/nginx.conf" || FAIL=1
+grep -q 'selective/current' "${ROOT}/templates/nginx.conf" || FAIL=1
+grep -q 'server_name security.ubuntu.com' "${ROOT}/templates/nginx.conf" || FAIL=1
+grep -q 'server_name old-releases.ubuntu.com' "${ROOT}/templates/nginx.conf" || FAIL=1
 
 if command -v nginx >/dev/null 2>&1; then
   # Build a minimal nginx.conf that includes our server block for -t

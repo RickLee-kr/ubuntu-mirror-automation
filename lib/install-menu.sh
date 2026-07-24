@@ -373,7 +373,7 @@ um_menu_run_dashboard() {
   [[ -x "$dash" ]] || dash="${INSTALL_BIN_DIR:-/usr/local/bin}/mirror-dashboard"
   [[ -x "$dash" ]] || dash="${UM_PROJECT_ROOT}/scripts/mirror-dashboard.sh"
   if [[ ! -x "$dash" ]]; then
-    um_whiptail_msg "Monitor" "Dashboard not installed yet.\n\nInstall first (Minimal or Full)."
+    um_whiptail_msg "Monitor" "Dashboard not installed yet.\n\nInstall offline-upgrade-selective first."
     return 0
   fi
   clear 2>/dev/null || true
@@ -407,17 +407,21 @@ um_menu_follow_logs() {
 
 um_menu_stop_sync() {
   um_require_root
-  if ! um_is_sync_running && ! pgrep -f '/usr/bin/apt-mirror' >/dev/null 2>&1; then
-    um_whiptail_msg "Stop sync" "No sync process is running."
+  if ! um_is_sync_running \
+    && ! pgrep -f 'ubuntu-offline-mirror\.sh[[:space:]]+(materialize-selective|verify-selective|publish-selective)' >/dev/null 2>&1 \
+    && ! pgrep -f '/usr/bin/perl /usr/bin/apt-mirror' >/dev/null 2>&1; then
+    um_whiptail_msg "Stop operation" "No selective materialize process is running."
     return 0
   fi
-  if ! um_whiptail_yesno "Stop sync" "Stop apt-mirror.service now?\n\nSync will halt until started again." 1; then
+  if ! um_whiptail_yesno "Stop operation" "Stop selective materialize now?\n\nOperation will halt until started again." 1; then
     return 0
   fi
   systemctl kill -s SIGCONT apt-mirror.service 2>/dev/null || true
   systemctl stop apt-mirror.service 2>/dev/null || true
-  pkill -f '/usr/bin/apt-mirror' 2>/dev/null || true
-  um_whiptail_msg "Stop sync" "Stop requested."
+  pkill -f 'ubuntu-offline-mirror\.sh[[:space:]]+(materialize-selective|verify-selective|publish-selective)' 2>/dev/null || true
+  pkill -f 'selective_mirror\.py[[:space:]]+materialize' 2>/dev/null || true
+  pkill -f '/usr/bin/perl /usr/bin/apt-mirror' 2>/dev/null || true
+  um_whiptail_msg "Stop operation" "Stop requested."
 }
 
 um_menu_delete_data() {
@@ -458,24 +462,25 @@ um_menu_delete_data() {
 }
 
 um_menu_prepare_install_minimal() {
-  UM_FULL=0
-  UM_MINIMAL=1
-  UM_FORCE=1
-  UM_NO_SYNC=0
-  UM_SYNC_MODE="foreground"
-  um_resolve_mirror_mode 0 1
-
-  local cap_out
-  cap_out="$(mktemp)"
-  if ! um_check_sync_capacity "$BASE_PATH" "minimal" >"$cap_out" 2>&1; then
-    um_whiptail_file_msg "Capacity check failed" "$cap_out" 18 72
-    rm -f "$cap_out"
-    return 1
+  # Minimal is blocked for offline 16.04→24.04 upgrades (P0-5).
+  if [[ -f "${UM_PROJECT_ROOT}/lib/upgrade-profile.sh" ]]; then
+    # shellcheck source=lib/upgrade-profile.sh
+    source "${UM_PROJECT_ROOT}/lib/upgrade-profile.sh"
+    um_load_upgrade_profile 2>/dev/null || true
   fi
-  rm -f "$cap_out"
+  um_whiptail_msg "UNSUPPORTED_MINIMAL_PROFILE" \
+    "Minimal mirrors are not supported for the Ubuntu 16.04 → 24.04 offline upgrade chain.
 
-  um_whiptail_yesno "Minimal install" \
-    "Install / start sync in MINIMAL mode?\n\nComponents: main + restricted\nProjected size: ~320 GiB\n\nNOTE: Minimal is NOT sufficient for closed-network release upgrades." 0
+Required profile: offline-upgrade-selective
+Required components: main restricted universe multiverse
+Required pockets: base updates security backports
+
+No sync was started. Choose Full / offline-upgrade install instead.
+
+Migration (existing minimal hosts):
+  ubuntu-offline-mirror.sh migrate-profile --dry-run
+  ubuntu-offline-mirror.sh migrate-profile --confirm"
+  return 1
 }
 
 um_menu_prepare_install_full() {
@@ -491,17 +496,25 @@ um_menu_prepare_install_full() {
   if ! um_check_sync_capacity "$BASE_PATH" "full" >"$cap_out" 2>&1; then
     um_whiptail_file_msg "Full mode blocked" "$cap_out" 18 72
     rm -f "$cap_out"
-    um_resolve_mirror_mode 0 0
     return 1
   fi
   rm -f "$cap_out"
 
-  if ! um_whiptail_yesno "Full / offline upgrade install" \
-    "Install / start FULL offline upgrade mirror?\n\nComponents: main restricted universe multiverse\nSuites: release, updates, security, backports\nReleases: xenial→noble\nProjected size: ~700–900 GiB\n\nRequired for closed-network release upgrades." 0; then
-    um_resolve_mirror_mode 0 0
+  if ! um_whiptail_yesno "Selective offline upgrade install" \
+    "Install / Build Selective Offline Upgrade Mirror?\n\nProfile: offline-upgrade-selective\nSelection: discovery-exact DP upgrade payloads (~3.39 GiB)\nLayout: hop-separated selective snapshots\nReleases: xenial→noble\n\nRuns plan-selective (no full apt-mirror).\nThen start materialize-selective via systemd.\nExisting full mirror seed is preserved." 0; then
     return 1
   fi
   return 0
+}
+
+um_menu_resume_materialize() {
+  um_require_root
+  if um_is_sync_running; then
+    um_whiptail_msg "Resume" "Selective materialize already running."
+    return 0
+  fi
+  systemctl start --no-block apt-mirror.service 2>/dev/null || true
+  um_whiptail_msg "Resume" "Started selective materialize\n(apt-mirror.service → materialize-selective)."
 }
 
 um_menu_fallback_draw() {
@@ -509,14 +522,14 @@ um_menu_fallback_draw() {
 ┌──────────────── Ubuntu Mirror Server ─────────────────┐
 │ $(um_menu_status_blurb)
 ├───────────────────────────────────────────────────────┤
-│  1) Install / start sync — Minimal (~320 GiB)         │
-│  2) Install / start sync — Full (~700 GiB)            │
-│  3) Monitor live dashboard                            │
-│  4) Show status                                       │
-│  5) Follow raw logs                                   │
-│  6) Stop running synchronization                      │
-│  7) Delete existing mirror data  (DANGEROUS)          │
-│  8) Exit                                              │
+│  1) Install / Build Selective Offline Upgrade Mirror  │
+│  2) Resume Selective Mirror Materialization           │
+│  3) Watch Live Progress                               │
+│  4) Check Status                                      │
+│  5) Follow Logs                                       │
+│  6) Stop Current Operation                            │
+│  7) Delete Selective Mirror Data                      │
+│  8) Quit                                              │
 └───────────────────────────────────────────────────────┘
 EOF
 }
@@ -530,17 +543,12 @@ um_install_menu_fallback() {
     read -r choice || choice="8"
     case "$choice" in
       1)
-        if um_menu_prepare_install_minimal; then
-          UM_MENU_ACTION="install"
-          return 0
-        fi
-        ;;
-      2)
         if um_menu_prepare_install_full; then
           UM_MENU_ACTION="install"
           return 0
         fi
         ;;
+      2) um_menu_resume_materialize ;;
       3) um_menu_run_dashboard ;;
       4) um_menu_show_status ;;
       5) um_menu_follow_logs ;;
@@ -580,31 +588,26 @@ um_install_menu() {
       "Ubuntu Mirror Server
 
 ${blurb}" \
-      "1" "Install / start sync — Minimal (~320 GiB)" \
-      "2" "Install / start sync — Full (~700 GiB)" \
-      "3" "Monitor live dashboard" \
-      "4" "Show status" \
-      "5" "Follow raw logs" \
-      "6" "Stop running synchronization" \
-      "7" "Delete existing mirror data (DANGEROUS)" \
-      "8" "Exit" \
+      "1" "Install / Build Selective Offline Upgrade Mirror" \
+      "2" "Resume Selective Mirror Materialization" \
+      "3" "Watch Live Progress" \
+      "4" "Check Status" \
+      "5" "Follow Logs" \
+      "6" "Stop Current Operation" \
+      "7" "Delete Selective Mirror Data" \
+      "8" "Quit" \
     )" || continue
 
     [[ -z "${choice}" ]] && continue
 
     case "$choice" in
       1)
-        if um_menu_prepare_install_minimal; then
-          UM_MENU_ACTION="install"
-          return 0
-        fi
-        ;;
-      2)
         if um_menu_prepare_install_full; then
           UM_MENU_ACTION="install"
           return 0
         fi
         ;;
+      2) um_menu_resume_materialize ;;
       3) um_menu_run_dashboard ;;
       4) um_menu_show_status ;;
       5) um_menu_follow_logs ;;

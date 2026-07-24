@@ -1,0 +1,5 @@
+package	version	status	architecture
+systemd	237-3ubuntu10.57	install ok installed	amd64
+libc6	2.27-3ubuntu1.6	install ok installed	amd64
+linux-image-4.15.0-213-generic	4.15.0-213.224	install ok installed	amd64
+ubuntu-minimal	1.417.5	install ok installed	amd64

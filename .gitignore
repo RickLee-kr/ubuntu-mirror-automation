@@ -20,7 +20,40 @@ skel/
 # Real DP host collection archives (do not commit)
 dp-upgrade-readiness-*.tar.gz
 dp-upgrade-preflight-*.tar.gz
+ubuntu-upgrade-discovery-*.tar.gz
+ubuntu-upgrade-discovery-*.tar.gz.sha256
 
 
 # Local test smoke outputs
 tests/smoke-results/
+
+# Upgrade-discovery workspace exports: manifests only (never payloads/caches)
+artifacts/upgrade-discovery/**/*.deb
+artifacts/upgrade-discovery/**/*.udeb
+artifacts/upgrade-discovery/**/*.tar
+artifacts/upgrade-discovery/**/*.tar.gz
+artifacts/upgrade-discovery/**/*.xz
+artifacts/upgrade-discovery/**/*.gz
+artifacts/upgrade-discovery/**/*.bz2
+artifacts/upgrade-discovery/**/runtime/
+artifacts/upgrade-discovery/**/deb-cache/
+artifacts/upgrade-discovery/**/payload/
+artifacts/upgrade-discovery/**/responses/
+artifacts/upgrade-discovery/.staging-*/
+artifacts/upgrade-discovery/.replace-*/
+artifacts/upgrade-discovery/.old-*/
+artifacts/upgrade-discovery/.index.tsv.tmp.*
+
+# Client build outputs (regenerate with build-client-xenial-to-bionic)
+artifacts/client/
+# Unsigned test-only client builds (never deploy / never nginx)
+artifacts/client-unsigned-test/
+# Manifest signing private key (public .gpg may be committed)
+config/client-signing/*.private.gpg
+config/client-signing/*private*
+artifacts/upgrade-discovery/
+artifacts/recovery/
+artifacts/logs/
+artifacts/client/nginx-deploy/
+artifacts/client/build-summary.json
+ubuntu-mirror-automation/

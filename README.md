@@ -1,340 +1,151 @@
 # Ubuntu Mirror Server Automation
 
-Production installer for an Ubuntu package mirror (16.04 → 24.04) using apt-mirror + nginx + systemd.
+Selective offline Ubuntu upgrade mirror for Stellar Cyber DP baselines
+(16.04 → 18.04 → 20.04 → 22.04 → 24.04), driven by discovery artifacts — **not** a general full Ubuntu mirror.
 
-## Usage (summary)
+## Supported profile
 
-| What you want | Command / action |
-|---------------|------------------|
-| Install & start sync | `sudo ./install.sh` → menu **1** (Minimal) or **2** (Full) |
-| Watch live progress | Menu **3**, or `sudo mirrorctl watch` |
-| Check if sync finished | `sudo mirrorctl status` → look for `State: READY` |
-| Follow raw logs | Menu **5**, or `sudo mirrorctl logs` |
-| Stop sync | Menu **6**, or `sudo mirrorctl sync stop` |
-| Delete existing mirror data | Menu **7** (type `DELETE` to confirm) |
-| Quit menu | Menu **8**, or Esc |
+**`offline-upgrade-selective`** (`config/offline-upgrade-profile.json`)
 
-### How to run
+- Exact `.deb` payloads from `artifacts/upgrade-discovery`
+- Hop-separated APT snapshots (deterministic package sets)
+- Generated `Packages` / `Release` / `InRelease` via `apt-ftparchive`
+- Local GPG signing (no `trusted=yes`)
+- Meta-release + release upgraders
+- Existing full mirror under `/var/spool/apt-mirror/mirror/...` is **seed only** (never auto-deleted)
+
+## Operator flow
 
 ```bash
-git clone https://github.com/RickLee-kr/ubuntu-mirror-automation.git
-cd ubuntu-mirror-automation
+# 1) Analyze discovery (safe on ops host; no copy/download)
+sudo ./scripts/ubuntu-offline-mirror.sh plan-selective
+
+# 2) Materialize into /var/spool/apt-mirror/selective/staging
+#    (hardlink/reflink/copy from seed; download only missing)
+sudo ./scripts/ubuntu-offline-mirror.sh materialize-selective
+
+# 3) Pre-publish verify (staging only — independent of production nginx)
+#    Checks plan/discovery checksums, .deb SHA256/size, Packages coverage,
+#    Release/InRelease + local GPG, upgraders/meta-release, isolated APT (file://).
+#    PASS here does NOT mean published and does NOT write READY.
+sudo ./scripts/ubuntu-offline-mirror.sh verify-selective
+
+# 3b) One-time / idempotent: ensure production nginx root is selective/current
+#     (legacy installs may still point at /var/spool/apt-mirror/mirror).
+sudo ./scripts/ubuntu-offline-mirror.sh migrate-nginx-selective
+
+# 4) Atomic publish + post-publish HTTP smoke (concrete Release/Packages/.deb URLs)
+#    Preflight fails fast with SELECTIVE_NGINX_EFFECTIVE_ROOT_MISMATCH if nginx
+#    still serves the legacy full-mirror root (no HTTP endpoint storm).
+#    Switches selective/current → published; rolls back on HTTP failure; writes READY only on PASS.
+#    nginx URL `/` is NOT a readiness criterion (403/404 on `/` is ignored).
+sudo ./scripts/ubuntu-offline-mirror.sh publish-selective
+
+# Status — READY only after publish + post-publish HTTP PASS
+sudo ./scripts/ubuntu-offline-mirror.sh status
+```
+
+`sync` / full `apt-mirror` are **blocked** under this profile (`UNSUPPORTED_FULL_MIRROR_SYNC`).
+
+## Install
+
+```bash
 sudo ./install.sh
 ```
 
-1. Choose **1** (Minimal, recommended) or **2** (Full).
-2. A live dashboard opens. Detach with **B**, **Q**, or **Ctrl+C** — sync keeps running.
-3. Re-open the menu anytime with `sudo ./install.sh`, or attach the dashboard with `sudo mirrorctl watch`.
+Installs tooling, prepares `/var/spool/apt-mirror/selective`, runs **plan-selective**, and wires existing `mirrorctl` / systemd / nginx to the selective workflow. It does not publish, does not delete the seed mirror, and does not start a full apt-mirror sync.
+
+| Command | Purpose |
+|---------|---------|
+| `sudo ./install.sh` | Install + plan-selective (menu or `--no-menu`) |
+| `sudo mirrorctl sync start` | Start `materialize-selective` via apt-mirror.service |
+| `sudo mirrorctl watch` | Live progress dashboard |
+| `sudo mirrorctl status` | Selective counts / READY |
+| `sudo mirrorctl logs` | Materialize / service logs |
+| `sudo mirrorctl sync stop` | Stop selective materialize safely |
+
+Expected selective size ≈ **3.39 GiB** (3557 exact `.deb`s). `READY` only after pre-publish verify PASS **and** atomic publish with post-publish concrete HTTP smoke PASS.
+
+## Client
+
+### Phase 1 — Ubuntu OS-Only Offline Upgrade
+
+Phase 1 upgrades Ubuntu only (`16.04 → 18.04 → 20.04 → 22.04 → 24.04`) via the offline mirror.
+DP product install, topology, containers, and service health are **out of scope** (Phase 2).
+An uninstalled DP image is a valid Phase 1 test input.
+
+### One-hop offline OS upgrade (16.04 → 18.04 only)
+
+Build the single deliverable script from the READY selective mirror (does not rematerialize/publish):
+
+```bash
+sudo ./scripts/ubuntu-offline-mirror.sh build-client-xenial-to-bionic \
+  --mirror-base http://MIRROR_IP
+```
+
+Outputs:
+
+- `artifacts/client/dp-offline-upgrade-xenial-to-bionic.sh` (also copied to `client/`)
+- `artifacts/client/xenial-to-bionic/` (manifest, meta-release, announcements)
+- `/var/spool/apt-mirror/client/` for nginx `/client/` (separate from selective READY tree)
+
+On a Xenial host (installed or uninstalled DP image; after snapshot), run **only**:
+
+```bash
+sudo ./dp-offline-upgrade-xenial-to-bionic.sh --mode os-only
+```
+
+Default mode is already `OS_ONLY_PHASE1`. Optional override: `--mirror-base http://MIRROR_IP`.
+This hop does **not** start 18.04→20.04 or DP product validation/bringup.
+Phase 1 success for this hop = Ubuntu 18.04 boots with OS health PASS.
+
+### APT client helpers (manual attach)
+
+```bash
+sudo ./client/client-setup.sh --mirror-url http://MIRROR_IP [--hop xenial-to-bionic]
+./client/client-validate.sh --mirror-url http://MIRROR_IP
+```
+
+APT prefs disable Translation / DEP-11 / CNF / Contents / Sources. Prefer hop URL `/hops/<hop>/ubuntu`. `/ubuntu-security` aliases the same selective tree.
 
 ### How to confirm sync is complete
 
 ```bash
-sudo mirrorctl status
+sudo ./scripts/ubuntu-offline-mirror.sh status
 ```
 
-| `State` | Meaning |
-|---------|---------|
-| `SYNC_RUNNING` / `SYNC_WAITING` | Still downloading |
-| `SYNC_STALLED` | Process alive but no progress (investigate) |
-| `SYNC_FAILED` | Failed — check logs / disk |
-| `SYNC_COMPLETE` | apt-mirror finished; finalize may still be pending |
-| `READY` | **Done** — cleanup done, daily timer enabled, mirror usable |
-
-Also useful:
-
-```bash
-# Finalize log (auto-finalize steps)
-grep -E 'READY|completed' /var/log/ubuntu-mirror/finalize.log
-
-# HTTP check (replace with your mirror IP)
-curl -I http://YOUR_MIRROR_IP/ubuntu/dists/noble/Release
-```
-
-If status is `SYNC_COMPLETE` but not `READY`:
-
-```bash
-sudo mirrorctl finalize
-```
+Look for selective `READY: yes` / `validation_result=PASS` after `publish-selective`.
+Dashboard `State: READY` means the published selective mirror gates passed.
 
 ### How to delete existing mirror data
 
-**From the menu (recommended):**
-
-1. `sudo ./install.sh`
-2. If sync is running → **6** Stop sync
-3. **7** Delete existing mirror data → type `DELETE` → confirm
-4. Then **1** or **2** to install/sync again
-
-**From the shell:**
-
-```bash
-sudo mirrorctl sync stop
-sudo ./uninstall.sh --purge-data --force
-```
-
-`--purge-data --force` removes package data under `BASE_PATH` (`mirror/`, `skel/`, `var/`). It does not run unless both flags are given.
-
----
-
-## Quick Start
-
-```bash
-git clone https://github.com/RickLee-kr/ubuntu-mirror-automation.git
-cd ubuntu-mirror-automation
-sudo ./install.sh
-```
-
-On an interactive terminal this opens a **dialog-style menu** (whiptail):
-
-```text
-┌──────────── Ubuntu Mirror Menu ────────────┐
-│ Ubuntu Mirror Server                       │
-│                                            │
-│ 1 Install / start sync — Minimal (~320 GiB)│
-│ 2 Install / start sync — Full (~700 GiB)   │
-│ 3 Monitor live dashboard                   │
-│ 4 Show status                              │
-│ 5 Follow raw logs                          │
-│ 6 Stop running synchronization             │
-│ 7 Delete existing mirror data (DANGEROUS)  │
-│ 8 Exit                                     │
-│              <OK>   <Cancel>               │
-└────────────────────────────────────────────┘
-```
-
-Use **↑ / ↓** to move, **Tab** to switch between **OK** and **Cancel**, **Enter** to select.
-Esc also cancels / goes back.
-Choose **1** for the recommended default (main + restricted).  
-Choose **7** to wipe previous mirror data before re-installing.  
-Choose **3** anytime to re-attach the live sync dashboard.
-
-After install starts, the live dashboard appears. Press **B**, **Q**, or **Ctrl+C** to detach; sync continues in the background. Reconnect with menu option **3** or:
-
-```bash
-sudo mirrorctl watch
-```
-
-### Non-interactive / scripted install
-
-```bash
-sudo ./install.sh --full --no-menu          # offline upgrade mirror (default)
-sudo ./install.sh --minimal --no-menu       # reduced footprint (not enough for release upgrades)
-sudo ./install.sh --non-interactive
-```
-
-### Offline upgrade mirror (server-side)
-
-Integrated sync for closed-network LTS upgrades (`xenial → noble`):
-
-```bash
-sudo ubuntu-offline-mirror sync
-sudo ubuntu-offline-mirror verify
-sudo ubuntu-offline-mirror status
-sudo ubuntu-offline-mirror freeze   # before air-gap move
-```
-
-Config: `/etc/default/ubuntu-offline-mirror` (`PUBLIC_BASE_URL`, `ALLOW_ROOT_FS_MIRROR`, …).  
-Ops guide: `docs/operations.md`.
-
-DP host evidence collection (read-only, before upgrade): [`docs/collect-dp-upgrade-readiness.md`](docs/collect-dp-upgrade-readiness.md) / `scripts/collect-dp-upgrade-readiness.sh`.
-
-DP upgrade preflight (read-only READY/BLOCKED verdict from a collection): [`docs/dp-upgrade-preflight.md`](docs/dp-upgrade-preflight.md) / `scripts/dp-os-upgrade-preflight.sh`.
-
-```bash
-sudo ./scripts/dp-os-upgrade-preflight.sh \
-  --collection /var/tmp/dp-upgrade-readiness-dp01-....tar.gz \
-  --package-source-mode mirror \
-  --package-source-url http://10.34.200.20 \
-    --snapshot-reference "esxi-dp01-before-ubuntu-upgrade" \
-  --output-dir /var/tmp \
-  --keep-directory
-```
-
-Exit codes: `0` READY, `10` READY_WITH_WARNINGS, `20` BLOCKED, `2` CLI/input error, `3` integrity/internal error.
-
-Recommended DP upgrade flow:
-
-```text
-Collector
-→ OS-only Preflight (dp-os-upgrade-preflight.sh)
-→ Discovery OS Hop (or production hop chain)
-→ Package/File Analysis
-→ Mirror/Offline Set 보완
-→ 다음 OS Hop 반복 (new collector + preflight each discovery hop)
-→ Ubuntu 24.04 도달
-────────────────────────────────
-→ 별도 Phase 2 Readiness
-→ DP Python/Py3 Bringup
-```
-
-Profiles: `production` (snapshot required, full chain allowed) vs `discovery`
-(snapshot optional, default one hop, `CHECKPOINT_REACHED`, disposable VM ack).
-
-Phase 1 OS upgrade orchestrator: [`docs/dp-os-upgrade.md`](docs/dp-os-upgrade.md) /
-`scripts/dp-os-upgrade-only.sh` (default read-only; `install` requires `--execute` and
-destructive acknowledgment). Lab destructive E2E is gated separately:
-[`docs/dp-os-upgrade-lab-e2e.md`](docs/dp-os-upgrade-lab-e2e.md).
-
-**Included:** amd64 packages (main/restricted/universe/multiverse), updates/security/backports, release upgraders.  
-**Excluded:** i386, deb-src, Ubuntu Pro/ESM, PPAs, Docker/NVIDIA external repos, Snap, vendor private APT.
-
-### Installation modes
-
-```bash
-sudo ./install.sh                 # interactive menu (TTY)
-sudo ./install.sh --menu          # force menu
-sudo ./install.sh --minimal       # skip menu; minimal sync
-sudo ./install.sh --full          # skip menu; full offline sync (capacity checked)
-sudo ./install.sh --background    # skip menu; start sync and return to shell
-sudo ./install.sh --foreground    # skip menu; keep dashboard attached
-```
-
-Default mode is **full** for the offline upgrade mirror (~700–900 GiB projected). Use `--minimal` only for a reduced footprint. Before sync starts, capacity checks apply; `/var/spool/apt-mirror` should be a dedicated data mount (override with `ALLOW_ROOT_FS_MIRROR=true` only if necessary).
-
-`--background` example:
-
-```text
-Initial synchronization started in background.
-
-Attach dashboard:
-  sudo mirrorctl watch
-
-Check status:
-  sudo mirrorctl status
-
-Follow raw logs:
-  sudo mirrorctl logs
-```
-
-Without an interactive terminal (CI / redirected output), the installer automatically uses background mode and never emits ANSI cursor controls.
-
-### Day-to-day monitoring
-
-```bash
-sudo mirrorctl watch      # live TUI dashboard (refresh every 20s)
-sudo mirrorctl status     # one-shot status snapshot
-sudo mirrorctl logs       # follow /var/log/apt-mirror.log
-```
-
-You do not need to stitch together journalctl, df, and tail to know whether sync is alive.
-The dashboard distinguishes **RUNNING**, **WAITING**, **STALLED**, **FAILED**, and **READY**.
-
-When the first sync finishes, finalization runs automatically (cleanup + daily timer) and the dashboard shows each step. If needed:
-
-```bash
-sudo mirrorctl finalize
-```
-
-## Operator options
-
-| Option | Behavior |
-|--------|----------|
-| *(none)* | Interactive menu on a TTY (mode / monitor / delete data) |
-| `--menu` | Force interactive menu |
-| `--no-menu` / `--non-interactive` | Skip menu (automation / CI) |
-| `--full` | Skip menu; explicit full mirror |
-| `--minimal` | Skip menu; minimal mirror |
-| `--background` | Skip menu; start sync and return to the shell |
-| `--foreground` | Skip menu; keep the live dashboard attached |
-| `--config FILE` | Use a custom configuration file |
-| `--dry-run` | Show planned actions without changing the system |
-| `--no-sync` | Install and validate but do not start initial sync |
-| `--verbose` | Show full validation details |
-| `--force` | Replace changed managed configuration after backup |
-| `--help` | Show concise usage |
-
-## Configuration
-
-Edit `mirror.conf` before install if needed:
-
-- `BASE_PATH` (default `/var/spool/apt-mirror`)
-- `MIRROR_MODE` (default `minimal`; `full` in config is ignored unless `install.sh --full`)
-- `DISK_RESERVE_PERCENT` (default `20`) — free space that must remain after sync
-- `PROJECTED_SIZE_GIB_MINIMAL` / `PROJECTED_SIZE_GIB_FULL` — pre-sync size estimates
-- `UBUNTU_VERSIONS`, `NTHREADS`, `UPSTREAM_MIRROR`
-- `MIRROR_IP` / `MIRROR_URL` (auto-detected when empty)
-- `STALL_THRESHOLD_SEC` (default 600) for dashboard stall detection
-If `/var/spool/apt-mirror` is already mounted (for example `/dev/sdb1`), leave `DATA_DEVICE` empty. The installer will not format or remount it.
-
-## Day-2 operations
-
-```bash
-sudo mirrorctl watch
-sudo mirrorctl status
-sudo mirrorctl logs
-sudo mirrorctl logs --progress
-sudo mirrorctl sync start --foreground
-sudo mirrorctl sync stop
-sudo mirrorctl sync pause
-sudo mirrorctl sync resume
-sudo mirrorctl validate
-sudo mirrorctl finalize    # if auto-finalize did not run
-sudo mirrorctl cleanup
-sudo mirrorctl timer status
-```
-
-### Dashboard keyboard controls
-
-| Key | Action |
-|-----|--------|
-| `F` | Keep / follow in foreground |
-| `B` | Detach to background (return to shell) |
-| `L` | Switch to raw log view |
-| `S` | Show detailed status |
-| `P` | Pause sync (SIGSTOP), if supported |
-| `R` | Resume paused sync (SIGCONT) |
-| `Q` | Detach and quit dashboard |
-| `Ctrl+C` | Detach dashboard only — **does not** stop sync |
-
-Stopping sync requires an explicit command:
-
-```bash
-sudo mirrorctl sync stop
-```
-
-## Uninstall
-
-```bash
-sudo ./uninstall.sh
-# Dangerous: also delete mirrored packages
-sudo ./uninstall.sh --purge-data --force
-```
+Do **not** delete the 2.2TB seed automatically. After selective verify+publish PASS,
+review `selective/state/cleanup-plan.json` and only then manually remove the seed if
+the selective tree is independently complete (no hardlink dependency).
 
 ## Development and Troubleshooting
 
-Advanced scripts remain available for diagnostics:
+- Unit tests: `python3 tests/test_selective_mirror.py`
+- Profile tests: `python3 tests/test_upgrade_profile.py`
+- Full suite: `bash tests/run_all.sh`
+- Logs / status: `sudo mirrorctl status` (when installed)
+
+### Git backup staging (no commit/push)
+
+Do **not** paste `set -e` / `exit` audit blocks into an interactive SSH shell, and do **not** `source` the helper. Run only:
 
 ```bash
-./validate.sh --mode install
-./validate.sh --mode operational
-sudo mirrorctl recover
-sudo mirror-status
-sudo mirror-recovery
+bash scripts/prepare-backup-staging.sh --audit-only
+bash scripts/prepare-backup-staging.sh --stage
 ```
 
-Logs:
+Audits staged blobs for complete PEM/PGP private-key blocks (not bare marker
+substrings), and cross-checks production client script SHA pins against
+sidecar/hop/manifest signature evidence. See [docs/operations.md](docs/operations.md)
+→ **Git backup staging**.
 
-- `/var/log/ubuntu-mirror/install.log`
-- `/var/log/ubuntu-mirror/progress.jsonl`
-- `/var/log/ubuntu-mirror/finalize.log`
-- `/var/log/apt-mirror.log`
+## Docs
 
-Run the test suite:
-
-```bash
-cd tests && ./run_all.sh
-```
-
-Includes `bash -n`, ShellCheck, dry-run (no packages required), dashboard fixtures, and install-flow tests.
-
-See also:
-
-- [docs/architecture.md](docs/architecture.md)
 - [docs/operations.md](docs/operations.md)
-- [docs/recovery.md](docs/recovery.md)
-- [docs/collect-dp-upgrade-readiness.md](docs/collect-dp-upgrade-readiness.md)
-- [docs/dp-upgrade-preflight.md](docs/dp-upgrade-preflight.md)
-
-### Safety
-
-Normal `sudo ./install.sh` never formats disks, deletes mirror data, or enables the daily timer before the first successful sync. Disk formatting is a hidden expert flag (`--format-device --force`) and is not part of Quick Start. Detaching the dashboard never stops synchronization.
+- [docs/upgrade-discovery-analysis.md](docs/upgrade-discovery-analysis.md)
+- [docs/discover-upgrade-requirements.md](docs/discover-upgrade-requirements.md)

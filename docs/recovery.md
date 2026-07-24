@@ -56,7 +56,8 @@ sudo tail -50 /var/log/nginx/apt-mirror-error.log
 
 ```bash
 df -h /var/spool/apt-mirror
-# Switch to MIRROR_MODE=minimal, or drop versions, or expand volume:
+# Minimal mode is not supported. Free space, drop unused versions only if
+# your offline-upgrade profile still allows it, or expand the volume:
 # growpart + resize2fs (cloud) — not automated by default
 ```
 

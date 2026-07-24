@@ -1,0 +1,79 @@
+{
+  "schema_version": 2,
+  "profile_name": "offline-upgrade-selective",
+  "description": "Discovery-exact selective offline mirror for Stellar Cyber DP Ubuntu 16.04→24.04 LTS upgrades.",
+  "selection_mode": "discovery_exact",
+  "supported_hops": [
+    "xenial-to-bionic",
+    "bionic-to-focal",
+    "focal-to-jammy",
+    "jammy-to-noble"
+  ],
+  "series": ["xenial", "bionic", "focal", "jammy", "noble"],
+  "architectures": ["amd64"],
+  "architecture_all_allowed": true,
+  "discovery_root": "artifacts/upgrade-discovery",
+  "discovery_plan_path": "artifacts/upgrade-discovery/analysis/selective-mirror-plan.json",
+  "selective_mirror_root": "/var/spool/apt-mirror/selective",
+  "full_mirror_seed_root": "/var/spool/apt-mirror/mirror/archive.ubuntu.com/ubuntu",
+  "repository_layout": "hop_separated_source_target_suites",
+  "metadata_generator": "apt-ftparchive",
+  "signing": {
+    "mode": "local_gpg",
+    "trusted_yes_forbidden": true,
+    "key_name": "ubuntu-mirror-selective"
+  },
+  "requirements": {
+    "by_hash": false,
+    "security_compat": true,
+    "release_upgraders": true,
+    "legacy_xenial_snapshot": false,
+    "external_fallback_forbidden": true,
+    "nginx_http": true,
+    "client_offline_config": true,
+    "generated_packages_index": true,
+    "local_signing": true,
+    "discovery_exact_payload": true
+  },
+  "upgrader_dists": ["bionic", "focal", "jammy", "noble"],
+  "meta_chain_dists": ["xenial", "bionic", "focal", "jammy", "noble"],
+  "rejected_modes": ["minimal", "full", "offline-upgrade-full"],
+  "rejected_component_sets": [
+    ["main"],
+    ["main", "restricted"]
+  ],
+  "mirror_mode_alias": "selective",
+  "exceptions_path": "config/offline-upgrade-exceptions.json",
+  "omit_by_default": [
+    "Translation",
+    "DEP-11",
+    "CNF",
+    "Contents",
+    "Sources",
+    "i386",
+    "deb-src",
+    "Acquire-By-Hash",
+    "full_official_by_hash"
+  ],
+  "ready_gates": [
+    "profile_name",
+    "discovery_hops",
+    "unresolved_packages",
+    "unresolved_files",
+    "unresolved_urls",
+    "selected_deb_checksum",
+    "packages_index_checksum",
+    "selected_package_index_coverage",
+    "source_suite_semantics",
+    "target_suite_semantics",
+    "cross_release_index_contamination",
+    "offline_distupgrade_target_source",
+    "release_upgraders",
+    "meta_release",
+    "local_signing",
+    "isolated_apt_update",
+    "external_urls_remaining",
+    "unexpected_pool_packages",
+    "post_publish_http"
+  ]
+}

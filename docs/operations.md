@@ -1,210 +1,146 @@
-# Operations — Offline Ubuntu Upgrade Mirror
+# Operations — Selective Offline Ubuntu Upgrade Mirror
 
-This server builds a **portable offline upgrade mirror** for the LTS chain:
+This server builds a **discovery-exact selective offline upgrade mirror** for the DP LTS chain:
 
 `Ubuntu 16.04 Xenial → 18.04 Bionic → 20.04 Focal → 22.04 Jammy → 24.04 Noble`
 
-Client-side upgrade procedures are **out of scope** for this document. This guide covers **internet-connected mirror server** operations only.
+It is **not** a general full Ubuntu archive mirror.
 
 ## Scope
 
 ### Included
 
-- Official Ubuntu **amd64** binary packages
-- Components: `main` `restricted` `universe` `multiverse`
-- Suites per release: release, `updates`, `security`, `backports` (20 suites total)
-- Release upgrader tarballs + GPG signatures for **bionic / focal / jammy / noble**
-- Local `meta-release-lts` rewritten to `PUBLIC_BASE_URL`
+- Exact `.deb` payloads from `artifacts/upgrade-discovery` (4 hops)
+- Hop-separated generated APT repositories (`Packages` / `Release` / `InRelease`)
+- Local GPG signing (no unconditional `trusted=yes`)
+- Release upgraders + local `meta-release-lts`
+- `/ubuntu-security` nginx alias to the same selective tree
+- Existing full mirror as **read-only seed** (hardlink/reflink/copy)
 
 ### Excluded
 
-- i386 (and any non-amd64) packages
-- Source packages (`deb-src`)
-- Ubuntu Pro / ESM authenticated repositories
-- PPAs
-- Docker CE / NVIDIA / CUDA external repositories
-- Snap packages
-- Stellar Cyber or other vendor-private APT repos
-
----
+- Full `apt-mirror` Cartesian sync (`UNSUPPORTED_FULL_MIRROR_SYNC`)
+- Official full by-hash materialization / Translation / DEP-11 / CNF / Contents
+- Automatic deletion of the existing ~2.2TB seed mirror
 
 ## Install
 
 ```bash
 cd ubuntu-mirror-automation
-sudo ./install.sh --full --no-menu --no-sync
+sudo ./install.sh --selective --no-menu --no-sync
 ```
 
-Or interactive menu (`sudo ./install.sh`) and choose **Full / offline upgrade**.
-
-Installer installs: `apt-mirror`, `nginx`, `curl`, `ca-certificates`, `gpgv`, `ubuntu-keyring`, `jq`, `xz-utils`, `gzip`, `whiptail`, and deploys:
+Profile SSOT: `config/offline-upgrade-profile.json` (`offline-upgrade-selective`).
 
 | Path | Purpose |
 |------|---------|
-| `/etc/apt/mirror.list` | apt-mirror suite definitions (amd64 only) |
-| `/etc/default/ubuntu-offline-mirror` | `PUBLIC_BASE_URL`, paths, safety knobs |
-| `/usr/local/sbin/ubuntu-offline-mirror.sh` | Integrated `sync` / `verify` / `status` / `freeze` |
-| `/etc/nginx/sites-available/apt-mirror` | `/ubuntu/` + `/offline/` |
-| `/etc/systemd/system/apt-mirror.service` | `ExecStart=... ubuntu-offline-mirror.sh sync` |
-| `/etc/systemd/system/apt-mirror.timer` | Daily + `RandomizedDelaySec` |
+| `/var/spool/apt-mirror/selective` | staging / published selective tree |
+| `/var/spool/apt-mirror/mirror/...` | existing full seed (preserved) |
+| `ubuntu-offline-mirror.sh` | plan / materialize / verify / publish / status |
 
-Edit public URL **before** freeze / move:
+## Selective workflow
 
-```bash
-sudoedit /etc/default/ubuntu-offline-mirror
-# PUBLIC_BASE_URL=http://<closed-network-host-or-ip>
-```
-
-### Data disk requirement
-
-`/var/spool/apt-mirror` must be a **dedicated data mount**. If it sits on the OS root filesystem, sync fails unless:
+Existing operator surface (`install.sh`, `mirrorctl`, systemd `apt-mirror.service`, nginx) runs the selective engine:
 
 ```bash
-# /etc/default/ubuntu-offline-mirror
-ALLOW_ROOT_FS_MIRROR=true   # emergency override only
+sudo ./install.sh                          # plan-selective + tooling
+sudo mirrorctl sync start                  # materialize-selective (systemd)
+sudo mirrorctl watch / status / logs
+sudo ubuntu-offline-mirror.sh verify-selective   # staging / pre-publish only
+sudo ubuntu-offline-mirror.sh publish-selective  # atomic publish + HTTP smoke + READY
+sudo mirrorctl status
 ```
 
-Projected full offline footprint is roughly **700–900 GiB**. Ensure `MIN_FREE_GB` free space remains after sync.
+### Xenial→Bionic hop refresh (official single command)
 
----
-
-## First sync
+After a suite-semantics fix (or when `xenial-to-bionic` was quarantined for
+cross-release contamination), rebuild **only** the selective tree — never a full
+apt-mirror sync:
 
 ```bash
-sudo ubuntu-offline-mirror sync
-# or
-sudo systemctl start apt-mirror.service
+sudo ./scripts/ubuntu-offline-mirror.sh refresh-hop-selective xenial-to-bionic
 ```
 
-`sync` performs:
+This runs, in order, under **one** global flock (`/run/ubuntu-offline-mirror.lock`):
 
-1. Mount / disk / inode preflight  
-2. flock concurrency lock  
-3. `apt-mirror`  
-4. Release upgrader download (from `meta-release-lts`)  
-5. Local `meta-release-lts` generation  
-6. GPG verification of upgrader tarballs  
-7. Suite + HTTP + isolated `apt-get update` checks  
-8. `manifest.json` + `SHA256SUMS`  
-9. Optional `clean.sh` (`RUN_CLEAN=true`)  
-10. Writes `/var/spool/apt-mirror/offline/READY` **only if all checks pass**
+1. `quarantine-hop-selective` (marks hop `QUARANTINED`, clears READY; other hops kept)
+2. `plan-selective`
+3. `materialize-selective` (reuses PASS staging when plan/discovery provenance matches;
+   otherwise downloads missing files — never blindly wipes staging)
+4. `verify-selective` (includes `SOURCE_SUITE_SEMANTICS` / `TARGET_SUITE_SEMANTICS`)
+5. `publish-selective` (atomic publish; READY only on PASS)
 
-## Incremental sync
+Internal steps call `*_impl` functions in-process — they do **not** re-exec
+`$0 verify-selective` / `$0 publish-selective` (that previously caused a
+self-deadlock via a second `flock -n` on a new FD while the parent still held
+the first). Concurrent standalone `verify-selective` / `publish-selective` from
+another process still fail with `FAIL_SELECTIVE_MIRROR_LOCK_BUSY`.
 
-Re-run the same command. Existing package data is retained; apt-mirror downloads increments.
+If a prior run completed materialize (`validation_result=PASS` + matching
+`plan_checksum` / `discovery_artifact_checksum`), refresh resumes with
+`MATERIALIZE_REUSED=YES` / `REFRESH_RESUME_FROM=MATERIALIZED` and continues at
+verify→publish without re-downloading. Provenance mismatch fails closed with
+`FAIL_SELECTIVE_STAGING_PROVENANCE_MISMATCH` (staging is not auto-deleted).
+
+Orchestration phase is recorded in
+`selective/state/refresh-orchestration.json`
+(`QUARANTINED` → `PLAN_READY` → `MATERIALIZED` → `VERIFIED` → `PUBLISHED` / `FAILED`).
+
+Then rebuild the DP client against the new READY tree:
 
 ```bash
-sudo ubuntu-offline-mirror sync
+sudo ./scripts/ubuntu-offline-mirror.sh build-client-xenial-to-bionic \
+  --mirror-base http://SERVER
 ```
 
-## Progress / status
+### Repository suite semantics
 
-```bash
-sudo ubuntu-offline-mirror status
-sudo mirrorctl watch          # live dashboard (apt-mirror activity)
-sudo journalctl -u apt-mirror.service -f
-sudo tail -f /var/log/ubuntu-offline-mirror.log
-sudo tail -f /var/log/apt-mirror.log
-```
+Each hop keeps one URI (`/hops/<hop>/ubuntu`) so `do-release-upgrade` can rewrite
+suite names in place. Indexes are **not** replicated across series:
 
-## verify
+| Path | Role |
+|------|------|
+| `dists/xenial*` | Source stabilization — Xenial packages only (may be empty Packages) |
+| `dists/bionic*` | Target upgrade — discovery Bionic payloads |
+| `pool/` | Shared `.deb` storage |
 
-Offline validation using **local files + localhost nginx only** (no upstream internet required for the checks themselves):
+`verify-selective` fails closed on target versions appearing under source suites
+(`FAIL_SOURCE_SUITE_TARGET_PACKAGE_CONTAMINATION`).
 
-```bash
-sudo ubuntu-offline-mirror verify
-```
+### Verification phases
 
-- Non-zero exit on any failure  
-- Invalidates previous `READY` on start  
-- Rewrites `READY` only after success  
+| Step | Command | Target | Depends on nginx / `published/current`? | Writes READY? |
+|------|---------|--------|----------------------------------------|---------------|
+| 1 | `materialize-selective` | `selective/staging` | No | No |
+| 2 | `verify-selective` | staging (pre-publish) | **No** | **No** |
+| 3 | `publish-selective` | atomic switch + post-publish HTTP | Yes (concrete endpoints) | Yes, only if smoke PASS |
 
-## freeze (prepare for air-gap move)
+- `verify-selective` PASS means the staging tree is consistent; it is **not** yet published.
+- Production nginx document root must be the canonical path
+  `/var/spool/apt-mirror/selective/current` (symlink → `published` after publish).
+- Legacy installs may still have `root /var/spool/apt-mirror/mirror;` — migrate with:
+  `sudo ./scripts/ubuntu-offline-mirror.sh migrate-nginx-selective`
+  (or `sudo mirrorctl nginx migrate`). Idempotent: timestamp backup → atomic replace →
+  `nginx -t` → reload; restores backup on `-t` failure. Other nginx sites are untouched.
+- `publish-selective` preflight checks effective nginx root, `nginx -t`, nginx active, and
+  repository readability. Legacy/mismatched root fails immediately with
+  `SELECTIVE_NGINX_EFFECTIVE_ROOT_MISMATCH` (no multi-endpoint HTTP probe).
+- Post-publish smoke tests concrete `Release` / `InRelease` / `Packages(.gz)` / sample `.deb`
+  URLs (and `/offline/meta-release-lts`). A 403/404 on `/` alone is **not** a failure.
+- If post-publish HTTP fails, publish rolls back the previous `current` (or removes the failed publish) and does **not** write READY.
+- `verify-selective` failure blocks `publish-selective`.
 
-```bash
-sudo ubuntu-offline-mirror freeze
-```
+`sync` (full apt-mirror) is blocked under selective profile (`UNSUPPORTED_FULL_MIRROR_SYNC`).
+nginx serves only `selective/current` → published tree (staging never exposed).
 
-1. Runs verify (abort on failure)  
-2. Stops/disables `apt-mirror.timer`  
-3. Refuses if a sync is running  
-4. Writes `snapshot.json` + `FROZEN` marker  
-5. Prints confirmation that the mirror is ready to disconnect  
+Cleanup of the seed full mirror is **never** automatic; see
+`selective/state/cleanup-plan.json` after materialize.
 
-## READY / FROZEN checks
+## Legacy reference (pre-selective)
 
-```bash
-cat /var/spool/apt-mirror/offline/READY
-cat /var/spool/apt-mirror/offline/FROZEN
-curl -sS http://127.0.0.1/offline/READY
-```
-
-## Before disconnecting from the internet
-
-```bash
-sudo ubuntu-offline-mirror verify
-sudo ubuntu-offline-mirror status
-# Confirm READY exists, all 20 suites OK, 4 upgrader GPG OK
-sudo ubuntu-offline-mirror freeze
-```
-
-## After bringing the mirror up on a closed network
-
-1. Ensure nginx is running  
-2. Set `PUBLIC_BASE_URL` to the closed-network address and regenerate local meta if the URL changed:
-
-   ```bash
-   sudoedit /etc/default/ubuntu-offline-mirror
-   # then re-run verify (rebuilds meta if you re-sync upgraders) or re-sync upgrader/meta section
-   sudo SKIP_APT_MIRROR=true ubuntu-offline-mirror sync   # only if you need to rebuild meta/upgraders
-   sudo ubuntu-offline-mirror verify
-   ```
-
-3. Localhost checks:
-
-```bash
-curl -I http://127.0.0.1/ubuntu/dists/xenial/InRelease
-curl -I http://127.0.0.1/ubuntu/dists/noble/InRelease
-curl -I http://127.0.0.1/ubuntu/dists/bionic-updates/main/dist-upgrader-all/current/bionic.tar.gz
-curl -sS http://127.0.0.1/offline/meta-release-lts | head
-curl -sS http://127.0.0.1/offline/manifest.json | jq .
-```
-
-## Timer enable / disable
-
-```bash
-# Disable (also done by freeze)
-sudo systemctl disable --now apt-mirror.timer
-
-# Re-enable on an internet-connected host after unfreeze
-sudo systemctl enable --now apt-mirror.timer
-systemctl list-timers apt-mirror.timer
-```
-
-## Logs
-
-| Log | Path |
-|-----|------|
-| Offline mirror | `/var/log/ubuntu-offline-mirror.log` |
-| apt-mirror (legacy/ops) | `/var/log/apt-mirror.log` |
-| nginx access/error | `/var/log/nginx/apt-mirror-*.log` |
-| systemd | `journalctl -u apt-mirror.service` |
-
-## Repository paths
-
-```text
-/var/spool/apt-mirror/
-  mirror/archive.ubuntu.com/ubuntu/     # APT pool + dists
-  offline/
-    meta-release-lts                    # local rewritten
-    meta-release-lts.upstream           # official copy
-    manifest.json
-    SHA256SUMS
-    READY / FROZEN
-    snapshot.json
-    announcements/
-  skel/ var/                            # apt-mirror working trees
-```
+The following sections are retained for P0-2/P0-3/P0-4 operational detail
+but READY/sync steps that require full apt-mirror/by-hash-3219 are obsolete.
+Use plan-selective → materialize-selective → verify-selective → publish-selective.
 
 ## HTTP endpoints
 
@@ -212,16 +148,73 @@ systemctl list-timers apt-mirror.timer
 http://SERVER/ubuntu/
 http://SERVER/ubuntu/dists/<suite>/InRelease
 http://SERVER/ubuntu/dists/<suite>/Release
-http://SERVER/ubuntu/dists/bionic-updates/main/dist-upgrader-all/current/bionic.tar.gz
-http://SERVER/ubuntu/dists/focal-updates/main/dist-upgrader-all/current/focal.tar.gz
-http://SERVER/ubuntu/dists/jammy-updates/main/dist-upgrader-all/current/jammy.tar.gz
-http://SERVER/ubuntu/dists/noble-updates/main/dist-upgrader-all/current/noble.tar.gz
+http://SERVER/hops/<hop>/ubuntu/dists/<suite>/Release
+http://SERVER/offline/release-upgraders/<dist>/<dist>.tar.gz
 http://SERVER/offline/meta-release-lts
-http://SERVER/offline/meta-release-lts.upstream
-http://SERVER/offline/manifest.json
-http://SERVER/offline/SHA256SUMS
-http://SERVER/offline/READY
+http://SERVER/keys/ubuntu-mirror-selective.gpg
+http://SERVER/client/                          # build-client artifacts (not part of READY tree)
+http://SERVER/client/xenial-to-bionic/meta-release-lts
 ```
+
+## Phase 1 — Ubuntu OS-Only Offline Upgrade
+
+Phase 1 enables and validates **Ubuntu OS hops only** using the offline selective mirror:
+
+`16.04 → 18.04 → 20.04 → 22.04 → 24.04`
+
+**In scope:** root/OS identity, mirror GPG/suite semantics, disk/dpkg/APT health, critical OS package holds, `do-release-upgrade`, reboot, and post-boot OS validation.
+
+**Out of scope (Phase 2):** DP product install/activation/registration, topology (AIO/DL-master/Worker), product containers/services, UI/data/topology compatibility.
+
+- DP product install is **not** required. An uninstalled DP image (no `aella.role`, `installed=false`, no product containers) is a valid Phase 1 input.
+- Product version/topology may be logged as diagnostics (`DP_*_GATE=SKIPPED_PHASE1_OS_ONLY`) but never hard-fail Phase 1.
+- Phase 1 success = Ubuntu 24.04 boots with OS health PASS — not DP UI/service health.
+
+### Xenial → Bionic hop client (`UPGRADE_MODE=OS_ONLY_PHASE1`)
+
+```bash
+# On mirror host (after READY): render pinned single-file client script
+sudo ./scripts/ubuntu-offline-mirror.sh build-client-xenial-to-bionic \
+  --mirror-base http://221.139.249.111
+
+# Deploy path for nginx /client/ (does not alter selective READY fingerprint)
+# /var/spool/apt-mirror/client/
+# Reload nginx after template migrate if /client/ is new:
+sudo ./scripts/ubuntu-offline-mirror.sh migrate-nginx-selective
+```
+
+Deliverable: `artifacts/client/dp-offline-upgrade-xenial-to-bionic.sh`
+
+- Default mode: `OS_ONLY_PHASE1` (`--mode os-only`)
+- Execution path: `run_os_preflight` → confirm → `run_os_upgrade` → post-boot `os_validation_result`
+  (`run_product_preflight` / `run_product_post_upgrade` are not called)
+- Confirmation phrase: `UPGRADE-XENIAL-TO-BIONIC`
+- State root: `/opt/aelladata/os-upgrade/offline/`
+- Log: `/var/log/aella/offline_os_upgrade.log`
+- Units: `stellar-offline-os-upgrade.service`, `stellar-offline-os-upgrade-postboot.service`
+- Stops after `COMPLETED_BIONIC` — does **not** auto-start 18.04→20.04
+- Product diagnostics (optional INFO only; never invent AIO / never create `aella.role`):
+  1. Shared `aella_cli` probe when present
+  2. Authoritative keys in `/opt/aelladata/release-image.yml` for version logging
+  3. Explicit vendor role files for topology logging
+  4. Topology undetermined / Worker / DL-master / missing version → continue Phase 1
+  5. Critical **OS** package holds are planned for automatic unhold after confirmation (not hard-fail); product-only holds remain ignored in Phase 1. Successful release upgrades do **not** auto-restore critical OS holds (deferred to Phase 2).
+
+### Bionic → Focal hop client (`UPGRADE_MODE=OS_ONLY_PHASE1`)
+
+See [operations-bionic-to-focal.md](operations-bionic-to-focal.md) for the full procedure.
+
+```bash
+sudo ./scripts/ubuntu-offline-mirror.sh build-client-bionic-to-focal \
+  --mirror-base http://221.139.249.111
+sudo ./scripts/deploy-client-bionic-to-focal-atomic.sh
+```
+
+- Deliverable: `artifacts/client/dp-offline-upgrade-bionic-to-focal.sh`
+- Confirmation: `UPGRADE-BIONIC-TO-FOCAL`
+- Terminal state: `COMPLETED_FOCAL` — does **not** auto-start 20.04→22.04
+- Repository: `http://221.139.249.111/hops/bionic-to-focal/ubuntu`
+- Integration tests must use a **clean** Bionic VM (never the Xenial→Bionic success evidence VM)
 
 ## Failure recovery
 
@@ -231,11 +224,47 @@ http://SERVER/offline/READY
 | Sync fails: free space | Expand data volume; do **not** delete mirror blindly |
 | GPG upgrader failure | Re-run sync; check keyring `/usr/share/keyrings/ubuntu-archive-keyring.gpg` |
 | `READY` missing after sync | Read `/var/log/ubuntu-offline-mirror.log`; fix failing check; re-run `verify`/`sync` |
-| nginx 404 on `/ubuntu/` | Confirm alias paths; `nginx -t`; `systemctl reload nginx` |
+| nginx 404 on `/ubuntu/` or `/hops/` after publish | Confirm `root` is `selective/current` (not `mirror`); run `migrate-nginx-selective`; `nginx -t`; reload |
+| `SELECTIVE_NGINX_EFFECTIVE_ROOT_MISMATCH` | Runtime site still legacy; run `migrate-nginx-selective` then retry `publish-selective` |
 | Concurrent sync | Wait; lock file `/run/ubuntu-offline-mirror.lock` |
 | Need full-tree hashes | `sudo ubuntu-offline-mirror sha256-all` (expensive; optional) |
 
 Do **not** automatically format disks, wipe the mirror, or run host `apt upgrade` as part of recovery.
+
+## Git backup staging
+
+Use this only to **stage and audit** a Git backup candidate. It does **not** commit or push.
+
+### Warnings
+
+- Do **not** paste multi-line `set -e` / `exit N` audit blocks into an interactive SSH shell.
+  A failing `exit` in the current shell terminates the SSH session.
+- Do **not** `source` (or `.`) the helper script into your login shell.
+- Always run it as a **child** bash process:
+
+```bash
+bash scripts/prepare-backup-staging.sh --audit-only
+bash scripts/prepare-backup-staging.sh --stage
+```
+
+### Modes
+
+| Mode | Effect |
+|------|--------|
+| `--audit-only` | Read-only inspection. Does not change git index, `.gitignore`, or the worktree. |
+| `--stage` | Stages approved paths, ensures exclude rules in `.gitignore`, then audits. On audit failure, restores the pre-run index (and any `.gitignore` edits from this run). Never commits or pushes. |
+
+Private signing material such as `config/client-signing/offline-client-manifest.private.gpg` is never staged. Nested `ubuntu-mirror-automation/` and discovery/recovery/log artifacts are excluded.
+
+Staged blobs are scanned for **complete** PEM/PGP private-key blocks (exact
+`BEGIN`/`END` lines plus base64 payload). Bare marker substrings in docs, tests,
+or detector source are not treated as secrets. There is no path allowlist.
+
+Production client scripts are cross-checked per hop: top-level script, `.sha256`
+sidecar, hop-directory copy, signed `client-manifest.json` (script hash field
+when present in the schema), detached signature, and helper pins. Mismatches
+print `ARTIFACT_HOP` / `EXPECTED_SHA256` / `ACTUAL_SHA256` and related fields.
+Helper pins are updated only when artifacts are consistent and the pin is stale.
 
 ## Related commands
 

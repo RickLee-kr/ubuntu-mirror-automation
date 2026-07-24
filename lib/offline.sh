@@ -79,37 +79,48 @@ uom_stanza_get() {
 }
 
 # Rewrite allowed Ubuntu archive URLs to PUBLIC_BASE_URL local paths.
-# http://archive.ubuntu.com/ubuntu/... -> ${PUBLIC_BASE_URL}/ubuntu/...
-# http://changelogs.ubuntu.com/...     -> ${PUBLIC_BASE_URL}/offline/<basename> when mapped,
-#                                        else keep under /offline/announcements/ if announcement.
+# http://archive.ubuntu.com/ubuntu/...  -> ${PUBLIC_BASE_URL}/ubuntu/...
+# http://security.ubuntu.com/ubuntu/... -> ${PUBLIC_BASE_URL}/ubuntu-security/...
+# http://changelogs.ubuntu.com/...      -> ${PUBLIC_BASE_URL}/offline/announcements/<basename>
 uom_rewrite_url() {
   local url="$1"
   local public_base="${2%/}"
-  local host path
+  local host path prefix rest
 
   host="$(uom_url_host "$url")"
   path="$(uom_url_path "$url")"
 
   case "$host" in
-    archive.ubuntu.com|security.ubuntu.com|old-releases.ubuntu.com)
-      # Expect /ubuntu/... paths
+    archive.ubuntu.com|old-releases.ubuntu.com)
       if [[ "$path" == /ubuntu/* ]] || [[ "$path" == /ubuntu ]]; then
         printf '%s%s\n' "$public_base" "$path"
         return 0
       fi
-      # Some mirrors use host root differently — map /ubuntu prefix if missing
       printf '%s/ubuntu%s\n' "$public_base" "$path"
       return 0
       ;;
+    security.ubuntu.com)
+      # Map /ubuntu/... → /ubuntu-security/... (same on-disk tree via nginx alias)
+      prefix="/ubuntu-security"
+      if [[ "$path" == /ubuntu/* ]]; then
+        rest="${path#/ubuntu}"
+        printf '%s%s%s\n' "$public_base" "$prefix" "$rest"
+        return 0
+      fi
+      if [[ "$path" == /ubuntu ]]; then
+        printf '%s%s\n' "$public_base" "$prefix"
+        return 0
+      fi
+      printf '%s%s%s\n' "$public_base" "$prefix" "$path"
+      return 0
+      ;;
     changelogs.ubuntu.com)
-      # Announcements referenced by basename under offline tree
       local base
       base="$(basename "$path")"
       printf '%s/offline/announcements/%s\n' "$public_base" "$base"
       return 0
       ;;
     *)
-      # Unknown host — return empty to signal failure
       return 1
       ;;
   esac

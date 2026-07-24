@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "profile": "offline-upgrade-selective",
+  "hop": "jammy-to-noble",
+  "source_codename": "jammy",
+  "target_codename": "noble",
+  "source_version": "22.04",
+  "target_version": "24.04",
+  "mirror_base": "http://221.139.249.111",
+  "repository_base": "http://221.139.249.111/hops/jammy-to-noble/ubuntu",
+  "suites": [
+    "jammy",
+    "jammy-updates",
+    "jammy-security",
+    "jammy-backports",
+    "noble",
+    "noble-updates",
+    "noble-security",
+    "noble-backports"
+  ],
+  "source_suites": [
+    "jammy",
+    "jammy-updates",
+    "jammy-security",
+    "jammy-backports"
+  ],
+  "target_suites": [
+    "noble",
+    "noble-updates",
+    "noble-security",
+    "noble-backports"
+  ],
+  "components": [
+    "main",
+    "universe"
+  ],
+  "repository_key_fingerprint": "D1FF722556ED95F5E779BAE66B1BA1673A997CA5",
+  "key_sha256": "d1ef6724347f11355a0fbc8a1dec9cf69e8e8647c5ccd06fbc2f952bcb177d60",
+  "manifest_key_fingerprint": "C786FE9887290E2CF759271DFDD38BE958EABD4A",
+  "manifest_key_sha256": "d398cbadb5d87b1d01978ce1499feb7436c0c81859314f96298b0adddc3ec079",
+  "keyring_install_path": "/etc/apt/trusted.gpg.d/stellar-offline-jammy-to-noble.gpg",
+  "meta_release_url": "http://221.139.249.111/client/jammy-to-noble/meta-release-lts",
+  "meta_release_sha256": "923f6b897e2f06f7101dbbe213bab2b3194a652bb706d616e217b1b8b655dae2",
+  "upgrader_tar_url": "http://221.139.249.111/offline/release-upgraders/noble/noble.tar.gz",
+  "upgrader_tar_sha256": "447f54cbdfb9f57d32ddb02fcf0a0abb0184059cc0f680e806d23379878fe396",
+  "upgrader_gpg_url": "http://221.139.249.111/offline/release-upgraders/noble/noble.tar.gz.gpg",
+  "upgrader_gpg_sha256": "7af99394662fe6d9fbe4ba7f6efd4818f5594e82e553aaaf659144a80ff53bfe",
+  "sample_deb_url": "http://221.139.249.111/hops/jammy-to-noble/ubuntu/pool/main/a/accountsservice/accountsservice_23.13.9-2ubuntu6_amd64.deb",
+  "plan_checksum": "8eb3d478e2d40e7a19510239fcbf6e2e6824b2587e6e7172d60ef01e8920b157",
+  "discovery_checksum": "d08f76a4e87bbaabc82b2aea3f552d26b9ece53be83735a74dffdfd70a816b56",
+  "confirm_phrase": "UPGRADE-JAMMY-TO-NOBLE",
+  "generated_at": "2026-07-24T11:49:14Z",
+  "announcements": {
+    "ReleaseAnnouncement": "d1e82d2e770663b63ac99b39e3aa436dfb731139c67163db44392b93284efd63",
+    "ReleaseAnnouncement.html": "e71d14df093ce5e457f7c3ba89c5a0264b0202b1ca72f4203a35b2ead64988b3"
+  }
+}
