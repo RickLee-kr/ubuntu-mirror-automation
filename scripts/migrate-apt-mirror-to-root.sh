@@ -423,13 +423,28 @@ capacity_guard() {
 # ---------------------------------------------------------------------------
 # Process / service guards
 # ---------------------------------------------------------------------------
-unit_state() {
-  local u="$1"
-  if [[ "$TEST_MODE" == "1" ]]; then
-    printf '%s\n' "${MIGRATE_TEST_UNIT_STATE:-inactive}"
-    return 0
-  fi
-  systemctl is-active "$u" 2>/dev/null || printf 'inactive\n'
+# Query systemd unit ActiveState via `systemctl is-active`.
+# Prints exactly one line to stdout. Never uses `|| echo inactive` —
+# is-active already prints "inactive" on stdout with a non-zero exit code,
+# so a fallback echo would duplicate the line (inactive\ninactive).
+get_unit_active_state() {
+  local unit="$1"
+  local state
+
+  state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+  state="${state%%$'\n'*}"
+
+  case "$state" in
+    active|inactive|failed|activating|deactivating|reloading)
+      printf '%s\n' "$state"
+      ;;
+    "")
+      printf '%s\n' "unknown"
+      ;;
+    *)
+      printf '%s\n' "$state"
+      ;;
+  esac
 }
 
 assert_no_sync_processes() {
@@ -961,9 +976,10 @@ cmd_preflight() {
   key_metadata_line "$(private_key_path "$SOURCE_MOUNT")" >&2
 
   local svc timer
-  svc="$(unit_state apt-mirror.service)"
-  timer="$(unit_state apt-mirror.timer)"
-  info "apt-mirror.service=${svc} apt-mirror.timer=${timer}"
+  svc="$(get_unit_active_state apt-mirror.service)"
+  timer="$(get_unit_active_state apt-mirror.timer)"
+  info "apt-mirror.service=${svc}"
+  info "apt-mirror.timer=${timer}"
   assert_no_sync_processes
 
   ok "PREFLIGHT=PASS"
@@ -1144,12 +1160,12 @@ cmd_cutover() {
   nginx_cmd stop || cutover_fail "nginx stop"
 
   local svc timer
-  svc="$(unit_state apt-mirror.service)"
-  timer="$(unit_state apt-mirror.timer)"
-  [[ "$svc" == "inactive" || "$svc" == "dead" || "$svc" == "failed" ]] \
-    || cutover_fail "apt-mirror.service not inactive ($svc)"
-  [[ "$timer" == "inactive" || "$timer" == "dead" || "$timer" == "failed" ]] \
-    || cutover_fail "apt-mirror.timer not inactive ($timer)"
+  svc="$(get_unit_active_state apt-mirror.service)"
+  timer="$(get_unit_active_state apt-mirror.timer)"
+  [[ "$svc" == "inactive" ]] \
+    || cutover_fail "apt-mirror.service must be inactive; actual=${svc}"
+  [[ "$timer" == "inactive" ]] \
+    || cutover_fail "apt-mirror.timer must be inactive; actual=${timer}"
 
   assert_no_sync_processes || cutover_fail "sync process present"
   stop_gpg_agents_on_mount "$SOURCE_MOUNT" || cutover_fail "gpg-agent stop"

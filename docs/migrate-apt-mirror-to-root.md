@@ -160,6 +160,12 @@ Tracked source updates, if desired, are a separate commit.
   public signing key, `meta-release-lts`, and related paths derived from
   the effective site config
 
+## systemd unit state
+
+Cutover requires `apt-mirror.service` and `apt-mirror.timer` to each be
+exactly `inactive` (queried separately; `systemctl is-active` non-zero exit
+must not be turned into a duplicated `inactive` line).
+
 ## Rollback
 
 On cutover failure after evidence exists:

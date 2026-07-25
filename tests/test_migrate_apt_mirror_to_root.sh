@@ -13,10 +13,59 @@ fail() { echo "  FAIL: $*"; FAIL=$((FAIL + 1)); }
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/test-migrate-apt-mirror.XXXXXX")"
 trap 'rm -rf -- "$WORKDIR"' EXIT
+FAKE_BIN="$WORKDIR/bin"
+mkdir -p "$FAKE_BIN"
 
 echo "=== test_migrate_apt_mirror_to_root ==="
 [[ -f "$SCRIPT" ]] || { echo "missing script"; exit 1; }
 chmod +x "$SCRIPT"
+
+# Fake systemctl: mimics real is-active (stdout state + non-zero rc when not active).
+# This reproduces the production bug if helpers use `is-active || echo inactive`.
+install_fake_systemctl() {
+  cat >"$FAKE_BIN/systemctl" <<'EOS'
+#!/usr/bin/env bash
+cmd="${1:-}"
+shift || true
+case "$cmd" in
+  is-active)
+    unit="${1:-}"
+    state=""
+    case "$unit" in
+      apt-mirror.service)
+        state="${MIGRATE_TEST_APT_MIRROR_SERVICE_STATE:-${MIGRATE_TEST_UNIT_STATE:-inactive}}"
+        ;;
+      apt-mirror.timer)
+        state="${MIGRATE_TEST_APT_MIRROR_TIMER_STATE:-${MIGRATE_TEST_UNIT_STATE:-inactive}}"
+        ;;
+      nginx|nginx.service)
+        state="${MIGRATE_TEST_NGINX_STATE:-active}"
+        ;;
+      *)
+        state="${MIGRATE_TEST_UNIT_STATE:-inactive}"
+        ;;
+    esac
+    # Match systemd: print state even when inactive/failed; rc=0 only for active.
+    printf '%s\n' "$state"
+    if [[ "$state" == "active" ]]; then
+      exit 0
+    fi
+    # systemd uses 3 for "inactive" / not-active
+    exit 3
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOS
+  chmod +x "$FAKE_BIN/systemctl"
+}
+install_fake_systemctl
+
+# Extract get_unit_active_state from the script for isolated helper tests.
+load_get_unit_active_state() {
+  eval "$(sed -n '/^get_unit_active_state()/,/^}/p' "$SCRIPT")"
+}
 
 # ---------------------------------------------------------------------------
 make_spool_tree() {
@@ -74,7 +123,7 @@ run_script() {
       eenv+=("$a")
     fi
   done
-  ( cd "$repo" && env "${eenv[@]}" bash scripts/migrate-apt-mirror-to-root.sh "${sargs[@]}" )
+  ( cd "$repo" && env PATH="$FAKE_BIN:$PATH" "${eenv[@]}" bash scripts/migrate-apt-mirror-to-root.sh "${sargs[@]}" )
 }
 
 # ---------------------------------------------------------------------------
@@ -424,6 +473,199 @@ if printf '%s' "$out" | grep -qiE 'empty mountpoint|not empty|CUTOVER_FAILED'; t
   pass "17 non-empty mountpoint aborts"
 else
   fail "17 non-empty mountpoint ($out)"
+fi
+
+# ---------------------------------------------------------------------------
+# Regression: systemctl is-active prints inactive + rc=3 (no duplicate echo)
+# ---------------------------------------------------------------------------
+load_get_unit_active_state
+export PATH="$FAKE_BIN:$PATH"
+
+# Helper with inactive + exit 3 must return exactly one line "inactive"
+helper_out="$(
+  MIGRATE_TEST_APT_MIRROR_SERVICE_STATE=inactive \
+  MIGRATE_TEST_APT_MIRROR_TIMER_STATE=inactive \
+  get_unit_active_state apt-mirror.service
+)"
+helper_lines="$(printf '%s\n' "$helper_out" | wc -l | tr -d ' ')"
+if [[ "$helper_out" == "inactive" && "$helper_lines" == "1" ]]; then
+  pass "unit-state helper single-line inactive (rc=3 fixture)"
+else
+  fail "unit-state helper single-line (got=$(printf '%q' "$helper_out") lines=$helper_lines)"
+fi
+if printf '%s' "$helper_out" | grep -qx 'inactive'; then
+  pass "unit-state helper is exactly inactive"
+else
+  fail "unit-state helper value"
+fi
+# Must not contain the duplicated inactive\ninactive pattern
+# (do not use grep with embedded newlines — GNU grep splits patterns on \n)
+case "$helper_out" in
+  *$'\n'*)
+    fail "unit-state helper duplicated inactive\\ninactive (got=$(printf '%q' "$helper_out"))"
+    ;;
+  inactive)
+    pass "unit-state helper has no inactive\\ninactive duplicate"
+    ;;
+  *)
+    fail "unit-state helper unexpected value $(printf '%q' "$helper_out")"
+    ;;
+esac
+
+# service=inactive, timer=inactive → cutover service guard passes (full cutover)
+CUT_US="$WORKDIR/cut_unit_ok"
+SPOOL_US="$(setup_cutover_tree "$CUT_US")"
+cut_env_for "$CUT_US" "$SPOOL_US"
+CUT_ENV+=(
+  MIGRATE_TEST_APT_MIRROR_SERVICE_STATE=inactive
+  MIGRATE_TEST_APT_MIRROR_TIMER_STATE=inactive
+)
+out="$(run_script "$CUT_US/repo" "${CUT_ENV[@]}" --cutover --execute 2>&1)" || true
+if printf '%s' "$out" | grep -q 'CUTOVER=PASS' \
+  && ! printf '%s' "$out" | grep -qi 'must be inactive'; then
+  pass "cutover guard passes when service+timer inactive"
+else
+  fail "cutover guard inactive/inactive ($out)"
+fi
+
+# service=active → abort
+CUT_SA="$WORKDIR/cut_svc_active"
+SPOOL_SA="$(setup_cutover_tree "$CUT_SA")"
+cut_env_for "$CUT_SA" "$SPOOL_SA"
+CUT_ENV+=(
+  MIGRATE_TEST_APT_MIRROR_SERVICE_STATE=active
+  MIGRATE_TEST_APT_MIRROR_TIMER_STATE=inactive
+)
+out="$(run_script "$CUT_SA/repo" "${CUT_ENV[@]}" --cutover --execute 2>&1)" || true
+if printf '%s' "$out" | grep -q 'apt-mirror.service must be inactive; actual=active' \
+  && ! printf '%s' "$out" | grep -q 'CUTOVER=PASS'; then
+  pass "cutover aborts when service=active"
+else
+  fail "cutover service=active ($out)"
+fi
+
+# timer=active → abort
+CUT_TA="$WORKDIR/cut_timer_active"
+SPOOL_TA="$(setup_cutover_tree "$CUT_TA")"
+cut_env_for "$CUT_TA" "$SPOOL_TA"
+CUT_ENV+=(
+  MIGRATE_TEST_APT_MIRROR_SERVICE_STATE=inactive
+  MIGRATE_TEST_APT_MIRROR_TIMER_STATE=active
+)
+out="$(run_script "$CUT_TA/repo" "${CUT_ENV[@]}" --cutover --execute 2>&1)" || true
+if printf '%s' "$out" | grep -q 'apt-mirror.timer must be inactive; actual=active' \
+  && ! printf '%s' "$out" | grep -q 'CUTOVER=PASS'; then
+  pass "cutover aborts when timer=active"
+else
+  fail "cutover timer=active ($out)"
+fi
+
+# service=failed → abort (failed must not be treated as inactive)
+CUT_SF="$WORKDIR/cut_svc_failed"
+SPOOL_SF="$(setup_cutover_tree "$CUT_SF")"
+cut_env_for "$CUT_SF" "$SPOOL_SF"
+CUT_ENV+=(
+  MIGRATE_TEST_APT_MIRROR_SERVICE_STATE=failed
+  MIGRATE_TEST_APT_MIRROR_TIMER_STATE=inactive
+)
+out="$(run_script "$CUT_SF/repo" "${CUT_ENV[@]}" --cutover --execute 2>&1)" || true
+if printf '%s' "$out" | grep -q 'apt-mirror.service must be inactive; actual=failed' \
+  && ! printf '%s' "$out" | grep -q 'CUTOVER=PASS'; then
+  pass "cutover aborts when service=failed"
+else
+  fail "cutover service=failed ($out)"
+fi
+
+# timer=unknown → abort
+# Empty systemctl stdout maps to unknown; override fake to print nothing.
+cat >"$FAKE_BIN/systemctl" <<'EOS'
+#!/usr/bin/env bash
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  is-active)
+    unit="${1:-}"
+    case "$unit" in
+      apt-mirror.service)
+        printf '%s\n' "${MIGRATE_TEST_APT_MIRROR_SERVICE_STATE:-inactive}"
+        [[ "${MIGRATE_TEST_APT_MIRROR_SERVICE_STATE:-inactive}" == "active" ]] && exit 0
+        exit 3
+        ;;
+      apt-mirror.timer)
+        # empty stdout → helper returns unknown
+        exit 1
+        ;;
+      *)
+        printf 'inactive\n'
+        exit 3
+        ;;
+    esac
+    ;;
+  *) exit 0 ;;
+esac
+EOS
+chmod +x "$FAKE_BIN/systemctl"
+CUT_TU="$WORKDIR/cut_timer_unknown"
+SPOOL_TU="$(setup_cutover_tree "$CUT_TU")"
+cut_env_for "$CUT_TU" "$SPOOL_TU"
+CUT_ENV+=(MIGRATE_TEST_APT_MIRROR_SERVICE_STATE=inactive)
+out="$(run_script "$CUT_TU/repo" "${CUT_ENV[@]}" --cutover --execute 2>&1)" || true
+if printf '%s' "$out" | grep -q 'apt-mirror.timer must be inactive; actual=unknown' \
+  && ! printf '%s' "$out" | grep -q 'CUTOVER=PASS'; then
+  pass "cutover aborts when timer=unknown"
+else
+  fail "cutover timer=unknown ($out)"
+fi
+# Restore standard fake systemctl for remaining tests
+install_fake_systemctl
+
+# preflight: one-line service/timer logs; no stray standalone inactive rows
+out="$(run_script "$FX/repo" "${base_env[@]}" \
+  MIGRATE_TEST_APT_MIRROR_SERVICE_STATE=inactive \
+  MIGRATE_TEST_APT_MIRROR_TIMER_STATE=inactive \
+  --preflight 2>&1)" || true
+printf '%s' "$out" | grep -qE '\[INFO\] apt-mirror\.service=inactive' \
+  && pass "preflight logs apt-mirror.service=inactive" \
+  || fail "preflight service log ($out)"
+printf '%s' "$out" | grep -qE '\[INFO\] apt-mirror\.timer=inactive' \
+  && pass "preflight logs apt-mirror.timer=inactive" \
+  || fail "preflight timer log ($out)"
+# Standalone line that is exactly "inactive" (bug symptom) must not appear
+if printf '%s\n' "$out" | grep -qx 'inactive'; then
+  fail "preflight has stray standalone inactive line"
+else
+  pass "preflight has no stray standalone inactive line"
+fi
+# Unit state info lines must be exactly ...=inactive (single field, one line)
+svc_info_lines="$(printf '%s\n' "$out" | grep -E '\[INFO\] apt-mirror\.service=' || true)"
+timer_info_lines="$(printf '%s\n' "$out" | grep -E '\[INFO\] apt-mirror\.timer=' || true)"
+if [[ "$(printf '%s\n' "$svc_info_lines" | grep -c . || true)" -eq 1 ]] \
+  && [[ "$svc_info_lines" == *'=inactive' ]] \
+  && [[ "$svc_info_lines" != *'=inactive'*'inactive'* ]] \
+  && [[ "$(printf '%s\n' "$timer_info_lines" | grep -c . || true)" -eq 1 ]] \
+  && [[ "$timer_info_lines" == *'=inactive' ]] \
+  && [[ "$timer_info_lines" != *'=inactive'*'inactive'* ]]; then
+  pass "preflight unit state values are single-line"
+else
+  fail "preflight has duplicated inactive in unit state value (svc=$(printf '%q' "$svc_info_lines") timer=$(printf '%q' "$timer_info_lines"))"
+fi
+
+# rollback path regression (inactive units + fake systemctl) still works
+CUT_RB="$WORKDIR/cut_rollback_unit"
+SPOOL_RB="$(setup_cutover_tree "$CUT_RB")"
+cut_env_for "$CUT_RB" "$SPOOL_RB"
+CUT_ENV+=(
+  MIGRATE_TEST_APT_MIRROR_SERVICE_STATE=inactive
+  MIGRATE_TEST_APT_MIRROR_TIMER_STATE=inactive
+)
+out="$(run_script "$CUT_RB/repo" "${CUT_ENV[@]}" --cutover --execute 2>&1)" || true
+printf '%s' "$out" | grep -q 'CUTOVER=PASS' || fail "rollback-regression cutover setup ($out)"
+out="$(run_script "$CUT_RB/repo" "${CUT_ENV[@]}" --rollback --execute 2>&1)" || true
+if printf '%s' "$out" | grep -q 'ROLLBACK=PASS' \
+  && printf '%s' "$out" | grep -q 'SOURCE_DISK_DATA_PRESERVED=YES' \
+  && grep -qE '^UUID=d48ae479-10f5-4ff5-b9be-4baa34dd15ea[[:space:]]' "$CUT_RB/etc/fstab"; then
+  pass "rollback path no regression with unit-state helper"
+else
+  fail "rollback regression ($out)"
 fi
 
 echo
