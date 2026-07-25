@@ -668,6 +668,229 @@ else
   fail "rollback regression ($out)"
 fi
 
+# ---------------------------------------------------------------------------
+# Inbound HTTP connection guard (local sport 80/443; never peer :443)
+# ---------------------------------------------------------------------------
+# Extract a top-level bash function (closing '}' at column 0 only).
+extract_bash_func() {
+  local name="$1"
+  awk -v name="$name" '
+    index($0, name "()") == 1 { grab = 1 }
+    grab { print }
+    grab && /^}/ { exit }
+  ' "$SCRIPT"
+}
+
+load_http_guard_helpers() {
+  eval "$(extract_bash_func ss_endpoint_port)"
+  eval "$(extract_bash_func collect_ss_established_lines)"
+  eval "$(extract_bash_func parse_ss_http_connections)"
+}
+
+SSFX="$WORKDIR/ss_fixtures"
+mkdir -p "$SSFX"
+load_http_guard_helpers
+
+parse_fixture() {
+  local file="$1"
+  parse_ss_http_connections <"$file"
+}
+
+# 1) outbound HTTPS peer :443 is not inbound
+cat >"$SSFX/outbound_https.txt" <<'EOF'
+0 0 221.139.249.111:51234 32.194.135.169:443
+EOF
+out="$(parse_fixture "$SSFX/outbound_https.txt")" || true
+if printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=0' \
+  && printf '%s\n' "$out" | grep -q 'OUTBOUND_HTTPS_LOCAL=221.139.249.111:51234 REMOTE=32.194.135.169:443' \
+  && ! printf '%s\n' "$out" | grep -q 'INBOUND_HTTP_LOCAL='; then
+  pass "http-guard outbound HTTPS not counted as inbound"
+else
+  fail "http-guard outbound HTTPS ($out)"
+fi
+
+# 2) inbound HTTP :80
+cat >"$SSFX/inbound_80.txt" <<'EOF'
+0 0 221.139.249.111:80 192.168.1.10:53000
+EOF
+out="$(parse_fixture "$SSFX/inbound_80.txt")" || true
+printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=1' \
+  && printf '%s\n' "$out" | grep -q 'INBOUND_HTTP_LOCAL=221.139.249.111:80 REMOTE=192.168.1.10:53000' \
+  && pass "http-guard inbound HTTP :80 counted" \
+  || fail "http-guard inbound :80 ($out)"
+
+# 3) inbound HTTPS :443
+cat >"$SSFX/inbound_443.txt" <<'EOF'
+0 0 221.139.249.111:443 192.168.1.10:53001
+EOF
+out="$(parse_fixture "$SSFX/inbound_443.txt")" || true
+printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=1' \
+  && printf '%s\n' "$out" | grep -q 'INBOUND_HTTP_LOCAL=221.139.249.111:443 REMOTE=192.168.1.10:53001' \
+  && pass "http-guard inbound HTTPS :443 counted" \
+  || fail "http-guard inbound :443 ($out)"
+
+# 4) IPv6 inbound 80
+cat >"$SSFX/inbound_v6_80.txt" <<'EOF'
+0 0 [2001:db8::1]:80 [2001:db8::10]:53000
+EOF
+out="$(parse_fixture "$SSFX/inbound_v6_80.txt")" || true
+printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=1' \
+  && pass "http-guard IPv6 inbound :80" \
+  || fail "http-guard IPv6 :80 ($out)"
+
+# 5) IPv6 inbound 443
+cat >"$SSFX/inbound_v6_443.txt" <<'EOF'
+0 0 [::]:443 [2001:db8::10]:53001
+EOF
+out="$(parse_fixture "$SSFX/inbound_v6_443.txt")" || true
+printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=1' \
+  && pass "http-guard IPv6 inbound :443" \
+  || fail "http-guard IPv6 :443 ($out)"
+
+# 6) IPv6 outbound remote 443 not counted
+cat >"$SSFX/outbound_v6.txt" <<'EOF'
+0 0 [2001:db8::1]:51234 [2001:db8::2]:443
+EOF
+out="$(parse_fixture "$SSFX/outbound_v6.txt")" || true
+printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=0' \
+  && printf '%s\n' "$out" | grep -q 'OUTBOUND_HTTPS_LOCAL=' \
+  && pass "http-guard IPv6 outbound remote :443 ignored" \
+  || fail "http-guard IPv6 outbound ($out)"
+
+# 7) several outbound remote 443 → inbound 0
+cat >"$SSFX/many_outbound.txt" <<'EOF'
+0 0 221.139.249.111:51234 32.194.135.169:443
+0 0 221.139.249.111:51235 1.2.3.4:443
+0 0 10.0.0.2:40000 8.8.8.8:443
+EOF
+out="$(parse_fixture "$SSFX/many_outbound.txt")" || true
+printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=0' \
+  && [[ "$(printf '%s\n' "$out" | grep -c 'OUTBOUND_HTTPS_LOCAL=' || true)" -eq 3 ]] \
+  && pass "http-guard many outbound still inbound=0" \
+  || fail "http-guard many outbound ($out)"
+
+# 8) mixed inbound + outbound → count inbound only
+cat >"$SSFX/mixed.txt" <<'EOF'
+0 0 221.139.249.111:51234 32.194.135.169:443
+0 0 221.139.249.111:80 192.168.1.10:53000
+0 0 0.0.0.0:443 192.168.1.11:53002
+0 0 *:80 192.168.1.12:53003
+0 0 221.139.249.111:52000 9.9.9.9:443
+EOF
+out="$(parse_fixture "$SSFX/mixed.txt")" || true
+if printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=3' \
+  && [[ "$(printf '%s\n' "$out" | grep -c 'INBOUND_HTTP_LOCAL=' || true)" -eq 3 ]] \
+  && [[ "$(printf '%s\n' "$out" | grep -c 'OUTBOUND_HTTPS_LOCAL=' || true)" -eq 2 ]]; then
+  pass "http-guard mixed inbound/outbound exact count"
+else
+  fail "http-guard mixed ($out)"
+fi
+
+# 9) ss command failure must not PASS as zero
+CUT_SSFAIL="$WORKDIR/cut_ss_fail"
+SPOOL_SSFAIL="$(setup_cutover_tree "$CUT_SSFAIL")"
+cut_env_for "$CUT_SSFAIL" "$SPOOL_SSFAIL"
+fstab_before="$(cksum "$CUT_SSFAIL/etc/fstab" | awk '{print $1}')"
+: >"$CUT_SSFAIL/fake.log"
+out="$(run_script "$CUT_SSFAIL/repo" "${CUT_ENV[@]}" \
+  MIGRATE_FAKE_SS_FILE="$SSFX/outbound_https.txt" \
+  MIGRATE_FAKE_SS_RC=1 \
+  --cutover --execute 2>&1)" || true
+if ! printf '%s' "$out" | grep -q 'CUTOVER=PASS' \
+  && printf '%s' "$out" | grep -qi 'ss established query failed\|INBOUND_HTTP_CONNECTION_GUARD=FAIL' \
+  && ! printf '%s' "$out" | grep -qE '\[OK\] INBOUND_HTTP_CONNECTIONS=0' \
+  && [[ "$(cksum "$CUT_SSFAIL/etc/fstab" | awk '{print $1}')" == "$fstab_before" ]]; then
+  pass "http-guard ss failure aborts (not zero)"
+else
+  fail "http-guard ss failure ($out)"
+fi
+
+# 10) malformed ss output must not become 0
+cat >"$SSFX/malformed.txt" <<'EOF'
+not-a-valid-ss-line
+EOF
+parse_rc=0
+out="$(parse_fixture "$SSFX/malformed.txt" 2>"$SSFX/malformed.err")" || parse_rc=$?
+if [[ "$parse_rc" -ne 0 ]] \
+  && ! printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=0' \
+  && grep -qi 'PARSE_ERROR' "$SSFX/malformed.err"; then
+  pass "http-guard malformed ss not coerced to 0"
+else
+  fail "http-guard malformed (rc=$parse_rc out=$out err=$(cat "$SSFX/malformed.err"))"
+fi
+
+# 11) active inbound aborts cutover before start
+CUT_INB="$WORKDIR/cut_inbound"
+SPOOL_INB="$(setup_cutover_tree "$CUT_INB")"
+cut_env_for "$CUT_INB" "$SPOOL_INB"
+fstab_before="$(cksum "$CUT_INB/etc/fstab" | awk '{print $1}')"
+: >"$CUT_INB/fake.log"
+out="$(run_script "$CUT_INB/repo" "${CUT_ENV[@]}" \
+  MIGRATE_FAKE_SS_FILE="$SSFX/inbound_80.txt" \
+  --cutover --execute 2>&1)" || true
+if ! printf '%s' "$out" | grep -q 'CUTOVER=PASS' \
+  && printf '%s' "$out" | grep -q 'INBOUND_HTTP_CONNECTIONS=1' \
+  && printf '%s' "$out" | grep -qi 'INBOUND_HTTP_CONNECTION_GUARD=FAIL' \
+  && [[ "$(cksum "$CUT_INB/etc/fstab" | awk '{print $1}')" == "$fstab_before" ]]; then
+  pass "http-guard active inbound aborts before cutover"
+else
+  fail "http-guard active inbound ($out)"
+fi
+
+# 12) inbound=0 passes cutover guard (outbound only fixture)
+CUT_OUT0="$WORKDIR/cut_outbound_ok"
+SPOOL_OUT0="$(setup_cutover_tree "$CUT_OUT0")"
+cut_env_for "$CUT_OUT0" "$SPOOL_OUT0"
+out="$(run_script "$CUT_OUT0/repo" "${CUT_ENV[@]}" \
+  MIGRATE_FAKE_SS_FILE="$SSFX/many_outbound.txt" \
+  --cutover --execute 2>&1)" || true
+if printf '%s' "$out" | grep -q 'CUTOVER=PASS' \
+  && printf '%s' "$out" | grep -q 'INBOUND_HTTP_CONNECTIONS=0' \
+  && printf '%s' "$out" | grep -q 'OUTBOUND_HTTPS_LOCAL='; then
+  pass "http-guard inbound=0 allows cutover"
+else
+  fail "http-guard inbound=0 cutover ($out)"
+fi
+
+# 13) guard failure: no nginx stop / rsync / umount / fstab mutation
+CUT_NOMUT="$WORKDIR/cut_no_mutation"
+SPOOL_NOMUT="$(setup_cutover_tree "$CUT_NOMUT")"
+cut_env_for "$CUT_NOMUT" "$SPOOL_NOMUT"
+fstab_before="$(cksum "$CUT_NOMUT/etc/fstab" | awk '{print $1}')"
+stage_before="$(find "$CUT_NOMUT/var/spool/apt-mirror.root-stage" -printf '%p %s\n' | cksum | awk '{print $1}')"
+: >"$CUT_NOMUT/fake.log"
+out="$(run_script "$CUT_NOMUT/repo" "${CUT_ENV[@]}" \
+  MIGRATE_FAKE_SS_FILE="$SSFX/inbound_443.txt" \
+  --cutover --execute 2>&1)" || true
+fake_log="$(cat "$CUT_NOMUT/fake.log" 2>/dev/null || true)"
+stage_after="$(find "$CUT_NOMUT/var/spool/apt-mirror.root-stage" -printf '%p %s\n' | cksum | awk '{print $1}')"
+if ! printf '%s' "$out" | grep -q 'CUTOVER=PASS' \
+  && ! printf '%s\n' "$fake_log" | grep -qx 'stop' \
+  && ! printf '%s\n' "$fake_log" | grep -q 'umount' \
+  && [[ "$(cksum "$CUT_NOMUT/etc/fstab" | awk '{print $1}')" == "$fstab_before" ]] \
+  && [[ "$stage_before" == "$stage_after" ]] \
+  && grep -qE '^UUID=d48ae479-10f5-4ff5-b9be-4baa34dd15ea[[:space:]]' "$CUT_NOMUT/etc/fstab"; then
+  pass "http-guard failure performs no nginx/rsync/umount/fstab mutation"
+else
+  fail "http-guard no-mutation (log=$fake_log out=$out)"
+fi
+
+# 14) logs must not confuse peer port with local port
+cat >"$SSFX/peer_vs_local.txt" <<'EOF'
+0 0 221.139.249.111:51234 32.194.135.169:443
+0 0 221.139.249.111:80 192.168.1.10:53000
+EOF
+out="$(parse_fixture "$SSFX/peer_vs_local.txt")" || true
+if printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=1' \
+  && printf '%s\n' "$out" | grep -q 'INBOUND_HTTP_LOCAL=221.139.249.111:80 REMOTE=192.168.1.10:53000' \
+  && printf '%s\n' "$out" | grep -q 'OUTBOUND_HTTPS_LOCAL=221.139.249.111:51234 REMOTE=32.194.135.169:443' \
+  && ! printf '%s\n' "$out" | grep -q 'INBOUND_HTTP_LOCAL=.*:51234' \
+  && ! printf '%s\n' "$out" | grep -q 'INBOUND_HTTP_LOCAL=32.194.135.169:443'; then
+  pass "http-guard local vs peer ports not confused in output"
+else
+  fail "http-guard peer/local confusion ($out)"
+fi
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 if [[ "$FAIL" -ne 0 ]]; then

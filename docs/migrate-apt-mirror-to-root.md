@@ -160,6 +160,28 @@ Tracked source updates, if desired, are a separate commit.
   public signing key, `meta-release-lts`, and related paths derived from
   the effective site config
 
+## Inbound HTTP connection guard
+
+Before any cutover mutation (nginx stop, rsync, umount, fstab), the script
+counts **established** TCP connections whose **local** service port is `80`
+or `443` (inbound to nginx). Peer/remote port `443` alone is **not** inbound
+and must not block cutover (common outbound HTTPS clients on ephemeral local
+ports).
+
+Implementation notes:
+
+- Prefer inspecting the local endpoint (`ss` column for local address:port),
+  not the peer column
+- IPv4 (`host:80`) and IPv6 (`[addr]:443`, `*:80`, `0.0.0.0:80`) use the
+  port after the last colon
+- Output markers:
+  - `INBOUND_HTTP_CONNECTIONS=<count>`
+  - `INBOUND_HTTP_LOCAL=<local> REMOTE=<remote>` for each inbound row
+  - `OUTBOUND_HTTPS_LOCAL=<local> REMOTE=<remote>` for reference only
+- `ss` query failure or malformed parse **aborts** cutover; failures are never
+  treated as `INBOUND_HTTP_CONNECTIONS=0`
+- The guard is read-only (no connection kills)
+
 ## systemd unit state
 
 Cutover requires `apt-mirror.service` and `apt-mirror.timer` to each be

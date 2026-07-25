@@ -93,6 +93,7 @@ Environment overrides (tests/fixtures):
   MIGRATE_EFFECTIVE_MIRROR_CONF  MIGRATE_EFFECTIVE_DEFAULTS
   MIGRATE_FAKE_MOUNT_TABLE  MIGRATE_SKIP_GIT  MIGRATE_SKIP_HTTP
   MIGRATE_CONFIRM_CUTOVER=CUTOVER_TO_ROOT  MIGRATE_ROOT_AVAIL_BYTES
+  MIGRATE_FAKE_SS_FILE  MIGRATE_FAKE_SS_RC (fixture ss established lines)
 EOF
 }
 
@@ -541,6 +542,174 @@ assert_no_user_handles() {
     return 1
   fi
   ok "OPEN_HANDLE_COUNT=0"
+}
+
+# ---------------------------------------------------------------------------
+# Inbound HTTP connection guard (local sport 80/443 only; read-only)
+# ---------------------------------------------------------------------------
+# Extract numeric port from ss local/peer endpoint (IPv4 host:port or IPv6 [addr]:port).
+ss_endpoint_port() {
+  local endpoint="$1" value
+  [[ -n "$endpoint" && "$endpoint" == *:* ]] || return 1
+  value="${endpoint##*:}"
+  [[ "$value" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$value"
+}
+
+# Emit established TCP lines for parsing. Fixture overrides avoid real network in tests.
+# Does not treat query failure as empty/zero.
+collect_ss_established_lines() {
+  local rc=0
+  if [[ -n "${MIGRATE_FAKE_SS_FILE:-}" ]]; then
+    rc="${MIGRATE_FAKE_SS_RC:-0}"
+    if [[ "$rc" != "0" ]]; then
+      echo "ss fixture forced failure rc=${rc}" >&2
+      return "$rc"
+    fi
+    [[ -f "$MIGRATE_FAKE_SS_FILE" ]] || {
+      echo "MIGRATE_FAKE_SS_FILE missing: $MIGRATE_FAKE_SS_FILE" >&2
+      return 1
+    }
+    cat "$MIGRATE_FAKE_SS_FILE"
+    return 0
+  fi
+  if [[ "$TEST_MODE" == "1" ]]; then
+    # Deterministic fixture default: no real ss dependency.
+    return 0
+  fi
+  # Prefer ss sport filter when available (validated on iproute2); still parse below.
+  # Full established dump is required so outbound HTTPS peers can be reported.
+  ss -Htn state established || return $?
+}
+
+# Parse ss -Htn established rows from stdin.
+# Counts only connections whose LOCAL service port is 80 or 443.
+# Prints INBOUND_HTTP_* / OUTBOUND_HTTPS_* detail lines, then INBOUND_HTTP_CONNECTIONS=<n>.
+# Exit 2 on malformed input (never silently coerce to 0).
+parse_ss_http_connections() {
+  awk '
+    function port_of(endpoint, value) {
+      value = endpoint
+      if (value == "" || index(value, ":") == 0)
+        return ""
+      sub(/^.*:/, "", value)
+      return value
+    }
+    function is_port(p) {
+      return (p ~ /^[0-9]+$/)
+    }
+    function fail_parse(msg) {
+      printf "PARSE_ERROR: %s\n", msg > "/dev/stderr"
+      had_error = 1
+      # awk still runs END after exit; END must not emit a fake zero count.
+      exit
+    }
+    {
+      line = $0
+      gsub(/^[ \t]+|[ \t]+$/, "", line)
+      if (line == "")
+        next
+      n = split(line, f, /[ \t]+/)
+      local_ep = ""
+      peer_ep = ""
+      if (n >= 5 && f[1] ~ /^(tcp|udp|TCP|UDP)$/) {
+        local_ep = f[4]
+        peer_ep = f[5]
+      } else if (n >= 4) {
+        local_ep = f[3]
+        peer_ep = f[4]
+      } else {
+        fail_parse("bad field count: " line)
+      }
+      lport = port_of(local_ep)
+      rport = port_of(peer_ep)
+      if (!is_port(lport) || !is_port(rport)) {
+        fail_parse("non-numeric port local=" local_ep " peer=" peer_ep " line=" line)
+      }
+      if (lport == "80" || lport == "443") {
+        inbound++
+        printf "INBOUND_HTTP_LOCAL=%s REMOTE=%s\n", local_ep, peer_ep
+      } else if (rport == "443") {
+        # Reference only — outbound HTTPS must not block cutover.
+        printf "OUTBOUND_HTTPS_LOCAL=%s REMOTE=%s\n", local_ep, peer_ep
+      }
+    }
+    END {
+      if (had_error)
+        exit 2
+      printf "INBOUND_HTTP_CONNECTIONS=%d\n", inbound + 0
+    }
+  '
+}
+
+# Read-only guard: abort when inbound HTTP(S) is present or ss/parse fails.
+assert_no_inbound_http_connections() {
+  local raw_file parse_file err_file parse_rc=0 count="" line
+  raw_file="$(mktemp)"
+  parse_file="$(mktemp)"
+  err_file="$(mktemp)"
+
+  cleanup_ss_tmp() {
+    rm -f -- "$raw_file" "$parse_file" "$err_file"
+  }
+
+  if ! collect_ss_established_lines >"$raw_file" 2>"$err_file"; then
+    error "ss established query failed (not treating as INBOUND_HTTP_CONNECTIONS=0)"
+    if [[ -s "$err_file" ]]; then
+      cat "$err_file" >&2 || true
+    fi
+    cleanup_ss_tmp
+    fail_rc "INBOUND_HTTP_CONNECTION_GUARD=FAIL ss_query"
+    return 1
+  fi
+
+  parse_rc=0
+  parse_ss_http_connections <"$raw_file" >"$parse_file" 2>"$err_file" || parse_rc=$?
+  if [[ "$parse_rc" -ne 0 ]]; then
+    error "ss established parse failed rc=${parse_rc} (not treating as INBOUND_HTTP_CONNECTIONS=0)"
+    if [[ -s "$err_file" ]]; then
+      cat "$err_file" >&2 || true
+    fi
+    cleanup_ss_tmp
+    fail_rc "INBOUND_HTTP_CONNECTION_GUARD=FAIL ss_parse"
+    return 1
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+    case "$line" in
+      INBOUND_HTTP_CONNECTIONS=*)
+        count="${line#INBOUND_HTTP_CONNECTIONS=}"
+        printf '%s\n' "$line"
+        info "$line"
+        ;;
+      INBOUND_HTTP_LOCAL=*|OUTBOUND_HTTPS_LOCAL=*)
+        printf '%s\n' "$line"
+        info "$line"
+        ;;
+      *)
+        info "$line"
+        ;;
+    esac
+  done <"$parse_file"
+
+  if [[ ! "$count" =~ ^[0-9]+$ ]]; then
+    error "INBOUND_HTTP_CONNECTIONS missing or non-integer after parse"
+    cleanup_ss_tmp
+    fail_rc "INBOUND_HTTP_CONNECTION_GUARD=FAIL missing_count"
+    return 1
+  fi
+
+  if [[ "$count" -gt 0 ]]; then
+    error "Active inbound HTTP(S) connections on local :80/:443: INBOUND_HTTP_CONNECTIONS=${count}"
+    cleanup_ss_tmp
+    fail_rc "INBOUND_HTTP_CONNECTION_GUARD=FAIL inbound=${count}"
+    return 1
+  fi
+
+  cleanup_ss_tmp
+  ok "INBOUND_HTTP_CONNECTIONS=0"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -1156,6 +1325,11 @@ cmd_cutover() {
       die "CUTOVER_AND_ROLLBACK_FAILED reason=${reason}"
     fi
   }
+
+  # Before any service/mount/fstab mutation: only local :80/:443 count as inbound.
+  # Outbound HTTPS (peer :443) must not block. Failures must not be treated as zero.
+  assert_no_inbound_http_connections \
+    || die "INBOUND_HTTP_CONNECTION_GUARD=FAIL (cutover not started; no nginx/mount/fstab mutation)"
 
   nginx_cmd stop || cutover_fail "nginx stop"
 
