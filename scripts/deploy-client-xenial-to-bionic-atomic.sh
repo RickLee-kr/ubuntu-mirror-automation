@@ -1,25 +1,38 @@
 #!/usr/bin/env bash
-# Atomic deploy of xenial→bionic client script + sha256 sidecar only.
-# Does NOT touch selective READY, hop package trees, or DP publish.
+# Atomic deploy of xenial→bionic approved client artifacts:
+#   - top-level script + sha256 sidecar
+#   - per-hop script + manifest + detached signature + hop support files
+# Does NOT rebuild/sign artifacts, touch selective READY, or restart nginx.
 #
-# Fail-closed: refuses UNSIGNED_TEST / wrong signer / gpgv failure / SHA mismatch
-# both on the local artifact and on the HTTP-fetched post-deploy copy.
+# Fail-closed: refuses SHA mismatch / wrong signer / gpg failure both locally
+# and (unless SKIP_HTTP_VERIFY=1) on the HTTP-fetched post-deploy copies.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARTIFACT="${ROOT}/artifacts/client/dp-offline-upgrade-xenial-to-bionic.sh"
 SHAFILE="${ARTIFACT}.sha256"
+HOP_DIR="${ROOT}/artifacts/client/xenial-to-bionic"
+HOP_NAME="xenial-to-bionic"
 DEST_ROOT="${DEST_ROOT:-/var/spool/apt-mirror/client}"
 NAME="dp-offline-upgrade-xenial-to-bionic.sh"
 BUILD_PY="${ROOT}/scripts/lib/build_client_xenial_to_bionic.py"
+DEPLOY_PY="${ROOT}/scripts/lib/deploy_client_artifacts_atomic.py"
 PUB_KEY="${ROOT}/config/client-signing/offline-client-manifest.gpg"
+EXPECTED_ARTIFACT_SHA="${EXPECTED_ARTIFACT_SHA:-a41038fb816c1b6cdec439188d851c50f54d7eb191e7e007752399ba73ae0213}"
+ALLOWED_FINGERPRINT="${ALLOWED_FINGERPRINT:-C786FE9887290E2CF759271DFDD38BE958EABD4A}"
 
 [[ -f "$ARTIFACT" && -f "$SHAFILE" ]] || { echo "missing artifact/sha256" >&2; exit 1; }
+[[ -d "$HOP_DIR" ]] || { echo "missing hop dir: $HOP_DIR" >&2; exit 1; }
 [[ -f "$BUILD_PY" ]] || { echo "missing builder helper: $BUILD_PY" >&2; exit 1; }
+[[ -f "$DEPLOY_PY" ]] || { echo "missing deploy helper: $DEPLOY_PY" >&2; exit 1; }
 [[ -f "$PUB_KEY" ]] || { echo "missing production public key: $PUB_KEY" >&2; exit 1; }
 
 ART_SHA="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
 SIDECAR_SHA="$(awk '{print $1}' "$SHAFILE")"
 [[ "$ART_SHA" == "$SIDECAR_SHA" ]] || { echo "artifact/sidecar SHA mismatch" >&2; exit 1; }
+[[ "$ART_SHA" == "$EXPECTED_ARTIFACT_SHA" ]] || {
+  echo "artifact SHA ${ART_SHA} != approved ${EXPECTED_ARTIFACT_SHA}" >&2
+  exit 1
+}
 
 READY_PATH="${READY_PATH:-/var/spool/apt-mirror/selective/state/READY}"
 READY_BEFORE=""
@@ -48,31 +61,16 @@ PY
 }
 printf '%s\n' "$VERIFY_OUT"
 
-python3 - "$ARTIFACT" "$SHAFILE" "$DEST_ROOT" "$NAME" <<'PY'
-import os, shutil, sys, time
-script_path, sha_path, deploy_root, script_name = sys.argv[1:5]
-stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-os.makedirs(deploy_root, exist_ok=True)
-for src, name in ((script_path, script_name), (sha_path, script_name + ".sha256")):
-    dest = os.path.join(deploy_root, name)
-    if os.path.isfile(dest):
-        bak = "{}.bak-{}".format(dest, stamp)
-        shutil.copy2(dest, bak)
-        print("client_deploy_backup=" + bak)
-    tmp = "{}.tmp.{}".format(dest, os.getpid())
-    shutil.copy2(src, tmp)
-    os.chmod(tmp, 0o755 if name.endswith(".sh") else 0o644)
-    with open(tmp, "rb") as fh:
-        os.fsync(fh.fileno())
-    os.replace(tmp, dest)
-    dirfd = os.open(deploy_root, os.O_RDONLY)
-    try:
-        os.fsync(dirfd)
-    finally:
-        os.close(dirfd)
-    print("client_deploy_atomic=" + dest)
-print("DEPLOY_OK")
-PY
+python3 "$DEPLOY_PY" \
+  --artifact "$ARTIFACT" \
+  --sidecar "$SHAFILE" \
+  --hop-dir "$HOP_DIR" \
+  --hop-name "$HOP_NAME" \
+  --script-name "$NAME" \
+  --dest-root "$DEST_ROOT" \
+  --pub-key "$PUB_KEY" \
+  --expected-sha "$EXPECTED_ARTIFACT_SHA" \
+  --allowed-fingerprint "$ALLOWED_FINGERPRINT"
 
 READY_AFTER=""
 [[ -f "$READY_PATH" ]] && READY_AFTER="$(sha256sum "$READY_PATH" | awk '{print $1}')"
@@ -83,18 +81,33 @@ fi
 echo "READY_UNCHANGED=YES"
 echo "ARTIFACT_SHA256=${ART_SHA}"
 
+if [[ "${SKIP_HTTP_VERIFY:-0}" == "1" ]]; then
+  echo "HTTP_VERIFY=SKIPPED"
+  exit 0
+fi
+
 MIRROR_BASE="${MIRROR_BASE:-http://221.139.249.111}"
 TMP="$(mktemp)"
-trap 'rm -f "$TMP"' EXIT
+trap 'rm -f "$TMP" "${TMP}.sha256" "${TMP}.hop" "${TMP}.manifest" "${TMP}.asc"' EXIT
 curl -fsS -o "$TMP" "${MIRROR_BASE}/client/${NAME}"
 HTTP_SHA="$(sha256sum "$TMP" | awk '{print $1}')"
 echo "HTTP_SHA256=${HTTP_SHA}"
 [[ "$HTTP_SHA" == "$ART_SHA" ]] || { echo "HTTP download SHA mismatch" >&2; exit 1; }
 curl -fsS -o "${TMP}.sha256" "${MIRROR_BASE}/client/${NAME}.sha256"
 HTTP_SIDE="$(awk '{print $1}' "${TMP}.sha256")"
-rm -f "${TMP}.sha256"
 echo "HTTP_SIDECAR_SHA256=${HTTP_SIDE}"
 [[ "$HTTP_SIDE" == "$ART_SHA" ]] || { echo "HTTP sidecar SHA mismatch" >&2; exit 1; }
+
+curl -fsS -o "${TMP}.hop" "${MIRROR_BASE}/client/${HOP_NAME}/${NAME}"
+HTTP_HOP_SHA="$(sha256sum "${TMP}.hop" | awk '{print $1}')"
+echo "HTTP_HOP_SHA256=${HTTP_HOP_SHA}"
+[[ "$HTTP_HOP_SHA" == "$ART_SHA" ]] || { echo "HTTP per-hop script SHA mismatch" >&2; exit 1; }
+
+curl -fsS -o "${TMP}.manifest" "${MIRROR_BASE}/client/${HOP_NAME}/client-manifest.json"
+curl -fsS -o "${TMP}.asc" "${MIRROR_BASE}/client/${HOP_NAME}/client-manifest.json.asc"
+MAN_SHA="$(sha256sum "${TMP}.manifest" | awk '{print $1}')"
+REPO_MAN_SHA="$(sha256sum "${HOP_DIR}/client-manifest.json" | awk '{print $1}')"
+[[ "$MAN_SHA" == "$REPO_MAN_SHA" ]] || { echo "HTTP manifest SHA mismatch" >&2; exit 1; }
 
 HTTP_VERIFY_OUT="$(
   python3 - "$BUILD_PY" "$TMP" "$PUB_KEY" <<'PY'
@@ -114,5 +127,33 @@ PY
   exit 1
 }
 printf '%s\n' "$HTTP_VERIFY_OUT"
+
+# Detached HTTP per-hop manifest verification (temporary GNUPGHOME, public key only).
+python3 - "$PUB_KEY" "${TMP}.manifest" "${TMP}.asc" "$ALLOWED_FINGERPRINT" <<'PY'
+import os, subprocess, sys, tempfile, shutil
+pub, manifest, asc, allowed = sys.argv[1:5]
+td = tempfile.mkdtemp(prefix="http-manifest-gpg-")
+try:
+    env = os.environ.copy(); env["GNUPGHOME"] = td
+    subprocess.run(["gpg", "--batch", "--import", pub], check=True, env=env,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    p = subprocess.run(
+        ["gpg", "--batch", "--status-fd", "1", "--verify", asc, manifest],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+    )
+    status = (p.stdout or "") + "\n" + (p.stderr or "")
+    validsig = None
+    for line in status.splitlines():
+        if line.startswith("[GNUPG:] VALIDSIG "):
+            validsig = line.split()[2].upper()
+            break
+    if p.returncode != 0 or validsig != allowed.upper():
+        raise SystemExit("HTTP manifest signature verify failed")
+    print("HTTP_HOP_MANIFEST_SIGNATURE_VERIFY=PASS")
+    print("HTTP_HOP_MANIFEST_SIGNER_FINGERPRINT=" + validsig)
+finally:
+    shutil.rmtree(td, ignore_errors=True)
+PY
+
 echo "HTTP_VERIFY=PASS"
 echo "DOWNLOAD=curl -fsSO ${MIRROR_BASE}/client/${NAME}"
