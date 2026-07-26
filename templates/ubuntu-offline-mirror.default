@@ -31,7 +31,7 @@ EXTRA_ALLOWED_HOSTS=""
 RUN_CLEAN=true
 
 # Allow MIRROR_ROOT on the OS root filesystem (NOT recommended). Default: false
-ALLOW_ROOT_FS_MIRROR=false
+ALLOW_ROOT_FS_MIRROR=true
 
 # Skip apt-mirror package sync (upgrader/meta only) — for tests / recovery
 SKIP_APT_MIRROR=false
