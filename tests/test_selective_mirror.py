@@ -1061,7 +1061,24 @@ class SelectivePrePostPublishTests(unittest.TestCase):
     """Pre-publish verify vs post-publish HTTP separation."""
 
     def _minimal_staging_tree(self, selective, hop='xenial-to-bionic', suite='bionic'):
-        data = b'demo-deb-bytes'
+        # Build a real .deb so packages↔control metadata consistency can run.
+        deb_tmpdir = tempfile.mkdtemp(prefix='sel-deb-')
+        try:
+            deb_build = os.path.join(deb_tmpdir, 'pkg')
+            debian = os.path.join(deb_build, 'DEBIAN')
+            os.makedirs(debian)
+            write(os.path.join(debian, 'control'),
+                  'Package: demo\nVersion: 1\nArchitecture: amd64\n'
+                  'Maintainer: test <t@example.com>\nDescription: demo\n')
+            deb_out = os.path.join(deb_tmpdir, 'demo_1_amd64.deb')
+            subprocess.check_call(
+                ['dpkg-deb', '-b', deb_build, deb_out],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            with open(deb_out, 'rb') as fh:
+                data = fh.read()
+        finally:
+            shutil.rmtree(deb_tmpdir, ignore_errors=True)
         digest = hashlib.sha256(data).hexdigest()
         rel = 'pool/main/d/demo/demo_1_amd64.deb'
         ubuntu = os.path.join(selective, 'staging', 'hops', hop, 'ubuntu')
@@ -1069,7 +1086,8 @@ class SelectivePrePostPublishTests(unittest.TestCase):
         binary = os.path.join(ubuntu, 'dists', suite, 'main', 'binary-amd64')
         os.makedirs(binary, exist_ok=True)
         write(os.path.join(binary, 'Packages'),
-              'Package: demo\nFilename: %s\nSize: %d\nSHA256: %s\n\n' % (
+              'Package: demo\nVersion: 1\nArchitecture: amd64\n'
+              'Filename: %s\nSize: %d\nSHA256: %s\n\n' % (
                   rel, len(data), digest))
         write(os.path.join(ubuntu, 'dists', suite, 'Release'),
               'Suite: %s\nAcquire-By-Hash: no\n' % suite)

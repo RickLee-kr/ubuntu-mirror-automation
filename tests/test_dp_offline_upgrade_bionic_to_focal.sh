@@ -17,7 +17,7 @@ trap 'rm -rf "$OUT_DIR"' EXIT
 [[ -f "$BUILD_PY" ]] || fail "builder missing"
 bash -n "$SCRIPT_IN" 2>/dev/null && pass "template bash -n" || fail "template bash -n"
 
-# 2) Bash 4.3 compatibility — reject bash-5-only constructs in template
+# 2) Bash 4.3 compatibility - reject bash-5-only constructs in template
 if grep -nE '\$\{[A-Za-z_][A-Za-z0-9_]*@Q\}|mapfile -d|&\>|\|\|&' "$SCRIPT_IN"; then
   fail "bash 5-only / unsupported constructs found"
 else
@@ -31,7 +31,7 @@ else
 fi
 if grep -nE 'archive\.ubuntu\.com|security\.ubuntu\.com|changelogs\.ubuntu\.com' "$SCRIPT_IN" \
   | grep -v 'EXTERNAL\|external\|grep\|die\|ERROR\|FORBIDDEN\|assert_no_external'; then
-  # Allow only in rejection/detection contexts — already filtered; any leftover is fail
+  # Allow only in rejection/detection contexts - already filtered; any leftover is fail
   :
 fi
 # Explicit: template must not hardcode Canonical archive as fallback sources
@@ -282,7 +282,7 @@ else
   fail "minimum/supported check failed"
 fi
 
-# Welcome ignored for topology — only DataProcessor(...)> roles
+# Welcome ignored for topology - only DataProcessor(...)> roles
 roles="$(extract_dataprocessor_roles_from_text "$(cat <<'OUT'
 Welcome to Data Processor
 
@@ -511,7 +511,13 @@ STUB="${OUT_DIR}/dp-offline-upgrade-bionic-to-focal.stub.sh"
 python3 - "$SCRIPT_IN" "$STUB" <<'PY'
 import re, sys
 src, dst = sys.argv[1], sys.argv[2]
+from pathlib import Path
 text = open(src, encoding="utf-8").read()
+_hp = Path(src).resolve().parent / "lib" / "dp-offline-destructive-confirmation.sh"
+text = text.replace(
+    "@@DESTRUCTIVE_CONFIRMATION_HELPER@@",
+    _hp.read_text(encoding="utf-8").rstrip("\n") + "\n",
+)
 pins = {
     "MIRROR_BASE": "http://127.0.0.1:9",
     "HOP": "bionic-to-focal",
@@ -1758,7 +1764,7 @@ EOF
      && ! -f "$fake/etc/apt/trusted.gpg.d/stellar-offline-bionic-to-focal.gpg" ]]; then
     pass "no keyring install before valid confirmation"
   else
-    # may exist if commit ran — fail
+    # may exist if commit ran - fail
     fail "keyring installed despite bad confirmation"
   fi
 
@@ -1901,7 +1907,7 @@ EOF
   set -e
   [[ "$rc" -ne 0 ]] && pass "refuse 22.04+" || fail "accepted 22.04"
 
-  # Runner must reboot only on success path — static check
+  # Runner must reboot only on success path - static check
   grep -A20 'reboot_if_success' "$BUILT" | grep -q 'systemctl reboot' && pass "reboot helper present"
   # Failure path must write FAILED before any reboot call in runner section
   if awk '/write_state FAILED/{f=1} /reboot_if_success/{if(!f) bad=1} END{exit bad+0}' \
@@ -1987,7 +1993,19 @@ STUB_FAIL="${OUT_DIR}/stub-fail.sh"
 # Minimal stub from template pins for state handling only
 {
   # Extract helpers + handle_existing_state via rendering pins as empty-safe
-  sed -e "s/@@[A-Z0-9_]*@@/x/g" "$SCRIPT_IN" >"$STUB_FAIL"
+  python3 - "$SCRIPT_IN" "$STUB_FAIL" <<'PY'
+from pathlib import Path
+import re, sys
+src, dst = sys.argv[1], sys.argv[2]
+text = Path(src).read_text(encoding="utf-8")
+hp = Path(src).resolve().parent / "lib" / "dp-offline-destructive-confirmation.sh"
+text = text.replace(
+    "@@DESTRUCTIVE_CONFIRMATION_HELPER@@",
+    hp.read_text(encoding="utf-8").rstrip("\n") + "\n",
+)
+text = re.sub(r"@@[A-Z0-9_]*@@", "x", text)
+Path(dst).write_text(text, encoding="utf-8")
+PY
 }
 # Soften die paths that need network by using TEST_ROOT fixture
 fx_fail="$(mktemp -d "${OUT_DIR}/fx-fail.XXXX")"
@@ -2068,7 +2086,7 @@ grep -q 'FAIL_PARTIAL_RELEASE_TRANSITION_DETECTED' "$fx_mix/out.txt" \
   && pass "mixed/partial transition fixture blocked" \
   || fail "mixed-state fixture not blocked"
 
-# 11) Bash 4.3 — already covered above; refresh-hop orchestration exists
+# 11) Bash 4.3 - already covered above; refresh-hop orchestration exists
 grep -q 'refresh-hop-selective' "${ROOT}/scripts/ubuntu-offline-mirror.sh" \
   && pass "refresh-hop-selective orchestration present" \
   || fail "refresh-hop-selective missing"
@@ -2386,7 +2404,7 @@ run_handoff_case() {
   "$@"
 }
 
-# 12.1 / 12.2 — --no-block call + client does not wait for oneshot completion
+# 12.1 / 12.2 - --no-block call + client does not wait for oneshot completion
 hf="$(mktemp -d)"
 make_handoff_fixture "$hf"
 install_fake_systemctl "$hf" ok
@@ -2601,7 +2619,7 @@ if grep -q 'RUNNER_PARENT_PID=' "$hf/var/log/aella/offline_os_upgrade.log" \
    && grep -q 'RUNNER_DETACHED_FROM_CLIENT=YES' "$hf/var/log/aella/offline_os_upgrade.log"; then
   pass "runner logs parent pid + detached"
 else
-  # fixture runner writes after redirect — wait briefly
+  # fixture runner writes after redirect - wait briefly
   sleep 0.2
   if grep -q 'RUNNER_START=PASS' "$hf/var/log/aella/offline_os_upgrade.log"; then
     pass "runner logs parent pid + detached"
@@ -2753,7 +2771,7 @@ printf 'start\n' >"$hf/run/sub.state"
   echo "RUNNER_START=PASS"
   echo "STAGE=SOURCE_RELEASE_PREPARATION"
   echo "APT_PREPARATION=PASS"
-  for i in $(seq 1 12); do echo "SEED_LINE_$i"; done
+  for i in $(seq 1 24); do echo "SEED_LINE_$i"; done
 } >>"$hf/var/log/aella/offline_os_upgrade.log"
 export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl" HANDOFF_WAIT_SECS=2 HANDOFF_POLL_SECS=1
@@ -2761,6 +2779,7 @@ export DP_OFFLINE_FORCE_MONITOR=1
 export DP_OFFLINE_MONITOR_MAX_SECS=7
 export DP_OFFLINE_MONITOR_POLL_SECS=1
 export DP_OFFLINE_MONITOR_HEARTBEAT_SECS=2
+export DP_OFFLINE_MONITOR_RECENT_LINES=30
 export DETACH_AFTER_HANDOFF=0
 source "$HANDOFF_HARNESS"
 # Drive live log + state changes after handoff monitor attaches
@@ -2781,7 +2800,8 @@ if [[ "$rc" -eq 0 ]] \
    && grep -q 'CLIENT_MONITOR_POLICY=FOREGROUND_READ_ONLY' "$hf/out-mon.txt" \
    && grep -q 'MONITOR_INTERRUPT_STOPS_UPGRADE=NO' "$hf/out-mon.txt" \
    && grep -q 'recent upgrade log' "$hf/out-mon.txt" \
-   && grep -q 'SEED_LINE_12' "$hf/out-mon.txt" \
+   && grep -qE 'SEED_LINE_1[2-9]|SEED_LINE_2[0-4]' "$hf/out-mon.txt" \
+   && grep -q 'SYSTEMD_HANDOFF=PASS' "$hf/out-mon.txt" \
    && grep -q 'STAGE=DO_RELEASE_UPGRADE' "$hf/out-mon.txt" \
    && grep -qE '\[PROGRESS\].*state=|UPGRADE_HEARTBEAT|runner=ALIVE' "$hf/out-mon.txt" \
    && grep -q 'UPGRADE STAGE CHANGED' "$hf/out-mon.txt" \
@@ -4249,7 +4269,7 @@ pkill -f '/tmp/.*/usr/local/sbin/stellar-offline-os-upgrade-runner' 2>/dev/null 
 hf="$(mktemp -d)"
 make_handoff_fixture "$hf"
 install_fake_systemctl "$hf" ok
-# No runner process — terminal failure must still exit.
+# No runner process - terminal failure must still exit.
 printf 'FAILED_PRE_DRO\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
 printf 'FINAL_STATE=FAILED_PRE_DRO\nPRE_DRO_ROLLBACK_RESULT=PASS\n' \
   >>"$hf/var/log/aella/offline_os_upgrade.log"
@@ -5030,7 +5050,13 @@ if [[ -f "$X2B_IN" ]]; then
   python3 - "$X2B_IN" "$X2B_STUB" <<'PY'
 import re, sys
 src, dst = sys.argv[1], sys.argv[2]
+from pathlib import Path
 text = open(src, encoding="utf-8").read()
+_hp = Path(src).resolve().parent / "lib" / "dp-offline-destructive-confirmation.sh"
+text = text.replace(
+    "@@DESTRUCTIVE_CONFIRMATION_HELPER@@",
+    _hp.read_text(encoding="utf-8").rstrip("\n") + "\n",
+)
 pins = {
     "MIRROR_BASE": "http://127.0.0.1:9",
     "HOP": "xenial-to-bionic",
@@ -5435,7 +5461,7 @@ else
   tail -20 "$hop_x/out2.txt" || true
 fi
 
-# 17.Y x2b regression already covered by 17.K — reinforce presence check
+# 17.Y x2b regression already covered by 17.K - reinforce presence check
 if grep -q 'already COMPLETED_BIONIC' "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh.in" \
   && ! grep -q 'classify_mutation_evidence_ownership' "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh.in"; then
   pass "17.Y x2b COMPLETED_BIONIC terminal unchanged"
@@ -5443,7 +5469,7 @@ else
   fail "17.Y x2b regression"
 fi
 
-# 17.Z Focal contradiction (20.04 + COMPLETED_BIONIC) — reinforce 17.C
+# 17.Z Focal contradiction (20.04 + COMPLETED_BIONIC) - reinforce 17.C
 hop_z="$(mktemp -d "${OUT_DIR}/hop-z.XXXX")"
 hop_fx_prep "$hop_z"
 cat >"$hop_z/etc/os-release" <<EOF
@@ -5853,7 +5879,7 @@ grep -q 'exclude only the Stellar source-gate\|excluding only the Stellar source
   && pass "17.AN non-Stellar hook preservation helper" \
   || fail "17.AN non-Stellar preservation missing"
 
-# 17.AO apt warning handling — exit code based, not warning-only
+# 17.AO apt warning handling - exit code based, not warning-only
 grep -q 'unsandboxed warnings alone are not failure' "$SCRIPT_IN" \
   && pass "17.AO apt warning vs exit-code policy" \
   || fail "17.AO apt warning policy missing"
@@ -5916,14 +5942,20 @@ else
 fi
 
 # =============================================================================
-# 17.AS–BG — silent preflight exit / meta-release 404 continuation / invariants
+# 17.AS–BG - silent preflight exit / meta-release 404 continuation / invariants
 # =============================================================================
 
 # Rebuild stub from current template so AS–BG see latest control-flow fixes.
 python3 - "$SCRIPT_IN" "$STUB" <<'PY'
 import re, sys
 src, dst = sys.argv[1], sys.argv[2]
+from pathlib import Path
 text = open(src, encoding="utf-8").read()
+_hp = Path(src).resolve().parent / "lib" / "dp-offline-destructive-confirmation.sh"
+text = text.replace(
+    "@@DESTRUCTIVE_CONFIRMATION_HELPER@@",
+    _hp.read_text(encoding="utf-8").rstrip("\n") + "\n",
+)
 pins = {
     "MIRROR_BASE": "http://127.0.0.1:9",
     "HOP": "bionic-to-focal",
@@ -6134,7 +6166,7 @@ rc=$?
 set -e
 if [[ "$rc" -eq 0 ]] \
   && grep -q 'READY_FOR_CONFIRMATION' "$hop_ba/out.txt" \
-  && grep -q 'preflight-only requested — no confirmation, no persistent changes' "$hop_ba/out.txt" \
+  && grep -q 'preflight-only requested - no confirmation, no persistent changes' "$hop_ba/out.txt" \
   && ! grep -q 'UPGRADE-BIONIC-TO-FOCAL' "$hop_ba/out.txt" \
   && [[ "$(cat "$hop_ba/opt/aelladata/os-upgrade/offline/state")" == "READY_FOR_CONFIRMATION" ]]; then
   pass "17.BA --preflight-only regression"
@@ -6195,7 +6227,7 @@ if [[ -f "${ROOT}/client/dp-offline-upgrade-bionic-to-focal.sh" ]]; then
     'guard_unexpected_preflight_exit'
   do
     if ! grep -q "$marker" "$SCRIPT_IN" || ! grep -q "$marker" "$gen"; then
-      # generated may be stale until rebuild — require template; warn on gen
+      # generated may be stale until rebuild - require template; warn on gen
       if ! grep -q "$marker" "$SCRIPT_IN"; then
         bd_ok=0
       fi
@@ -6208,7 +6240,7 @@ if [[ -f "${ROOT}/client/dp-offline-upgrade-bionic-to-focal.sh" ]]; then
     fail "17.BD template/generated parity"
   fi
 else
-  pass "17.BD generated absent — template markers only"
+  pass "17.BD generated absent - template markers only"
 fi
 
 # 17.BE HTTP artifact parity markers (sidecar contract remains in deploy script)
@@ -6219,7 +6251,7 @@ else
   fail "17.BE deploy parity checks missing"
 fi
 
-# 17.BF EXIT trap regression — SIGPIPE/silent success guard present; RETURN cleanup cleared
+# 17.BF EXIT trap regression - SIGPIPE/silent success guard present; RETURN cleanup cleared
 if grep -q 'main_exit_trap' "$SCRIPT_IN" \
   && grep -q 'PREFLIGHT_ABORT_SIGPIPE' "$SCRIPT_IN" \
   && grep -q 'PREFLIGHT_SILENT_SUCCESS_EXIT' "$SCRIPT_IN" \
@@ -6770,7 +6802,7 @@ set +e
   export DP_OFFLINE_TEST_ROOT="$bu" TEST_ROOT="$bu"
   # shellcheck disable=SC1090
   source "$LXD_HARNESS"
-  # Harness defaults LOG_FILE=/dev/null — point at fixture evidence after source.
+  # Harness defaults LOG_FILE=/dev/null - point at fixture evidence after source.
   LOG_FILE="$bu/var/log/aella/offline_os_upgrade.log"
   _hp() { hostpath "$1"; }
   package_transition_evidence_present() { return 0; }

@@ -49,7 +49,7 @@
   "plan_checksum": "8eb3d478e2d40e7a19510239fcbf6e2e6824b2587e6e7172d60ef01e8920b157",
   "discovery_checksum": "d08f76a4e87bbaabc82b2aea3f552d26b9ece53be83735a74dffdfd70a816b56",
   "confirm_phrase": "UPGRADE-FOCAL-TO-JAMMY",
-  "generated_at": "2026-07-24T09:53:20Z",
+  "generated_at": "2026-07-26T16:31:29Z",
   "announcements": {
     "ReleaseAnnouncement": "98ad1d85906c69851771f003dcb470d559caed2e12f5bacba152915b7e239f69",
     "ReleaseAnnouncement.html": "a8240cf725d60b57917e26d1324f5640e39b31cf4c6d91fef1a948e55191d08a"

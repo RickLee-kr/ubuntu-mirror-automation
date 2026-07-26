@@ -549,6 +549,19 @@ def assert_no_f2j_residuals(label, body):
 def render_script(template_path, replacements):
     with open(template_path, "r", encoding="utf-8") as fh:
         body = fh.read()
+    helper_token = "@@DESTRUCTIVE_CONFIRMATION_HELPER@@"
+    helper_path = os.path.join(
+        os.path.dirname(os.path.abspath(template_path)),
+        "lib",
+        "dp-offline-destructive-confirmation.sh",
+    )
+    if helper_token not in body:
+        raise BuildError("template missing token {}".format(helper_token))
+    if not os.path.isfile(helper_path):
+        raise BuildError("missing confirmation helper: {}".format(helper_path))
+    with open(helper_path, "r", encoding="utf-8") as fh:
+        helper_body = fh.read().rstrip("\n") + "\n"
+    body = body.replace(helper_token, helper_body)
     for key, value in replacements.items():
         token = "@@{}@@".format(key)
         if token not in body:

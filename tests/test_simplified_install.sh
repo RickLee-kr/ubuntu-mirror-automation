@@ -264,7 +264,9 @@ else
   pass "--full skips menu"
 fi
 grep -q 'Delete existing mirror data' "${ROOT}/lib/install-menu.sh" && pass "purge menu option exists" || fail "purge missing"
-grep -q 'Monitor live dashboard' "${ROOT}/lib/install-menu.sh" && pass "monitor menu option exists" || fail "monitor missing"
+# Canonical selective menu label (Watch Live Progress → um_menu_run_dashboard).
+grep -qE 'Watch Live Progress|Monitor live dashboard' "${ROOT}/lib/install-menu.sh" \
+  && pass "monitor menu option exists" || fail "monitor missing"
 grep -q 'um_install_menu' "${ROOT}/install.sh" && pass "install.sh calls menu" || fail "menu not wired"
 grep -q 'whiptail' "${ROOT}/lib/install-menu.sh" && pass "whiptail dialog UI" || fail "whiptail missing"
 grep -q 'NEWT_COLORS' "${ROOT}/lib/install-menu.sh" && pass "dialog color theme" || fail "NEWT_COLORS missing"

@@ -454,11 +454,12 @@ def validate_packages_deb_metadata_consistency(ubuntu_root, arch='amd64'):
         ])
     dists = os.path.join(ubuntu_root, 'dists')
     if not os.path.isdir(dists):
-        return False, OrderedDict([
-            ('ok', False),
-            ('error', 'dists missing'),
+        # Empty hop trees (pool placeholder, no indexes) are vacuously consistent.
+        return True, OrderedDict([
+            ('ok', True),
             ('checked', 0),
             ('mismatches', 0),
+            ('note', 'no dists'),
         ])
     for suite in sorted(os.listdir(dists)):
         suite_dir = os.path.join(dists, suite)

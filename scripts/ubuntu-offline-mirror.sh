@@ -2133,6 +2133,11 @@ Also available:
                           into artifacts/client/ (and optional /var/spool/apt-mirror/client)
                           Does not rematerialize/publish or change READY.
 
+DP Phase 2 (6.5.0 bringup artifacts; does not touch selective READY):
+  sync-dp-phase2          Download/verify/bundle/atomic-publish from ACPS
+  verify-dp-phase2        Offline verify of current Phase 2 release
+  status-dp-phase2        Show current/previous/bundle/disk/URL status
+
 Config: /etc/default/ubuntu-offline-mirror
 Profile SSOT: config/offline-upgrade-profile.json (offline-upgrade-selective)
 Selective root: ${SELECTIVE_MIRROR_ROOT}
@@ -2468,6 +2473,44 @@ cmd_validate_release_upgraders() {
   ok "release upgrader validation PASS"
 }
 
+_dp_phase2_script() {
+  local cand
+  for cand in \
+    "${PROJECT_ROOT}/scripts/download-dp-phase2-6.5.0.sh" \
+    "/usr/local/lib/ubuntu-mirror/download-dp-phase2-6.5.0.sh" \
+    "${SCRIPT_DIR}/download-dp-phase2-6.5.0.sh"
+  do
+    if [[ -f "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+cmd_sync_dp_phase2() {
+  local script
+  script="$(_dp_phase2_script)" || die "download-dp-phase2-6.5.0.sh not found"
+  # Dedicated lock inside download script; also refuses if UOM global lock is busy.
+  # Does not acquire UOM global lock (avoids blocking verify-selective readers wrongly,
+  # and avoids re-entrancy issues). Selective READY is never touched.
+  info "DP_PHASE2_SYNC_START script=${script}"
+  DP_PHASE2_LOG_FILE="${DP_PHASE2_LOG_FILE:-/var/log/ubuntu-mirror/dp-phase2-sync.log}" \
+    bash "$script" sync
+}
+
+cmd_verify_dp_phase2() {
+  local script
+  script="$(_dp_phase2_script)" || die "download-dp-phase2-6.5.0.sh not found"
+  bash "$script" verify
+}
+
+cmd_status_dp_phase2() {
+  local script
+  script="$(_dp_phase2_script)" || die "download-dp-phase2-6.5.0.sh not found"
+  bash "$script" status
+}
+
 main() {
   local cmd="${1:-}"
   case "$cmd" in
@@ -2500,6 +2543,9 @@ main() {
     build-client-bionic-to-focal) shift; cmd_build_client_bionic_to_focal "$@" ;;
     build-client-focal-to-jammy) shift; cmd_build_client_focal_to_jammy "$@" ;;
     build-client-jammy-to-noble) shift; cmd_build_client_jammy_to_noble "$@" ;;
+    sync-dp-phase2) shift; cmd_sync_dp_phase2 "$@" ;;
+    verify-dp-phase2) shift; cmd_verify_dp_phase2 "$@" ;;
+    status-dp-phase2) shift; cmd_status_dp_phase2 "$@" ;;
     -h|--help|help|"") usage; [[ -n "$cmd" ]] || exit 1; exit 0 ;;
     *) die "Unknown command: $cmd (see --help)" ;;
   esac

@@ -147,6 +147,17 @@ grep -q 'sync_validate_cleanup_by_hash' "${ROOT}/scripts/ubuntu-offline-mirror.s
 python3 -m py_compile "${ROOT}/scripts/lib/sync_by_hash.py"
 pass "by-hash CLI + py_compile"
 
+echo "[test] DP Phase 2 CLI wiring"
+grep -q 'sync-dp-phase2' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing sync-dp-phase2"
+grep -q 'verify-dp-phase2' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing verify-dp-phase2"
+grep -q 'status-dp-phase2' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing status-dp-phase2"
+[[ -f "${ROOT}/scripts/download-dp-phase2-6.5.0.sh" ]] || fail "missing download-dp-phase2-6.5.0.sh"
+[[ -f "${ROOT}/scripts/lib/dp-phase2-common.sh" ]] || fail "missing dp-phase2-common.sh"
+[[ -f "${ROOT}/client/stage-dp-phase2-6.5.0.sh" ]] || fail "missing stage-dp-phase2-6.5.0.sh"
+bash -n "${ROOT}/scripts/download-dp-phase2-6.5.0.sh"
+bash -n "${ROOT}/client/stage-dp-phase2-6.5.0.sh"
+pass "DP Phase 2 CLI + bash -n"
+
 echo "[test] release-upgrader CLI wiring"
 grep -q 'sync-release-upgraders' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing sync-release-upgraders"
 grep -q 'sync-legacy-releases' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing sync-legacy-releases"

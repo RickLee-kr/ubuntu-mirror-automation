@@ -23,6 +23,8 @@ grep -q 'location /ubuntu-security/' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
 grep -q 'location /offline/' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
 grep -q 'location /hops/' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
 grep -q 'location /client/' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
+grep -q 'location /dp-phase2/6.5.0/' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
+grep -q 'dp-phase2/6.5.0/current' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
 grep -q 'selective/current' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
 grep -q 'server_name security.ubuntu.com' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
 grep -q 'server_name archive.ubuntu.com' "${TMPDIR_TEST}/apt-mirror.conf" || FAIL=1
@@ -39,6 +41,8 @@ fi
 grep -q 'location /ubuntu/' "${ROOT}/templates/nginx.conf" || FAIL=1
 grep -q 'location /ubuntu-security/' "${ROOT}/templates/nginx.conf" || FAIL=1
 grep -q 'location /offline/' "${ROOT}/templates/nginx.conf" || FAIL=1
+grep -q 'location /client/' "${ROOT}/templates/nginx.conf" || FAIL=1
+grep -q 'location /dp-phase2/6.5.0/' "${ROOT}/templates/nginx.conf" || FAIL=1
 grep -q 'selective/current' "${ROOT}/templates/nginx.conf" || FAIL=1
 grep -q 'server_name security.ubuntu.com' "${ROOT}/templates/nginx.conf" || FAIL=1
 grep -q 'server_name old-releases.ubuntu.com' "${ROOT}/templates/nginx.conf" || FAIL=1

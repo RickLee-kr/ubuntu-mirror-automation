@@ -404,10 +404,12 @@ class TestByHash(unittest.TestCase):
             url_path[len("/ubuntu/") :],
         )
         self.assertTrue(os.path.isfile(fs_path), fs_path)
-        # Template must alias /ubuntu/ without blocking by-hash
+        # Template must alias /ubuntu/ to selective current without blocking by-hash
         nginx = open(os.path.join(ROOT, "templates", "nginx.conf"), encoding="utf-8").read()
         self.assertIn("location /ubuntu/", nginx)
-        self.assertIn("alias /var/spool/apt-mirror/mirror/archive.ubuntu.com/ubuntu/", nginx)
+        self.assertIn(
+            "alias /var/spool/apt-mirror/selective/current/ubuntu/", nginx
+        )
         self.assertNotIn("by-hash", nginx)  # no special rewrite needed
 
     def test_15_discovery_byhash_url_shapes_supported(self):

@@ -22,12 +22,14 @@ trap 'rm -rf "$TMP"' EXIT
 export UM_QUIET_LOAD=1
 um_load_config "${ROOT}/mirror.conf"
 
-# Isolate state/logs into temp dirs
+# Isolate state/logs into temp dirs (must override selective paths from mirror.conf
+# so host /var/spool/apt-mirror/selective READY cannot leak into fixtures).
 export UM_STATE_DIR="$TMP/state"
 export LOG_DIR="$TMP/logs"
 export APT_MIRROR_LOG="$TMP/apt-mirror.log"
 export UM_PROGRESS_JSONL="$TMP/logs/progress.jsonl"
 export BASE_PATH="$TMP/mirror-root"
+export SELECTIVE_MIRROR_ROOT="$TMP/mirror-root/selective"
 export DIST_ROOT="$TMP/mirror-root/dists"
 export UBUNTU_MIRROR_ROOT="$TMP/mirror-root"
 export INSTALL_BIN_DIR="$TMP/bin"
@@ -35,8 +37,10 @@ export STALL_THRESHOLD_SEC=600
 export WAITING_THRESHOLD_SEC=30
 UM_STALL_THRESHOLD_SEC=600
 UM_WAITING_THRESHOLD_SEC=30
+# Dashboard size/count fixtures exercise non-selective progress.jsonl fallbacks.
+export MIRROR_MODE="full"
 
-mkdir -p "$UM_STATE_DIR" "$LOG_DIR" "$BASE_PATH" "$DIST_ROOT" "$INSTALL_BIN_DIR"
+mkdir -p "$UM_STATE_DIR" "$LOG_DIR" "$BASE_PATH" "$DIST_ROOT" "$INSTALL_BIN_DIR" "$SELECTIVE_MIRROR_ROOT/state"
 # Pretend installed for lifecycle tests that need it
 touch "$TMP/mirror.list"
 # Override um_is_installed for isolated tests
@@ -71,12 +75,16 @@ pgrep() { [[ "$MOCK_PROCESS" -eq 1 ]]; }
 
 # ---------------------------------------------------------------------------
 echo "[test_install_sync_nonblocking]"
-if grep -q 'systemctl start --no-block apt-mirror.service' "${ROOT}/install.sh"; then
-  pass "Phase 6 uses systemctl start --no-block"
+# Selective install runs plan-selective only; materialize is started non-blocking
+# from the menu resume path (apt-mirror.service → materialize-selective).
+if grep -q 'plan-selective' "${ROOT}/install.sh" \
+  && grep -q 'systemctl start --no-block apt-mirror.service' "${ROOT}/lib/install-menu.sh"; then
+  pass "Phase 6 plan-selective + menu non-blocking materialize"
 else
-  fail "missing --no-block sync start"
+  fail "missing selective plan / --no-block materialize path"
 fi
-if grep -q 'um_attach_dashboard\|mirrorctl watch\|mirror-dashboard' "${ROOT}/install.sh"; then
+if grep -q 'um_attach_dashboard\|mirrorctl watch\|mirror-dashboard\|Watch Live Progress' \
+  "${ROOT}/install.sh" "${ROOT}/lib/install-menu.sh"; then
   pass "Phase 6 can attach dashboard"
 else
   fail "dashboard attach missing"

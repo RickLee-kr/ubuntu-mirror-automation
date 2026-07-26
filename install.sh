@@ -487,7 +487,10 @@ install_mgmt_tools() {
   um_install_file "${UM_PROJECT_ROOT}/scripts/lib/validate_selective_mirror.py" "${INSTALL_LIB_DIR}/validate_selective_mirror.py" 0644
   um_install_file "${UM_PROJECT_ROOT}/scripts/build-selective-mirror-plan.py" "${INSTALL_LIB_DIR}/build-selective-mirror-plan.py" 0644
   um_install_file "${UM_PROJECT_ROOT}/lib/upgrade-profile.sh" "${INSTALL_LIB_DIR}/upgrade-profile.sh" 0644
-  mkdir -p "${INSTALL_LIB_DIR}/templates"
+  mkdir -p "${INSTALL_LIB_DIR}/lib" "${INSTALL_LIB_DIR}/templates"
+  um_install_file "${UM_PROJECT_ROOT}/scripts/lib/dp-phase2-common.sh" "${INSTALL_LIB_DIR}/lib/dp-phase2-common.sh" 0644
+  um_install_file "${UM_PROJECT_ROOT}/scripts/download-dp-phase2-6.5.0.sh" "${INSTALL_LIB_DIR}/download-dp-phase2-6.5.0.sh" 0755
+  um_install_file "${UM_PROJECT_ROOT}/scripts/deploy-stage-dp-phase2-client-atomic.sh" "${INSTALL_LIB_DIR}/deploy-stage-dp-phase2-client-atomic.sh" 0755
   um_install_file "${UM_PROJECT_ROOT}/templates/nginx.conf" "${INSTALL_LIB_DIR}/templates/nginx.conf" 0644
   um_install_file "${UM_PROJECT_ROOT}/config/offline-upgrade-profile.json" "${INSTALL_CONF_DIR}/offline-upgrade-profile.json" 0644
   um_install_file "${UM_PROJECT_ROOT}/config/offline-upgrade-exceptions.json" "${INSTALL_CONF_DIR}/offline-upgrade-exceptions.json" 0644
@@ -500,7 +503,9 @@ install_mgmt_tools() {
     "${BASE_PATH}/selective/published" \
     "${BASE_PATH}/selective/state" \
     "${BASE_PATH}/selective/logs" \
-    "${BASE_PATH}/selective/keys"
+    "${BASE_PATH}/selective/keys" \
+    "${BASE_PATH}/dp-phase2" \
+    "${BASE_PATH}/client"
   # Ensure current pointer exists only after publish; do not expose staging.
   if [[ ! -e "${BASE_PATH}/selective/current" ]] && [[ -d "${BASE_PATH}/selective/published" ]]; then
     # Placeholder empty published tree is fine; nginx 404s until publish.

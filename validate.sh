@@ -565,6 +565,104 @@ check_legacy_releases() {
   rm -f "$out"
 }
 
+check_dp_phase2() {
+  # Separate from OS mirror READY checks. Missing Phase 2 => WARNING/PENDING only.
+  local enabled="${DP_PHASE2_ENABLED:-true}"
+  local ver="${DP_PHASE2_VERSION:-6.5.0}"
+  local root="${DP_PHASE2_ROOT:-${BASE_PATH}/dp-phase2}"
+  local current="${root}/${ver}/current"
+  local public_path="${DP_PHASE2_PUBLIC_PATH:-/dp-phase2/${ver}/}"
+  local stable="dp_bundle_${ver}-current.tar"
+
+  if [[ "$enabled" != "true" ]]; then
+    um_result PASS "DP Phase 2" "disabled in config"
+    return 0
+  fi
+
+  if [[ ! -L "$current" || ! -d "$current" ]]; then
+    um_result WARNING "DP Phase 2 pending" "current release missing at ${current}"
+    return 0
+  fi
+
+  um_result PASS "DP Phase 2 current" "$(readlink -f "$current" 2>/dev/null || readlink "$current")"
+
+  local required=(
+    aelladeb_py3_common.tar.gz
+    aelladeb_py3_common.tar.gz.sha1
+    aella-uvp-2404_6.5.0ubuntu1_amd64.deb
+    aella-uvp-2404_6.5.0ubuntu1_amd64.deb.sha1
+    bringup_py3_dp_after_os_upgrade.sh
+    bringup_py3_dp_after_os_upgrade.sh.sha1
+    images-6.5.0.list
+    images-6.5.0.tar
+    images-6.5.0.tar.sha256
+  )
+  local f missing=0
+  for f in "${required[@]}"; do
+    if [[ ! -f "${current}/files/${f}" ]]; then
+      missing=1
+      break
+    fi
+  done
+  if [[ "$missing" -eq 1 ]]; then
+    um_result FAIL "DP Phase 2 file count" "required files missing under ${current}/files"
+    return 0
+  fi
+  um_result PASS "DP Phase 2 file count" "9 files present"
+
+  # Checksums (first field only)
+  local ok_sum=1
+  local expected actual
+  expected="$(awk 'NF {print $1; exit}' "${current}/files/aelladeb_py3_common.tar.gz.sha1")"
+  actual="$(sha1sum "${current}/files/aelladeb_py3_common.tar.gz" | awk '{print $1}')"
+  [[ "${expected,,}" == "${actual,,}" ]] || ok_sum=0
+  expected="$(awk 'NF {print $1; exit}' "${current}/files/images-6.5.0.tar.sha256")"
+  actual="$(sha256sum "${current}/files/images-6.5.0.tar" | awk '{print $1}')"
+  [[ "${expected,,}" == "${actual,,}" ]] || ok_sum=0
+  if [[ "$ok_sum" -ne 1 ]]; then
+    um_result FAIL "DP Phase 2 checksums" "ACPS checksum mismatch"
+  else
+    um_result PASS "DP Phase 2 checksums" "sha1/sha256 OK"
+  fi
+
+  if [[ -f "${current}/${stable}" && -f "${current}/${stable}.sha256" ]]; then
+    expected="$(awk 'NF {print $1; exit}' "${current}/${stable}.sha256")"
+    actual="$(sha256sum "${current}/${stable}" | awk '{print $1}')"
+    local tar_lines
+    tar_lines="$(tar -tf "${current}/${stable}" 2>/dev/null | wc -l | tr -d ' ')"
+    if [[ "${expected,,}" == "${actual,,}" && "$tar_lines" == "9" ]]; then
+      um_result PASS "DP Phase 2 bundle" "${stable} sha256 OK entries=9"
+    else
+      um_result FAIL "DP Phase 2 bundle" "sha256 or tar list invalid"
+    fi
+  else
+    um_result FAIL "DP Phase 2 bundle" "stable bundle missing"
+  fi
+
+  # HTTP checks (operational prefers live; install still probes lightly)
+  local base="${MIRROR_URL}${public_path}"
+  base="${base%/}"
+  local code
+  code="$(curl -sS -o /dev/null --max-time "${HTTP_TIMEOUT_SEC:-10}" -w '%{http_code}' "${base}/release.env" 2>/dev/null || true)"
+  [[ -z "$code" ]] && code="000"
+  if [[ "$code" == "200" ]]; then
+    local code2 code3
+    code2="$(curl -sS -o /dev/null --max-time "${HTTP_TIMEOUT_SEC:-10}" -w '%{http_code}' "${base}/${stable}.sha256" 2>/dev/null || true)"
+    code3="$(curl -sS -o /dev/null --max-time "${HTTP_TIMEOUT_SEC:-10}" -I -w '%{http_code}' "${base}/${stable}" 2>/dev/null || true)"
+    if [[ "$code2" == "200" && ( "$code3" == "200" || "$code3" == "206" ) ]]; then
+      um_result PASS "DP Phase 2 HTTP" "${base}/ OK"
+    else
+      um_result FAIL "DP Phase 2 HTTP" "release.env=200 but bundle/sidecar HTTP ${code2}/${code3}"
+    fi
+  else
+    if [[ "$UM_MODE" == "install" ]]; then
+      um_result WARNING "DP Phase 2 HTTP" "PENDING (HTTP ${code})"
+    else
+      um_result FAIL "DP Phase 2 HTTP" "HTTP ${code} for ${base}/release.env"
+    fi
+  fi
+}
+
 main() {
   parse_args "$@"
   um_setup_trap
@@ -600,10 +698,12 @@ main() {
     check_legacy_releases
     check_logs
     check_health
+    check_dp_phase2
   else
     # install mode: report sync as pending, never FAIL solely for missing dists
     check_ubuntu_versions
     check_logs
+    check_dp_phase2
   fi
 
   if [[ "$UM_QUIET" != "1" ]]; then

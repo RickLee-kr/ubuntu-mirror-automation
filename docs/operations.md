@@ -169,6 +169,20 @@ Phase 1 enables and validates **Ubuntu OS hops only** using the offline selectiv
 - DP product install is **not** required. An uninstalled DP image (no `aella.role`, `installed=false`, no product containers) is a valid Phase 1 input.
 - Product version/topology may be logged as diagnostics (`DP_*_GATE=SKIPPED_PHASE1_OS_ONLY`) but never hard-fail Phase 1.
 - Phase 1 success = Ubuntu 24.04 boots with OS health PASS — not DP UI/service health.
+- On **Jammy (22.04)** intermediate hops, DP runtime / `aella_cli` unavailability and the known kubelet Docker API 1.40 vs daemon 1.44 mismatch are **expected** and must **not** abort Phase 1. Do not repair kubelet/Docker/containerd/Kubernetes in Phase 1.
+- After **Noble (24.04)** OS validation, create a **powered-off** VM snapshot before Phase 2. Phase 2 does **not** auto-start.
+
+### Phase 2 mirror apply (SSH-safe interactive wrapper)
+
+`scripts/apply-dp-phase2-production.sh` never kills SSH. A trailing `exit "$rc"` in an interactive login shell **will** close the SSH session — that is wrapper misuse, not script behavior.
+
+```bash
+cd /home/aella/ubuntu-mirror-automation && {
+  sudo bash scripts/apply-dp-phase2-production.sh
+  rc=$?
+  printf '\nAPPLY_DP_PHASE2_EXIT_CODE=%s\n' "$rc"
+}
+```
 
 ### Xenial → Bionic hop client (`UPGRADE_MODE=OS_ONLY_PHASE1`)
 

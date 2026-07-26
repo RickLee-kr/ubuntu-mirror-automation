@@ -49,7 +49,7 @@
   "plan_checksum": "8eb3d478e2d40e7a19510239fcbf6e2e6824b2587e6e7172d60ef01e8920b157",
   "discovery_checksum": "d08f76a4e87bbaabc82b2aea3f552d26b9ece53be83735a74dffdfd70a816b56",
   "confirm_phrase": "UPGRADE-JAMMY-TO-NOBLE",
-  "generated_at": "2026-07-24T11:49:14Z",
+  "generated_at": "2026-07-26T17:03:35Z",
   "announcements": {
     "ReleaseAnnouncement": "d1e82d2e770663b63ac99b39e3aa436dfb731139c67163db44392b93284efd63",
     "ReleaseAnnouncement.html": "e71d14df093ce5e457f7c3ba89c5a0264b0202b1ca72f4203a35b2ead64988b3"
