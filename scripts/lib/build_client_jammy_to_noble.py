@@ -37,6 +37,32 @@ EXTERNAL_HOST_RE = re.compile(
 UNSIGNED_TEST_MARKER = "UNSIGNED" + "_TEST"
 PRODUCTION_CLIENT_REL = os.path.join("artifacts", "client")
 UNSIGNED_TEST_CLIENT_REL = os.path.join("artifacts", "client-unsigned-test")
+POSTBOOT_POLICY_REL = os.path.join(
+    "client", "dp-postboot-readiness-policy.sh.inc"
+)
+POSTBOOT_POLICY_REQUIRED_MARKERS = (
+    "check_and_repair_dns_resolver()",
+    "DNS_RESOLVER_STATE=",
+    "DNS_RESOLVER_REPAIR=",
+    "DNS_SERVERS_CONFIGURED=",
+    "DNS_NAME_RESOLUTION=",
+    "check_time_readiness()",
+    "TIME_READINESS=",
+    "CLOCK_SKEW_SECONDS=",
+    "MAX_CLOCK_SKEW_SECONDS=",
+    "NTP_SOURCE_CLASS=",
+    "NTP_SELECTED_PEER=",
+    "BRINGUP_READY=",
+    "BRINGUP_EXECUTED=\"NO\"",
+    "-fsSI --connect-timeout 5 --max-time 10",
+    "WARNING: no internal NTP source detected; continuing because local clock readiness passed",
+)
+POSTBOOT_POLICY_FORBIDDEN_RE = re.compile(
+    r"(^|[^A-Za-z0-9_])(ifdown|ifup|reboot)([^A-Za-z0-9_]|$)|"
+    r"systemctl\s+(restart|try-restart)\s+(networking|NetworkManager|systemd-networkd)|"
+    r"bringup_py3_dp_after_os_upgrade",
+    re.I | re.M,
+)
 CLIENT_SIGNING_PRIV_REL = os.path.join(
     "config", "client-signing", "offline-client-manifest.private.gpg"
 )
@@ -65,6 +91,30 @@ FORBIDDEN_F2J_RESIDUAL_RE = re.compile(
 
 class BuildError(Exception):
     pass
+
+
+def assert_postboot_policy_contract(label, text):
+    missing = [marker for marker in POSTBOOT_POLICY_REQUIRED_MARKERS if marker not in text]
+    if missing:
+        raise BuildError(
+            "{} missing postboot policy markers: {}".format(label, ", ".join(missing))
+        )
+    if POSTBOOT_POLICY_FORBIDDEN_RE.search(text):
+        raise BuildError(
+            "{} contains a forbidden network restart, reboot, or bringup action".format(label)
+        )
+    if re.search(r"(^|[^0-9])8\.8\.8\.8([^0-9]|$)", text):
+        raise BuildError("{} hardcodes a public DNS address".format(label))
+
+
+def load_postboot_policy(project_root):
+    path = os.path.join(project_root, POSTBOOT_POLICY_REL)
+    if not os.path.isfile(path):
+        raise BuildError("postboot policy not found: {}".format(path))
+    with open(path, "r", encoding="utf-8", errors="strict") as fh:
+        text = fh.read()
+    assert_postboot_policy_contract("postboot policy", text)
+    return text.rstrip("\n")
 
 
 def sha256_bytes(data):
@@ -639,6 +689,7 @@ def main(argv=None):
     )
     if not os.path.isfile(template):
         raise BuildError("template not found: {}".format(template))
+    postboot_policy = load_postboot_policy(project_root)
 
     key_path = os.path.join(selective_root, "keys", "ubuntu-mirror-selective.gpg")
     ready_path = os.path.join(selective_root, "state", "READY")
@@ -906,9 +957,12 @@ def main(argv=None):
         "ANNOUNCEMENT_B64": ann_b64_wrapped,
         "GENERATED_AT": generated_at,
         "PROFILE_NAME": PROFILE_NAME,
+        "POSTBOOT_POLICY_LIB": postboot_policy,
     }
 
     script_body = render_script(template, replacements)
+    if "@@POSTBOOT_POLICY_LIB@@" in script_body:
+        raise BuildError("postboot policy placeholder was not rendered")
     assert_no_f2j_residuals("rendered script", script_body)
     assert_no_f2j_residuals("meta-release", meta_text)
     if fingerprint.upper() != REPOSITORY_SIGNER_FINGERPRINT:

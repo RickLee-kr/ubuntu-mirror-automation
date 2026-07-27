@@ -39,6 +39,8 @@ TEST_LIST=(
   test_destructive_confirmation.sh
   test_phase1_finalize.sh
   test_ntp_pre_transition_quiesce.sh
+  test_ntp_dns_postboot_policy.sh
+  test_dns_time_readiness_policy.sh
   test_dp_offline_upgrade_xenial_to_bionic.sh
   test_dp_offline_upgrade_bionic_to_focal.sh
   test_dp_offline_upgrade_focal_to_jammy.sh

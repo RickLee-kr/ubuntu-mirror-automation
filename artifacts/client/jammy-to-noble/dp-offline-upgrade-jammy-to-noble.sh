@@ -30,10 +30,10 @@ PIN_UPGRADER_TAR_SHA256='447f54cbdfb9f57d32ddb02fcf0a0abb0184059cc0f680e806d2337
 PIN_UPGRADER_GPG_SHA256='7af99394662fe6d9fbe4ba7f6efd4818f5594e82e553aaaf659144a80ff53bfe'
 PIN_PLAN_CHECKSUM='8eb3d478e2d40e7a19510239fcbf6e2e6824b2587e6e7172d60ef01e8920b157'
 PIN_DISCOVERY_CHECKSUM='d08f76a4e87bbaabc82b2aea3f552d26b9ece53be83735a74dffdfd70a816b56'
-PIN_MANIFEST_SHA256='e9a0a514cbeb8fe7edc827a6401bfccd05b04414968edeb359e892663d3e58c2'
+PIN_MANIFEST_SHA256='ddb404e98235095ea2ac3eecbd41d271b1addfa72b6536121a1f1e05b5864c91'
 PIN_SAMPLE_DEB_URL='http://221.139.249.111/hops/jammy-to-noble/ubuntu/pool/main/a/accountsservice/accountsservice_23.13.9-2ubuntu6_amd64.deb'
 PIN_CONFIRM_PHRASE='UPGRADE-JAMMY-TO-NOBLE'
-PIN_GENERATED_AT='2026-07-26T23:55:21Z'
+PIN_GENERATED_AT='2026-07-27T14:30:09Z'
 PIN_PROFILE_NAME='offline-upgrade-selective'
 
 PIN_KEY_B64='mQENBGpePjYBCAC4/mSayiOdnynQyEygHF0MQZazmNTgWm6REY3nOTTGeZz9KrVrGuncglQk56wg
@@ -116,20 +116,20 @@ bGFuX2NoZWNrc3VtIjogIjhlYjNkNDc4ZTJkNDBlN2ExOTUxMDIzOWZjYmY2ZTJlNjgyNGIyNTg3
 ZTZlNzE3MmQ2MGVmMDFlODkyMGIxNTciLAogICJkaXNjb3ZlcnlfY2hlY2tzdW0iOiAiZDA4Zjc2
 YTRlODdiYmFhYmM4MmIyYWVhM2Y1NTJkMjZiOWVjZTUzYmU4MzczNWE3NGRmZmRmZDcwYTgxNmI1
 NiIsCiAgImNvbmZpcm1fcGhyYXNlIjogIlVQR1JBREUtSkFNTVktVE8tTk9CTEUiLAogICJnZW5l
-cmF0ZWRfYXQiOiAiMjAyNi0wNy0yNlQyMzo1NToyMVoiLAogICJhbm5vdW5jZW1lbnRzIjogewog
+cmF0ZWRfYXQiOiAiMjAyNi0wNy0yN1QxNDozMDowOVoiLAogICJhbm5vdW5jZW1lbnRzIjogewog
 ICAgIlJlbGVhc2VBbm5vdW5jZW1lbnQiOiAiZDFlODJkMmU3NzA2NjNiNjNhYzk5YjM5ZTNhYTQz
 NmRmYjczMTEzOWM2NzE2M2RiNDQzOTJiOTMyODRlZmQ2MyIsCiAgICAiUmVsZWFzZUFubm91bmNl
 bWVudC5odG1sIjogImU3MWQxNGRmMDkzY2U1ZTQ1N2Y3YzNiYTg5YzVhMDI2NGIwMjAyYjFjYTcy
 ZjQyMDNhMzViMmVhZDY0OTg4YjMiCiAgfQp9Cg=='
 PIN_MANIFEST_SIG_B64='LS0tLS1CRUdJTiBQR1AgU0lHTkFUVVJFLS0tLS0KCmlRRXpCQUFCQ2dBZEZpRUV4NGIrbUljcERp
-ejNXU2NkL2RPTDZWanF2VW9GQW1wbW5ta0FDZ2tRL2RPTDZWanEKdlVwTUpBZjlHV29IUFlZM3Ju
-S0pCK0JIZDB0QllHYS9TNmxSN1lGNnhieEEyNjljUVMyMTFDY050Ym1yc0E4TwpubkV2VUpQVy9P
-OGNiamxjUGdhRTkzQ0Z5YmR5Smo4RUpCRUw4NUwvSEhGeUc2bXZpbThhUHRsQlJDWGxTZzlMCmdL
-WWJNblRubm1TRFc1T1dOUGQwM3VtTWFGdEk0bVp2TU1YeUxqSGtQOE0xOWpJM3pCUnhhMnE5L0ZE
-R2RtNGoKOHJJdytIVUVyYWNSTDJQZmpYL0FCTzFRQ1pKV0lHS3lBVnBCOTdpN242dTlveERaczlN
-eFFGM1drNmM1Z2liMAozYjBFTjhLTWZ2SUZmbm1XYTBWekVtWThBTTVFK2ZFcDB5aHpETmZ2WlhN
-Slpla2tnSVRreE5oSzBzMnZ1VWgxCjhhckIwMjIrYnVFSDJYSHV1OUIzQXpTYlMzNEE0UT09Cj01
-SFdjCi0tLS0tRU5EIFBHUCBTSUdOQVRVUkUtLS0tLQo='
+ejNXU2NkL2RPTDZWanF2VW9GQW1wbmEzRUFDZ2tRL2RPTDZWanEKdlVyUFBnZi9TUHd5M0JGZDEy
+VjJaaStmcGlGS0lDQXBMcUQ1YlZUM1ZCenlLc1lvY1ZPQTA1MmJ4VGwzZ2hUNAp5eVJwN1ovT0E4
+OVRRQ2RHeHFxc0YvYnFoeTFlNFVyYjlYelE4TWt3MU5wbG5OMjRJWkROQzgyemVKM0M0WXlBCmd4
+Q0g1R09qbng4anZ4cE1jNGczN2ZNVzBLM1pwbEZpbXVnc1FpTWFYd1BacWE4RGZlUXFlSWJNQnZH
+R2I0c0MKY245VGlXRDgwMkFMc3BoN2VOcDJORURBSk4vL3BvOUlNbktMSkorQXF0Wk9WZGlpMFZq
+SFlPNFhWcGdvVkx1eApsL3FyQlNndzZSYkRHVnBiS2ZTQ1RNWUFDaitySHo1TjBJSGZMNXVYZ2k0
+RTFUTEpkME1GYjVaZnBQSDljd3FPCnk2d3lpQmp3c3M4RlFyNXV0bGprOUF3ZTNMYjRFUT09Cj1M
+ODB1Ci0tLS0tRU5EIFBHUCBTSUdOQVRVUkUtLS0tLQo='
 PIN_ANNOUNCEMENT_B64='PSBXZWxjb21lIHRvIFVidW50dSAyNC4wNCBMVFMgJ05vYmxlIE51bWJhdCcgPQoKVGhlIFVidW50
 dSB0ZWFtIGlzIHByb3VkIHRvIGFubm91bmNlIFVidW50dSAyNC4wNCBMVFMgJ05vYmxlIE51bWJh
 dCcuCgpUbyBzZWUgd2hhdCdzIG5ldyBpbiB0aGlzIHJlbGVhc2UsIHZpc2l0OgogIGh0dHBzOi8v
@@ -215,6 +215,8 @@ DETACH_AFTER_HANDOFF=0
 MONITOR_POLL_SECS="${DP_OFFLINE_MONITOR_POLL_SECS:-3}"
 MONITOR_HEARTBEAT_SECS="${DP_OFFLINE_MONITOR_HEARTBEAT_SECS:-15}"
 MONITOR_RECENT_LINES="${DP_OFFLINE_MONITOR_RECENT_LINES:-15}"
+# Local-clock hard gate threshold used by Noble postboot validation.
+DP_MAX_CLOCK_SKEW_SECONDS="${DP_MAX_CLOCK_SKEW_SECONDS:-300}"
 MONITOR_INTERRUPTED=0
 MONITOR_EXIT_REASON=""
 MONITOR_LOG_OFFSET=0
@@ -2057,8 +2059,50 @@ detect_dp_install_state() {
   DP_INSTALL_STATE="UNKNOWN"
 }
 
+persist_source_product_env() {
+  # Persist source DP product version for Phase 2 (do not overwrite an existing PASS record).
+  local dest raw norm origin check captured
+  dest="$(hostpath ${STATE_ROOT}/source-product.env)"
+  mkdir -p "$(dirname "$dest")"
+  if [[ -f "$dest" ]] && grep -qE '^SOURCE_DP_VERSION_CHECK=PASS$' "$dest" 2>/dev/null; then
+    log INFO "SOURCE_PRODUCT_ENV=REUSED path=${STATE_ROOT}/source-product.env"
+    return 0
+  fi
+  raw="${DP_VERSION:-}"
+  origin="${DP_VERSION_SOURCE:-undetermined}"
+  captured="$(utc_now)"
+  if [[ -n "$raw" ]] && version_is_mmp "$raw"; then
+    norm="$raw"
+    check="PASS"
+    if dpkg --compare-versions "$norm" lt "${MIN_DP_VERSION:-6.2.0}" 2>/dev/null; then
+      check="FAIL_UNSUPPORTED"
+    fi
+  else
+    raw=""
+    norm="UNKNOWN"
+    check="FAIL_UNKNOWN"
+    origin="${origin:-none}"
+  fi
+  cat >"$dest" <<EOF
+SOURCE_DP_VERSION_RAW=${raw}
+SOURCE_DP_VERSION=${norm}
+SOURCE_DP_VERSION_ORIGIN=${origin}
+SOURCE_DP_VERSION_CAPTURED_AT=${captured}
+MIN_SUPPORTED_SOURCE_DP_VERSION=${MIN_DP_VERSION:-6.2.0}
+SOURCE_DP_VERSION_CHECK=${check}
+EOF
+  sync
+  log INFO "SOURCE_PRODUCT_ENV=WRITTEN check=${check} version=${norm} path=${STATE_ROOT}/source-product.env"
+  # Phase 1 remains OS-only: do not hard-stop here. Phase 2 staging enforces
+  # MIN_SUPPORTED_SOURCE_DP_VERSION using this persisted evidence.
+  if [[ "$check" == "FAIL_UNSUPPORTED" ]]; then
+    log WARN "SOURCE_DP_VERSION_CHECK=FAIL_UNSUPPORTED source=${norm} min=${MIN_DP_VERSION:-6.2.0} (Phase 2 will refuse; Phase 1 OS-only continues)"
+  fi
+}
+
 log_product_state_phase1() {
-  # Diagnostic-only product probe. Never dies; never invents AIO/role files.
+  # Diagnostic-only product probe. Never invents AIO/role files.
+  # Persists source-product.env for Phase 2 (hard gate is enforced in Phase 2 staging).
   local role dpver
   DP_INSTALL_STATE="UNKNOWN"
   detect_dp_install_state || true
@@ -2070,6 +2114,8 @@ log_product_state_phase1() {
 
   dpver="${DP_VERSION:-}"
   role="${DP_TOPOLOGY:-}"
+
+  persist_source_product_env
 
   log INFO "DP_INSTALL_STATE=${DP_INSTALL_STATE}"
   log INFO "DP_PRODUCT_STATE_ACTION=IGNORED_BY_PHASE1_POLICY"
@@ -3873,10 +3919,12 @@ run_os_preflight() {
   # before any temporary/host-visible apt-get update.
   ensure_source_gate_safe_for_preflight
 
-  # NTP / time - informational only if unsynchronized
+  # NTP / time — informational only in OS preflight (not a Phase 1 hard gate).
+  # Postboot applies TIME_READINESS skew/unverifiable gates; sync-only never blocks Phase 1 alone.
   if command -v timedatectl >/dev/null 2>&1; then
     if ! timedatectl status 2>/dev/null | grep -qiE 'NTP synchronized: yes|System clock synchronized: yes'; then
       log INFO "NTP_SYNC=UNCONFIRMED (informational; not a Phase 1 hard gate)"
+      log INFO "TIME_READINESS=PREFLIGHT_INFORMATIONAL_ONLY"
     fi
   fi
 
@@ -6019,6 +6067,621 @@ change_login_shells() {
   done
 }
 
+# =============================================================================
+# BEGIN_DP_POSTBOOT_DNS_TIME_POLICY
+# Jammy→Noble postboot DNS resolver repair + time readiness (Phase 1).
+# Build-time inlined from client/dp-postboot-readiness-policy.sh.inc by
+# scripts/lib/build_client_jammy_to_noble.py into the single-file client.
+# Target DP must not require a separate include file at runtime.
+# Never hard-gates on missing internal NTP alone. Never restarts NICs / reboot / bringup.
+# =============================================================================
+
+#!/usr/bin/env bash
+# Shared postboot DNS resolver repair and local-clock readiness policy.
+# This file is inlined by build_client_jammy_to_noble.py into the generated
+# postboot helper. It is also directly sourceable by fixture tests.
+# shellcheck shell=bash
+
+DNS_RESOLVER_STATE="NOT_CHECKED"
+DNS_RESOLVER_REPAIR="NOT_ATTEMPTED"
+DNS_SERVERS_CONFIGURED="NONE"
+DNS_NAME_RESOLUTION="NOT_TESTED"
+TIME_READINESS="NOT_CHECKED"
+CLOCK_SKEW_SECONDS="UNKNOWN"
+MAX_CLOCK_SKEW_SECONDS="${DP_MAX_CLOCK_SKEW_SECONDS:-300}"
+NTP_SOURCE_CLASS="UNKNOWN"
+NTP_SELECTED_PEER="NONE"
+BRINGUP_READY="NO"
+NTP_BRINGUP_READINESS="NOT_CHECKED"
+BRINGUP_EXECUTED="NO"
+
+DP_POSTBOOT_TEST_ROOT="${DP_POSTBOOT_TEST_ROOT:-}"
+SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
+RESOLVECTL_BIN="${RESOLVECTL_BIN:-resolvectl}"
+GETENT_BIN="${GETENT_BIN:-getent}"
+CURL_BIN="${CURL_BIN:-curl}"
+NTPQ_BIN="${NTPQ_BIN:-ntpq}"
+NTPWAIT_BIN="${NTPWAIT_BIN:-ntpwait}"
+TIMEDATECTL_BIN="${TIMEDATECTL_BIN:-timedatectl}"
+
+postboot_policy_log() {
+  local level="$1"; shift
+  if declare -F log >/dev/null 2>&1; then
+    log "$level" "$*"
+  else
+    printf '%s: %s\n' "$level" "$*"
+  fi
+}
+
+dns_hp() {
+  local p="$1"
+  if [[ -n "${DP_POSTBOOT_TEST_ROOT:-}" ]]; then
+    printf '%s%s' "${DP_POSTBOOT_TEST_ROOT%/}" "$p"
+  else
+    printf '%s' "$p"
+  fi
+}
+
+dns_is_valid_ipv4() {
+  local ip="${1:-}" a b c d octet
+  IFS=. read -r a b c d <<<"$ip"
+  [[ -n "$a" && -n "$b" && -n "$c" && -n "$d" && "$ip" != *.*.*.*.* ]] || return 1
+  for octet in "$a" "$b" "$c" "$d"; do
+    [[ "$octet" =~ ^[0-9]{1,3}$ ]] || return 1
+    ((10#$octet >= 0 && 10#$octet <= 255)) || return 1
+  done
+}
+
+dedup_valid_ipv4_words() {
+  local word
+  for word in "$@"; do
+    dns_is_valid_ipv4 "$word" && printf '%s\n' "$word"
+  done | awk '!seen[$0]++'
+}
+
+interfaces_dns_servers() {
+  local f
+  f="$(dns_hp /etc/network/interfaces)"
+  [[ -r "$f" ]] || return 0
+  awk '
+    /^[[:space:]]*#/ {next}
+    /^[[:space:]]*dns-nameservers[[:space:]]+/ {
+      sub(/^[[:space:]]*dns-nameservers[[:space:]]+/, "")
+      print
+    }
+  ' "$f" | tr ' \t' '\n' | awk 'NF'
+}
+
+resolv_conf_dns_servers() {
+  local f
+  f="$(dns_hp /etc/resolv.conf)"
+  [[ -r "$f" ]] || return 0
+  awk '
+    /^[[:space:]]*#/ {next}
+    /^[[:space:]]*nameserver[[:space:]]+/ {print $2}
+  ' "$f"
+}
+
+configured_ntp_hostname() {
+  local f token
+  f="$(dns_hp /etc/ntpsec/ntp.conf)"
+  [[ -r "$f" ]] || return 1
+  while IFS= read -r token; do
+    [[ -n "$token" ]] || continue
+    if ! dns_is_valid_ipv4 "$token" && [[ "$token" != "localhost" && "$token" != "::1" ]]; then
+      printf '%s' "$token"
+      return 0
+    fi
+  done < <(awk '
+    /^[[:space:]]*#/ {next}
+    /^[[:space:]]*(server|pool)[[:space:]]+/ {print $2}
+  ' "$f")
+  return 1
+}
+
+check_dns_name_resolution() {
+  local host="${1:-}"
+  [[ -n "$host" ]] || host="$(configured_ntp_hostname 2>/dev/null || true)"
+  [[ -n "$host" ]] || host="${DP_DNS_VALIDATION_HOSTNAME:-archive.ubuntu.com}"
+  if "$GETENT_BIN" ahosts "$host" >/dev/null 2>&1; then
+    DNS_NAME_RESOLUTION="PASS"
+    postboot_policy_log INFO "DNS_VALIDATION_HOSTNAME=${host}"
+    return 0
+  fi
+  DNS_NAME_RESOLUTION="FAIL"
+  postboot_policy_log INFO "DNS_VALIDATION_HOSTNAME=${host}"
+  return 1
+}
+
+resolver_service_state() {
+  local enabled active
+  enabled="$("$SYSTEMCTL_BIN" is-enabled systemd-resolved 2>/dev/null || true)"
+  enabled="$(printf '%s\n' "$enabled" | awk 'NF{print; exit}')"
+  active="$("$SYSTEMCTL_BIN" is-active systemd-resolved 2>/dev/null || true)"
+  active="$(printf '%s\n' "$active" | awk 'NF{print; exit}')"
+  printf '%s|%s' "${enabled:-unknown}" "${active:-unknown}"
+}
+
+resolved_uses_one_configured_dns() {
+  local servers_csv="$1" output ip
+  output="$("$RESOLVECTL_BIN" dns 2>/dev/null || true)"
+  IFS=, read -ra _dns_array <<<"$servers_csv"
+  for ip in "${_dns_array[@]}"; do
+    [[ -n "$ip" ]] || continue
+    if printf '%s\n' "$output" | grep -Fq -- "$ip"; then
+      return 0
+    fi
+  done
+  local upstream
+  upstream="$(dns_hp /run/systemd/resolve/resolv.conf)"
+  if [[ -r "$upstream" ]]; then
+    for ip in "${_dns_array[@]}"; do
+      grep -Eq "^[[:space:]]*nameserver[[:space:]]+${ip//./\.}([[:space:]]|$)" "$upstream" && return 0
+    done
+  fi
+  return 1
+}
+
+restore_resolved_service_state() {
+  local prior_enabled="$1" prior_active="$2"
+  "$SYSTEMCTL_BIN" stop systemd-resolved >/dev/null 2>&1 || true
+  case "$prior_enabled" in
+    masked)
+      "$SYSTEMCTL_BIN" disable systemd-resolved >/dev/null 2>&1 || true
+      "$SYSTEMCTL_BIN" mask systemd-resolved >/dev/null 2>&1 || true
+      ;;
+    enabled|enabled-runtime|static|indirect)
+      "$SYSTEMCTL_BIN" unmask systemd-resolved >/dev/null 2>&1 || true
+      "$SYSTEMCTL_BIN" enable systemd-resolved >/dev/null 2>&1 || true
+      ;;
+    *)
+      "$SYSTEMCTL_BIN" unmask systemd-resolved >/dev/null 2>&1 || true
+      "$SYSTEMCTL_BIN" disable systemd-resolved >/dev/null 2>&1 || true
+      ;;
+  esac
+  if [[ "$prior_active" == "active" ]]; then
+    "$SYSTEMCTL_BIN" start systemd-resolved >/dev/null 2>&1 || true
+  fi
+}
+
+emit_dns_result() {
+  postboot_policy_log INFO "DNS_RESOLVER_STATE=${DNS_RESOLVER_STATE}"
+  postboot_policy_log INFO "DNS_RESOLVER_REPAIR=${DNS_RESOLVER_REPAIR}"
+  postboot_policy_log INFO "DNS_SERVERS_CONFIGURED=${DNS_SERVERS_CONFIGURED}"
+  postboot_policy_log INFO "DNS_NAME_RESOLUTION=${DNS_NAME_RESOLUTION}"
+}
+
+check_and_repair_dns_resolver() {
+  local resolv raw_target canonical stub interfaces state_pair enabled active
+  local dns_lines dns_csv dropin_dir dropin tmp backup had_dropin=0
+  local repair_ok=1 current_active
+  DNS_RESOLVER_STATE="NOT_CHECKED"
+  DNS_RESOLVER_REPAIR="NOT_ATTEMPTED"
+  DNS_SERVERS_CONFIGURED="NONE"
+  DNS_NAME_RESOLUTION="NOT_TESTED"
+
+  resolv="$(dns_hp /etc/resolv.conf)"
+  stub="$(dns_hp /run/systemd/resolve/stub-resolv.conf)"
+  interfaces="$(dns_hp /etc/network/interfaces)"
+
+  if [[ -f "$resolv" && ! -L "$resolv" ]]; then
+    dns_lines="$(resolv_conf_dns_servers | while read -r ip; do dns_is_valid_ipv4 "$ip" && echo "$ip"; done | awk '!seen[$0]++')"
+    if [[ -n "$dns_lines" ]]; then
+      DNS_RESOLVER_STATE="HEALTHY_STATIC"
+      DNS_RESOLVER_REPAIR="NOT_REQUIRED"
+      DNS_SERVERS_CONFIGURED="$(printf '%s\n' "$dns_lines" | paste -sd, -)"
+      check_dns_name_resolution || true
+      emit_dns_result
+      return 0
+    fi
+    DNS_RESOLVER_STATE="BROKEN_STATIC"
+    DNS_RESOLVER_REPAIR="FAIL"
+    check_dns_name_resolution || true
+    emit_dns_result
+    return 1
+  fi
+
+  if [[ -L "$resolv" ]]; then
+    raw_target="$(readlink "$resolv" 2>/dev/null || true)"
+    canonical="$(readlink -f "$resolv" 2>/dev/null || true)"
+    if [[ "$canonical" == "$stub" && -f "$stub" ]]; then
+      if check_dns_name_resolution; then
+        DNS_RESOLVER_STATE="HEALTHY_SYSTEMD_RESOLVED"
+        DNS_RESOLVER_REPAIR="NOT_REQUIRED"
+        dns_lines="$(interfaces_dns_servers | while read -r ip; do dns_is_valid_ipv4 "$ip" && echo "$ip"; done | awk '!seen[$0]++')"
+        [[ -n "$dns_lines" ]] && DNS_SERVERS_CONFIGURED="$(printf '%s\n' "$dns_lines" | paste -sd, -)"
+        emit_dns_result
+        return 0
+      fi
+      DNS_RESOLVER_STATE="BROKEN_SYSTEMD_RESOLVED"
+      DNS_RESOLVER_REPAIR="FAIL"
+      emit_dns_result
+      return 1
+    fi
+
+    state_pair="$(resolver_service_state)"
+    enabled="${state_pair%%|*}"
+    active="${state_pair#*|}"
+    if [[ "$raw_target" == "../run/systemd/resolve/stub-resolv.conf" && ! -e "$stub" \
+          && ( "$enabled" == "masked" || "$active" != "active" ) ]]; then
+      dns_lines="$(interfaces_dns_servers | while read -r ip; do dns_is_valid_ipv4 "$ip" && echo "$ip"; done | awk '!seen[$0]++')"
+      if [[ -z "$dns_lines" ]]; then
+        DNS_RESOLVER_STATE="BROKEN_SYSTEMD_RESOLVED"
+        DNS_RESOLVER_REPAIR="FAIL"
+        DNS_SERVERS_CONFIGURED="NONE"
+        DNS_NAME_RESOLUTION="NOT_TESTED"
+        postboot_policy_log ERROR "ERROR: broken systemd-resolved stub link and no valid dns-nameservers in ${interfaces}"
+        emit_dns_result
+        return 1
+      fi
+      dns_csv="$(printf '%s\n' "$dns_lines" | paste -sd, -)"
+      DNS_SERVERS_CONFIGURED="$dns_csv"
+      dropin_dir="$(dns_hp /etc/systemd/resolved.conf.d)"
+      dropin="${dropin_dir}/20-dp-static-dns.conf"
+      mkdir -p "$dropin_dir"
+      backup="${dropin}.rollback.$$"
+      if [[ -e "$dropin" ]]; then
+        cp -a "$dropin" "$backup"
+        had_dropin=1
+      fi
+      tmp="${dropin}.tmp.$$"
+      {
+        printf '[Resolve]\nDNS='
+        printf '%s\n' "$dns_lines" | paste -sd' ' -
+        printf 'FallbackDNS=\n'
+      } >"$tmp"
+      chmod 0644 "$tmp"
+      mv -f "$tmp" "$dropin"
+
+      "$SYSTEMCTL_BIN" unmask systemd-resolved >/dev/null 2>&1 || repair_ok=0
+      "$SYSTEMCTL_BIN" enable --now systemd-resolved >/dev/null 2>&1 || repair_ok=0
+
+      canonical="$(readlink -f "$resolv" 2>/dev/null || true)"
+      current_active="$("$SYSTEMCTL_BIN" is-active systemd-resolved 2>/dev/null || true)"
+      current_active="$(printf '%s\n' "$current_active" | awk 'NF {print; exit}')"
+      [[ "$current_active" == "active" ]] || repair_ok=0
+      [[ -f "$stub" ]] || repair_ok=0
+      [[ "$canonical" == "$stub" ]] || repair_ok=0
+      resolved_uses_one_configured_dns "$dns_csv" || repair_ok=0
+      check_dns_name_resolution || repair_ok=0
+
+      if [[ "$repair_ok" -eq 1 ]]; then
+        rm -f "$backup"
+        DNS_RESOLVER_STATE="RECOVERED_SYSTEMD_RESOLVED"
+        DNS_RESOLVER_REPAIR="PASS"
+        emit_dns_result
+        return 0
+      fi
+
+      rm -f "$dropin"
+      if [[ "$had_dropin" -eq 1 && -e "$backup" ]]; then
+        mv -f "$backup" "$dropin"
+      else
+        rm -f "$backup"
+      fi
+      restore_resolved_service_state "$enabled" "$active"
+      DNS_RESOLVER_STATE="BROKEN_SYSTEMD_RESOLVED"
+      DNS_RESOLVER_REPAIR="FAIL"
+      emit_dns_result
+      return 1
+    fi
+
+    DNS_RESOLVER_STATE="UNKNOWN_LAYOUT"
+    DNS_RESOLVER_REPAIR="NOT_ATTEMPTED"
+    postboot_policy_log WARN "DNS_RESOLVER_DIAGNOSTIC=symlink target=${raw_target:-unknown} canonical=${canonical:-missing} resolved_enabled=${enabled:-unknown} resolved_active=${active:-unknown}"
+    if check_dns_name_resolution; then
+      emit_dns_result
+      return 0
+    fi
+    emit_dns_result
+    return 1
+  fi
+
+  DNS_RESOLVER_STATE="UNKNOWN_LAYOUT"
+  DNS_RESOLVER_REPAIR="NOT_ATTEMPTED"
+  postboot_policy_log WARN "DNS_RESOLVER_DIAGNOSTIC=/etc/resolv.conf missing or unsupported layout"
+  if check_dns_name_resolution; then
+    emit_dns_result
+    return 0
+  fi
+  emit_dns_result
+  return 1
+}
+
+is_positive_integer() {
+  [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
+}
+
+is_valid_ipv4() {
+  local ip="${1:-}" a b c d octet
+  IFS=. read -r a b c d <<<"$ip"
+  [[ -n "$a" && -n "$b" && -n "$c" && -n "$d" ]] || return 1
+  [[ "$ip" != *.*.*.*.* ]] || return 1
+  for octet in "$a" "$b" "$c" "$d"; do
+    [[ "$octet" =~ ^[0-9]{1,3}$ ]] || return 1
+    ((10#$octet >= 0 && 10#$octet <= 255)) || return 1
+  done
+}
+
+ipv4_source_scope() {
+  local ip="$1" a b c d
+  is_valid_ipv4 "$ip" || { printf 'UNKNOWN'; return 1; }
+  IFS=. read -r a b c d <<<"$ip"
+  if ((a == 10)) || ((a == 172 && b >= 16 && b <= 31)) || ((a == 192 && b == 168)); then
+    printf 'INTERNAL'
+  elif ((a == 127)) || ((a == 169 && b == 254)) || ((a == 0)) || ((a >= 224)); then
+    printf 'IGNORED'
+  else
+    printf 'PUBLIC'
+  fi
+}
+
+normalize_ntp_source_token() {
+  local token="${1:-}"
+  token="${token#\*}"
+  token="${token#+}"
+  token="${token#-}"
+  token="${token#o}"
+  token="${token#x}"
+  token="${token#\#}"
+  token="${token#[}"
+  token="${token%]}"
+  token="${token%.}"
+  printf '%s' "$token"
+}
+
+classify_ntp_source_token() {
+  local token ip scope saw_public=0
+  token="$(normalize_ntp_source_token "${1:-}")"
+  [[ -n "$token" ]] || { printf 'UNKNOWN'; return 0; }
+  case "$token" in
+    LOCAL|LOCAL\(*|localhost|localhost.*|0.0.0.0|127.*|169.254.*|::1|fe80:*|FE80:*)
+      printf 'IGNORED'; return 0 ;;
+  esac
+  if is_valid_ipv4 "$token"; then
+    ipv4_source_scope "$token"
+    return 0
+  fi
+  if command -v "$GETENT_BIN" >/dev/null 2>&1; then
+    while IFS= read -r ip; do
+      [[ -n "$ip" ]] || continue
+      scope="$(ipv4_source_scope "$ip" 2>/dev/null || printf UNKNOWN)"
+      case "$scope" in
+        INTERNAL) printf 'INTERNAL'; return 0 ;;
+        PUBLIC) saw_public=1 ;;
+      esac
+    done < <("$GETENT_BIN" ahostsv4 "$token" 2>/dev/null | awk '{print $1}' | awk '!seen[$0]++')
+  fi
+  if [[ "$saw_public" -eq 1 ]]; then
+    printf 'PUBLIC'
+  else
+    printf 'UNKNOWN'
+  fi
+}
+
+classify_ntp_sources() {
+  local ntpq_text="${1:-}" token class have_internal=0 have_public=0
+  while IFS= read -r token; do
+    [[ -n "$token" ]] || continue
+    class="$(classify_ntp_source_token "$token")"
+    case "$class" in
+      INTERNAL) have_internal=1 ;;
+      PUBLIC) have_public=1 ;;
+    esac
+  done < <(
+    {
+      printf '%s\n' "$ntpq_text" | awk 'NR>2 && NF>=1 {print $1}'
+      if [[ -r "$(dns_hp /etc/ntpsec/ntp.conf)" ]]; then
+        awk '
+          /^[[:space:]]*#/ {next}
+          /^[[:space:]]*(server|pool)[[:space:]]+/ {print $2}
+        ' "$(dns_hp /etc/ntpsec/ntp.conf)"
+      fi
+    } | awk 'NF && !seen[$0]++'
+  )
+  if [[ "$have_internal" -eq 1 ]]; then
+    NTP_SOURCE_CLASS="INTERNAL"
+  elif [[ "$have_public" -eq 1 ]]; then
+    NTP_SOURCE_CLASS="PUBLIC"
+  else
+    NTP_SOURCE_CLASS="UNKNOWN"
+  fi
+}
+
+selected_ntp_peer_from_text() {
+  local text="${1:-}"
+  printf '%s\n' "$text" | awk 'NR>2 && $1 ~ /^\*/ {gsub(/^\*/, "", $1); print $1; exit}'
+}
+
+ntpq_clock_reference_from_text() {
+  local text="${1:-}"
+  printf '%s\n' "$text" | awk '
+    function abs(v) { return v < 0 ? -v : v }
+    NR > 2 && NF >= 9 {
+      remote=$1; reach=$7; off=$9
+      selected=(remote ~ /^\*/)
+      gsub(/^[*+#ox-]/, "", remote)
+      if (reach !~ /^[0-9]+$/ || reach == 0) next
+      if (off !~ /^[-+]?[0-9]+([.][0-9]+)?$/) next
+      a=abs(off)
+      if (selected && !have_sel) { sel=a; selpeer=remote; have_sel=1 }
+      if (!have_any || a < best) { best=a; bestpeer=remote; have_any=1 }
+    }
+    END {
+      if (have_sel) printf "%d|%s\n", int((sel + 999.999999) / 1000), selpeer
+      else if (have_any) printf "%d|%s\n", int((best + 999.999999) / 1000), bestpeer
+    }
+  '
+}
+
+http_date_clock_skew_seconds() {
+  local base_url="${1:-http://221.139.249.111}" headers date_value ref_epoch local_epoch delta
+  headers="$("$CURL_BIN" -fsSI --connect-timeout 5 --max-time 10 "$base_url" 2>/dev/null || true)"
+  date_value="$(printf '%s\n' "$headers" | awk 'BEGIN{IGNORECASE=1} /^Date:[[:space:]]*/ {sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}')"
+  [[ -n "$date_value" ]] || return 1
+  ref_epoch="$(LC_ALL=C date -u -d "$date_value" +%s 2>/dev/null || true)"
+  local_epoch="$(date -u +%s 2>/dev/null || true)"
+  [[ "$ref_epoch" =~ ^[0-9]+$ && "$local_epoch" =~ ^[0-9]+$ ]] || return 1
+  if ((local_epoch >= ref_epoch)); then delta=$((local_epoch-ref_epoch)); else delta=$((ref_epoch-local_epoch)); fi
+  printf '%s\n' "$delta"
+}
+
+run_ntpwait_probe() {
+  command -v "$NTPWAIT_BIN" >/dev/null 2>&1 || return 1
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 20 "$NTPWAIT_BIN" -n 1 -s 1 >/dev/null 2>&1
+  else
+    "$NTPWAIT_BIN" -n 1 -s 1 >/dev/null 2>&1
+  fi
+}
+
+check_time_readiness() {
+  local ntpq_text="" rv_text="" td="" ref="" skew="" ref_peer=""
+  TIME_READINESS="FAIL_TIME_UNVERIFIABLE"
+  CLOCK_SKEW_SECONDS="UNKNOWN"
+  MAX_CLOCK_SKEW_SECONDS="${DP_MAX_CLOCK_SKEW_SECONDS:-300}"
+  NTP_SOURCE_CLASS="UNKNOWN"
+  NTP_SELECTED_PEER="NONE"
+  BRINGUP_READY="NO"
+  NTP_BRINGUP_READINESS="FAIL"
+
+  if ! is_positive_integer "$MAX_CLOCK_SKEW_SECONDS"; then
+    postboot_policy_log ERROR "ERROR: DP_MAX_CLOCK_SKEW_SECONDS must be a positive integer"
+    return 1
+  fi
+
+  if command -v "$NTPQ_BIN" >/dev/null 2>&1; then
+    ntpq_text="$("$NTPQ_BIN" -pn 2>/dev/null || "$NTPQ_BIN" -p 2>/dev/null || true)"
+    rv_text="$("$NTPQ_BIN" rv 2>/dev/null || true)"
+  fi
+  NTP_SELECTED_PEER="$(selected_ntp_peer_from_text "$ntpq_text")"
+  [[ -n "$NTP_SELECTED_PEER" ]] || NTP_SELECTED_PEER="NONE"
+  classify_ntp_sources "$ntpq_text"
+
+  if run_ntpwait_probe; then
+    TIME_READINESS="PASS_SYNCED"
+    CLOCK_SKEW_SECONDS="0"
+    BRINGUP_READY="YES"
+    NTP_BRINGUP_READINESS="PASS"
+  elif [[ "$NTP_SELECTED_PEER" != "NONE" ]] && printf '%s\n' "$rv_text" | grep -Eq '(^|[[:space:],])leap=00([[:space:],]|$)'; then
+    TIME_READINESS="PASS_SYNCED"
+    CLOCK_SKEW_SECONDS="0"
+    BRINGUP_READY="YES"
+    NTP_BRINGUP_READINESS="PASS"
+  else
+    if command -v "$TIMEDATECTL_BIN" >/dev/null 2>&1; then
+      td="$("$TIMEDATECTL_BIN" status 2>/dev/null || "$TIMEDATECTL_BIN" 2>/dev/null || true)"
+    fi
+    if printf '%s\n' "$td" | grep -qiE 'System clock synchronized:[[:space:]]*yes'; then
+      TIME_READINESS="PASS_SYNCED"
+      CLOCK_SKEW_SECONDS="0"
+      BRINGUP_READY="YES"
+      NTP_BRINGUP_READINESS="PASS"
+    else
+      ref="$(ntpq_clock_reference_from_text "$ntpq_text" || true)"
+      if [[ -n "$ref" ]]; then
+        skew="${ref%%|*}"
+        ref_peer="${ref#*|}"
+        postboot_policy_log INFO "TIME_REFERENCE=NTP_PEER peer=${ref_peer}"
+      else
+        skew="$(http_date_clock_skew_seconds "${DP_TIME_REFERENCE_URL:-http://221.139.249.111}" || true)"
+        [[ -n "$skew" ]] && postboot_policy_log INFO "TIME_REFERENCE=HTTP_DATE url=${DP_TIME_REFERENCE_URL:-http://221.139.249.111}"
+      fi
+      if [[ "$skew" =~ ^[0-9]+$ ]]; then
+        CLOCK_SKEW_SECONDS="$skew"
+        if ((skew <= MAX_CLOCK_SKEW_SECONDS)); then
+          TIME_READINESS="PASS_WITH_WARNING"
+          BRINGUP_READY="YES"
+          NTP_BRINGUP_READINESS="PASS"
+          postboot_policy_log WARN "WARNING: time synchronization not confirmed; clock skew ${skew}s is within ${MAX_CLOCK_SKEW_SECONDS}s"
+        else
+          TIME_READINESS="FAIL_CLOCK_SKEW"
+          BRINGUP_READY="NO"
+          NTP_BRINGUP_READINESS="FAIL"
+          postboot_policy_log ERROR "ERROR: clock skew ${skew}s exceeds ${MAX_CLOCK_SKEW_SECONDS}s"
+        fi
+      else
+        TIME_READINESS="FAIL_TIME_UNVERIFIABLE"
+        BRINGUP_READY="NO"
+        NTP_BRINGUP_READINESS="FAIL"
+        postboot_policy_log ERROR "ERROR: time synchronization is unconfirmed and no usable time reference was obtained"
+      fi
+    fi
+  fi
+
+  if [[ "$BRINGUP_READY" == "YES" && "$NTP_SOURCE_CLASS" != "INTERNAL" ]]; then
+    postboot_policy_log WARN "WARNING: no internal NTP source detected; continuing because local clock readiness passed"
+  fi
+  postboot_policy_log INFO "TIME_READINESS=${TIME_READINESS}"
+  postboot_policy_log INFO "CLOCK_SKEW_SECONDS=${CLOCK_SKEW_SECONDS}"
+  postboot_policy_log INFO "MAX_CLOCK_SKEW_SECONDS=${MAX_CLOCK_SKEW_SECONDS}"
+  postboot_policy_log INFO "NTP_SOURCE_CLASS=${NTP_SOURCE_CLASS}"
+  postboot_policy_log INFO "NTP_SELECTED_PEER=${NTP_SELECTED_PEER}"
+  postboot_policy_log INFO "BRINGUP_READY=${BRINGUP_READY}"
+  [[ "$BRINGUP_READY" == "YES" ]]
+}
+
+# Compatibility wrapper for call sites / fixtures that still name the Phase 1 helper.
+check_time_readiness_phase1() {
+  check_time_readiness "$@"
+}
+
+check_basic_network_route() {
+  # Default route / primary interface presence. Fixture-friendly.
+  if [[ -n "${STELLAR_OFFLINE_FAKE_DEFAULT_ROUTE:-}" ]]; then
+    [[ "${STELLAR_OFFLINE_FAKE_DEFAULT_ROUTE}" == "1" ]]
+    return $?
+  fi
+  if [[ -n "${DP_POSTBOOT_TEST_ROOT:-}" ]]; then
+    local hp
+    if declare -F dns_hp >/dev/null 2>&1; then
+      hp="$(dns_hp /tmp/default-route-ok)"
+      [[ -f "$hp" ]] && return 0
+      hp="$(dns_hp /proc/net/route)"
+    else
+      hp="${DP_POSTBOOT_TEST_ROOT}/tmp/default-route-ok"
+      [[ -f "$hp" ]] && return 0
+      hp="${DP_POSTBOOT_TEST_ROOT}/proc/net/route"
+    fi
+    [[ -f "$hp" ]] || return 1
+    awk 'NR>1 && $2=="00000000" { found=1 } END { exit(found?0:1) }' "$hp" 2>/dev/null
+    return $?
+  fi
+  local default_route default_iface
+  default_route="$(ip -4 route show default 2>/dev/null | awk 'NR==1 {print; exit}')"
+  default_iface="$(printf '%s\n' "$default_route" | awk '{for (i=1; i<=NF; i++) if ($i=="dev") {print $(i+1); exit}}')"
+  [[ -n "$default_route" && -n "$default_iface" ]] || return 1
+  if declare -F postboot_policy_log >/dev/null 2>&1; then
+    postboot_policy_log INFO "DEFAULT_ROUTE_CHECK=PASS"
+    postboot_policy_log INFO "DEFAULT_INTERFACE=${default_iface}"
+    postboot_policy_log INFO "DEFAULT_ROUTE=${default_route}"
+  elif declare -F log >/dev/null 2>&1; then
+    log INFO "DEFAULT_ROUTE_CHECK=PASS"
+    log INFO "DEFAULT_INTERFACE=${default_iface}"
+    log INFO "DEFAULT_ROUTE=${default_route}"
+  fi
+}
+
+emit_dns_time_result_contract() {
+  local _log=postboot_policy_log
+  declare -F postboot_policy_log >/dev/null 2>&1 || _log=log
+  "$_log" INFO "DNS_RESOLVER_STATE=${DNS_RESOLVER_STATE:-}"
+  "$_log" INFO "DNS_RESOLVER_REPAIR=${DNS_RESOLVER_REPAIR:-}"
+  "$_log" INFO "DNS_SERVERS_CONFIGURED=${DNS_SERVERS_CONFIGURED:-}"
+  "$_log" INFO "DNS_NAME_RESOLUTION=${DNS_NAME_RESOLUTION:-}"
+  "$_log" INFO "TIME_READINESS=${TIME_READINESS:-}"
+  "$_log" INFO "CLOCK_SKEW_SECONDS=${CLOCK_SKEW_SECONDS:-}"
+  "$_log" INFO "MAX_CLOCK_SKEW_SECONDS=${MAX_CLOCK_SKEW_SECONDS:-}"
+  "$_log" INFO "NTP_SOURCE_CLASS=${NTP_SOURCE_CLASS:-}"
+  "$_log" INFO "NTP_SELECTED_PEER=${NTP_SELECTED_PEER:-}"
+  "$_log" INFO "BRINGUP_READY=${BRINGUP_READY:-}"
+  "$_log" INFO "BRINGUP_EXECUTED=${BRINGUP_EXECUTED:-NO}"
+}
+
+# END_DP_POSTBOOT_DNS_TIME_POLICY
+# =============================================================================
+
+
 install_runner_and_units() {
   local work="$1"
   mkdir -p "$(hostpath /usr/local/sbin)" "$(hostpath /etc/systemd/system)"
@@ -8138,7 +8801,9 @@ main "$@"
 
 RUNNER
 
-  install -m 0755 /dev/stdin "$(hostpath "$POSTBOOT_PATH")" <<'POSTBOOT'
+  # Postboot: build-time-inlined DNS/time policy + main verifier (single-file).
+  {
+    cat <<'POSTBOOT_HDR'
 #!/usr/bin/env bash
 set -euo pipefail
 STATE_ROOT="/opt/aelladata/os-upgrade/offline"
@@ -8150,9 +8815,590 @@ exec >>"$LOG_FILE" 2>&1
 log() { printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" "$2"; }
 write_state() { printf '%s\n' "$1" >"$STATE_FILE"; sync; }
 
+# Inlined by scripts/lib/build_client_jammy_to_noble.py (single-file; no runtime include).
+#!/usr/bin/env bash
+# Shared postboot DNS resolver repair and local-clock readiness policy.
+# This file is inlined by build_client_jammy_to_noble.py into the generated
+# postboot helper. It is also directly sourceable by fixture tests.
+# shellcheck shell=bash
+
+DNS_RESOLVER_STATE="NOT_CHECKED"
+DNS_RESOLVER_REPAIR="NOT_ATTEMPTED"
+DNS_SERVERS_CONFIGURED="NONE"
+DNS_NAME_RESOLUTION="NOT_TESTED"
+TIME_READINESS="NOT_CHECKED"
+CLOCK_SKEW_SECONDS="UNKNOWN"
+MAX_CLOCK_SKEW_SECONDS="${DP_MAX_CLOCK_SKEW_SECONDS:-300}"
+NTP_SOURCE_CLASS="UNKNOWN"
+NTP_SELECTED_PEER="NONE"
+BRINGUP_READY="NO"
+NTP_BRINGUP_READINESS="NOT_CHECKED"
+BRINGUP_EXECUTED="NO"
+
+DP_POSTBOOT_TEST_ROOT="${DP_POSTBOOT_TEST_ROOT:-}"
+SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
+RESOLVECTL_BIN="${RESOLVECTL_BIN:-resolvectl}"
+GETENT_BIN="${GETENT_BIN:-getent}"
+CURL_BIN="${CURL_BIN:-curl}"
+NTPQ_BIN="${NTPQ_BIN:-ntpq}"
+NTPWAIT_BIN="${NTPWAIT_BIN:-ntpwait}"
+TIMEDATECTL_BIN="${TIMEDATECTL_BIN:-timedatectl}"
+
+postboot_policy_log() {
+  local level="$1"; shift
+  if declare -F log >/dev/null 2>&1; then
+    log "$level" "$*"
+  else
+    printf '%s: %s\n' "$level" "$*"
+  fi
+}
+
+dns_hp() {
+  local p="$1"
+  if [[ -n "${DP_POSTBOOT_TEST_ROOT:-}" ]]; then
+    printf '%s%s' "${DP_POSTBOOT_TEST_ROOT%/}" "$p"
+  else
+    printf '%s' "$p"
+  fi
+}
+
+dns_is_valid_ipv4() {
+  local ip="${1:-}" a b c d octet
+  IFS=. read -r a b c d <<<"$ip"
+  [[ -n "$a" && -n "$b" && -n "$c" && -n "$d" && "$ip" != *.*.*.*.* ]] || return 1
+  for octet in "$a" "$b" "$c" "$d"; do
+    [[ "$octet" =~ ^[0-9]{1,3}$ ]] || return 1
+    ((10#$octet >= 0 && 10#$octet <= 255)) || return 1
+  done
+}
+
+dedup_valid_ipv4_words() {
+  local word
+  for word in "$@"; do
+    dns_is_valid_ipv4 "$word" && printf '%s\n' "$word"
+  done | awk '!seen[$0]++'
+}
+
+interfaces_dns_servers() {
+  local f
+  f="$(dns_hp /etc/network/interfaces)"
+  [[ -r "$f" ]] || return 0
+  awk '
+    /^[[:space:]]*#/ {next}
+    /^[[:space:]]*dns-nameservers[[:space:]]+/ {
+      sub(/^[[:space:]]*dns-nameservers[[:space:]]+/, "")
+      print
+    }
+  ' "$f" | tr ' \t' '\n' | awk 'NF'
+}
+
+resolv_conf_dns_servers() {
+  local f
+  f="$(dns_hp /etc/resolv.conf)"
+  [[ -r "$f" ]] || return 0
+  awk '
+    /^[[:space:]]*#/ {next}
+    /^[[:space:]]*nameserver[[:space:]]+/ {print $2}
+  ' "$f"
+}
+
+configured_ntp_hostname() {
+  local f token
+  f="$(dns_hp /etc/ntpsec/ntp.conf)"
+  [[ -r "$f" ]] || return 1
+  while IFS= read -r token; do
+    [[ -n "$token" ]] || continue
+    if ! dns_is_valid_ipv4 "$token" && [[ "$token" != "localhost" && "$token" != "::1" ]]; then
+      printf '%s' "$token"
+      return 0
+    fi
+  done < <(awk '
+    /^[[:space:]]*#/ {next}
+    /^[[:space:]]*(server|pool)[[:space:]]+/ {print $2}
+  ' "$f")
+  return 1
+}
+
+check_dns_name_resolution() {
+  local host="${1:-}"
+  [[ -n "$host" ]] || host="$(configured_ntp_hostname 2>/dev/null || true)"
+  [[ -n "$host" ]] || host="${DP_DNS_VALIDATION_HOSTNAME:-archive.ubuntu.com}"
+  if "$GETENT_BIN" ahosts "$host" >/dev/null 2>&1; then
+    DNS_NAME_RESOLUTION="PASS"
+    postboot_policy_log INFO "DNS_VALIDATION_HOSTNAME=${host}"
+    return 0
+  fi
+  DNS_NAME_RESOLUTION="FAIL"
+  postboot_policy_log INFO "DNS_VALIDATION_HOSTNAME=${host}"
+  return 1
+}
+
+resolver_service_state() {
+  local enabled active
+  enabled="$("$SYSTEMCTL_BIN" is-enabled systemd-resolved 2>/dev/null || true)"
+  enabled="$(printf '%s\n' "$enabled" | awk 'NF{print; exit}')"
+  active="$("$SYSTEMCTL_BIN" is-active systemd-resolved 2>/dev/null || true)"
+  active="$(printf '%s\n' "$active" | awk 'NF{print; exit}')"
+  printf '%s|%s' "${enabled:-unknown}" "${active:-unknown}"
+}
+
+resolved_uses_one_configured_dns() {
+  local servers_csv="$1" output ip
+  output="$("$RESOLVECTL_BIN" dns 2>/dev/null || true)"
+  IFS=, read -ra _dns_array <<<"$servers_csv"
+  for ip in "${_dns_array[@]}"; do
+    [[ -n "$ip" ]] || continue
+    if printf '%s\n' "$output" | grep -Fq -- "$ip"; then
+      return 0
+    fi
+  done
+  local upstream
+  upstream="$(dns_hp /run/systemd/resolve/resolv.conf)"
+  if [[ -r "$upstream" ]]; then
+    for ip in "${_dns_array[@]}"; do
+      grep -Eq "^[[:space:]]*nameserver[[:space:]]+${ip//./\.}([[:space:]]|$)" "$upstream" && return 0
+    done
+  fi
+  return 1
+}
+
+restore_resolved_service_state() {
+  local prior_enabled="$1" prior_active="$2"
+  "$SYSTEMCTL_BIN" stop systemd-resolved >/dev/null 2>&1 || true
+  case "$prior_enabled" in
+    masked)
+      "$SYSTEMCTL_BIN" disable systemd-resolved >/dev/null 2>&1 || true
+      "$SYSTEMCTL_BIN" mask systemd-resolved >/dev/null 2>&1 || true
+      ;;
+    enabled|enabled-runtime|static|indirect)
+      "$SYSTEMCTL_BIN" unmask systemd-resolved >/dev/null 2>&1 || true
+      "$SYSTEMCTL_BIN" enable systemd-resolved >/dev/null 2>&1 || true
+      ;;
+    *)
+      "$SYSTEMCTL_BIN" unmask systemd-resolved >/dev/null 2>&1 || true
+      "$SYSTEMCTL_BIN" disable systemd-resolved >/dev/null 2>&1 || true
+      ;;
+  esac
+  if [[ "$prior_active" == "active" ]]; then
+    "$SYSTEMCTL_BIN" start systemd-resolved >/dev/null 2>&1 || true
+  fi
+}
+
+emit_dns_result() {
+  postboot_policy_log INFO "DNS_RESOLVER_STATE=${DNS_RESOLVER_STATE}"
+  postboot_policy_log INFO "DNS_RESOLVER_REPAIR=${DNS_RESOLVER_REPAIR}"
+  postboot_policy_log INFO "DNS_SERVERS_CONFIGURED=${DNS_SERVERS_CONFIGURED}"
+  postboot_policy_log INFO "DNS_NAME_RESOLUTION=${DNS_NAME_RESOLUTION}"
+}
+
+check_and_repair_dns_resolver() {
+  local resolv raw_target canonical stub interfaces state_pair enabled active
+  local dns_lines dns_csv dropin_dir dropin tmp backup had_dropin=0
+  local repair_ok=1 current_active
+  DNS_RESOLVER_STATE="NOT_CHECKED"
+  DNS_RESOLVER_REPAIR="NOT_ATTEMPTED"
+  DNS_SERVERS_CONFIGURED="NONE"
+  DNS_NAME_RESOLUTION="NOT_TESTED"
+
+  resolv="$(dns_hp /etc/resolv.conf)"
+  stub="$(dns_hp /run/systemd/resolve/stub-resolv.conf)"
+  interfaces="$(dns_hp /etc/network/interfaces)"
+
+  if [[ -f "$resolv" && ! -L "$resolv" ]]; then
+    dns_lines="$(resolv_conf_dns_servers | while read -r ip; do dns_is_valid_ipv4 "$ip" && echo "$ip"; done | awk '!seen[$0]++')"
+    if [[ -n "$dns_lines" ]]; then
+      DNS_RESOLVER_STATE="HEALTHY_STATIC"
+      DNS_RESOLVER_REPAIR="NOT_REQUIRED"
+      DNS_SERVERS_CONFIGURED="$(printf '%s\n' "$dns_lines" | paste -sd, -)"
+      check_dns_name_resolution || true
+      emit_dns_result
+      return 0
+    fi
+    DNS_RESOLVER_STATE="BROKEN_STATIC"
+    DNS_RESOLVER_REPAIR="FAIL"
+    check_dns_name_resolution || true
+    emit_dns_result
+    return 1
+  fi
+
+  if [[ -L "$resolv" ]]; then
+    raw_target="$(readlink "$resolv" 2>/dev/null || true)"
+    canonical="$(readlink -f "$resolv" 2>/dev/null || true)"
+    if [[ "$canonical" == "$stub" && -f "$stub" ]]; then
+      if check_dns_name_resolution; then
+        DNS_RESOLVER_STATE="HEALTHY_SYSTEMD_RESOLVED"
+        DNS_RESOLVER_REPAIR="NOT_REQUIRED"
+        dns_lines="$(interfaces_dns_servers | while read -r ip; do dns_is_valid_ipv4 "$ip" && echo "$ip"; done | awk '!seen[$0]++')"
+        [[ -n "$dns_lines" ]] && DNS_SERVERS_CONFIGURED="$(printf '%s\n' "$dns_lines" | paste -sd, -)"
+        emit_dns_result
+        return 0
+      fi
+      DNS_RESOLVER_STATE="BROKEN_SYSTEMD_RESOLVED"
+      DNS_RESOLVER_REPAIR="FAIL"
+      emit_dns_result
+      return 1
+    fi
+
+    state_pair="$(resolver_service_state)"
+    enabled="${state_pair%%|*}"
+    active="${state_pair#*|}"
+    if [[ "$raw_target" == "../run/systemd/resolve/stub-resolv.conf" && ! -e "$stub" \
+          && ( "$enabled" == "masked" || "$active" != "active" ) ]]; then
+      dns_lines="$(interfaces_dns_servers | while read -r ip; do dns_is_valid_ipv4 "$ip" && echo "$ip"; done | awk '!seen[$0]++')"
+      if [[ -z "$dns_lines" ]]; then
+        DNS_RESOLVER_STATE="BROKEN_SYSTEMD_RESOLVED"
+        DNS_RESOLVER_REPAIR="FAIL"
+        DNS_SERVERS_CONFIGURED="NONE"
+        DNS_NAME_RESOLUTION="NOT_TESTED"
+        postboot_policy_log ERROR "ERROR: broken systemd-resolved stub link and no valid dns-nameservers in ${interfaces}"
+        emit_dns_result
+        return 1
+      fi
+      dns_csv="$(printf '%s\n' "$dns_lines" | paste -sd, -)"
+      DNS_SERVERS_CONFIGURED="$dns_csv"
+      dropin_dir="$(dns_hp /etc/systemd/resolved.conf.d)"
+      dropin="${dropin_dir}/20-dp-static-dns.conf"
+      mkdir -p "$dropin_dir"
+      backup="${dropin}.rollback.$$"
+      if [[ -e "$dropin" ]]; then
+        cp -a "$dropin" "$backup"
+        had_dropin=1
+      fi
+      tmp="${dropin}.tmp.$$"
+      {
+        printf '[Resolve]\nDNS='
+        printf '%s\n' "$dns_lines" | paste -sd' ' -
+        printf 'FallbackDNS=\n'
+      } >"$tmp"
+      chmod 0644 "$tmp"
+      mv -f "$tmp" "$dropin"
+
+      "$SYSTEMCTL_BIN" unmask systemd-resolved >/dev/null 2>&1 || repair_ok=0
+      "$SYSTEMCTL_BIN" enable --now systemd-resolved >/dev/null 2>&1 || repair_ok=0
+
+      canonical="$(readlink -f "$resolv" 2>/dev/null || true)"
+      current_active="$("$SYSTEMCTL_BIN" is-active systemd-resolved 2>/dev/null || true)"
+      current_active="$(printf '%s\n' "$current_active" | awk 'NF {print; exit}')"
+      [[ "$current_active" == "active" ]] || repair_ok=0
+      [[ -f "$stub" ]] || repair_ok=0
+      [[ "$canonical" == "$stub" ]] || repair_ok=0
+      resolved_uses_one_configured_dns "$dns_csv" || repair_ok=0
+      check_dns_name_resolution || repair_ok=0
+
+      if [[ "$repair_ok" -eq 1 ]]; then
+        rm -f "$backup"
+        DNS_RESOLVER_STATE="RECOVERED_SYSTEMD_RESOLVED"
+        DNS_RESOLVER_REPAIR="PASS"
+        emit_dns_result
+        return 0
+      fi
+
+      rm -f "$dropin"
+      if [[ "$had_dropin" -eq 1 && -e "$backup" ]]; then
+        mv -f "$backup" "$dropin"
+      else
+        rm -f "$backup"
+      fi
+      restore_resolved_service_state "$enabled" "$active"
+      DNS_RESOLVER_STATE="BROKEN_SYSTEMD_RESOLVED"
+      DNS_RESOLVER_REPAIR="FAIL"
+      emit_dns_result
+      return 1
+    fi
+
+    DNS_RESOLVER_STATE="UNKNOWN_LAYOUT"
+    DNS_RESOLVER_REPAIR="NOT_ATTEMPTED"
+    postboot_policy_log WARN "DNS_RESOLVER_DIAGNOSTIC=symlink target=${raw_target:-unknown} canonical=${canonical:-missing} resolved_enabled=${enabled:-unknown} resolved_active=${active:-unknown}"
+    if check_dns_name_resolution; then
+      emit_dns_result
+      return 0
+    fi
+    emit_dns_result
+    return 1
+  fi
+
+  DNS_RESOLVER_STATE="UNKNOWN_LAYOUT"
+  DNS_RESOLVER_REPAIR="NOT_ATTEMPTED"
+  postboot_policy_log WARN "DNS_RESOLVER_DIAGNOSTIC=/etc/resolv.conf missing or unsupported layout"
+  if check_dns_name_resolution; then
+    emit_dns_result
+    return 0
+  fi
+  emit_dns_result
+  return 1
+}
+
+is_positive_integer() {
+  [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
+}
+
+is_valid_ipv4() {
+  local ip="${1:-}" a b c d octet
+  IFS=. read -r a b c d <<<"$ip"
+  [[ -n "$a" && -n "$b" && -n "$c" && -n "$d" ]] || return 1
+  [[ "$ip" != *.*.*.*.* ]] || return 1
+  for octet in "$a" "$b" "$c" "$d"; do
+    [[ "$octet" =~ ^[0-9]{1,3}$ ]] || return 1
+    ((10#$octet >= 0 && 10#$octet <= 255)) || return 1
+  done
+}
+
+ipv4_source_scope() {
+  local ip="$1" a b c d
+  is_valid_ipv4 "$ip" || { printf 'UNKNOWN'; return 1; }
+  IFS=. read -r a b c d <<<"$ip"
+  if ((a == 10)) || ((a == 172 && b >= 16 && b <= 31)) || ((a == 192 && b == 168)); then
+    printf 'INTERNAL'
+  elif ((a == 127)) || ((a == 169 && b == 254)) || ((a == 0)) || ((a >= 224)); then
+    printf 'IGNORED'
+  else
+    printf 'PUBLIC'
+  fi
+}
+
+normalize_ntp_source_token() {
+  local token="${1:-}"
+  token="${token#\*}"
+  token="${token#+}"
+  token="${token#-}"
+  token="${token#o}"
+  token="${token#x}"
+  token="${token#\#}"
+  token="${token#[}"
+  token="${token%]}"
+  token="${token%.}"
+  printf '%s' "$token"
+}
+
+classify_ntp_source_token() {
+  local token ip scope saw_public=0
+  token="$(normalize_ntp_source_token "${1:-}")"
+  [[ -n "$token" ]] || { printf 'UNKNOWN'; return 0; }
+  case "$token" in
+    LOCAL|LOCAL\(*|localhost|localhost.*|0.0.0.0|127.*|169.254.*|::1|fe80:*|FE80:*)
+      printf 'IGNORED'; return 0 ;;
+  esac
+  if is_valid_ipv4 "$token"; then
+    ipv4_source_scope "$token"
+    return 0
+  fi
+  if command -v "$GETENT_BIN" >/dev/null 2>&1; then
+    while IFS= read -r ip; do
+      [[ -n "$ip" ]] || continue
+      scope="$(ipv4_source_scope "$ip" 2>/dev/null || printf UNKNOWN)"
+      case "$scope" in
+        INTERNAL) printf 'INTERNAL'; return 0 ;;
+        PUBLIC) saw_public=1 ;;
+      esac
+    done < <("$GETENT_BIN" ahostsv4 "$token" 2>/dev/null | awk '{print $1}' | awk '!seen[$0]++')
+  fi
+  if [[ "$saw_public" -eq 1 ]]; then
+    printf 'PUBLIC'
+  else
+    printf 'UNKNOWN'
+  fi
+}
+
+classify_ntp_sources() {
+  local ntpq_text="${1:-}" token class have_internal=0 have_public=0
+  while IFS= read -r token; do
+    [[ -n "$token" ]] || continue
+    class="$(classify_ntp_source_token "$token")"
+    case "$class" in
+      INTERNAL) have_internal=1 ;;
+      PUBLIC) have_public=1 ;;
+    esac
+  done < <(
+    {
+      printf '%s\n' "$ntpq_text" | awk 'NR>2 && NF>=1 {print $1}'
+      if [[ -r "$(dns_hp /etc/ntpsec/ntp.conf)" ]]; then
+        awk '
+          /^[[:space:]]*#/ {next}
+          /^[[:space:]]*(server|pool)[[:space:]]+/ {print $2}
+        ' "$(dns_hp /etc/ntpsec/ntp.conf)"
+      fi
+    } | awk 'NF && !seen[$0]++'
+  )
+  if [[ "$have_internal" -eq 1 ]]; then
+    NTP_SOURCE_CLASS="INTERNAL"
+  elif [[ "$have_public" -eq 1 ]]; then
+    NTP_SOURCE_CLASS="PUBLIC"
+  else
+    NTP_SOURCE_CLASS="UNKNOWN"
+  fi
+}
+
+selected_ntp_peer_from_text() {
+  local text="${1:-}"
+  printf '%s\n' "$text" | awk 'NR>2 && $1 ~ /^\*/ {gsub(/^\*/, "", $1); print $1; exit}'
+}
+
+ntpq_clock_reference_from_text() {
+  local text="${1:-}"
+  printf '%s\n' "$text" | awk '
+    function abs(v) { return v < 0 ? -v : v }
+    NR > 2 && NF >= 9 {
+      remote=$1; reach=$7; off=$9
+      selected=(remote ~ /^\*/)
+      gsub(/^[*+#ox-]/, "", remote)
+      if (reach !~ /^[0-9]+$/ || reach == 0) next
+      if (off !~ /^[-+]?[0-9]+([.][0-9]+)?$/) next
+      a=abs(off)
+      if (selected && !have_sel) { sel=a; selpeer=remote; have_sel=1 }
+      if (!have_any || a < best) { best=a; bestpeer=remote; have_any=1 }
+    }
+    END {
+      if (have_sel) printf "%d|%s\n", int((sel + 999.999999) / 1000), selpeer
+      else if (have_any) printf "%d|%s\n", int((best + 999.999999) / 1000), bestpeer
+    }
+  '
+}
+
+http_date_clock_skew_seconds() {
+  local base_url="${1:-http://221.139.249.111}" headers date_value ref_epoch local_epoch delta
+  headers="$("$CURL_BIN" -fsSI --connect-timeout 5 --max-time 10 "$base_url" 2>/dev/null || true)"
+  date_value="$(printf '%s\n' "$headers" | awk 'BEGIN{IGNORECASE=1} /^Date:[[:space:]]*/ {sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}')"
+  [[ -n "$date_value" ]] || return 1
+  ref_epoch="$(LC_ALL=C date -u -d "$date_value" +%s 2>/dev/null || true)"
+  local_epoch="$(date -u +%s 2>/dev/null || true)"
+  [[ "$ref_epoch" =~ ^[0-9]+$ && "$local_epoch" =~ ^[0-9]+$ ]] || return 1
+  if ((local_epoch >= ref_epoch)); then delta=$((local_epoch-ref_epoch)); else delta=$((ref_epoch-local_epoch)); fi
+  printf '%s\n' "$delta"
+}
+
+run_ntpwait_probe() {
+  command -v "$NTPWAIT_BIN" >/dev/null 2>&1 || return 1
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 20 "$NTPWAIT_BIN" -n 1 -s 1 >/dev/null 2>&1
+  else
+    "$NTPWAIT_BIN" -n 1 -s 1 >/dev/null 2>&1
+  fi
+}
+
+check_time_readiness() {
+  local ntpq_text="" rv_text="" td="" ref="" skew="" ref_peer=""
+  TIME_READINESS="FAIL_TIME_UNVERIFIABLE"
+  CLOCK_SKEW_SECONDS="UNKNOWN"
+  MAX_CLOCK_SKEW_SECONDS="${DP_MAX_CLOCK_SKEW_SECONDS:-300}"
+  NTP_SOURCE_CLASS="UNKNOWN"
+  NTP_SELECTED_PEER="NONE"
+  BRINGUP_READY="NO"
+  NTP_BRINGUP_READINESS="FAIL"
+
+  if ! is_positive_integer "$MAX_CLOCK_SKEW_SECONDS"; then
+    postboot_policy_log ERROR "ERROR: DP_MAX_CLOCK_SKEW_SECONDS must be a positive integer"
+    return 1
+  fi
+
+  if command -v "$NTPQ_BIN" >/dev/null 2>&1; then
+    ntpq_text="$("$NTPQ_BIN" -pn 2>/dev/null || "$NTPQ_BIN" -p 2>/dev/null || true)"
+    rv_text="$("$NTPQ_BIN" rv 2>/dev/null || true)"
+  fi
+  NTP_SELECTED_PEER="$(selected_ntp_peer_from_text "$ntpq_text")"
+  [[ -n "$NTP_SELECTED_PEER" ]] || NTP_SELECTED_PEER="NONE"
+  classify_ntp_sources "$ntpq_text"
+
+  if run_ntpwait_probe; then
+    TIME_READINESS="PASS_SYNCED"
+    CLOCK_SKEW_SECONDS="0"
+    BRINGUP_READY="YES"
+    NTP_BRINGUP_READINESS="PASS"
+  elif [[ "$NTP_SELECTED_PEER" != "NONE" ]] && printf '%s\n' "$rv_text" | grep -Eq '(^|[[:space:],])leap=00([[:space:],]|$)'; then
+    TIME_READINESS="PASS_SYNCED"
+    CLOCK_SKEW_SECONDS="0"
+    BRINGUP_READY="YES"
+    NTP_BRINGUP_READINESS="PASS"
+  else
+    if command -v "$TIMEDATECTL_BIN" >/dev/null 2>&1; then
+      td="$("$TIMEDATECTL_BIN" status 2>/dev/null || "$TIMEDATECTL_BIN" 2>/dev/null || true)"
+    fi
+    if printf '%s\n' "$td" | grep -qiE 'System clock synchronized:[[:space:]]*yes'; then
+      TIME_READINESS="PASS_SYNCED"
+      CLOCK_SKEW_SECONDS="0"
+      BRINGUP_READY="YES"
+      NTP_BRINGUP_READINESS="PASS"
+    else
+      ref="$(ntpq_clock_reference_from_text "$ntpq_text" || true)"
+      if [[ -n "$ref" ]]; then
+        skew="${ref%%|*}"
+        ref_peer="${ref#*|}"
+        postboot_policy_log INFO "TIME_REFERENCE=NTP_PEER peer=${ref_peer}"
+      else
+        skew="$(http_date_clock_skew_seconds "${DP_TIME_REFERENCE_URL:-http://221.139.249.111}" || true)"
+        [[ -n "$skew" ]] && postboot_policy_log INFO "TIME_REFERENCE=HTTP_DATE url=${DP_TIME_REFERENCE_URL:-http://221.139.249.111}"
+      fi
+      if [[ "$skew" =~ ^[0-9]+$ ]]; then
+        CLOCK_SKEW_SECONDS="$skew"
+        if ((skew <= MAX_CLOCK_SKEW_SECONDS)); then
+          TIME_READINESS="PASS_WITH_WARNING"
+          BRINGUP_READY="YES"
+          NTP_BRINGUP_READINESS="PASS"
+          postboot_policy_log WARN "WARNING: time synchronization not confirmed; clock skew ${skew}s is within ${MAX_CLOCK_SKEW_SECONDS}s"
+        else
+          TIME_READINESS="FAIL_CLOCK_SKEW"
+          BRINGUP_READY="NO"
+          NTP_BRINGUP_READINESS="FAIL"
+          postboot_policy_log ERROR "ERROR: clock skew ${skew}s exceeds ${MAX_CLOCK_SKEW_SECONDS}s"
+        fi
+      else
+        TIME_READINESS="FAIL_TIME_UNVERIFIABLE"
+        BRINGUP_READY="NO"
+        NTP_BRINGUP_READINESS="FAIL"
+        postboot_policy_log ERROR "ERROR: time synchronization is unconfirmed and no usable time reference was obtained"
+      fi
+    fi
+  fi
+
+  if [[ "$BRINGUP_READY" == "YES" && "$NTP_SOURCE_CLASS" != "INTERNAL" ]]; then
+    postboot_policy_log WARN "WARNING: no internal NTP source detected; continuing because local clock readiness passed"
+  fi
+  postboot_policy_log INFO "TIME_READINESS=${TIME_READINESS}"
+  postboot_policy_log INFO "CLOCK_SKEW_SECONDS=${CLOCK_SKEW_SECONDS}"
+  postboot_policy_log INFO "MAX_CLOCK_SKEW_SECONDS=${MAX_CLOCK_SKEW_SECONDS}"
+  postboot_policy_log INFO "NTP_SOURCE_CLASS=${NTP_SOURCE_CLASS}"
+  postboot_policy_log INFO "NTP_SELECTED_PEER=${NTP_SELECTED_PEER}"
+  postboot_policy_log INFO "BRINGUP_READY=${BRINGUP_READY}"
+  [[ "$BRINGUP_READY" == "YES" ]]
+}
+
+check_time_readiness_phase1() {
+  check_time_readiness "$@"
+}
+
+check_basic_network_route() {
+  local default_route default_iface
+  if [[ -n "${STELLAR_OFFLINE_FAKE_DEFAULT_ROUTE:-}" ]]; then
+    [[ "${STELLAR_OFFLINE_FAKE_DEFAULT_ROUTE}" == "1" ]]
+    return $?
+  fi
+  default_route="$(ip -4 route show default 2>/dev/null | awk 'NR==1 {print; exit}')"
+  default_iface="$(printf '%s\n' "$default_route" | awk '{for (i=1; i<=NF; i++) if ($i=="dev") {print $(i+1); exit}}')"
+  [[ -n "$default_route" && -n "$default_iface" ]] || return 1
+  log INFO "DEFAULT_ROUTE_CHECK=PASS"
+  log INFO "DEFAULT_INTERFACE=${default_iface}"
+  log INFO "DEFAULT_ROUTE=${default_route}"
+}
+
+emit_dns_time_result_contract() {
+  log INFO "DNS_RESOLVER_STATE=${DNS_RESOLVER_STATE:-}"
+  log INFO "DNS_RESOLVER_REPAIR=${DNS_RESOLVER_REPAIR:-}"
+  log INFO "DNS_SERVERS_CONFIGURED=${DNS_SERVERS_CONFIGURED:-}"
+  log INFO "DNS_NAME_RESOLUTION=${DNS_NAME_RESOLUTION:-}"
+  log INFO "TIME_READINESS=${TIME_READINESS:-}"
+  log INFO "CLOCK_SKEW_SECONDS=${CLOCK_SKEW_SECONDS:-}"
+  log INFO "MAX_CLOCK_SKEW_SECONDS=${MAX_CLOCK_SKEW_SECONDS:-}"
+  log INFO "NTP_SOURCE_CLASS=${NTP_SOURCE_CLASS:-}"
+  log INFO "NTP_SELECTED_PEER=${NTP_SELECTED_PEER:-}"
+  log INFO "BRINGUP_READY=${BRINGUP_READY:-}"
+  log INFO "BRINGUP_EXECUTED=${BRINGUP_EXECUTED:-NO}"
+}
+POSTBOOT_HDR
+    cat <<'POSTBOOT_MAIN'
+
 main() {
   write_state POST_BOOT_VERIFY
-  local ver code arch
+  local ver code arch ubu py3ver kr
+  # 1) Noble OS confirmation
   ver="$(grep -E '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')"
   code="$(grep -E '^VERSION_CODENAME=' /etc/os-release | cut -d= -f2 | tr -d '"')"
   arch="$(dpkg --print-architecture)"
@@ -8177,6 +9423,7 @@ main() {
       log ERROR "kernel not Noble-series generic (${kr})"; write_state FAILED; exit 1 ;;
   esac
   log INFO "KERNEL_SERIES_CHECK=PASS version=${kr}"
+  # 2) dpkg/apt health
   dpkg --audit 2>/dev/null | grep -q . && { log ERROR "dpkg audit"; write_state FAILED; exit 1; }
   apt-get check >/dev/null 2>&1 || { log ERROR "broken deps"; write_state FAILED; exit 1; }
   [[ -d /opt/aelladata ]] || { log ERROR "aelladata missing"; write_state FAILED; exit 1; }
@@ -8200,6 +9447,34 @@ main() {
       log INFO "NONINTERACTIVE_CONFFILE_POLICY_REMOVED=YES reason=postboot"
     fi
   fi
+  # 3) basic interface / default route
+  if ! check_basic_network_route; then
+    log ERROR "DEFAULT_ROUTE_CHECK=FAIL"
+    write_state FAILED
+    exit 1
+  fi
+  log INFO "DEFAULT_ROUTE_CHECK=PASS"
+  log INFO "BASIC_NETWORK_ROUTE=PASS"
+  # 4) DNS resolver inspect / limited auto-repair (before COMPLETED_NOBLE)
+  if ! check_and_repair_dns_resolver; then
+    emit_dns_time_result_contract || true
+    log ERROR "DNS_POSTBOOT_VALIDATION=FAIL"
+    log ERROR "DNS resolver validation/repair failed; not recording COMPLETED_NOBLE"
+    write_state FAILED
+    exit 1
+  fi
+  log INFO "DNS_POSTBOOT_VALIDATION=PASS"
+  # 5) time readiness (skew/unverifiable hard-fail; sync-only never hard-fails alone)
+  if ! check_time_readiness; then
+    emit_dns_time_result_contract || true
+    log ERROR "TIME_POSTBOOT_VALIDATION=FAIL"
+    log ERROR "time readiness failed; not recording COMPLETED_NOBLE"
+    write_state FAILED
+    exit 1
+  fi
+  log INFO "TIME_POSTBOOT_VALIDATION=PASS"
+  emit_dns_time_result_contract || true
+  # 6) COMPLETED_NOBLE — only after DNS + time readiness
   write_state COMPLETED_NOBLE
   mkdir -p /etc/motd.d 2>/dev/null || true
   cat >"$MOTD" <<EOF
@@ -8257,10 +9532,23 @@ EOF
   log INFO "PRODUCT_VALIDATION=NOT_RUN_PHASE1"
   log INFO "PHASE2_DP_BRINGUP=PENDING"
   log INFO "NEXT_REQUIRED_ACTION=POWERED_OFF_SNAPSHOT"
+  log INFO "DNS_RESOLVER_STATE=${DNS_RESOLVER_STATE}"
+  log INFO "DNS_RESOLVER_REPAIR=${DNS_RESOLVER_REPAIR}"
+  log INFO "DNS_SERVERS_CONFIGURED=${DNS_SERVERS_CONFIGURED}"
+  log INFO "DNS_NAME_RESOLUTION=${DNS_NAME_RESOLUTION}"
+  log INFO "TIME_READINESS=${TIME_READINESS}"
+  log INFO "CLOCK_SKEW_SECONDS=${CLOCK_SKEW_SECONDS}"
+  log INFO "MAX_CLOCK_SKEW_SECONDS=${MAX_CLOCK_SKEW_SECONDS}"
+  log INFO "NTP_SOURCE_CLASS=${NTP_SOURCE_CLASS}"
+  log INFO "NTP_SELECTED_PEER=${NTP_SELECTED_PEER}"
+  log INFO "BRINGUP_READY=${BRINGUP_READY}"
+  log INFO "BRINGUP_EXECUTED=NO"
   log INFO "post-boot verification PASS - COMPLETED_NOBLE"
 }
 main "$@"
-POSTBOOT
+POSTBOOT_MAIN
+  } >"$(hostpath "$POSTBOOT_PATH")"
+  chmod 0755 "$(hostpath "$POSTBOOT_PATH")"
 
   cat >"$(hostpath /etc/systemd/system/${UNIT_NAME})" <<EOF
 [Unit]
@@ -8303,6 +9591,7 @@ ConditionPathExists=${STATE_FILE}
 Type=oneshot
 User=root
 ExecStart=${POSTBOOT_PATH}
+EnvironmentFile=-${ENV_DEFAULT_FILE}
 RemainAfterExit=yes
 TimeoutStartSec=0
 Restart=no
@@ -8391,6 +9680,7 @@ write_pins_env() {
     printf 'RUNNER_PID_FILE=%s\n' "$(_env_quote "$RUNNER_PID_FILE")"
     printf 'UNIT_NAME=%s\n' "$(_env_quote "$UNIT_NAME")"
     printf 'POSTBOOT_UNIT_NAME=%s\n' "$(_env_quote "$POSTBOOT_UNIT_NAME")"
+    printf 'DP_MAX_CLOCK_SKEW_SECONDS=%s\n' "$(_env_quote "$DP_MAX_CLOCK_SKEW_SECONDS")"
     # Official DistUpgradeController env override for internal mirrors.
     printf 'RELEASE_UPGRADER_ALLOW_THIRD_PARTY=%s\n' "$(_env_quote "1")"
   } >"$tmp_env"

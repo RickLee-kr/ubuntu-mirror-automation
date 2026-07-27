@@ -549,6 +549,8 @@ pins = {
     "MANIFEST_SIG_B64": "c3R1Yg==",
     "ANNOUNCEMENT_B64": "c3R1Yg==",
 }
+policy = (Path(src).resolve().parent / "dp-postboot-readiness-policy.sh.inc").read_text(encoding="utf-8").rstrip("\n")
+text = text.replace("@@POSTBOOT_POLICY_LIB@@", policy)
 for key, val in pins.items():
     text = text.replace("@@{}@@".format(key), val)
 # Any leftover placeholders → stub
@@ -2003,6 +2005,8 @@ text = text.replace(
     "@@DESTRUCTIVE_CONFIRMATION_HELPER@@",
     hp.read_text(encoding="utf-8").rstrip("\n") + "\n",
 )
+policy = (Path(src).resolve().parent / "dp-postboot-readiness-policy.sh.inc").read_text(encoding="utf-8").rstrip("\n")
+text = text.replace("@@POSTBOOT_POLICY_LIB@@", policy)
 text = re.sub(r"@@[A-Z0-9_]*@@", "x", text)
 Path(dst).write_text(text, encoding="utf-8")
 PY
@@ -3601,7 +3605,23 @@ STATE_FILE="${STATE_ROOT}/state"
 hostpath() { local p="$1"; if [[ -n "$TEST_ROOT" ]]; then printf '%s%s' "$TEST_ROOT" "$p"; else printf '%s' "$p"; fi; }
 log() { :; }
 EOS
-  awk '/^install_runner_and_units\(\)/,/^write_pins_env\(\)/ {if(/^write_pins_env/) exit; print}' "$SCRIPT_IN"
+  # Policy helpers are build-time inlined; expand placeholder for fixture harness.
+  awk '/^# BEGIN_DP_POSTBOOT_DNS_TIME_POLICY$/,/^# END_DP_POSTBOOT_DNS_TIME_POLICY$/' "$SCRIPT_IN" \
+    | while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" == '@@POSTBOOT_POLICY_LIB@@' ]]; then
+          cat "${ROOT}/client/dp-postboot-readiness-policy.sh.inc"
+        else
+          printf '%s\n' "$line"
+        fi
+      done
+  awk '/^install_runner_and_units\(\)/,/^write_pins_env\(\)/ {if(/^write_pins_env/) exit; print}' "$SCRIPT_IN" \
+    | while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" == '@@POSTBOOT_POLICY_LIB@@' ]]; then
+          cat "${ROOT}/client/dp-postboot-readiness-policy.sh.inc"
+        else
+          printf '%s\n' "$line"
+        fi
+      done
 } >"$UNIT_CHECK"
 bash -n "$UNIT_CHECK" && pass "unit install harness bash -n" || fail "unit install harness bash -n"
 uf="$(mktemp -d)"
@@ -5088,6 +5108,8 @@ pins = {
     "MANIFEST_SIG_B64": "c3R1Yg==",
     "ANNOUNCEMENT_B64": "c3R1Yg==",
 }
+policy = (Path(src).resolve().parent / "dp-postboot-readiness-policy.sh.inc").read_text(encoding="utf-8").rstrip("\n")
+text = text.replace("@@POSTBOOT_POLICY_LIB@@", policy)
 for key, val in pins.items():
     text = text.replace("@@{}@@".format(key), val)
 text = re.sub(r"@@[A-Z0-9_]+@@", "stub", text)
@@ -5987,6 +6009,8 @@ pins = {
     "MANIFEST_SIG_B64": "c3R1Yg==",
     "ANNOUNCEMENT_B64": "c3R1Yg==",
 }
+policy = (Path(src).resolve().parent / "dp-postboot-readiness-policy.sh.inc").read_text(encoding="utf-8").rstrip("\n")
+text = text.replace("@@POSTBOOT_POLICY_LIB@@", policy)
 for key, val in pins.items():
     text = text.replace("@@{}@@".format(key), val)
 text = re.sub(r"@@[A-Z0-9_]+@@", "stub", text)

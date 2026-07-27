@@ -14,7 +14,7 @@ NAME="dp-offline-upgrade-jammy-to-noble.sh"
 BUILD_PY="${ROOT}/scripts/lib/build_client_jammy_to_noble.py"
 DEPLOY_PY="${ROOT}/scripts/lib/deploy_client_artifacts_atomic.py"
 PUB_KEY="${ROOT}/config/client-signing/offline-client-manifest.gpg"
-EXPECTED_ARTIFACT_SHA="${EXPECTED_ARTIFACT_SHA:-e7d9fb8cbd8a0cfbbea16b26b68b3d736513fa80b800d72b6dfd610404b4434f}"
+EXPECTED_ARTIFACT_SHA="${EXPECTED_ARTIFACT_SHA:-315473fd6eedb4594c92d0fab781cafe1fc4cf013f84ded9797699e038fb86d2}"
 ALLOWED_FINGERPRINT="${ALLOWED_FINGERPRINT:-C786FE9887290E2CF759271DFDD38BE958EABD4A}"
 
 [[ -f "$ARTIFACT" && -f "$SHAFILE" ]] || { echo "missing artifact/sha256" >&2; exit 1; }

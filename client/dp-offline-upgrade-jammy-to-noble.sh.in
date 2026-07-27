@@ -96,6 +96,8 @@ DETACH_AFTER_HANDOFF=0
 MONITOR_POLL_SECS="${DP_OFFLINE_MONITOR_POLL_SECS:-3}"
 MONITOR_HEARTBEAT_SECS="${DP_OFFLINE_MONITOR_HEARTBEAT_SECS:-15}"
 MONITOR_RECENT_LINES="${DP_OFFLINE_MONITOR_RECENT_LINES:-15}"
+# Local-clock hard gate threshold used by Noble postboot validation.
+DP_MAX_CLOCK_SKEW_SECONDS="${DP_MAX_CLOCK_SKEW_SECONDS:-300}"
 MONITOR_INTERRUPTED=0
 MONITOR_EXIT_REASON=""
 MONITOR_LOG_OFFSET=0
@@ -3798,10 +3800,12 @@ run_os_preflight() {
   # before any temporary/host-visible apt-get update.
   ensure_source_gate_safe_for_preflight
 
-  # NTP / time - informational only if unsynchronized
+  # NTP / time — informational only in OS preflight (not a Phase 1 hard gate).
+  # Postboot applies TIME_READINESS skew/unverifiable gates; sync-only never blocks Phase 1 alone.
   if command -v timedatectl >/dev/null 2>&1; then
     if ! timedatectl status 2>/dev/null | grep -qiE 'NTP synchronized: yes|System clock synchronized: yes'; then
       log INFO "NTP_SYNC=UNCONFIRMED (informational; not a Phase 1 hard gate)"
+      log INFO "TIME_READINESS=PREFLIGHT_INFORMATIONAL_ONLY"
     fi
   fi
 
@@ -5875,6 +5879,78 @@ change_login_shells() {
     fi
   done
 }
+
+# =============================================================================
+# BEGIN_DP_POSTBOOT_DNS_TIME_POLICY
+# Jammy→Noble postboot DNS resolver repair + time readiness (Phase 1).
+# Build-time inlined from client/dp-postboot-readiness-policy.sh.inc by
+# scripts/lib/build_client_jammy_to_noble.py into the single-file client.
+# Target DP must not require a separate include file at runtime.
+# Never hard-gates on missing internal NTP alone. Never restarts NICs / reboot / bringup.
+# =============================================================================
+
+@@POSTBOOT_POLICY_LIB@@
+
+# Compatibility wrapper for call sites / fixtures that still name the Phase 1 helper.
+check_time_readiness_phase1() {
+  check_time_readiness "$@"
+}
+
+check_basic_network_route() {
+  # Default route / primary interface presence. Fixture-friendly.
+  if [[ -n "${STELLAR_OFFLINE_FAKE_DEFAULT_ROUTE:-}" ]]; then
+    [[ "${STELLAR_OFFLINE_FAKE_DEFAULT_ROUTE}" == "1" ]]
+    return $?
+  fi
+  if [[ -n "${DP_POSTBOOT_TEST_ROOT:-}" ]]; then
+    local hp
+    if declare -F dns_hp >/dev/null 2>&1; then
+      hp="$(dns_hp /tmp/default-route-ok)"
+      [[ -f "$hp" ]] && return 0
+      hp="$(dns_hp /proc/net/route)"
+    else
+      hp="${DP_POSTBOOT_TEST_ROOT}/tmp/default-route-ok"
+      [[ -f "$hp" ]] && return 0
+      hp="${DP_POSTBOOT_TEST_ROOT}/proc/net/route"
+    fi
+    [[ -f "$hp" ]] || return 1
+    awk 'NR>1 && $2=="00000000" { found=1 } END { exit(found?0:1) }' "$hp" 2>/dev/null
+    return $?
+  fi
+  local default_route default_iface
+  default_route="$(ip -4 route show default 2>/dev/null | awk 'NR==1 {print; exit}')"
+  default_iface="$(printf '%s\n' "$default_route" | awk '{for (i=1; i<=NF; i++) if ($i=="dev") {print $(i+1); exit}}')"
+  [[ -n "$default_route" && -n "$default_iface" ]] || return 1
+  if declare -F postboot_policy_log >/dev/null 2>&1; then
+    postboot_policy_log INFO "DEFAULT_ROUTE_CHECK=PASS"
+    postboot_policy_log INFO "DEFAULT_INTERFACE=${default_iface}"
+    postboot_policy_log INFO "DEFAULT_ROUTE=${default_route}"
+  elif declare -F log >/dev/null 2>&1; then
+    log INFO "DEFAULT_ROUTE_CHECK=PASS"
+    log INFO "DEFAULT_INTERFACE=${default_iface}"
+    log INFO "DEFAULT_ROUTE=${default_route}"
+  fi
+}
+
+emit_dns_time_result_contract() {
+  local _log=postboot_policy_log
+  declare -F postboot_policy_log >/dev/null 2>&1 || _log=log
+  "$_log" INFO "DNS_RESOLVER_STATE=${DNS_RESOLVER_STATE:-}"
+  "$_log" INFO "DNS_RESOLVER_REPAIR=${DNS_RESOLVER_REPAIR:-}"
+  "$_log" INFO "DNS_SERVERS_CONFIGURED=${DNS_SERVERS_CONFIGURED:-}"
+  "$_log" INFO "DNS_NAME_RESOLUTION=${DNS_NAME_RESOLUTION:-}"
+  "$_log" INFO "TIME_READINESS=${TIME_READINESS:-}"
+  "$_log" INFO "CLOCK_SKEW_SECONDS=${CLOCK_SKEW_SECONDS:-}"
+  "$_log" INFO "MAX_CLOCK_SKEW_SECONDS=${MAX_CLOCK_SKEW_SECONDS:-}"
+  "$_log" INFO "NTP_SOURCE_CLASS=${NTP_SOURCE_CLASS:-}"
+  "$_log" INFO "NTP_SELECTED_PEER=${NTP_SELECTED_PEER:-}"
+  "$_log" INFO "BRINGUP_READY=${BRINGUP_READY:-}"
+  "$_log" INFO "BRINGUP_EXECUTED=${BRINGUP_EXECUTED:-NO}"
+}
+
+# END_DP_POSTBOOT_DNS_TIME_POLICY
+# =============================================================================
+
 
 install_runner_and_units() {
   local work="$1"
@@ -7995,7 +8071,9 @@ main "$@"
 
 RUNNER
 
-  install -m 0755 /dev/stdin "$(hostpath "$POSTBOOT_PATH")" <<'POSTBOOT'
+  # Postboot: build-time-inlined DNS/time policy + main verifier (single-file).
+  {
+    cat <<'POSTBOOT_HDR'
 #!/usr/bin/env bash
 set -euo pipefail
 STATE_ROOT="/opt/aelladata/os-upgrade/offline"
@@ -8007,9 +8085,47 @@ exec >>"$LOG_FILE" 2>&1
 log() { printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" "$2"; }
 write_state() { printf '%s\n' "$1" >"$STATE_FILE"; sync; }
 
+# Inlined by scripts/lib/build_client_jammy_to_noble.py (single-file; no runtime include).
+@@POSTBOOT_POLICY_LIB@@
+
+check_time_readiness_phase1() {
+  check_time_readiness "$@"
+}
+
+check_basic_network_route() {
+  local default_route default_iface
+  if [[ -n "${STELLAR_OFFLINE_FAKE_DEFAULT_ROUTE:-}" ]]; then
+    [[ "${STELLAR_OFFLINE_FAKE_DEFAULT_ROUTE}" == "1" ]]
+    return $?
+  fi
+  default_route="$(ip -4 route show default 2>/dev/null | awk 'NR==1 {print; exit}')"
+  default_iface="$(printf '%s\n' "$default_route" | awk '{for (i=1; i<=NF; i++) if ($i=="dev") {print $(i+1); exit}}')"
+  [[ -n "$default_route" && -n "$default_iface" ]] || return 1
+  log INFO "DEFAULT_ROUTE_CHECK=PASS"
+  log INFO "DEFAULT_INTERFACE=${default_iface}"
+  log INFO "DEFAULT_ROUTE=${default_route}"
+}
+
+emit_dns_time_result_contract() {
+  log INFO "DNS_RESOLVER_STATE=${DNS_RESOLVER_STATE:-}"
+  log INFO "DNS_RESOLVER_REPAIR=${DNS_RESOLVER_REPAIR:-}"
+  log INFO "DNS_SERVERS_CONFIGURED=${DNS_SERVERS_CONFIGURED:-}"
+  log INFO "DNS_NAME_RESOLUTION=${DNS_NAME_RESOLUTION:-}"
+  log INFO "TIME_READINESS=${TIME_READINESS:-}"
+  log INFO "CLOCK_SKEW_SECONDS=${CLOCK_SKEW_SECONDS:-}"
+  log INFO "MAX_CLOCK_SKEW_SECONDS=${MAX_CLOCK_SKEW_SECONDS:-}"
+  log INFO "NTP_SOURCE_CLASS=${NTP_SOURCE_CLASS:-}"
+  log INFO "NTP_SELECTED_PEER=${NTP_SELECTED_PEER:-}"
+  log INFO "BRINGUP_READY=${BRINGUP_READY:-}"
+  log INFO "BRINGUP_EXECUTED=${BRINGUP_EXECUTED:-NO}"
+}
+POSTBOOT_HDR
+    cat <<'POSTBOOT_MAIN'
+
 main() {
   write_state POST_BOOT_VERIFY
-  local ver code arch
+  local ver code arch ubu py3ver kr
+  # 1) Noble OS confirmation
   ver="$(grep -E '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')"
   code="$(grep -E '^VERSION_CODENAME=' /etc/os-release | cut -d= -f2 | tr -d '"')"
   arch="$(dpkg --print-architecture)"
@@ -8034,6 +8150,7 @@ main() {
       log ERROR "kernel not Noble-series generic (${kr})"; write_state FAILED; exit 1 ;;
   esac
   log INFO "KERNEL_SERIES_CHECK=PASS version=${kr}"
+  # 2) dpkg/apt health
   dpkg --audit 2>/dev/null | grep -q . && { log ERROR "dpkg audit"; write_state FAILED; exit 1; }
   apt-get check >/dev/null 2>&1 || { log ERROR "broken deps"; write_state FAILED; exit 1; }
   [[ -d /opt/aelladata ]] || { log ERROR "aelladata missing"; write_state FAILED; exit 1; }
@@ -8057,6 +8174,34 @@ main() {
       log INFO "NONINTERACTIVE_CONFFILE_POLICY_REMOVED=YES reason=postboot"
     fi
   fi
+  # 3) basic interface / default route
+  if ! check_basic_network_route; then
+    log ERROR "DEFAULT_ROUTE_CHECK=FAIL"
+    write_state FAILED
+    exit 1
+  fi
+  log INFO "DEFAULT_ROUTE_CHECK=PASS"
+  log INFO "BASIC_NETWORK_ROUTE=PASS"
+  # 4) DNS resolver inspect / limited auto-repair (before COMPLETED_NOBLE)
+  if ! check_and_repair_dns_resolver; then
+    emit_dns_time_result_contract || true
+    log ERROR "DNS_POSTBOOT_VALIDATION=FAIL"
+    log ERROR "DNS resolver validation/repair failed; not recording COMPLETED_NOBLE"
+    write_state FAILED
+    exit 1
+  fi
+  log INFO "DNS_POSTBOOT_VALIDATION=PASS"
+  # 5) time readiness (skew/unverifiable hard-fail; sync-only never hard-fails alone)
+  if ! check_time_readiness; then
+    emit_dns_time_result_contract || true
+    log ERROR "TIME_POSTBOOT_VALIDATION=FAIL"
+    log ERROR "time readiness failed; not recording COMPLETED_NOBLE"
+    write_state FAILED
+    exit 1
+  fi
+  log INFO "TIME_POSTBOOT_VALIDATION=PASS"
+  emit_dns_time_result_contract || true
+  # 6) COMPLETED_NOBLE — only after DNS + time readiness
   write_state COMPLETED_NOBLE
   mkdir -p /etc/motd.d 2>/dev/null || true
   cat >"$MOTD" <<EOF
@@ -8114,10 +8259,23 @@ EOF
   log INFO "PRODUCT_VALIDATION=NOT_RUN_PHASE1"
   log INFO "PHASE2_DP_BRINGUP=PENDING"
   log INFO "NEXT_REQUIRED_ACTION=POWERED_OFF_SNAPSHOT"
+  log INFO "DNS_RESOLVER_STATE=${DNS_RESOLVER_STATE}"
+  log INFO "DNS_RESOLVER_REPAIR=${DNS_RESOLVER_REPAIR}"
+  log INFO "DNS_SERVERS_CONFIGURED=${DNS_SERVERS_CONFIGURED}"
+  log INFO "DNS_NAME_RESOLUTION=${DNS_NAME_RESOLUTION}"
+  log INFO "TIME_READINESS=${TIME_READINESS}"
+  log INFO "CLOCK_SKEW_SECONDS=${CLOCK_SKEW_SECONDS}"
+  log INFO "MAX_CLOCK_SKEW_SECONDS=${MAX_CLOCK_SKEW_SECONDS}"
+  log INFO "NTP_SOURCE_CLASS=${NTP_SOURCE_CLASS}"
+  log INFO "NTP_SELECTED_PEER=${NTP_SELECTED_PEER}"
+  log INFO "BRINGUP_READY=${BRINGUP_READY}"
+  log INFO "BRINGUP_EXECUTED=NO"
   log INFO "post-boot verification PASS - COMPLETED_NOBLE"
 }
 main "$@"
-POSTBOOT
+POSTBOOT_MAIN
+  } >"$(hostpath "$POSTBOOT_PATH")"
+  chmod 0755 "$(hostpath "$POSTBOOT_PATH")"
 
   cat >"$(hostpath /etc/systemd/system/${UNIT_NAME})" <<EOF
 [Unit]
@@ -8160,6 +8318,7 @@ ConditionPathExists=${STATE_FILE}
 Type=oneshot
 User=root
 ExecStart=${POSTBOOT_PATH}
+EnvironmentFile=-${ENV_DEFAULT_FILE}
 RemainAfterExit=yes
 TimeoutStartSec=0
 Restart=no
@@ -8248,6 +8407,7 @@ write_pins_env() {
     printf 'RUNNER_PID_FILE=%s\n' "$(_env_quote "$RUNNER_PID_FILE")"
     printf 'UNIT_NAME=%s\n' "$(_env_quote "$UNIT_NAME")"
     printf 'POSTBOOT_UNIT_NAME=%s\n' "$(_env_quote "$POSTBOOT_UNIT_NAME")"
+    printf 'DP_MAX_CLOCK_SKEW_SECONDS=%s\n' "$(_env_quote "$DP_MAX_CLOCK_SKEW_SECONDS")"
     # Official DistUpgradeController env override for internal mirrors.
     printf 'RELEASE_UPGRADER_ALLOW_THIRD_PARTY=%s\n' "$(_env_quote "1")"
   } >"$tmp_env"
