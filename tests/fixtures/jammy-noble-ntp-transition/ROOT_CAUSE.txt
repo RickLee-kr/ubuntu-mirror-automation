@@ -1,0 +1,31 @@
+ROOT_CAUSE_CONFIRMED=YES
+HOP=jammy-to-noble
+TRANSITION=legacy_ntp -> ntpsec (+ transitional ntp package)
+
+EVIDENCE:
+1. Package transition timing:
+   - Client runner invokes do-release-upgrade (PACKAGE_TRANSACTION stage).
+   - DistUpgrade/apt replaces jammy ntp (1:4.2.8p15+dfsg-1ubuntu2) with
+     ntpsec + transitional ntp (Breaks/Replaces ntp << 1:4.2.8p15+dfsg-2~).
+   - See package-control-excerpts.txt and upgrade-discovery required-packages.tsv.
+
+2. Maintainer script userdel condition:
+   - jammy-ntp.postrm: on purge -> deluser --system --quiet ntp
+   - noble-transitional-ntp.postrm: on purge -> deluser --system --quiet ntp
+   - deluser invokes /usr/sbin/userdel; exit 8 means user still used by a process.
+
+3. Why ntp UID process survives until purge:
+   - jammy ntp.service Type=forking runs ntpd as user ntp (-u via wrapper).
+   - jammy-ntp.prerm only stops the service when $1=remove (invoke-rc.d ntp stop).
+   - On same-name upgrade to transitional ntp, prerm receives "upgrade" and does
+     NOT stop ntpd. Client previously performed no pre-DRO quiesce.
+   - Therefore ntpd under UID ntp can still be alive when postrm purge runs
+     deluser/userdel -> error code 8.
+
+4. Log signature (dist-upgrade-main.log fixture):
+   userdel: user ntp is currently used by process ...
+   fatal: '/usr/sbin/userdel ntp' returned error code 8. Exiting.
+
+PREVENTION:
+   Before package transition, if legacy ntp package/unit is present, systemd-stop
+   legacy ntp units only, bounded-wait until NTP_UID_ACTIVE_PROCESS_COUNT=0, else STOP.

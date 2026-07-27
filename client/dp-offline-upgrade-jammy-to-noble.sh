@@ -30,10 +30,10 @@ PIN_UPGRADER_TAR_SHA256='447f54cbdfb9f57d32ddb02fcf0a0abb0184059cc0f680e806d2337
 PIN_UPGRADER_GPG_SHA256='7af99394662fe6d9fbe4ba7f6efd4818f5594e82e553aaaf659144a80ff53bfe'
 PIN_PLAN_CHECKSUM='8eb3d478e2d40e7a19510239fcbf6e2e6824b2587e6e7172d60ef01e8920b157'
 PIN_DISCOVERY_CHECKSUM='d08f76a4e87bbaabc82b2aea3f552d26b9ece53be83735a74dffdfd70a816b56'
-PIN_MANIFEST_SHA256='7415e8b70341d707e30149c2fa4ead2aa87da1b65c60545f95d9867328715414'
+PIN_MANIFEST_SHA256='e9a0a514cbeb8fe7edc827a6401bfccd05b04414968edeb359e892663d3e58c2'
 PIN_SAMPLE_DEB_URL='http://221.139.249.111/hops/jammy-to-noble/ubuntu/pool/main/a/accountsservice/accountsservice_23.13.9-2ubuntu6_amd64.deb'
 PIN_CONFIRM_PHRASE='UPGRADE-JAMMY-TO-NOBLE'
-PIN_GENERATED_AT='2026-07-26T17:38:21Z'
+PIN_GENERATED_AT='2026-07-26T23:55:21Z'
 PIN_PROFILE_NAME='offline-upgrade-selective'
 
 PIN_KEY_B64='mQENBGpePjYBCAC4/mSayiOdnynQyEygHF0MQZazmNTgWm6REY3nOTTGeZz9KrVrGuncglQk56wg
@@ -116,20 +116,20 @@ bGFuX2NoZWNrc3VtIjogIjhlYjNkNDc4ZTJkNDBlN2ExOTUxMDIzOWZjYmY2ZTJlNjgyNGIyNTg3
 ZTZlNzE3MmQ2MGVmMDFlODkyMGIxNTciLAogICJkaXNjb3ZlcnlfY2hlY2tzdW0iOiAiZDA4Zjc2
 YTRlODdiYmFhYmM4MmIyYWVhM2Y1NTJkMjZiOWVjZTUzYmU4MzczNWE3NGRmZmRmZDcwYTgxNmI1
 NiIsCiAgImNvbmZpcm1fcGhyYXNlIjogIlVQR1JBREUtSkFNTVktVE8tTk9CTEUiLAogICJnZW5l
-cmF0ZWRfYXQiOiAiMjAyNi0wNy0yNlQxNzozODoyMVoiLAogICJhbm5vdW5jZW1lbnRzIjogewog
+cmF0ZWRfYXQiOiAiMjAyNi0wNy0yNlQyMzo1NToyMVoiLAogICJhbm5vdW5jZW1lbnRzIjogewog
 ICAgIlJlbGVhc2VBbm5vdW5jZW1lbnQiOiAiZDFlODJkMmU3NzA2NjNiNjNhYzk5YjM5ZTNhYTQz
 NmRmYjczMTEzOWM2NzE2M2RiNDQzOTJiOTMyODRlZmQ2MyIsCiAgICAiUmVsZWFzZUFubm91bmNl
 bWVudC5odG1sIjogImU3MWQxNGRmMDkzY2U1ZTQ1N2Y3YzNiYTg5YzVhMDI2NGIwMjAyYjFjYTcy
 ZjQyMDNhMzViMmVhZDY0OTg4YjMiCiAgfQp9Cg=='
 PIN_MANIFEST_SIG_B64='LS0tLS1CRUdJTiBQR1AgU0lHTkFUVVJFLS0tLS0KCmlRRXpCQUFCQ2dBZEZpRUV4NGIrbUljcERp
-ejNXU2NkL2RPTDZWanF2VW9GQW1wbVJnMEFDZ2tRL2RPTDZWanEKdlVyTS9nZitORTF5UVd4NGt6
-d3lJK3k4Wk5aQ2t1SVdsN0ZxL3V2OTFGbEhpcXllVi8zeHI4MkFUb2E0REJRVwpaRHFjOHhBRXM0
-aDNFV1R5NGRzdUlBUjVObnJmL05tV1JrcHRFTmx4M0RGMGNWK3RVYXdDVWp3eWd1QzNWdWp4CjBC
-T2ZMWk15dldsUi9hN3hwK2lqYVFhUU1RbjRxK2FJb2lKOEprUUQ1M1E5ZE9ETnBVdFZTQUh5am15
-RFg3UnIKUmdRSExMTG1JZklqck5MWmp6VktaRUVUaEJQRTlOQW9jZjZJNjlMTDNnVWhjQlBqWXhT
-QWFmS0R6MHRUa0RKNAprZFdWRW5OK0xScGF2YnJaR29FZElwRllYbTFxZ1dvWXNzbHhTZEZ3SjlR
-OUN1NS83K211cFE2aktVZE1WMTdqCmRQY210M3ZRNHRsbGZEMTA5ZmVmNzNhaitSbGdJdz09Cj13
-Z2lxCi0tLS0tRU5EIFBHUCBTSUdOQVRVUkUtLS0tLQo='
+ejNXU2NkL2RPTDZWanF2VW9GQW1wbW5ta0FDZ2tRL2RPTDZWanEKdlVwTUpBZjlHV29IUFlZM3Ju
+S0pCK0JIZDB0QllHYS9TNmxSN1lGNnhieEEyNjljUVMyMTFDY050Ym1yc0E4TwpubkV2VUpQVy9P
+OGNiamxjUGdhRTkzQ0Z5YmR5Smo4RUpCRUw4NUwvSEhGeUc2bXZpbThhUHRsQlJDWGxTZzlMCmdL
+WWJNblRubm1TRFc1T1dOUGQwM3VtTWFGdEk0bVp2TU1YeUxqSGtQOE0xOWpJM3pCUnhhMnE5L0ZE
+R2RtNGoKOHJJdytIVUVyYWNSTDJQZmpYL0FCTzFRQ1pKV0lHS3lBVnBCOTdpN242dTlveERaczlN
+eFFGM1drNmM1Z2liMAozYjBFTjhLTWZ2SUZmbm1XYTBWekVtWThBTTVFK2ZFcDB5aHpETmZ2WlhN
+Slpla2tnSVRreE5oSzBzMnZ1VWgxCjhhckIwMjIrYnVFSDJYSHV1OUIzQXpTYlMzNEE0UT09Cj01
+SFdjCi0tLS0tRU5EIFBHUCBTSUdOQVRVUkUtLS0tLQo='
 PIN_ANNOUNCEMENT_B64='PSBXZWxjb21lIHRvIFVidW50dSAyNC4wNCBMVFMgJ05vYmxlIE51bWJhdCcgPQoKVGhlIFVidW50
 dSB0ZWFtIGlzIHByb3VkIHRvIGFubm91bmNlIFVidW50dSAyNC4wNCBMVFMgJ05vYmxlIE51bWJh
 dCcuCgpUbyBzZWUgd2hhdCdzIG5ldyBpbiB0aGlzIHJlbGVhc2UsIHZpc2l0OgogIGh0dHBzOi8v
@@ -7172,6 +7172,341 @@ PY
   log INFO "META_RELEASE_URI_VALIDATION=PASS"
 }
 
+# ---------------------------------------------------------------------------
+# Legacy NTP pre-transition quiesce (Jammy→Noble / ntp → ntpsec)
+#
+# ROOT CAUSE (confirmed via package maintainer scripts + fixtures):
+#   jammy ntp postrm/transitional ntp postrm call `deluser --system ntp` on purge.
+#   If ntpd under UID ntp is still running, userdel returns 8 and logs:
+#     userdel: user ntp is currently used by process ...
+#     fatal: '/usr/sbin/userdel ntp' returned error code 8. Exiting.
+#   jammy ntp prerm only stops the unit on remove (not upgrade), and the client
+#   previously started do-release-upgrade without quiescing legacy ntp.
+#
+# Prevention: before package transition, stop systemd-managed legacy ntp units
+# only, bounded-wait for UID ntp process count == 0, else STOP. Never kill -9,
+# never pkill/killall, never stop ntpsec, never delete the ntp user, never patch
+# maintainer scripts or hide error code 8.
+# ---------------------------------------------------------------------------
+LEGACY_NTP_VERSION_LT="1:4.2.8p15+dfsg-2~"
+NTP_QUIESCE_WAIT_SECS="${NTP_QUIESCE_WAIT_SECS:-30}"
+NTP_QUIESCE_STAMP_NAME="ntp-pre-transition-quiesce.done"
+
+ntp_quiesce_stamp_path() {
+  printf '%s/%s' "${STATE_ROOT}" "${NTP_QUIESCE_STAMP_NAME}"
+}
+
+count_ntp_uid_processes() {
+  # Test hooks (fixture path only).
+  if [[ -n "${STELLAR_OFFLINE_FAKE_NTP_UID_PROCS:-}" ]]; then
+    printf '%s' "${STELLAR_OFFLINE_FAKE_NTP_UID_PROCS}"
+    return 0
+  fi
+  local count=0
+  if ! getent passwd ntp >/dev/null 2>&1; then
+    printf '0'
+    return 0
+  fi
+  # Enumerate only; never kill by UID.
+  count="$(ps -u ntp -o pid= 2>/dev/null | awk 'NF {c++} END {print c+0}')"
+  printf '%s' "${count:-0}"
+}
+
+legacy_ntp_package_installed() {
+  if [[ -n "${STELLAR_OFFLINE_FAKE_LEGACY_NTP_PACKAGE:-}" ]]; then
+    [[ "${STELLAR_OFFLINE_FAKE_LEGACY_NTP_PACKAGE}" == "1" ]]
+    return $?
+  fi
+  local st ver
+  st="$(dpkg-query -W -f='${db:Status-Status}' ntp 2>/dev/null || true)"
+  [[ "$st" == "installed" ]] || return 1
+  ver="$(dpkg-query -W -f='${Version}' ntp 2>/dev/null || true)"
+  [[ -n "$ver" ]] || return 1
+  # ntpsec Breaks/Replaces ntp versions before 1:4.2.8p15+dfsg-2~; older = real jammy ntp.
+  dpkg --compare-versions "$ver" lt "$LEGACY_NTP_VERSION_LT"
+}
+
+ntpsec_package_installed() {
+  if [[ -n "${STELLAR_OFFLINE_FAKE_NTPSEC_PACKAGE:-}" ]]; then
+    [[ "${STELLAR_OFFLINE_FAKE_NTPSEC_PACKAGE}" == "1" ]]
+    return $?
+  fi
+  local st
+  st="$(dpkg-query -W -f='${db:Status-Status}' ntpsec 2>/dev/null || true)"
+  [[ "$st" == "installed" ]]
+}
+
+legacy_ntp_unit_fragment() {
+  if [[ -n "${STELLAR_OFFLINE_FAKE_LEGACY_NTP_UNIT_FRAGMENT:-}" ]]; then
+    printf '%s' "${STELLAR_OFFLINE_FAKE_LEGACY_NTP_UNIT_FRAGMENT}"
+    return 0
+  fi
+  systemctl show -p FragmentPath --value ntp.service 2>/dev/null || true
+}
+
+legacy_ntp_unit_owned_by_ntp_package() {
+  # True only when ntp.service fragment is owned by package "ntp" (not ntpsec alias).
+  if [[ -n "${STELLAR_OFFLINE_FAKE_LEGACY_NTP_UNIT_OWNED:-}" ]]; then
+    [[ "${STELLAR_OFFLINE_FAKE_LEGACY_NTP_UNIT_OWNED}" == "1" ]]
+    return $?
+  fi
+  local frag owner
+  frag="$(legacy_ntp_unit_fragment)"
+  case "$frag" in
+    */ntp.service) ;;
+    *) return 1 ;;
+  esac
+  # ntpsec exposes Alias=ntp.service but FragmentPath is .../ntpsec.service.
+  case "$frag" in
+    */ntpsec.service) return 1 ;;
+  esac
+  owner="$(dpkg-query -S "$frag" 2>/dev/null | head -1 | cut -d: -f1 | awk '{print $1}' || true)"
+  [[ "$owner" == "ntp" ]] || return 1
+  return 0
+}
+
+legacy_ntp_unit_is_active() {
+  if [[ -n "${STELLAR_OFFLINE_FAKE_LEGACY_NTP_ACTIVE:-}" ]]; then
+    [[ "${STELLAR_OFFLINE_FAKE_LEGACY_NTP_ACTIVE}" == "1" ]]
+    return $?
+  fi
+  local frag st
+  frag="$(legacy_ntp_unit_fragment)"
+  case "$frag" in
+    */ntp.service) ;;
+    *) return 1 ;;
+  esac
+  st="$(systemctl is-active ntp.service 2>/dev/null || true)"
+  [[ "$st" == "active" || "$st" == "activating" ]]
+}
+
+emit_ntp_quiesce_markers() {
+  local level="${1:-INFO}"
+  log "$level" "NTP_PRE_TRANSITION_CHECK=${NTP_PRE_TRANSITION_CHECK:-}"
+  log "$level" "LEGACY_NTP_PACKAGE_DETECTED=${LEGACY_NTP_PACKAGE_DETECTED:-NO}"
+  log "$level" "LEGACY_NTP_SERVICE_DETECTED=${LEGACY_NTP_SERVICE_DETECTED:-NO}"
+  log "$level" "LEGACY_NTP_SERVICE_QUIESCE=${LEGACY_NTP_SERVICE_QUIESCE:-NOT_REQUIRED}"
+  log "$level" "NTP_UID_ACTIVE_PROCESS_COUNT=${NTP_UID_ACTIVE_PROCESS_COUNT:-0}"
+  log "$level" "NTP_USERDEL_PREVENTION=${NTP_USERDEL_PREVENTION:-PASS}"
+}
+
+stop_legacy_ntp_systemd_units() {
+  # Stop only legacy ntp units. Never touch ntpsec.service.
+  if [[ -n "${STELLAR_OFFLINE_FAKE_SYSTEMCTL_STOP:-}" ]]; then
+    if [[ "${STELLAR_OFFLINE_FAKE_SYSTEMCTL_STOP}" == "ok" ]]; then
+      log INFO "LEGACY_NTP_SYSTEMCTL_STOP=FAKE_OK"
+      return 0
+    fi
+    log ERROR "LEGACY_NTP_SYSTEMCTL_STOP=FAKE_FAIL"
+    return 1
+  fi
+  local frag rc=0
+  frag="$(legacy_ntp_unit_fragment)"
+  if ! legacy_ntp_unit_owned_by_ntp_package; then
+    log ERROR "LEGACY_NTP_STOP_UNIT=REFUSED (not owned by legacy ntp package)"
+    return 1
+  fi
+  case "$frag" in
+    */ntp.service)
+      log INFO "LEGACY_NTP_STOP_UNIT=ntp.service fragment=${frag}"
+      systemctl stop ntp.service || rc=$?
+      ;;
+    *)
+      log INFO "LEGACY_NTP_STOP_UNIT=SKIP (no legacy ntp.service fragment)"
+      ;;
+  esac
+  # Companion path/unit from jammy ntp package (safe if absent).
+  if [[ -f /lib/systemd/system/ntp-systemd-netif.path ]] \
+    || [[ -f /lib/systemd/system/ntp-systemd-netif.service ]]; then
+    systemctl stop ntp-systemd-netif.path ntp-systemd-netif.service 2>/dev/null || true
+  fi
+  return "$rc"
+}
+
+wait_ntp_uid_processes_clear() {
+  local wait_secs="${1:-$NTP_QUIESCE_WAIT_SECS}"
+  local i count=0
+  i=0
+  while [[ "$i" -lt "$wait_secs" ]]; do
+    count="$(count_ntp_uid_processes)"
+    if [[ "$count" -eq 0 ]]; then
+      return 0
+    fi
+    # Test hook: after a successful fake stop, drop process count to 0 on next poll.
+    if [[ "${STELLAR_OFFLINE_FAKE_SYSTEMCTL_STOP:-}" == "ok" \
+       && "${STELLAR_OFFLINE_FAKE_NTP_UID_PROCS_AFTER_STOP:-}" != "" ]]; then
+      STELLAR_OFFLINE_FAKE_NTP_UID_PROCS="${STELLAR_OFFLINE_FAKE_NTP_UID_PROCS_AFTER_STOP}"
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  count="$(count_ntp_uid_processes)"
+  [[ "$count" -eq 0 ]]
+}
+
+write_ntp_quiesce_stamp() {
+  local result="$1"
+  local stamp
+  stamp="$(ntp_quiesce_stamp_path)"
+  mkdir -p "$STATE_ROOT" 2>/dev/null || true
+  cat >"${stamp}.new" <<EOF
+NTP_PRE_TRANSITION_CHECK=${result}
+LEGACY_NTP_PACKAGE_DETECTED=${LEGACY_NTP_PACKAGE_DETECTED:-NO}
+LEGACY_NTP_SERVICE_DETECTED=${LEGACY_NTP_SERVICE_DETECTED:-NO}
+LEGACY_NTP_SERVICE_QUIESCE=${LEGACY_NTP_SERVICE_QUIESCE:-NOT_REQUIRED}
+NTP_UID_ACTIVE_PROCESS_COUNT=${NTP_UID_ACTIVE_PROCESS_COUNT:-0}
+NTP_USERDEL_PREVENTION=${NTP_USERDEL_PREVENTION:-PASS}
+STAMPED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+EOF
+  mv -f "${stamp}.new" "$stamp"
+  chmod 0600 "$stamp" 2>/dev/null || true
+}
+
+ensure_legacy_ntp_quiesced_before_package_transition() {
+  # Idempotent pre-package-transition gate. Safe on resume/reboot re-entry.
+  # Required order:
+  #   1) legacy ntp package present?
+  #   2) ntp.service owned by legacy ntp package?
+  #   3) systemd stop (legacy only)
+  #   4) bounded wait until ntp UID process count == 0
+  #   5) only then allow package transition
+  local count stamp
+  NTP_PRE_TRANSITION_CHECK="START"
+  LEGACY_NTP_PACKAGE_DETECTED="NO"
+  LEGACY_NTP_SERVICE_DETECTED="NO"
+  LEGACY_NTP_SERVICE_QUIESCE="NOT_REQUIRED"
+  NTP_UID_ACTIVE_PROCESS_COUNT="0"
+  NTP_USERDEL_PREVENTION="PASS"
+
+  log INFO "NTP_PRE_TRANSITION_CHECK=START"
+
+  # Too late / wrong context: never stop services after mutation began.
+  if [[ "${RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED:-false}" == "true" ]] \
+    || package_transition_evidence_present 2>/dev/null; then
+    NTP_PRE_TRANSITION_CHECK="SKIP"
+    log INFO "NTP_PRE_TRANSITION_CHECK=SKIP"
+    log INFO "REASON=package_transition_already_started"
+    log INFO "LEGACY_NTP_PACKAGE_DETECTED=NO"
+    log INFO "LEGACY_NTP_SERVICE_DETECTED=NO"
+    log INFO "LEGACY_NTP_SERVICE_QUIESCE=NOT_REQUIRED"
+    log INFO "NTP_USERDEL_PREVENTION=PASS"
+    return 0
+  fi
+
+  if legacy_ntp_package_installed; then
+    LEGACY_NTP_PACKAGE_DETECTED="YES"
+  else
+    LEGACY_NTP_PACKAGE_DETECTED="NO"
+  fi
+  if legacy_ntp_unit_owned_by_ntp_package; then
+    LEGACY_NTP_SERVICE_DETECTED="YES"
+  else
+    LEGACY_NTP_SERVICE_DETECTED="NO"
+  fi
+  NTP_UID_ACTIVE_PROCESS_COUNT="$(count_ntp_uid_processes)"
+
+  # ntpsec-only: never stop ntpsec.
+  if ntpsec_package_installed && [[ "$LEGACY_NTP_PACKAGE_DETECTED" != "YES" ]]; then
+    local frag
+    frag="$(legacy_ntp_unit_fragment)"
+    case "$frag" in
+      */ntpsec.service|"")
+        LEGACY_NTP_SERVICE_QUIESCE="NOT_REQUIRED"
+        NTP_PRE_TRANSITION_CHECK="PASS"
+        NTP_USERDEL_PREVENTION="PASS"
+        log INFO "REASON=ntpsec_only_no_legacy_ntp"
+        emit_ntp_quiesce_markers INFO
+        write_ntp_quiesce_stamp PASS
+        return 0
+        ;;
+    esac
+  fi
+
+  # No legacy package and no legacy-owned unit → not required (unless stray UID procs).
+  if [[ "$LEGACY_NTP_PACKAGE_DETECTED" != "YES" && "$LEGACY_NTP_SERVICE_DETECTED" != "YES" ]]; then
+    if [[ "${NTP_UID_ACTIVE_PROCESS_COUNT}" -gt 0 ]]; then
+      LEGACY_NTP_SERVICE_QUIESCE="FAIL"
+      NTP_PRE_TRANSITION_CHECK="FAIL"
+      NTP_USERDEL_PREVENTION="FAIL"
+      log ERROR "REASON=ntp_uid_processes_without_legacy_unit"
+      emit_ntp_quiesce_markers ERROR
+      write_ntp_quiesce_stamp FAIL
+      fail_stage 1 "FAIL_LEGACY_NTP_QUIESCE: ntp UID processes remain without manageable legacy unit"
+    fi
+    LEGACY_NTP_SERVICE_QUIESCE="NOT_REQUIRED"
+    NTP_PRE_TRANSITION_CHECK="PASS"
+    NTP_USERDEL_PREVENTION="PASS"
+    emit_ntp_quiesce_markers INFO
+    write_ntp_quiesce_stamp PASS
+    return 0
+  fi
+
+  # Package present but unit not owned by legacy ntp → cannot safely systemd-stop.
+  if [[ "$LEGACY_NTP_PACKAGE_DETECTED" == "YES" && "$LEGACY_NTP_SERVICE_DETECTED" != "YES" ]]; then
+    if [[ "${NTP_UID_ACTIVE_PROCESS_COUNT}" -gt 0 ]]; then
+      LEGACY_NTP_SERVICE_QUIESCE="FAIL"
+      NTP_PRE_TRANSITION_CHECK="FAIL"
+      NTP_USERDEL_PREVENTION="FAIL"
+      log ERROR "REASON=legacy_ntp_package_without_owned_unit"
+      emit_ntp_quiesce_markers ERROR
+      write_ntp_quiesce_stamp FAIL
+      fail_stage 1 "FAIL_LEGACY_NTP_QUIESCE: legacy ntp package present but ntp.service not owned by ntp"
+    fi
+    # Installed but inactive/no unit file and no UID procs: nothing to quiesce.
+    LEGACY_NTP_SERVICE_QUIESCE="NOT_REQUIRED"
+    NTP_PRE_TRANSITION_CHECK="PASS"
+    NTP_USERDEL_PREVENTION="PASS"
+    emit_ntp_quiesce_markers INFO
+    write_ntp_quiesce_stamp PASS
+    return 0
+  fi
+
+  stamp="$(ntp_quiesce_stamp_path)"
+  if [[ -f "$stamp" ]] && grep -q '^LEGACY_NTP_SERVICE_QUIESCE=PASS$' "$stamp" 2>/dev/null \
+    && [[ "${NTP_UID_ACTIVE_PROCESS_COUNT}" -eq 0 ]]; then
+    LEGACY_NTP_SERVICE_QUIESCE="PASS"
+    NTP_PRE_TRANSITION_CHECK="PASS"
+    NTP_USERDEL_PREVENTION="PASS"
+    log INFO "REASON=idempotent_stamp_reuse"
+    emit_ntp_quiesce_markers INFO
+    return 0
+  fi
+
+  if legacy_ntp_unit_is_active || [[ "${NTP_UID_ACTIVE_PROCESS_COUNT}" -gt 0 ]]; then
+    log INFO "LEGACY_NTP_QUIESCE_ACTION=systemctl_stop"
+    if ! stop_legacy_ntp_systemd_units; then
+      LEGACY_NTP_SERVICE_QUIESCE="FAIL"
+      NTP_PRE_TRANSITION_CHECK="FAIL"
+      NTP_USERDEL_PREVENTION="FAIL"
+      log ERROR "REASON=legacy_ntp_systemctl_stop_failed"
+      emit_ntp_quiesce_markers ERROR
+      write_ntp_quiesce_stamp FAIL
+      fail_stage 1 "FAIL_LEGACY_NTP_QUIESCE: systemctl stop of legacy ntp failed"
+    fi
+  else
+    log INFO "LEGACY_NTP_QUIESCE_ACTION=already_inactive"
+  fi
+
+  if ! wait_ntp_uid_processes_clear "$NTP_QUIESCE_WAIT_SECS"; then
+    NTP_UID_ACTIVE_PROCESS_COUNT="$(count_ntp_uid_processes)"
+    LEGACY_NTP_SERVICE_QUIESCE="FAIL"
+    NTP_PRE_TRANSITION_CHECK="FAIL"
+    NTP_USERDEL_PREVENTION="FAIL"
+    log ERROR "REASON=ntp_uid_processes_remain_after_systemd_stop"
+    emit_ntp_quiesce_markers ERROR
+    write_ntp_quiesce_stamp FAIL
+    fail_stage 1 "FAIL_LEGACY_NTP_QUIESCE: ntp UID processes remain after systemd stop; refusing package transition"
+  fi
+
+  NTP_UID_ACTIVE_PROCESS_COUNT="0"
+  LEGACY_NTP_SERVICE_QUIESCE="PASS"
+  NTP_PRE_TRANSITION_CHECK="PASS"
+  NTP_USERDEL_PREVENTION="PASS"
+  emit_ntp_quiesce_markers INFO
+  write_ntp_quiesce_stamp PASS
+  return 0
+}
+
 classify_ntp_userdel_warning() {
   # Old ntp purge may emit userdel error 8 while the package transaction continues.
   # Detect the signature; do NOT kill ntp, restart services, or rewrite maintainer scripts.
@@ -7731,6 +8066,10 @@ main() {
   validate_distupgrade_config_ascii_before_dro
   install_noninteractive_conffile_policy
   snapshot_pre_dro_package_state
+  # Prevent ntp userdel error 8: quiesce legacy ntp before any package mutation.
+  set_stage "NTP_PRE_TRANSITION_QUIESCE"
+  LAST_COMMAND="ensure_legacy_ntp_quiesced_before_package_transition"
+  ensure_legacy_ntp_quiesced_before_package_transition
   # Leave ASCII gate before spawning DRO so failure journals never strand on
   # DISTUPGRADE_CONFIG_ASCII_GATE after config validation has already passed.
   set_stage "PACKAGE_TRANSACTION_WAIT"

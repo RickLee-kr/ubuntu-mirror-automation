@@ -2740,9 +2740,10 @@ fi
 # 13) Automatic progress monitor UX (fixture-only)
 # =============================================================================
 
-# Static: monitor must not signal runner/service
+# Static: monitor must not signal runner/service.
+# Allow pre-DRO legacy NTP quiesce (systemctl stop ntp.service / ntp-systemd-netif.* only).
 if grep -nE '^\s*wait "\$\{?RUNNER|^\s*wait "\$\{?UPGRADE_RUNNER|^\s*kill "\$\{?RUNNER|^\s*kill "\$\{?UPGRADE_RUNNER|^\s*systemctl stop|^\s*pkill |^\s*killall ' "$SCRIPT_IN" \
-  | grep -v 'grep\|#\|forbidden\|금지\|kill_fake\|pkill -f' ; then
+  | grep -vE 'grep|#|forbidden|금지|kill_fake|pkill -f|ntp\.service|ntp-systemd-netif|LEGACY_NTP|stop_legacy_ntp' ; then
   fail "monitor path appears to signal runner/service"
 else
   pass "no wait/kill/systemctl-stop of runner in client template"

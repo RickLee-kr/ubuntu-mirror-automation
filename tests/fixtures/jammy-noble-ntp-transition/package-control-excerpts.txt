@@ -1,0 +1,53 @@
+### jammy ntp (legacy)
+ new Debian package, version 2.0.
+ size 720770 bytes: control archive=3812 bytes.
+     200 bytes,     8 lines      conffiles
+    1248 bytes,    28 lines      control
+    2928 bytes,    46 lines      md5sums
+    4312 bytes,   114 lines   *  postinst             #!/bin/sh
+    1826 bytes,    55 lines   *  postrm               #!/bin/sh
+     233 bytes,     7 lines   *  preinst              #!/bin/sh
+     884 bytes,    26 lines   *  prerm                #!/bin/sh
+      99 bytes,     2 lines      triggers
+ Package: ntp
+ Version: 1:4.2.8p15+dfsg-1ubuntu2
+ Architecture: amd64
+ Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+ Installed-Size: 2071
+ Depends: adduser, lsb-base (>= 3.2-13), netbase, tzdata, libc6 (>= 2.34), libcap2 (>= 1:2.10), libedit2 (>= 2.11-20080614-0), libopts25 (>= 1:5.18.16), libssl3 (>= 3.0.0~~alpha1)
+ Recommends: sntp, perl:any
+ Suggests: ntp-doc
+ Conflicts: time-daemon
+ Replaces: time-daemon
+
+### noble transitional ntp
+ new Debian package, version 2.0.
+ size 15744 bytes: control archive=945 bytes.
+     277 bytes,     6 lines      conffiles
+     511 bytes,    14 lines      control
+     128 bytes,     2 lines      md5sums
+     466 bytes,    20 lines   *  postrm               #!/bin/sh
+ Package: ntp
+ Source: ntpsec (1.2.2+dfsg1-4build2)
+ Version: 1:4.2.8p15+dfsg-2~1.2.2+dfsg1-4build2
+ Architecture: all
+ Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+ Installed-Size: 68
+ Depends: ntpsec
+ Section: oldlibs
+ Priority: optional
+ Homepage: https://www.ntpsec.org
+ Description: Network Time Protocol daemon/utilities (transitional package)
+  This is a dummy transitional package to transition to NTPsec.
+  It can be safely removed.
+ Original-Maintainer: Richard Laager <rlaager@debian.org>
+
+### noble ntpsec Breaks/Replaces
+11: Package: ntpsec
+12: Version: 1.2.2+dfsg1-4build2
+16: Pre-Depends: init-system-helpers (>= 1.54~)
+17: Depends: adduser, netbase, python3, python3-ntp (= 1.2.2+dfsg1-4build2), tzdata, libc6 (>= 2.38), libcap2 (>= 1:2.10), libssl3t64 (>= 3.0.0)
+20: Conflicts: time-daemon
+21: Breaks: ntp (<< 1:4.2.8p15+dfsg-2~)
+22: Replaces: ntp (<< 1:4.2.8p15+dfsg-2~), time-daemon
+23: Provides: time-daemon

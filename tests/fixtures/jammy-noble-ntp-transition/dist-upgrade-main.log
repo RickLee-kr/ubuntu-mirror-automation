@@ -1,0 +1,5 @@
+2024-07-15 12:34:56,789 DEBUG Running post-installation trigger for man-db:amd64
+Removing ntp (1:4.2.8p15+dfsg-1ubuntu2) ...
+userdel: user ntp is currently used by process 1234
+fatal: '/usr/sbin/userdel ntp' returned error code 8. Exiting.
+dpkg: warning: while removing ntp, directory '/var/lib/ntp' not empty so not removed
