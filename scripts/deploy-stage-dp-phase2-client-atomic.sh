@@ -1,60 +1,83 @@
 #!/usr/bin/env bash
-# Atomic publish of client/stage-dp-phase2-6.5.0.sh (+ sha256) to /var/spool/apt-mirror/client/
-# Does NOT touch selective READY, OS upgrade client manifests, or nginx reload.
+# Atomic publish of Phase 2 client helpers (+ sha256) to /var/spool/apt-mirror/client/
+# Deploys both:
+#   stage-dp-phase2.sh              (canonical)
+#   stage-dp-phase2-6.5.0.sh        (compatibility wrapper)
+# Does NOT touch selective READY, OS upgrade client manifests, or nginx reload
+# unless HTTP verify requires an already-published /client/ location.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="${ROOT}/client/stage-dp-phase2-6.5.0.sh"
-NAME="stage-dp-phase2-6.5.0.sh"
 DEST_ROOT="${DEST_ROOT:-/var/spool/apt-mirror/client}"
 READY_PATH="${READY_PATH:-/var/spool/apt-mirror/selective/state/READY}"
 MIRROR_BASE="${MIRROR_BASE:-http://221.139.249.111}"
 SKIP_HTTP_VERIFY="${SKIP_HTTP_VERIFY:-0}"
 
-[[ -f "$SRC" ]] || { echo "missing ${SRC}" >&2; exit 1; }
+HELPERS=(
+  stage-dp-phase2.sh
+  stage-dp-phase2-6.5.0.sh
+)
+
 [[ "$(id -u)" -eq 0 || "${DP_PHASE2_SKIP_ROOT_CHECK:-0}" == "1" ]] || {
   echo "must run as root" >&2
   exit 1
 }
 
-bash -n "$SRC" || { echo "bash -n failed" >&2; exit 1; }
+deploy_one() {
+  local name="$1"
+  local src="${ROOT}/client/${name}"
+  [[ -f "$src" ]] || { echo "missing ${src}" >&2; exit 1; }
+  bash -n "$src" || { echo "bash -n failed: ${name}" >&2; exit 1; }
 
-# Refuse ACPS host and ensure bringup is never auto-executed
-# Reject an actual external Stellar Cyber URL, but allow guard code that
-# contains the hostname only to refuse such URLs at runtime.
-if grep -Ev '^[[:space:]]*#' "$SRC" |    grep -Eiq 'https?://[^[:space:]]*stellarcyber\.ai([/:]|$)'; then
-  echo "REFUSE: helper contains an external Stellar Cyber URL" >&2
-  exit 1
-fi
-grep -q 'BRINGUP_EXECUTED=NO' "$SRC" || { echo "missing BRINGUP_EXECUTED=NO" >&2; exit 1; }
-grep -Eq 'BRINGUP_EXECUTED=YES' "$SRC" && { echo "REFUSE: BRINGUP_EXECUTED=YES present" >&2; exit 1; }
-grep -q '221.139.249.111' "$SRC" || { echo "missing default mirror IP" >&2; exit 1; }
+  # Reject an actual external Stellar Cyber URL, but allow guard code that
+  # contains the hostname only to refuse such URLs at runtime.
+  if grep -Ev '^[[:space:]]*#' "$src" | grep -Eiq 'https?://[^[:space:]]*stellarcyber\.ai([/:]|$)'; then
+    echo "REFUSE: helper contains an external Stellar Cyber URL: ${name}" >&2
+    exit 1
+  fi
+  # Wrapper may only exec; canonical must declare BRINGUP_EXECUTED=NO
+  if [[ "$name" == "stage-dp-phase2.sh" ]]; then
+    grep -Eq '^[[:space:]]*BRINGUP_EXECUTED[[:space:]]*=[[:space:]]*"?NO"?[[:space:]]*$' "$src" || {
+      echo "missing valid BRINGUP_EXECUTED=NO assignment" >&2
+      exit 1
+    }
+    if grep -Eq '^[[:space:]]*BRINGUP_EXECUTED[[:space:]]*=[[:space:]]*"?YES"?[[:space:]]*$' "$src"; then
+      echo "REFUSE: BRINGUP_EXECUTED=YES assignment present" >&2
+      exit 1
+    fi
+    grep -q '221.139.249.111' "$src" || { echo "missing default mirror IP" >&2; exit 1; }
+    if grep -Eq -- 'chown[[:space:]]+aella:aella|install[[:space:]]+-o[[:space:]]+aella|[[:space:]]-g[[:space:]]+aella[[:space:]]+-m' "$src"; then
+      echo "REFUSE: literal aella group ownership present" >&2
+      exit 1
+    fi
+    if grep -Eq '^VERSION=|^[[:space:]]*VERSION=' "$src"; then
+      echo "REFUSE: ambiguous VERSION= assignment present" >&2
+      exit 1
+    fi
+  fi
 
-mkdir -p "$DEST_ROOT"
-SHA="$(sha256sum "$SRC" | awk '{print $1}')"
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-DEST="${DEST_ROOT}/${NAME}"
-SIDE="${DEST}.sha256"
-TMP="${DEST}.tmp.$$"
-SIDETMP="${SIDE}.tmp.$$"
+  mkdir -p "$DEST_ROOT"
+  local sha stamp dest side tmp sidetmp
+  sha="$(sha256sum "$src" | awk '{print $1}')"
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  dest="${DEST_ROOT}/${name}"
+  side="${dest}.sha256"
+  tmp="${dest}.tmp.$$"
+  sidetmp="${side}.tmp.$$"
 
-READY_BEFORE=""
-[[ -f "$READY_PATH" ]] && READY_BEFORE="$(sha256sum "$READY_PATH" | awk '{print $1}')"
+  if [[ -f "$dest" ]]; then
+    cp -a "$dest" "${dest}.bak-${stamp}"
+  fi
+  if [[ -f "$side" ]]; then
+    cp -a "$side" "${side}.bak-${stamp}"
+  fi
 
-if [[ -f "$DEST" ]]; then
-  cp -a "$DEST" "${DEST}.bak-${STAMP}"
-fi
-if [[ -f "$SIDE" ]]; then
-  cp -a "$SIDE" "${SIDE}.bak-${STAMP}"
-fi
+  cp -a "$src" "$tmp"
+  chmod 0755 "$tmp"
+  printf '%s  %s\n' "$sha" "$name" >"$sidetmp"
+  chmod 0644 "$sidetmp"
 
-cp -a "$SRC" "$TMP"
-chmod 0755 "$TMP"
-printf '%s  %s\n' "$SHA" "$NAME" >"$SIDETMP"
-chmod 0644 "$SIDETMP"
-
-# fsync + atomic replace
-python3 - "$TMP" "$DEST" "$SIDETMP" "$SIDE" <<'PY'
+  python3 - "$tmp" "$dest" "$sidetmp" "$side" <<'PY'
 import os, sys
 tmp, dest, sidetmp, side = sys.argv[1:5]
 for path in (tmp, sidetmp):
@@ -72,6 +95,15 @@ print("ATOMIC_DEPLOY=PASS")
 print("DEST=" + dest)
 print("SIDECAR=" + side)
 PY
+  echo "ARTIFACT_SHA256=${sha} name=${name}"
+}
+
+READY_BEFORE=""
+[[ -f "$READY_PATH" ]] && READY_BEFORE="$(sha256sum "$READY_PATH" | awk '{print $1}')"
+
+for h in "${HELPERS[@]}"; do
+  deploy_one "$h"
+done
 
 READY_AFTER=""
 [[ -f "$READY_PATH" ]] && READY_AFTER="$(sha256sum "$READY_PATH" | awk '{print $1}')"
@@ -80,7 +112,6 @@ if [[ -n "$READY_BEFORE" && "$READY_BEFORE" != "$READY_AFTER" ]]; then
   exit 1
 fi
 echo "READY_UNCHANGED=YES"
-echo "ARTIFACT_SHA256=${SHA}"
 
 if [[ "$SKIP_HTTP_VERIFY" == "1" ]]; then
   echo "HTTP_VERIFY=SKIPPED"
@@ -89,11 +120,13 @@ fi
 
 TMPD="$(mktemp -d)"
 trap 'rm -rf "$TMPD"' EXIT
-curl -fsS -o "${TMPD}/${NAME}" "${MIRROR_BASE}/client/${NAME}"
-HTTP_SHA="$(sha256sum "${TMPD}/${NAME}" | awk '{print $1}')"
-[[ "$HTTP_SHA" == "$SHA" ]] || { echo "HTTP SHA mismatch" >&2; exit 1; }
-curl -fsS -o "${TMPD}/${NAME}.sha256" "${MIRROR_BASE}/client/${NAME}.sha256"
-HTTP_SIDE="$(awk '{print $1}' "${TMPD}/${NAME}.sha256")"
-[[ "$HTTP_SIDE" == "$SHA" ]] || { echo "HTTP sidecar mismatch" >&2; exit 1; }
-echo "HTTP_VERIFY=PASS"
-echo "HTTP_SHA256=${HTTP_SHA}"
+for h in "${HELPERS[@]}"; do
+  local_sha="$(sha256sum "${DEST_ROOT}/${h}" | awk '{print $1}')"
+  curl -fsS -o "${TMPD}/${h}" "${MIRROR_BASE}/client/${h}"
+  http_sha="$(sha256sum "${TMPD}/${h}" | awk '{print $1}')"
+  [[ "$http_sha" == "$local_sha" ]] || { echo "HTTP SHA mismatch for ${h}" >&2; exit 1; }
+  curl -fsS -o "${TMPD}/${h}.sha256" "${MIRROR_BASE}/client/${h}.sha256"
+  http_side="$(awk '{print $1}' "${TMPD}/${h}.sha256")"
+  [[ "$http_side" == "$local_sha" ]] || { echo "HTTP sidecar mismatch for ${h}" >&2; exit 1; }
+  echo "HTTP_VERIFY=PASS name=${h} sha256=${http_sha}"
+done

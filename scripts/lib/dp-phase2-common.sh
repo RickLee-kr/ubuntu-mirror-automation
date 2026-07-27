@@ -1,21 +1,35 @@
 #!/usr/bin/env bash
-# Shared helpers for DP Phase 2 (6.5.0 only) offline bundle sync/verify/stage.
+# Shared helpers for DP Phase 2 offline bundle sync/verify/stage.
 # shellcheck shell=bash
 
 DP_PHASE2_VERSION_DEFAULT="6.5.0"
 DP_PHASE2_FILE_COUNT=9
+DP_PHASE2_REQUIRED_FILES=()
 
-DP_PHASE2_REQUIRED_FILES=(
-  aelladeb_py3_common.tar.gz
-  aelladeb_py3_common.tar.gz.sha1
-  aella-uvp-2404_6.5.0ubuntu1_amd64.deb
-  aella-uvp-2404_6.5.0ubuntu1_amd64.deb.sha1
-  bringup_py3_dp_after_os_upgrade.sh
-  bringup_py3_dp_after_os_upgrade.sh.sha1
-  images-6.5.0.list
-  images-6.5.0.tar
-  images-6.5.0.tar.sha256
-)
+dp2_set_version() {
+  local ver="${1:-}"
+  [[ -n "$ver" ]] || dp2_die "dp2_set_version requires a version"
+  if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    dp2_die "dp2_set_version malformed version=${ver}"
+  fi
+  DP_PHASE2_VERSION="$ver"
+  TARGET_DP_VERSION="$ver"
+  PHASE2_ARTIFACT_VERSION="$ver"
+  DP_PHASE2_REQUIRED_FILES=(
+    aelladeb_py3_common.tar.gz
+    aelladeb_py3_common.tar.gz.sha1
+    "aella-uvp-2404_${ver}ubuntu1_amd64.deb"
+    "aella-uvp-2404_${ver}ubuntu1_amd64.deb.sha1"
+    bringup_py3_dp_after_os_upgrade.sh
+    bringup_py3_dp_after_os_upgrade.sh.sha1
+    "images-${ver}.list"
+    "images-${ver}.tar"
+    "images-${ver}.tar.sha256"
+  )
+}
+
+# Default to configured/current artifact target until caller overrides.
+dp2_set_version "${DP_PHASE2_VERSION:-$DP_PHASE2_VERSION_DEFAULT}"
 
 dp2_log() {
   local level="$1"
@@ -205,18 +219,19 @@ dp2_assert_safe_tar_list() {
 
 dp2_verify_payload_checksums() {
   local files_dir="$1"
+  local ver="${DP_PHASE2_VERSION}"
   dp2_verify_sha1_pair \
     "${files_dir}/aelladeb_py3_common.tar.gz" \
     "${files_dir}/aelladeb_py3_common.tar.gz.sha1"
   dp2_verify_sha1_pair \
-    "${files_dir}/aella-uvp-2404_6.5.0ubuntu1_amd64.deb" \
-    "${files_dir}/aella-uvp-2404_6.5.0ubuntu1_amd64.deb.sha1"
+    "${files_dir}/aella-uvp-2404_${ver}ubuntu1_amd64.deb" \
+    "${files_dir}/aella-uvp-2404_${ver}ubuntu1_amd64.deb.sha1"
   dp2_verify_sha1_pair \
     "${files_dir}/bringup_py3_dp_after_os_upgrade.sh" \
     "${files_dir}/bringup_py3_dp_after_os_upgrade.sh.sha1"
   dp2_verify_sha256_pair \
-    "${files_dir}/images-6.5.0.tar" \
-    "${files_dir}/images-6.5.0.tar.sha256"
+    "${files_dir}/images-${ver}.tar" \
+    "${files_dir}/images-${ver}.tar.sha256"
 }
 
 dp2_check_image_list() {
@@ -243,7 +258,6 @@ dp2_write_manifest_sha256() {
   tmp="$(mktemp "${release_dir}/.manifest.XXXXXX")"
   (
     cd "$release_dir"
-    # Regular files only; exclude manifest itself and dangling junk
     find . -type f ! -name 'manifest.sha256' ! -name '.manifest.*' -printf '%P\n' \
       | LC_ALL=C sort \
       | while IFS= read -r rel; do
@@ -289,8 +303,18 @@ dp2_atomic_symlink() {
 }
 
 dp2_release_has_secret() {
+  # True when release.env (or similar metadata) appears to contain credentials.
+  # Host/path fields (SOURCE_HOST, SOURCE_PATH) are allowed; credential keys are not.
   local f="$1"
-  if grep -Eiq 'ACPS_PASS|password\s*=|passwd\s*=' "$f" 2>/dev/null; then
+  [[ -f "$f" ]] || return 1
+  if grep -Eiq \
+    '^[[:space:]]*(ACPS_PASS|ACPS_PASSWORD|ACPS_TOKEN|PASSWORD|PASSWD|SECRET|TOKEN|PRIVATE_KEY|ACCESS_KEY|CREDENTIAL|CREDENTIALS|AUTHORIZATION|AUTH_TOKEN|COOKIE|API_KEY)[[:space:]]*=' \
+    "$f" 2>/dev/null; then
+    return 0
+  fi
+  if grep -Eiq \
+    '(^|[^A-Za-z0-9_])(password|passwd|secret|token|private_key|access_key|credential|authorization|cookie)[[:space:]]*[:=]' \
+    "$f" 2>/dev/null; then
     return 0
   fi
   return 1

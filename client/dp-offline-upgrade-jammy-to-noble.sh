@@ -30,10 +30,10 @@ PIN_UPGRADER_TAR_SHA256='447f54cbdfb9f57d32ddb02fcf0a0abb0184059cc0f680e806d2337
 PIN_UPGRADER_GPG_SHA256='7af99394662fe6d9fbe4ba7f6efd4818f5594e82e553aaaf659144a80ff53bfe'
 PIN_PLAN_CHECKSUM='8eb3d478e2d40e7a19510239fcbf6e2e6824b2587e6e7172d60ef01e8920b157'
 PIN_DISCOVERY_CHECKSUM='d08f76a4e87bbaabc82b2aea3f552d26b9ece53be83735a74dffdfd70a816b56'
-PIN_MANIFEST_SHA256='e9a0a514cbeb8fe7edc827a6401bfccd05b04414968edeb359e892663d3e58c2'
+PIN_MANIFEST_SHA256='a0aa42e3a6920637bac990ec81102677c8449b3d18e5bba2903d173a684cabac'
 PIN_SAMPLE_DEB_URL='http://221.139.249.111/hops/jammy-to-noble/ubuntu/pool/main/a/accountsservice/accountsservice_23.13.9-2ubuntu6_amd64.deb'
 PIN_CONFIRM_PHRASE='UPGRADE-JAMMY-TO-NOBLE'
-PIN_GENERATED_AT='2026-07-26T23:55:21Z'
+PIN_GENERATED_AT='2026-07-27T04:23:42Z'
 PIN_PROFILE_NAME='offline-upgrade-selective'
 
 PIN_KEY_B64='mQENBGpePjYBCAC4/mSayiOdnynQyEygHF0MQZazmNTgWm6REY3nOTTGeZz9KrVrGuncglQk56wg
@@ -116,20 +116,20 @@ bGFuX2NoZWNrc3VtIjogIjhlYjNkNDc4ZTJkNDBlN2ExOTUxMDIzOWZjYmY2ZTJlNjgyNGIyNTg3
 ZTZlNzE3MmQ2MGVmMDFlODkyMGIxNTciLAogICJkaXNjb3ZlcnlfY2hlY2tzdW0iOiAiZDA4Zjc2
 YTRlODdiYmFhYmM4MmIyYWVhM2Y1NTJkMjZiOWVjZTUzYmU4MzczNWE3NGRmZmRmZDcwYTgxNmI1
 NiIsCiAgImNvbmZpcm1fcGhyYXNlIjogIlVQR1JBREUtSkFNTVktVE8tTk9CTEUiLAogICJnZW5l
-cmF0ZWRfYXQiOiAiMjAyNi0wNy0yNlQyMzo1NToyMVoiLAogICJhbm5vdW5jZW1lbnRzIjogewog
+cmF0ZWRfYXQiOiAiMjAyNi0wNy0yN1QwNDoyMzo0MloiLAogICJhbm5vdW5jZW1lbnRzIjogewog
 ICAgIlJlbGVhc2VBbm5vdW5jZW1lbnQiOiAiZDFlODJkMmU3NzA2NjNiNjNhYzk5YjM5ZTNhYTQz
 NmRmYjczMTEzOWM2NzE2M2RiNDQzOTJiOTMyODRlZmQ2MyIsCiAgICAiUmVsZWFzZUFubm91bmNl
 bWVudC5odG1sIjogImU3MWQxNGRmMDkzY2U1ZTQ1N2Y3YzNiYTg5YzVhMDI2NGIwMjAyYjFjYTcy
 ZjQyMDNhMzViMmVhZDY0OTg4YjMiCiAgfQp9Cg=='
 PIN_MANIFEST_SIG_B64='LS0tLS1CRUdJTiBQR1AgU0lHTkFUVVJFLS0tLS0KCmlRRXpCQUFCQ2dBZEZpRUV4NGIrbUljcERp
-ejNXU2NkL2RPTDZWanF2VW9GQW1wbW5ta0FDZ2tRL2RPTDZWanEKdlVwTUpBZjlHV29IUFlZM3Ju
-S0pCK0JIZDB0QllHYS9TNmxSN1lGNnhieEEyNjljUVMyMTFDY050Ym1yc0E4TwpubkV2VUpQVy9P
-OGNiamxjUGdhRTkzQ0Z5YmR5Smo4RUpCRUw4NUwvSEhGeUc2bXZpbThhUHRsQlJDWGxTZzlMCmdL
-WWJNblRubm1TRFc1T1dOUGQwM3VtTWFGdEk0bVp2TU1YeUxqSGtQOE0xOWpJM3pCUnhhMnE5L0ZE
-R2RtNGoKOHJJdytIVUVyYWNSTDJQZmpYL0FCTzFRQ1pKV0lHS3lBVnBCOTdpN242dTlveERaczlN
-eFFGM1drNmM1Z2liMAozYjBFTjhLTWZ2SUZmbm1XYTBWekVtWThBTTVFK2ZFcDB5aHpETmZ2WlhN
-Slpla2tnSVRreE5oSzBzMnZ1VWgxCjhhckIwMjIrYnVFSDJYSHV1OUIzQXpTYlMzNEE0UT09Cj01
-SFdjCi0tLS0tRU5EIFBHUCBTSUdOQVRVUkUtLS0tLQo='
+ejNXU2NkL2RPTDZWanF2VW9GQW1wbTNVNEFDZ2tRL2RPTDZWanEKdlVxVHJBZjhERE1WbHFZRkhk
+UytyZ0pScGpLKytuYWZDK1hRS3dnWHdDOGdNSm9XWW1sYTIyNGZETlBPNkNTcQpUTnh4Sld4VzRP
+Ny81Y25nOUhrSHpCbmxJdUNGaHpDV3VLUzc0UmJiTXpXc0R5OGd3Tkl5SU94cXdKN3E2WnhNCnVt
+aHFJem9WRTE1b3l4T01qT0Y1MFhmWEpkb2F4KzFTQ0lTVk0yai9JaTVsUGNiV1c5VEVwbk5xZTds
+bnZTcTMKcFNjUWpja1RrdzBZZ0hac042Sjdya2ZZYlRzL2JuZVF3dVpLK0xVZ1E2T3RHMnUzTU9r
+R0tya2JNVG5uVmFZMQpwWktWc1ZuR3ZXanJtekRzbnZqeWsrRENoN1BEUElGc0srV2lWU21qSHha
+OHpWMXJmbDRBTW1rZEFuaENqYVVECis5RkhibXZsemovNmc4V2oxVE85Zy9iV2xraVZYdz09Cj1s
+Z2kwCi0tLS0tRU5EIFBHUCBTSUdOQVRVUkUtLS0tLQo='
 PIN_ANNOUNCEMENT_B64='PSBXZWxjb21lIHRvIFVidW50dSAyNC4wNCBMVFMgJ05vYmxlIE51bWJhdCcgPQoKVGhlIFVidW50
 dSB0ZWFtIGlzIHByb3VkIHRvIGFubm91bmNlIFVidW50dSAyNC4wNCBMVFMgJ05vYmxlIE51bWJh
 dCcuCgpUbyBzZWUgd2hhdCdzIG5ldyBpbiB0aGlzIHJlbGVhc2UsIHZpc2l0OgogIGh0dHBzOi8v
@@ -2057,8 +2057,50 @@ detect_dp_install_state() {
   DP_INSTALL_STATE="UNKNOWN"
 }
 
+persist_source_product_env() {
+  # Persist source DP product version for Phase 2 (do not overwrite an existing PASS record).
+  local dest raw norm origin check captured
+  dest="$(hostpath ${STATE_ROOT}/source-product.env)"
+  mkdir -p "$(dirname "$dest")"
+  if [[ -f "$dest" ]] && grep -qE '^SOURCE_DP_VERSION_CHECK=PASS$' "$dest" 2>/dev/null; then
+    log INFO "SOURCE_PRODUCT_ENV=REUSED path=${STATE_ROOT}/source-product.env"
+    return 0
+  fi
+  raw="${DP_VERSION:-}"
+  origin="${DP_VERSION_SOURCE:-undetermined}"
+  captured="$(utc_now)"
+  if [[ -n "$raw" ]] && version_is_mmp "$raw"; then
+    norm="$raw"
+    check="PASS"
+    if dpkg --compare-versions "$norm" lt "${MIN_DP_VERSION:-6.2.0}" 2>/dev/null; then
+      check="FAIL_UNSUPPORTED"
+    fi
+  else
+    raw=""
+    norm="UNKNOWN"
+    check="FAIL_UNKNOWN"
+    origin="${origin:-none}"
+  fi
+  cat >"$dest" <<EOF
+SOURCE_DP_VERSION_RAW=${raw}
+SOURCE_DP_VERSION=${norm}
+SOURCE_DP_VERSION_ORIGIN=${origin}
+SOURCE_DP_VERSION_CAPTURED_AT=${captured}
+MIN_SUPPORTED_SOURCE_DP_VERSION=${MIN_DP_VERSION:-6.2.0}
+SOURCE_DP_VERSION_CHECK=${check}
+EOF
+  sync
+  log INFO "SOURCE_PRODUCT_ENV=WRITTEN check=${check} version=${norm} path=${STATE_ROOT}/source-product.env"
+  # Phase 1 remains OS-only: do not hard-stop here. Phase 2 staging enforces
+  # MIN_SUPPORTED_SOURCE_DP_VERSION using this persisted evidence.
+  if [[ "$check" == "FAIL_UNSUPPORTED" ]]; then
+    log WARN "SOURCE_DP_VERSION_CHECK=FAIL_UNSUPPORTED source=${norm} min=${MIN_DP_VERSION:-6.2.0} (Phase 2 will refuse; Phase 1 OS-only continues)"
+  fi
+}
+
 log_product_state_phase1() {
-  # Diagnostic-only product probe. Never dies; never invents AIO/role files.
+  # Diagnostic-only product probe. Never invents AIO/role files.
+  # Persists source-product.env for Phase 2 (hard gate is enforced in Phase 2 staging).
   local role dpver
   DP_INSTALL_STATE="UNKNOWN"
   detect_dp_install_state || true
@@ -2070,6 +2112,8 @@ log_product_state_phase1() {
 
   dpver="${DP_VERSION:-}"
   role="${DP_TOPOLOGY:-}"
+
+  persist_source_product_env
 
   log INFO "DP_INSTALL_STATE=${DP_INSTALL_STATE}"
   log INFO "DP_PRODUCT_STATE_ACTION=IGNORED_BY_PHASE1_POLICY"

@@ -891,8 +891,9 @@ def main(argv=None):
     hop_script = os.path.join(hop_out, script_name)
     shutil.copy2(script_path, hop_script)
     client_script = os.path.join(project_root, "client", script_name)
-    if not args.skip_sign:
-        # Never let unsigned test builds overwrite the repo client/ copy.
+    if not args.skip_sign and is_production_output_dir(project_root, out_dir):
+        # Refresh repo client/ only for production artifacts/client signed builds.
+        # Temp/test --output-dir builds must not mutate tracked client/*.sh.
         shutil.copy2(script_path, client_script)
         os.chmod(client_script, 0o755)
     else:

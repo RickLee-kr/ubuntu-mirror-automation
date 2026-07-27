@@ -46,6 +46,7 @@ fi
 # 2) Install scripts into lib dir (lightweight; does not full reinstall)
 mkdir -p /usr/local/lib/ubuntu-mirror/lib /usr/local/lib/ubuntu-mirror/templates
 install -m 0644 "${ROOT}/scripts/lib/dp-phase2-common.sh" /usr/local/lib/ubuntu-mirror/lib/dp-phase2-common.sh
+install -m 0755 "${ROOT}/scripts/download-dp-phase2.sh" /usr/local/lib/ubuntu-mirror/download-dp-phase2.sh
 install -m 0755 "${ROOT}/scripts/download-dp-phase2-6.5.0.sh" /usr/local/lib/ubuntu-mirror/download-dp-phase2-6.5.0.sh
 install -m 0755 "${ROOT}/scripts/deploy-stage-dp-phase2-client-atomic.sh" /usr/local/lib/ubuntu-mirror/deploy-stage-dp-phase2-client-atomic.sh
 install -m 0644 "${ROOT}/templates/nginx.conf" /usr/local/lib/ubuntu-mirror/templates/nginx.conf
@@ -68,11 +69,11 @@ echo "DP_PHASE2_SYNC_START log=${LOG}"
 export DP_PHASE2_LOG_FILE="$LOG"
 export DP_PHASE2_ROOT="/var/spool/apt-mirror/dp-phase2"
 export DP_PHASE2_MIN_FREE_GIB="70"
-bash "${ROOT}/scripts/download-dp-phase2-6.5.0.sh" sync 2>&1 | tee -a "$LOG"
+bash "${ROOT}/scripts/download-dp-phase2.sh" --version 6.5.0 sync 2>&1 | tee -a "$LOG"
 
 # 6) Verify + status
-bash "${ROOT}/scripts/download-dp-phase2-6.5.0.sh" verify | tee -a "$LOG"
-bash "${ROOT}/scripts/download-dp-phase2-6.5.0.sh" status | tee -a "$LOG"
+bash "${ROOT}/scripts/download-dp-phase2.sh" --version 6.5.0 verify | tee -a "$LOG"
+bash "${ROOT}/scripts/download-dp-phase2.sh" --version 6.5.0 status | tee -a "$LOG"
 
 # 7) HTTP checks (no full re-download of 30GiB)
 for url in \
@@ -80,6 +81,8 @@ for url in \
   "http://127.0.0.1/dp-phase2/6.5.0/release.env" \
   "http://127.0.0.1/dp-phase2/6.5.0/manifest.sha256" \
   "http://127.0.0.1/dp-phase2/6.5.0/dp_bundle_6.5.0-current.tar.sha256" \
+  "http://127.0.0.1/client/stage-dp-phase2.sh" \
+  "http://127.0.0.1/client/stage-dp-phase2.sh.sha256" \
   "http://127.0.0.1/client/stage-dp-phase2-6.5.0.sh" \
   "http://127.0.0.1/client/stage-dp-phase2-6.5.0.sh.sha256"
 do

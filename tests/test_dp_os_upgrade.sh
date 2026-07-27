@@ -193,6 +193,22 @@ hash_tree() {
   (cd "$d" && find . -type f -print0 | sort -z | xargs -0 sha256sum 2>/dev/null | sha256sum | awk '{print $1}')
 }
 
+# Copy a preflight fixture into WORKDIR and refresh completed_at_utc there only.
+fresh_pf() {
+  local name="$1" src="${2:-$FIX/preflight-ready-xenial}"
+  python3 - <<PY
+import json,shutil,pathlib,datetime
+src=pathlib.Path("$src")
+dst=pathlib.Path("$WORKDIR/$name")
+if dst.exists(): shutil.rmtree(dst)
+shutil.copytree(src,dst)
+d=json.load(open(dst/"preflight-summary.json"))
+d["completed_at_utc"]=datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+json.dump(d, open(dst/"preflight-summary.json","w"), indent=2)
+print(dst)
+PY
+}
+
 # ---------------------------------------------------------------------------
 # 1-3 syntax / help / version
 # ---------------------------------------------------------------------------
@@ -367,15 +383,9 @@ run_cli check --preflight "$FIX/invalid-json-preflight"
 
 # 22 unsupported schema
 setup_fake_root t22
-# refresh time
-python3 - <<PY
-import json,datetime
-p="$FIX/unsupported-schema/preflight-summary.json"
-d=json.load(open(p))
-d["completed_at_utc"]=datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-json.dump(d, open(p,"w"), indent=2)
-PY
-run_cli check --preflight "$FIX/unsupported-schema"
+# Refresh timestamp on a WORKDIR copy only — never mutate tracked fixtures.
+UNSUPPORTED_PF="$(fresh_pf pf-unsupported-schema "$FIX/unsupported-schema")"
+run_cli check --preflight "$UNSUPPORTED_PF"
 [[ "$RC" -eq 2 || "$RC" -eq 3 || "$RC" -eq 20 ]] && pass "unsupported schema" || fail "schema rc=$RC"
 
 # 23 stale
@@ -1268,21 +1278,6 @@ run_cli install --preflight "$WORKDIR/pf-orphan2" --execute \
 # ---------------------------------------------------------------------------
 # Bash 4.3 empty-array + durable execute authorization + repair-runtime
 # ---------------------------------------------------------------------------
-fresh_pf() {
-  local name="$1" src="${2:-$FIX/preflight-ready-xenial}"
-  python3 - <<PY
-import json,shutil,pathlib,datetime
-src=pathlib.Path("$src")
-dst=pathlib.Path("$WORKDIR/$name")
-if dst.exists(): shutil.rmtree(dst)
-shutil.copytree(src,dst)
-d=json.load(open(dst/"preflight-summary.json"))
-d["completed_at_utc"]=datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-json.dump(d, open(dst/"preflight-summary.json","w"), indent=2)
-print(dst)
-PY
-}
-
 # Empty reasons under set -u (native bash + xenial bash 4.3 when available)
 source "$LIB"
 osu_init_test_mode >/dev/null || true

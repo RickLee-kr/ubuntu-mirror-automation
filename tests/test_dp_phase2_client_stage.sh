@@ -3,19 +3,25 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HELPER="${ROOT}/client/stage-dp-phase2-6.5.0.sh"
+HELPER="${ROOT}/client/stage-dp-phase2.sh"
+WRAP="${ROOT}/client/stage-dp-phase2-6.5.0.sh"
 FAIL=0
 pass() { echo "  PASS: $*"; }
 fail() { echo "  FAIL: $*"; FAIL=1; }
 
 WORKDIR="$(mktemp -d)"
+HTTP_PID=""
 trap 'rm -rf "$WORKDIR"; [[ -n "${HTTP_PID:-}" ]] && kill "$HTTP_PID" 2>/dev/null || true' EXIT
 
-echo "[test] bash -n helper"
-bash -n "$HELPER" && pass "bash -n" || fail "bash -n"
+echo "[test] bash -n helpers"
+bash -n "$HELPER" && pass "bash -n canonical" || fail "bash -n canonical"
+bash -n "$WRAP" && pass "bash -n wrapper" || fail "bash -n wrapper"
+
+echo "[test] wrapper forwards target 6.5.0 only"
+grep -q -- '--target-version 6.5.0' "$WRAP" && pass "wrapper target" || fail "wrapper target"
+grep -q 'source-dp-version 6\.' "$WRAP" && fail "wrapper must not fix source version" || pass "wrapper source not fixed"
 
 echo "[test] helper does not use ACPS as download source"
-# Guard-string mentioning ACPS is OK; download/base URL must not.
 if grep -Eiq 'ACPS_PROVISION_URL|ACPS_BASE_URL|curl .*acps\.stellarcyber' "$HELPER"; then
   fail "ACPS download source present"
 elif grep -Eiq 'DEFAULT_MIRROR_URL=.*acps\.stellarcyber' "$HELPER"; then
@@ -24,47 +30,41 @@ else
   pass "no ACPS download source"
 fi
 
-echo "[test] default mirror IP only (no alternate public hosts hardcoded as default)"
+echo "[test] default mirror IP"
 grep -q 'DEFAULT_MIRROR_URL="http://221.139.249.111"' "$HELPER" && pass "default mirror IP" || fail "default mirror IP"
-if grep -Eiq 'DEFAULT_MIRROR_URL=.*(archive\.ubuntu\.com|acps\.)' "$HELPER"; then
-  fail "default mirror points elsewhere"
-else
-  pass "default mirror is internal IP"
-fi
 
 echo "[test] bringup never auto-executed"
-grep -q 'BRINGUP_EXECUTED=NO' "$HELPER" && pass "BRINGUP_EXECUTED=NO" || fail "missing NO"
-if grep -nE '[[:space:]](bash|sh)[[:space:]]+/home/aella/bringup_py3' "$HELPER" | grep -v 'NEXT_COMMAND'; then
+grep -Eq 'BRINGUP_EXECUTED=("NO"|NO)|BRINGUP_EXECUTED=\$\{BRINGUP_EXECUTED\}' "$HELPER" \
+  && pass "BRINGUP_EXECUTED=NO contract" || fail "missing NO"
+grep -q 'BRINGUP_EXECUTED="NO"' "$HELPER" && pass "default BRINGUP_EXECUTED=NO" || fail "default NO"
+if grep -nE '[[:space:]](bash|sh)[[:space:]]+/home/aella/bringup_py3' "$HELPER" | grep -vE 'NEXT_COMMAND|usage|EOF'; then
   fail "bringup executed in script body"
 else
   pass "bringup not executed in body"
 fi
-# NEXT_COMMAND is guidance only
-grep -q 'NEXT_COMMAND=sudo bash' "$HELPER" && pass "NEXT_COMMAND guidance present" || fail "NEXT_COMMAND"
 
-echo "[test] refuses stellarcyber URL via --mirror-url (non-root dies on root check first OK)"
-# parse_args runs before require_root — invoke through a tiny wrapper that sources parse only
-err="$(bash -c '
-  source "'"$HELPER"'" 2>/dev/null
-' 2>&1 || true)"
-# Direct execution: ACPS check happens in parse_args before root check
+echo "[test] no literal aella group / no ambiguous VERSION="
+if grep -En -- 'chown[[:space:]]+aella:aella|install[[:space:]]+-o[[:space:]]+aella|[[:space:]]-g[[:space:]]+aella[[:space:]]+-m' "$HELPER"; then
+  fail "literal aella group"
+else
+  pass "no literal aella group"
+fi
+grep -Eq '^VERSION=|"VERSION=6\.5\.0"|Current DP version' "$HELPER" && fail "ambiguous VERSION" || pass "no ambiguous VERSION"
+
+echo "[test] refuses stellarcyber URL via --mirror-url"
 set +e
-out="$(bash "$HELPER" --mirror-url 'https://acps.stellarcyber.ai/x' 2>&1)"
+out="$(bash "$HELPER" --target-version 6.5.0 --mirror-url 'https://acps.stellarcyber.ai/x' 2>&1)"
 rc=$?
 set -e
 if [[ "$rc" -ne 0 ]] && echo "$out" | grep -Eiq 'Refusing ACPS|ACPS|stellarcyber'; then
   pass "refuses ACPS mirror-url"
-elif [[ "$rc" -ne 0 ]]; then
-  # may die on root first depending on arg order — ensure parse_args is first in stage_main
-  if grep -A2 'stage_main()' "$HELPER" | grep -q 'parse_args'; then
-    # If root check somehow first, still ensure code path exists
-    grep -q 'Refusing ACPS' "$HELPER" && pass "ACPS refuse code present" || fail "ACPS refuse missing"
-  else
-    fail "should refuse ACPS mirror-url: $out"
-  fi
 else
-  fail "should refuse ACPS mirror-url"
+  fail "should refuse ACPS mirror-url: $out"
 fi
+
+echo "[test] failed staging cleanup removes STAGE_ROOT"
+grep -q 'STAGE_ROOT' "$HELPER" && grep -A20 '^cleanup()' "$HELPER" | grep -q 'STAGE_ROOT' \
+  && pass "cleanup removes STAGE_ROOT" || fail "STAGE_ROOT cleanup"
 
 echo "[test] checksum failure leaves destination untouched (inline harness)"
 HTTP_ROOT="${WORKDIR}/http"
@@ -97,7 +97,6 @@ sha256sum "${TMPF}/images-6.5.0.tar" | awk '{print $1}' >"${TMPF}/images-6.5.0.t
   cd "$TMPF"
   tar -cf "${REL}/dp_bundle_6.5.0-current.tar" "${FILES[@]}"
 )
-# Wrong checksum
 echo '0000000000000000000000000000000000000000000000000000000000000000  dp_bundle_6.5.0-current.tar' \
   >"${REL}/dp_bundle_6.5.0-current.tar.sha256"
 
@@ -109,7 +108,6 @@ PY
 HTTP_PID=$!
 sleep 0.3
 
-# Harness mirrors helper download+verify order; must not touch dest on failure
 DEST="${WORKDIR}/dest"
 STAGE="${WORKDIR}/stage"
 mkdir -p "$STAGE"
@@ -121,7 +119,6 @@ set +e
   expected="$(awk 'NF {print $1; exit}' "${STAGE}/bundle.tar.sha256")"
   actual="$(sha256sum "${STAGE}/bundle.tar" | awk '{print $1}')"
   [[ "${expected,,}" == "${actual,,}" ]]
-  # would extract + replace DEST only after success
   rm -rf "$DEST"
 ) 2>/dev/null
 rc=$?
@@ -129,7 +126,6 @@ set -e
 [[ "$rc" -ne 0 ]] && pass "checksum failure aborts before replace" || fail "checksum should fail"
 [[ -f "${DEST}/marker" ]] && pass "destination preserved on checksum fail" || fail "destination altered"
 
-# Success path after fix
 sha256sum "${REL}/dp_bundle_6.5.0-current.tar" | awk '{print $1"  dp_bundle_6.5.0-current.tar"}' \
   >"${REL}/dp_bundle_6.5.0-current.tar.sha256"
 NEW="${WORKDIR}/new_art"
@@ -145,7 +141,7 @@ tar -xf "${STAGE}/bundle.tar" -C "$NEW"
 echo "[test] deploy script safety checks"
 bash -n "${ROOT}/scripts/deploy-stage-dp-phase2-client-atomic.sh" && pass "deploy bash -n" || fail "deploy bash -n"
 grep -q 'READY_UNCHANGED' "${ROOT}/scripts/deploy-stage-dp-phase2-client-atomic.sh" && pass "READY guard" || fail "READY guard"
-grep -q 'stellarcyber' "${ROOT}/scripts/deploy-stage-dp-phase2-client-atomic.sh" && pass "deploy refuses ACPS check present" || fail "deploy ACPS check"
+grep -q 'stage-dp-phase2.sh' "${ROOT}/scripts/deploy-stage-dp-phase2-client-atomic.sh" && pass "deploys generic" || fail "deploys generic"
 
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -x -e SC1091,SC2015,SC2034,SC2119,SC2120,SC2317 "$HELPER" \

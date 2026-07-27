@@ -2476,6 +2476,9 @@ cmd_validate_release_upgraders() {
 _dp_phase2_script() {
   local cand
   for cand in \
+    "${PROJECT_ROOT}/scripts/download-dp-phase2.sh" \
+    "/usr/local/lib/ubuntu-mirror/download-dp-phase2.sh" \
+    "${SCRIPT_DIR}/download-dp-phase2.sh" \
     "${PROJECT_ROOT}/scripts/download-dp-phase2-6.5.0.sh" \
     "/usr/local/lib/ubuntu-mirror/download-dp-phase2-6.5.0.sh" \
     "${SCRIPT_DIR}/download-dp-phase2-6.5.0.sh"
@@ -2490,25 +2493,25 @@ _dp_phase2_script() {
 
 cmd_sync_dp_phase2() {
   local script
-  script="$(_dp_phase2_script)" || die "download-dp-phase2-6.5.0.sh not found"
+  script="$(_dp_phase2_script)" || die "download-dp-phase2.sh not found"
   # Dedicated lock inside download script; also refuses if UOM global lock is busy.
   # Does not acquire UOM global lock (avoids blocking verify-selective readers wrongly,
   # and avoids re-entrancy issues). Selective READY is never touched.
   info "DP_PHASE2_SYNC_START script=${script}"
   DP_PHASE2_LOG_FILE="${DP_PHASE2_LOG_FILE:-/var/log/ubuntu-mirror/dp-phase2-sync.log}" \
-    bash "$script" sync
+    bash "$script" --version "${DP_PHASE2_VERSION:-6.5.0}" sync
 }
 
 cmd_verify_dp_phase2() {
   local script
-  script="$(_dp_phase2_script)" || die "download-dp-phase2-6.5.0.sh not found"
-  bash "$script" verify
+  script="$(_dp_phase2_script)" || die "download-dp-phase2.sh not found"
+  bash "$script" --version "${DP_PHASE2_VERSION:-6.5.0}" verify
 }
 
 cmd_status_dp_phase2() {
   local script
-  script="$(_dp_phase2_script)" || die "download-dp-phase2-6.5.0.sh not found"
-  bash "$script" status
+  script="$(_dp_phase2_script)" || die "download-dp-phase2.sh not found"
+  bash "$script" --version "${DP_PHASE2_VERSION:-6.5.0}" status
 }
 
 main() {

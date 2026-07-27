@@ -172,7 +172,36 @@ Phase 1 enables and validates **Ubuntu OS hops only** using the offline selectiv
 - On **Jammy (22.04)** intermediate hops, DP runtime / `aella_cli` unavailability and the known kubelet Docker API 1.40 vs daemon 1.44 mismatch are **expected** and must **not** abort Phase 1. Do not repair kubelet/Docker/containerd/Kubernetes in Phase 1.
 - After **Noble (24.04)** OS validation, create a **powered-off** VM snapshot before Phase 2. Phase 2 does **not** auto-start.
 
-### Phase 2 mirror apply (SSH-safe interactive wrapper)
+### Phase 2 artifact staging (product bringup is separate)
+
+**Support contract**
+
+- Supported starting DP version: **6.2.0 or above**
+- Current Phase 2 artifact target version: **6.5.0** (bundle filenames remain versioned)
+- Source DP version is detected separately from the artifact target version
+- Phase 2 lands the DP on the selected target (currently 6.5.0 Py3)
+- Versions above the selected target must not be downgraded
+- A healthy host already on the target version on Ubuntu 24.04 normally needs no staging
+- After Phase 1 OS-only upgrade (`COMPLETED_NOBLE`, product validation `NOT_RUN_PHASE1`), same-version staging is allowed only with explicit `--same-version-recovery` after a powered-off snapshot
+
+**Client helpers (internal mirror `/client/`)**
+
+```bash
+# Canonical
+sudo bash stage-dp-phase2.sh \
+  --source-dp-version 6.3.0 \
+  --target-version 6.5.0 \
+  --mirror-url http://221.139.249.111
+
+# Compatibility wrapper (target fixed to 6.5.0; source still required/detected)
+sudo bash stage-dp-phase2-6.5.0.sh \
+  --source-dp-version 6.3.0 \
+  --mirror-url http://221.139.249.111
+```
+
+Staging never executes `bringup_py3_dp_after_os_upgrade.sh`. Do not run bringup until `NTP_BRINGUP_READINESS=PASS` (internal NTP only).
+
+**Mirror apply (SSH-safe interactive wrapper)**
 
 `scripts/apply-dp-phase2-production.sh` never kills SSH. A trailing `exit "$rc"` in an interactive login shell **will** close the SSH session — that is wrapper misuse, not script behavior.
 
@@ -183,6 +212,10 @@ cd /home/aella/ubuntu-mirror-automation && {
   printf '\nAPPLY_DP_PHASE2_EXIT_CODE=%s\n' "$rc"
 }
 ```
+
+Generic sync entrypoint: `sudo bash scripts/download-dp-phase2.sh --version 6.5.0 sync`
+
+Compatibility: `sudo bash scripts/download-dp-phase2-6.5.0.sh sync`
 
 ### Xenial → Bionic hop client (`UPGRADE_MODE=OS_ONLY_PHASE1`)
 

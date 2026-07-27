@@ -1938,8 +1938,50 @@ detect_dp_install_state() {
   DP_INSTALL_STATE="UNKNOWN"
 }
 
+persist_source_product_env() {
+  # Persist source DP product version for Phase 2 (do not overwrite an existing PASS record).
+  local dest raw norm origin check captured
+  dest="$(hostpath ${STATE_ROOT}/source-product.env)"
+  mkdir -p "$(dirname "$dest")"
+  if [[ -f "$dest" ]] && grep -qE '^SOURCE_DP_VERSION_CHECK=PASS$' "$dest" 2>/dev/null; then
+    log INFO "SOURCE_PRODUCT_ENV=REUSED path=${STATE_ROOT}/source-product.env"
+    return 0
+  fi
+  raw="${DP_VERSION:-}"
+  origin="${DP_VERSION_SOURCE:-undetermined}"
+  captured="$(utc_now)"
+  if [[ -n "$raw" ]] && version_is_mmp "$raw"; then
+    norm="$raw"
+    check="PASS"
+    if dpkg --compare-versions "$norm" lt "${MIN_DP_VERSION:-6.2.0}" 2>/dev/null; then
+      check="FAIL_UNSUPPORTED"
+    fi
+  else
+    raw=""
+    norm="UNKNOWN"
+    check="FAIL_UNKNOWN"
+    origin="${origin:-none}"
+  fi
+  cat >"$dest" <<EOF
+SOURCE_DP_VERSION_RAW=${raw}
+SOURCE_DP_VERSION=${norm}
+SOURCE_DP_VERSION_ORIGIN=${origin}
+SOURCE_DP_VERSION_CAPTURED_AT=${captured}
+MIN_SUPPORTED_SOURCE_DP_VERSION=${MIN_DP_VERSION:-6.2.0}
+SOURCE_DP_VERSION_CHECK=${check}
+EOF
+  sync
+  log INFO "SOURCE_PRODUCT_ENV=WRITTEN check=${check} version=${norm} path=${STATE_ROOT}/source-product.env"
+  # Phase 1 remains OS-only: do not hard-stop here. Phase 2 staging enforces
+  # MIN_SUPPORTED_SOURCE_DP_VERSION using this persisted evidence.
+  if [[ "$check" == "FAIL_UNSUPPORTED" ]]; then
+    log WARN "SOURCE_DP_VERSION_CHECK=FAIL_UNSUPPORTED source=${norm} min=${MIN_DP_VERSION:-6.2.0} (Phase 2 will refuse; Phase 1 OS-only continues)"
+  fi
+}
+
 log_product_state_phase1() {
-  # Diagnostic-only product probe. Never dies; never invents AIO/role files.
+  # Diagnostic-only product probe. Never invents AIO/role files.
+  # Persists source-product.env for Phase 2 (hard gate is enforced in Phase 2 staging).
   local role dpver
   DP_INSTALL_STATE="UNKNOWN"
   detect_dp_install_state || true
@@ -1951,6 +1993,8 @@ log_product_state_phase1() {
 
   dpver="${DP_VERSION:-}"
   role="${DP_TOPOLOGY:-}"
+
+  persist_source_product_env
 
   log INFO "DP_INSTALL_STATE=${DP_INSTALL_STATE}"
   log INFO "DP_PRODUCT_STATE_ACTION=IGNORED_BY_PHASE1_POLICY"

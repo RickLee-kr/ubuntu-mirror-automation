@@ -327,24 +327,35 @@ else
   tail -20 "${WORKDIR}/default-unsigned.log" || true
 fi
 
-# Rebuild production artifacts/client for subsequent HTTP/deploy checks (signed)
+# Final signed build must stay in a temp output dir (never rewrite tracked
+# artifacts/client or client/*.sh). Production publish is out of test scope.
+FINAL_OUT="${WORKDIR}/final-prod-isolated"
+CLIENT_SHA_BEFORE="$(sha256sum "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh" | awk '{print $1}')"
+ART_SHA_BEFORE=""
+[[ -f "$PROD_ARTIFACT" ]] && ART_SHA_BEFORE="$(sha256sum "$PROD_ARTIFACT" | awk '{print $1}')"
 set +e
 python3 "$BUILD_PY" \
   --project-root "$ROOT" \
   --mirror-base "$MIRROR_BASE" \
   --selective-root "$SEL_ROOT" \
-  --output-dir "${ROOT}/artifacts/client" \
+  --output-dir "$FINAL_OUT" \
   >"${WORKDIR}/final-prod-build.log" 2>&1
 rc=$?
 set -e
+CLIENT_SHA_AFTER="$(sha256sum "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh" | awk '{print $1}')"
+ART_SHA_AFTER=""
+[[ -f "$PROD_ARTIFACT" ]] && ART_SHA_AFTER="$(sha256sum "$PROD_ARTIFACT" | awk '{print $1}')"
 if [[ "$rc" -eq 0 ]] \
   && grep -q 'CLIENT_MANIFEST_SIGNATURE_MODE=PRODUCTION_SIGNED' "${WORKDIR}/final-prod-build.log" \
-  && grep -q 'ARTIFACT_SIGNATURE_VERIFY=PASS' "${WORKDIR}/final-prod-build.log"; then
-  pass "production artifacts/client rebuilt signed"
+  && grep -q 'ARTIFACT_SIGNATURE_VERIFY=PASS' "${WORKDIR}/final-prod-build.log" \
+  && [[ -f "${FINAL_OUT}/dp-offline-upgrade-xenial-to-bionic.sh" ]] \
+  && [[ "$CLIENT_SHA_BEFORE" == "$CLIENT_SHA_AFTER" ]] \
+  && [[ "$ART_SHA_BEFORE" == "$ART_SHA_AFTER" ]]; then
+  pass "isolated signed rebuild (tracked client/artifacts unchanged)"
   grep -E '^CLIENT_MANIFEST_SIGNER_FINGERPRINT=|^sha256=|^CLIENT_MANIFEST_UNSIGNED_TEST_COUNT=' \
     "${WORKDIR}/final-prod-build.log" || true
 else
-  fail "production artifacts/client rebuild"
+  fail "isolated signed rebuild / tracked tree mutated (rc=${rc})"
   tail -40 "${WORKDIR}/final-prod-build.log" || true
 fi
 

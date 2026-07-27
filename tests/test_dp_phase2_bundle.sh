@@ -151,6 +151,8 @@ CUR1="$(readlink -f "${DP_ROOT}/6.5.0/current")"
 [[ -d "$CUR1" ]] && pass "current exists" || fail "current missing"
 [[ -f "${CUR1}/dp_bundle_6.5.0-current.tar" ]] && pass "stable bundle" || fail "stable bundle"
 [[ -f "${CUR1}/release.env" ]] && pass "release.env" || fail "release.env"
+grep -q '^TARGET_DP_VERSION=6.5.0$' "${CUR1}/release.env" && pass "TARGET_DP_VERSION in release.env" || fail "TARGET_DP_VERSION"
+grep -q '^PHASE2_ARTIFACT_VERSION=6.5.0$' "${CUR1}/release.env" && pass "PHASE2_ARTIFACT_VERSION" || fail "PHASE2_ARTIFACT_VERSION"
 if grep -Eiq 'ACPS_PASS|password=' "${CUR1}/release.env"; then
   fail "secret in release.env"
 else
@@ -201,7 +203,8 @@ echo "[test] UOM CLI wiring + bash -n"
 grep -q 'sync-dp-phase2' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing sync-dp-phase2"
 grep -q 'verify-dp-phase2' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing verify-dp-phase2"
 grep -q 'status-dp-phase2' "${ROOT}/scripts/ubuntu-offline-mirror.sh" || fail "missing status-dp-phase2"
-bash -n "${ROOT}/scripts/download-dp-phase2-6.5.0.sh" && pass "bash -n download" || fail "bash -n download"
+bash -n "${ROOT}/scripts/download-dp-phase2.sh" && pass "bash -n download" || fail "bash -n download"
+bash -n "${ROOT}/scripts/download-dp-phase2-6.5.0.sh" && pass "bash -n download wrapper" || fail "bash -n download wrapper"
 bash -n "${ROOT}/scripts/lib/dp-phase2-common.sh" && pass "bash -n common" || fail "bash -n common"
 bash -n "${ROOT}/scripts/deploy-stage-dp-phase2-client-atomic.sh" && pass "bash -n deploy" || fail "bash -n deploy"
 
@@ -221,6 +224,7 @@ echo "$gen" | grep -q 'location /client/' && pass "client preserved" || fail "cl
 
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -x -e SC1091,SC2034 "${ROOT}/scripts/lib/dp-phase2-common.sh" \
+    "${ROOT}/scripts/download-dp-phase2.sh" \
     "${ROOT}/scripts/download-dp-phase2-6.5.0.sh" \
     && pass "shellcheck dp-phase2" || fail "shellcheck dp-phase2"
 else
