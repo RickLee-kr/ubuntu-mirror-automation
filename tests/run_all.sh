@@ -52,6 +52,8 @@ TEST_LIST=(
   test_dp_phase2_ownership.sh
   test_dp_phase2_cache_resume.sh
   test_dp_phase2_process_detect.sh
+  test_bringup_image_import_heartbeat.sh
+  test_bringup_dp_resume_notice.sh
   test_client_manifest_signing.sh
   test_worktree_isolation.sh
   test_distupgrade_config_ascii.sh
@@ -73,23 +75,38 @@ is_long_test() {
 
 clear_test_fixture_orphans() {
   # Only clear known test fixture patterns — never touch production upgrade processes.
-  local pid cmd
-  while IFS= read -r pid; do
-    [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] || continue
-    [[ "$pid" == "$$" || "$pid" == "$PPID" ]] && continue
-    [[ -r "/proc/${pid}/cmdline" ]] || continue
-    cmd="$(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null || true)"
-    case "$cmd" in
-      *fixture-dp-offline-upgrade*|*/fake-*upgrade*|*worktree-isolation-child*)
-        kill "$pid" 2>/dev/null || true
-        ;;
-    esac
-  done < <(ps -eo pid= 2>/dev/null || true)
+  # Orphan local HTTP fixtures (discover-upgrade origin.port / phase2 http-counts)
+  # accumulate across interrupted suites and can thrash a low-RAM host enough for
+  # test_selective_mirror.py to exceed LONG_TIMEOUT_SECS under run_all.
+  local pid cmd signal
+  for signal in TERM KILL; do
+    while IFS= read -r pid; do
+      pid="${pid#"${pid%%[![:space:]]*}"}"
+      pid="${pid%"${pid##*[![:space:]]}"}"
+      [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] || continue
+      [[ "$pid" == "$$" || "$pid" == "$PPID" ]] && continue
+      [[ -r "/proc/${pid}/cmdline" ]] || continue
+      cmd="$(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null || true)"
+      if [[ "$cmd" == *fixture-dp-offline-upgrade* || "$cmd" == */fake-*upgrade* || "$cmd" == *worktree-isolation-child* ]]; then
+        kill "-${signal}" "$pid" 2>/dev/null || true
+        continue
+      fi
+      # python3 - /tmp/tmp.*/origin{,2,3}.port   OR   python3 - /tmp/tmp.*/http <port> .../http-counts
+      if [[ "$cmd" == python3\ -\ /tmp/tmp.* ]] && \
+         { [[ "$cmd" == *origin.port* || "$cmd" == *origin2.port* || "$cmd" == *origin3.port* || "$cmd" == *http-counts* ]]; }; then
+        kill "-${signal}" "$pid" 2>/dev/null || true
+      fi
+    done < <(ps -eo pid= 2>/dev/null || true)
+    [[ "$signal" == TERM ]] && sleep 0.5 || true
+  done
 }
 
 FP_BASE="$(mktemp -d)"
 FP_CUR="$(mktemp -d)"
 trap 'rm -rf "$FP_BASE" "$FP_CUR"' EXIT
+
+echo "======== Clearing leftover test fixture orphans ========"
+clear_test_fixture_orphans
 
 echo "======== Capturing worktree baseline fingerprint ========"
 # Existing intentional Phase 2 (or other) dirty files are part of the baseline.
@@ -168,7 +185,7 @@ else
 fi
 
 clear_test_fixture_orphans
-left="$(ps -eo args= | grep -E 'fixture-dp-offline-upgrade|worktree-isolation-child' | grep -v grep || true)"
+left="$(ps -eo args= | grep -E 'fixture-dp-offline-upgrade|worktree-isolation-child|python3 - /tmp/tmp\..*(origin\.port|origin2\.port|origin3\.port|http-counts)' | grep -v grep || true)"
 if [[ -n "${left// }" ]]; then
   echo "WARNING: leftover matching processes after suite:"
   printf '%s\n' "$left"
