@@ -115,7 +115,12 @@ um_load_config "${ROOT}/mirror.conf"
 ngx="$(um_generate_nginx_conf)"
 assert_contains "$ngx" "location /ubuntu/" "nginx /ubuntu/ location"
 assert_contains "$ngx" "location /offline/" "nginx /offline/ location"
-assert_contains "$ngx" "selective/current" "nginx selective canonical root"
+assert_contains "$ngx" "selective/" "nginx selective canonical root"
+if printf '%s\n' "$ngx" | grep -qE 'selective/current|dp-phase2/.*/current'; then
+  echo "  FAIL: nginx still uses current symlink paths"; FAIL=1
+else
+  echo "  PASS: nginx uses direct selective/dp-phase2 paths"
+fi
 assert_contains "$ngx" "location /hops/" "nginx /hops/ location"
 svc="$(um_generate_systemd_service)"
 assert_contains "$svc" "materialize-selective" "service ExecStart materialize-selective"

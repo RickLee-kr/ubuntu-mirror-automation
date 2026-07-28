@@ -52,6 +52,7 @@ TEST_LIST=(
   test_dp_phase2_ownership.sh
   test_dp_phase2_cache_resume.sh
   test_dp_phase2_process_detect.sh
+  test_dp_upgrade_mirror_manager.sh
   test_bringup_image_import_heartbeat.sh
   test_bringup_dp_resume_notice.sh
   test_client_manifest_signing.sh
@@ -64,7 +65,7 @@ TEST_LIST=(
 
 is_long_test() {
   case "$1" in
-    test_dp_offline_upgrade_*.sh|test_dp_os_upgrade.sh|test_selective_mirror.py|test_offline_mirror.sh)
+    test_dp_offline_upgrade_*.sh|test_dp_os_upgrade.sh|test_selective_mirror.py|test_offline_mirror.sh|test_dp_upgrade_mirror_manager.sh)
       return 0
       ;;
     *)
@@ -92,6 +93,7 @@ clear_test_fixture_orphans() {
         continue
       fi
       # python3 - /tmp/tmp.*/origin{,2,3}.port   OR   python3 - /tmp/tmp.*/http <port> .../http-counts
+      # Also Mirror Manager fixture servers that record http-counts under /tmp.
       if [[ "$cmd" == python3\ -\ /tmp/tmp.* ]] && \
          { [[ "$cmd" == *origin.port* || "$cmd" == *origin2.port* || "$cmd" == *origin3.port* || "$cmd" == *http-counts* ]]; }; then
         kill "-${signal}" "$pid" 2>/dev/null || true

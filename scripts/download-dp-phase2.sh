@@ -15,15 +15,29 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPT_DIR}/lib/dp-phase2-common.sh"
 
 # ---------------------------------------------------------------------------
-# ACPS credentials — hardcoded per operator requirement from
-# download_dark_site_packages.sh (do not move to mirror.conf / env files).
-# Never enable set -x; never print ACPS_PASS.
+# ACPS credentials — loaded from Mirror Manager GUI config or environment.
+# Never hardcode username/password in this repository.
+# Never enable set -x; never print ACPS_PASS / ACPS_PASSWORD.
 # ---------------------------------------------------------------------------
-ACPS_HOST="acps.stellarcyber.ai"
-ACPS_USER="AellaMeta"
-ACPS_PASS='WroTQfm/W6x10'
-ACPS_PATH="/provision/aelladeb_py3"
-ACPS_BASE_URL="https://${ACPS_HOST}${ACPS_PATH}"
+ACPS_HOST="${ACPS_HOST:-acps.stellarcyber.ai}"
+ACPS_PATH="${ACPS_PATH:-/provision/aelladeb_py3}"
+ACPS_BASE_URL="${ACPS_BASE_URL:-https://${ACPS_HOST}${ACPS_PATH}}"
+ACPS_USER="${ACPS_USER:-${ACPS_USERNAME:-}}"
+ACPS_PASS="${ACPS_PASS:-${ACPS_PASSWORD:-}}"
+
+_load_acps_credentials_from_gui_config() {
+  local cfg="${DP_UPGRADE_MIRROR_CONFIG:-/etc/ubuntu-mirror/dp-upgrade-mirror.conf}"
+  if [[ -f "$cfg" ]]; then
+    # shellcheck disable=SC1090
+    set -a
+    # shellcheck source=/dev/null
+    source "$cfg"
+    set +a
+    ACPS_USER="${ACPS_USER:-${ACPS_USERNAME:-}}"
+    ACPS_PASS="${ACPS_PASS:-${ACPS_PASSWORD:-}}"
+  fi
+}
+_load_acps_credentials_from_gui_config
 
 DP_PHASE2_VERSION="${DP_PHASE2_VERSION:-6.5.0}"
 DP_PHASE2_ROOT="${DP_PHASE2_ROOT:-/var/spool/apt-mirror/dp-phase2}"
@@ -117,7 +131,7 @@ download_one() {
   else
     url="${ACPS_BASE_URL}/${name}"
     [[ -n "$ACPS_USER" && -n "$ACPS_PASS" ]] || \
-      dp2_die "ACPS_CREDENTIALS=FAIL embed ACPS_USER/ACPS_PASS from download_dark_site_packages.sh"
+      dp2_die "ACPS_CREDENTIALS=FAIL set via Mirror Manager Configuration or ACPS_USERNAME/ACPS_PASSWORD env"
     # ACPS only: -k and -u (never put password in URL)
     curl_args+=(-k -u "${ACPS_USER}:${ACPS_PASS}" --continue-at -)
   fi

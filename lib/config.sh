@@ -715,11 +715,12 @@ um_nginx_template_path() {
 }
 
 um_selective_nginx_root() {
-  printf '%s\n' "${SELECTIVE_NGINX_ROOT:-${SELECTIVE_MIRROR_ROOT:-${BASE_PATH}/selective}/current}"
+  # Single materialized selective tree (no current → published symlink).
+  printf '%s\n' "${SELECTIVE_NGINX_ROOT:-${SELECTIVE_MIRROR_ROOT:-${BASE_PATH}/selective}}"
 }
 
 # Generate selective nginx site from templates/nginx.conf (SSOT).
-# Canonical document root: SELECTIVE_MIRROR_ROOT/current → published
+# Canonical document root: SELECTIVE_MIRROR_ROOT (direct; no current/previous)
 um_generate_nginx_conf() {
   local tpl=""
   local sel_root="${SELECTIVE_MIRROR_ROOT:-${BASE_PATH}/selective}"
@@ -739,14 +740,13 @@ um_generate_nginx_conf() {
 
   local dp2_root="${DP_PHASE2_ROOT:-${BASE_PATH}/dp-phase2}"
   local dp2_ver="${DP_PHASE2_VERSION:-6.5.0}"
-  local dp2_current="${dp2_root}/${dp2_ver}/current"
+  local dp2_final="${dp2_root}/${dp2_ver}"
 
   if tpl="$(um_nginx_template_path)"; then
     rendered="$(sed \
-      -e "s|/var/spool/apt-mirror/selective/current|${sel_current}|g" \
       -e "s|/var/spool/apt-mirror/selective|${sel_root}|g" \
       -e "s|/var/spool/apt-mirror/client|${BASE_PATH}/client|g" \
-      -e "s|/var/spool/apt-mirror/dp-phase2/6.5.0/current|${dp2_current}|g" \
+      -e "s|/var/spool/apt-mirror/dp-phase2/6.5.0|${dp2_final}|g" \
       -e "s|/var/spool/apt-mirror/dp-phase2|${dp2_root}|g" \
       -e "s|listen 80 default_server;|listen ${MIRROR_PORT}${default_flag};|g" \
       -e "s|listen \\[::\\]:80 default_server;|listen [::]:${MIRROR_PORT}${default_flag};|g" \
@@ -833,7 +833,7 @@ ${listen_extra}
         return 301 /dp-phase2/${dp2_ver}/;
     }
     location /dp-phase2/${dp2_ver}/ {
-        alias ${dp2_current}/;
+        alias ${dp2_final}/;
         autoindex on;
         default_type application/octet-stream;
     }

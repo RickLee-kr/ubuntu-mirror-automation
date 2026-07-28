@@ -1025,9 +1025,10 @@ class SelectiveIntegrationSurfaceTests(unittest.TestCase):
         self.assertIn('materialize-selective', body)
         self.assertNotIn('ubuntu-offline-mirror.sh sync', body)
 
-    def test_nginx_points_at_published_current(self):
+    def test_nginx_points_at_selective_direct(self):
         body = open(os.path.join(ROOT, 'templates', 'nginx.conf')).read()
-        self.assertIn('selective/current', body)
+        self.assertIn('root /var/spool/apt-mirror/selective;', body)
+        self.assertNotIn('selective/current', body)
         self.assertNotIn('selective/active/ubuntu', body)
         self.assertNotIn('/var/spool/apt-mirror/mirror;', body)
 
@@ -1038,7 +1039,8 @@ class SelectiveIntegrationSurfaceTests(unittest.TestCase):
             'um_load_config "%s/mirror.conf"; um_generate_nginx_conf'
         ) % (ROOT, ROOT, ROOT)
         out = subprocess.check_output(['bash', '-c', script], universal_newlines=True)
-        self.assertIn('selective/current', out)
+        self.assertIn('/selective;', out)
+        self.assertNotIn('selective/current', out)
         self.assertIn('location /hops/', out)
         self.assertNotIn('root /var/spool/apt-mirror/mirror;', out)
 

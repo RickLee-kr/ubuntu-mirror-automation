@@ -2138,6 +2138,9 @@ DP Phase 2 (6.5.0 bringup artifacts; does not touch selective READY):
   verify-dp-phase2        Offline verify of current Phase 2 release
   status-dp-phase2        Show current/previous/bundle/disk/URL status
 
+DP Upgrade Mirror Manager (single R2 + ACPS workflow):
+  mirror-manager          Interactive whiptail manager (R2 OS Core + ACPS Phase 2)
+
 Config: /etc/default/ubuntu-offline-mirror
 Profile SSOT: config/offline-upgrade-profile.json (offline-upgrade-selective)
 Selective root: ${SELECTIVE_MIRROR_ROOT}
@@ -2514,6 +2517,27 @@ cmd_status_dp_phase2() {
   bash "$script" --version "${DP_PHASE2_VERSION:-6.5.0}" status
 }
 
+_mirror_manager_script() {
+  local cand
+  for cand in \
+    "${PROJECT_ROOT}/scripts/install-dp-upgrade-mirror.sh" \
+    "/usr/local/lib/ubuntu-mirror/install-dp-upgrade-mirror.sh" \
+    "${SCRIPT_DIR}/install-dp-upgrade-mirror.sh"
+  do
+    if [[ -f "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+cmd_mirror_manager() {
+  local script
+  script="$(_mirror_manager_script)" || die "install-dp-upgrade-mirror.sh not found"
+  bash "$script" mirror-manager "$@"
+}
+
 main() {
   local cmd="${1:-}"
   case "$cmd" in
@@ -2549,6 +2573,7 @@ main() {
     sync-dp-phase2) shift; cmd_sync_dp_phase2 "$@" ;;
     verify-dp-phase2) shift; cmd_verify_dp_phase2 "$@" ;;
     status-dp-phase2) shift; cmd_status_dp_phase2 "$@" ;;
+    mirror-manager) shift; cmd_mirror_manager "$@" ;;
     -h|--help|help|"") usage; [[ -n "$cmd" ]] || exit 1; exit 0 ;;
     *) die "Unknown command: $cmd (see --help)" ;;
   esac

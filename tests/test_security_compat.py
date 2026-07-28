@@ -316,7 +316,7 @@ class TestSecurityCompat(unittest.TestCase):
         self.assertIn("server_name security.ubuntu.com", conf)
         self.assertIn("server_name archive.ubuntu.com", conf)
         self.assertIn(
-            "alias /var/spool/apt-mirror/selective/current/ubuntu/", conf
+            "alias /var/spool/apt-mirror/selective/ubuntu/", conf
         )
 
     def test_13_components_and_suites_in_fixture(self):

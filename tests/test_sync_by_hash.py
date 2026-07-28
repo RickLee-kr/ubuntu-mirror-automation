@@ -408,7 +408,7 @@ class TestByHash(unittest.TestCase):
         nginx = open(os.path.join(ROOT, "templates", "nginx.conf"), encoding="utf-8").read()
         self.assertIn("location /ubuntu/", nginx)
         self.assertIn(
-            "alias /var/spool/apt-mirror/selective/current/ubuntu/", nginx
+            "alias /var/spool/apt-mirror/selective/ubuntu/", nginx
         )
         self.assertNotIn("by-hash", nginx)  # no special rewrite needed
 
