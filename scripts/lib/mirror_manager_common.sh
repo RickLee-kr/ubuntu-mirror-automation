@@ -26,11 +26,11 @@ MM_SKIP_ROOT_CHECK="${MM_SKIP_ROOT_CHECK:-0}"
 # Fixed ACPS endpoint (not user-editable). Credentials come from GUI config only.
 ACPS_BASE_URL_FIXED="${ACPS_BASE_URL_FIXED:-https://acps.stellarcyber.ai/provision/aelladeb_py3}"
 
-# Cloudflare R2 OS Core package URL — single code constant.
-# Production URL is not yet provided in this repository; leave empty placeholder.
+# Cloudflare R2 OS Core package URL — single code constant (custom domain).
+# Checksum sidecar is derived as "${OS_CORE_R2_URL}.sha256" (no separate constant).
 # Tests may override via environment: OS_CORE_R2_URL=http://127.0.0.1:<port>/pkg.tar
 # shellcheck disable=SC2034
-OS_CORE_R2_URL_CONSTANT=""
+OS_CORE_R2_URL_CONSTANT="https://xdrsolutions.uk/ubuntu-os-core/ubuntu-os-core-xenial-to-noble.tar"
 : "${OS_CORE_R2_URL:=${OS_CORE_R2_URL_CONSTANT}}"
 
 MM_LOCK_FD=""

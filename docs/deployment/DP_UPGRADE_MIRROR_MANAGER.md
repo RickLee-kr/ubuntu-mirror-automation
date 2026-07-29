@@ -63,12 +63,30 @@ R2 URL is a single code constant (`OS_CORE_R2_URL_CONSTANT` in
 `scripts/lib/mirror_manager_common.sh`). It is not user-editable. If unset,
 prepare stops with `CONFIGURATION_REQUIRED`.
 
+```
+OS_CORE_SOURCE=R2
+R2_PRODUCTION_URL_CONFIGURED=YES
+R2_PUBLIC_BASE_URL=https://xdrsolutions.uk
+OS_CORE_PACKAGE_URL=https://xdrsolutions.uk/ubuntu-os-core/ubuntu-os-core-xenial-to-noble.tar
+```
+
+The checksum sidecar URL is derived as `${OS_CORE_PACKAGE_URL}.sha256` (no separate
+constant). Clients never download from R2; only the Mirror Manager host does.
+
 ## Download and Prepare
 
-Automatic sequence: config check → R2 download (`.part`, resume, retry) → OS Core
+Automatic sequence: config check → R2 download (`.part`, safe resume, retry) → OS Core
 verify/extract → ACPS download → checksum → upstream bringup drift gate → patched
 bringup → Phase 2 bundle (9 entries) → place final HTTP files → delete download
 cache/staging.
+
+Resume rules for the R2 package download:
+
+- Requests send `Cache-Control: no-cache` and `Pragma: no-cache`.
+- HTTP 206 with matching `Content-Range` start → append to `.part` only.
+- HTTP 200 while a `.part` exists (Range ignored) → discard `.part` and replace
+  (never append a full body onto a partial).
+- Invalid `Content-Range` → fail; do not finalize.
 
 ## Storage
 

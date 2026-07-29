@@ -77,3 +77,15 @@ OS Core is always acquired from the code-fixed R2 URL
 (`OS_CORE_R2_URL_CONSTANT` / `OS_CORE_R2_URL`). Operators do not enter a local
 package path or R2 URL in the GUI. See
 [DP_UPGRADE_MIRROR_MANAGER.md](DP_UPGRADE_MIRROR_MANAGER.md).
+
+Production constant (custom domain):
+
+```
+https://xdrsolutions.uk/ubuntu-os-core/ubuntu-os-core-xenial-to-noble.tar
+```
+
+Checksum sidecar:
+
+```
+https://xdrsolutions.uk/ubuntu-os-core/ubuntu-os-core-xenial-to-noble.tar.sha256
+```

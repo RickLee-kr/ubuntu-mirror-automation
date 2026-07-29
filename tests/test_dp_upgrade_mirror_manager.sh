@@ -146,20 +146,32 @@ PY
   sleep 0.3
 }
 
+# mode: normal | ignore_range | bad_range
 start_r2() {
   local root="$1"
+  local mode="${2:-normal}"
   R2_PORT="$(python3 - <<'PY'
 import socket
 s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()
 PY
 )"
-  python3 - "$root" "$R2_PORT" "${WORKDIR}/http-counts-r2" <<'PY' &
+  python3 - "$root" "$R2_PORT" "${WORKDIR}/http-counts-r2" "$mode" <<'PY' &
 import http.server, os, sys, pathlib
-root, port, count_dir = sys.argv[1], int(sys.argv[2]), pathlib.Path(sys.argv[3])
+root, port, count_dir, mode = sys.argv[1], int(sys.argv[2]), pathlib.Path(sys.argv[3]), sys.argv[4]
 count_dir.mkdir(parents=True, exist_ok=True)
 class H(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **k):
         super().__init__(*a, directory=root, **k)
+    def do_HEAD(self):
+        path = self.translate_path(self.path)
+        if not os.path.isfile(path):
+            self.send_error(404); return
+        size = os.stat(path).st_size
+        self.send_response(200)
+        self.send_header('Accept-Ranges', 'bytes')
+        self.send_header('Content-Length', str(size))
+        self.send_header('Content-Type', 'application/octet-stream')
+        self.end_headers()
     def do_GET(self):
         p = count_dir / 'gets'
         p.write_text(str(int(p.read_text())+1 if p.exists() else 1))
@@ -168,11 +180,40 @@ class H(http.server.SimpleHTTPRequestHandler):
             self.send_error(404); return
         fs = os.stat(path); size = fs.st_size
         range_hdr = self.headers.get('Range')
+        # Record whether client sent no-cache (resume safety)
+        if self.headers.get('Cache-Control', '').lower() == 'no-cache':
+            (count_dir / 'nocache').write_text('1')
         if range_hdr and range_hdr.startswith('bytes='):
+            (count_dir / 'range').write_text(range_hdr)
+            if mode == 'ignore_range':
+                # Cloudflare-like: ignore Range, return HTTP 200 full body.
+                self.send_response(200)
+                self.send_header('Accept-Ranges', 'bytes')
+                self.send_header('Content-Length', str(size))
+                self.send_header('Content-Type', 'application/octet-stream')
+                self.end_headers()
+                with open(path, 'rb') as fh:
+                    self.wfile.write(fh.read())
+                return
             _, _, rng = range_hdr.partition('=')
             start_s, _, end_s = rng.partition('-')
             start = int(start_s) if start_s else 0
             end = int(end_s) if end_s else size-1
+            if mode == 'bad_range':
+                # Deliberately wrong start offset in Content-Range.
+                bad_start = 0 if start > 0 else 1
+                end = min(end, size-1)
+                length = end - start + 1
+                self.send_response(206)
+                self.send_header('Content-Range', f'bytes {bad_start}-{end}/{size}')
+                self.send_header('Accept-Ranges', 'bytes')
+                self.send_header('Content-Length', str(length))
+                self.send_header('Content-Type', 'application/octet-stream')
+                self.end_headers()
+                with open(path, 'rb') as fh:
+                    fh.seek(start)
+                    self.wfile.write(fh.read(length))
+                return
             end = min(end, size-1); length = end-start+1
             self.send_response(206)
             self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
@@ -259,17 +300,39 @@ grep -qE 'Enter R2 URL|Enter ACPS URL|R2 URL input|ACPS URL input|Set R2 URL|Set
 grep -q 'HYPERVISOR_SNAPSHOT' "$INSTALLER" && grep -q 'PROJECT_ROLLBACK_SUPPORTED=NO' "$INSTALLER" \
   && pass "O snapshot instructions" || fail "O instructions"
 
-echo "======== C. R2 constant / CONFIGURATION_REQUIRED ========"
+echo "======== C. R2 constant / checksum derivation ========"
 common_env
 write_gui_config "$MM_CONFIG_FILE"
-grep -q 'OS_CORE_R2_URL_CONSTANT=""' "${ROOT}/scripts/lib/mirror_manager_common.sh" \
-  && pass "C R2 constant empty placeholder" || fail "C constant"
+PROD_URL='https://xdrsolutions.uk/ubuntu-os-core/ubuntu-os-core-xenial-to-noble.tar'
+grep -F "OS_CORE_R2_URL_CONSTANT=\"${PROD_URL}\"" "${ROOT}/scripts/lib/mirror_manager_common.sh" \
+  && pass "C R2 production constant set" || fail "C constant"
+# Derived checksum URL contract (package URL + .sha256)
+derived="$(
+  env -u OS_CORE_R2_URL MM_PROJECT_ROOT="$ROOT" bash -c '
+    set -euo pipefail
+    source "'"${ROOT}"'/scripts/lib/mirror_manager_common.sh"
+    printf "%s\n%s\n" "${OS_CORE_R2_URL}" "${OS_CORE_R2_URL}.sha256"
+  '
+)"
+pkg_url="$(printf '%s\n' "$derived" | sed -n '1p')"
+sha_url="$(printf '%s\n' "$derived" | sed -n '2p')"
+[[ "$pkg_url" == "$PROD_URL" ]] && pass "C package URL from constant" || fail "C package URL"
+[[ "$sha_url" == "${PROD_URL}.sha256" ]] && pass "C checksum URL derivation" || fail "C sha URL"
+# Fail-closed when URL is cleared after constants load (simulates misconfig)
 set +e
-out_c="$(env -u OS_CORE_R2_URL MM_PROJECT_ROOT="$ROOT" bash "$INSTALLER" download-and-prepare --mirror-root "${WORKDIR}/mirror-c" 2>&1)"
+out_c="$(
+  MM_PROJECT_ROOT="$ROOT" bash -c '
+    set -euo pipefail
+    source "'"${ROOT}"'/scripts/lib/mirror_manager_common.sh"
+    source "'"${ROOT}"'/scripts/lib/r2_acquire.sh"
+    OS_CORE_R2_URL=""
+    r2_require_url
+  ' 2>&1
+)"
 rc_c=$?
 set -e
 [[ "$rc_c" -ne 0 ]] && echo "$out_c" | grep -q 'CONFIGURATION_REQUIRED' \
-  && pass "C CONFIGURATION_REQUIRED" || fail "C should require R2 URL"
+  && pass "C CONFIGURATION_REQUIRED when cleared" || fail "C cleared URL should require config"
 
 echo "======== E. OS Core package verify ========"
 SEL="${WORKDIR}/sel-e"; make_selective_fixture "$SEL"
@@ -447,7 +510,118 @@ done
 dd if="${ACPS_G}/images-6.5.0.tar" of="${WORKDIR}/mirror-g/.install-cache/acps/6.5.0/images-6.5.0.tar.part" bs=1024 count=10 status=none
 if run_prepare; then pass "G resume"; else fail "G resume"; fi
 
+echo "======== R2. production downloader resume safety ========"
+# Directly exercise r2_download_package (production path) in temp dirs only.
+kill "$HTTP_PID" 2>/dev/null || true; wait "$HTTP_PID" 2>/dev/null || true; HTTP_PID=""
+kill "$R2_PID" 2>/dev/null || true; wait "$R2_PID" 2>/dev/null || true; R2_PID=""
+
+run_r2_download_only() {
+  local mirror_root="$1"
+  local url="$2"
+  MM_PROJECT_ROOT="$ROOT" \
+  MM_SKIP_ROOT_CHECK=1 \
+  MM_MIRROR_ROOT="$mirror_root" \
+  MM_CACHE_ROOT="${mirror_root}/.install-cache" \
+  MM_STATE_ROOT="${mirror_root}/.state" \
+  MM_LOG_DIR="${mirror_root}/.logs" \
+  MM_CONFIG_DIR="${mirror_root}/.cfg" \
+  MM_STATUS_FILE="${mirror_root}/.cfg/status" \
+  OS_CORE_R2_URL="$url" \
+  bash -c '
+    set -euo pipefail
+    source "'"${ROOT}"'/scripts/lib/mirror_manager_common.sh"
+    source "'"${ROOT}"'/scripts/lib/r2_acquire.sh"
+    mm_state_init
+    r2_download_package
+    printf "OS_CORE_PACKAGE=%s\n" "${OS_CORE_PACKAGE}"
+    printf "OS_CORE_PACKAGE_BYTES=%s\n" "${OS_CORE_PACKAGE_BYTES}"
+  '
+}
+
+# R2-A: fresh download via production function
+R2A="${WORKDIR}/r2-fresh"; mkdir -p "$R2A"
+rm -rf "${WORKDIR}/http-counts-r2"
+start_r2 "$R2_ROOT2" normal
+URL_A="http://127.0.0.1:${R2_PORT}/$(basename "$PKG_E")"
+out_a="$(run_r2_download_only "$R2A" "$URL_A")"
+pkg_a="$(printf '%s\n' "$out_a" | sed -n 's/^OS_CORE_PACKAGE=//p' | tail -1)"
+[[ -f "$pkg_a" ]] && cmp -s "$pkg_a" "$PKG_E" && pass "R2-A fresh download" || fail "R2-A fresh"
+[[ -f "${pkg_a}.sha256" ]] && cmp -s "${pkg_a}.sha256" "${PKG_E}.sha256" && pass "R2-A checksum" || fail "R2-A sha"
+find "$R2A" -name '*.part' | grep -q . && fail "R2-A .part remains" || pass "R2-A .part cleanup"
+[[ -f "${WORKDIR}/http-counts-r2/nocache" ]] && pass "R2-A no-cache header" || fail "R2-A no-cache missing"
+kill "$R2_PID" 2>/dev/null || true; wait "$R2_PID" 2>/dev/null || true; R2_PID=""
+
+# R2-B: HTTP 206 resume append
+R2B="${WORKDIR}/r2-resume206"; mkdir -p "${R2B}/.install-cache/r2"
+rm -rf "${WORKDIR}/http-counts-r2"
+start_r2 "$R2_ROOT2" normal
+URL_B="http://127.0.0.1:${R2_PORT}/$(basename "$PKG_E")"
+base_b="$(basename "$PKG_E")"
+dd if="$PKG_E" of="${R2B}/.install-cache/r2/${base_b}.part" bs=1024 count=16 status=none
+out_b="$(run_r2_download_only "$R2B" "$URL_B")"
+pkg_b="$(printf '%s\n' "$out_b" | sed -n 's/^OS_CORE_PACKAGE=//p' | tail -1)"
+[[ -f "${WORKDIR}/http-counts-r2/range" ]] && pass "R2-B Range requested" || fail "R2-B no Range"
+cmp -s "$pkg_b" "$PKG_E" && pass "R2-B 206 resume integrity" || fail "R2-B corrupt"
+[[ "$(stat -c%s "$pkg_b")" == "$(stat -c%s "$PKG_E")" ]] && pass "R2-B size" || fail "R2-B size"
+find "$R2B" -name '*.part' | grep -q . && fail "R2-B .part remains" || pass "R2-B .part cleanup"
+kill "$R2_PID" 2>/dev/null || true; wait "$R2_PID" 2>/dev/null || true; R2_PID=""
+
+# R2-C: Range ignored → HTTP 200 full body (must NOT append)
+R2C="${WORKDIR}/r2-ignore200"; mkdir -p "${R2C}/.install-cache/r2"
+rm -rf "${WORKDIR}/http-counts-r2"
+start_r2 "$R2_ROOT2" ignore_range
+URL_C="http://127.0.0.1:${R2_PORT}/$(basename "$PKG_E")"
+base_c="$(basename "$PKG_E")"
+# Poisoned prefix that would corrupt if appended before a full body
+printf 'POISON' >"${R2C}/.install-cache/r2/${base_c}.part"
+dd if="$PKG_E" bs=1024 count=8 status=none >>"${R2C}/.install-cache/r2/${base_c}.part"
+out_c2="$(run_r2_download_only "$R2C" "$URL_C")"
+pkg_c="$(printf '%s\n' "$out_c2" | sed -n 's/^OS_CORE_PACKAGE=//p' | tail -1)"
+cmp -s "$pkg_c" "$PKG_E" && pass "R2-C 200 ignore-range clean restart" || fail "R2-C append corruption"
+# Final must not start with POISON
+! head -c 6 "$pkg_c" | grep -q 'POISON' && pass "R2-C no poison prefix" || fail "R2-C poison kept"
+kill "$R2_PID" 2>/dev/null || true; wait "$R2_PID" 2>/dev/null || true; R2_PID=""
+
+# R2-D: invalid Content-Range must fail (no successful finalize)
+R2D="${WORKDIR}/r2-badrange"; mkdir -p "${R2D}/.install-cache/r2"
+start_r2 "$R2_ROOT2" bad_range
+URL_D="http://127.0.0.1:${R2_PORT}/$(basename "$PKG_E")"
+base_d="$(basename "$PKG_E")"
+dd if="$PKG_E" of="${R2D}/.install-cache/r2/${base_d}.part" bs=1024 count=8 status=none
+set +e
+out_d="$(run_r2_download_only "$R2D" "$URL_D" 2>&1)"; rc_d=$?
+set -e
+[[ "$rc_d" -ne 0 ]] && echo "$out_d" | grep -q 'R2_CONTENT_RANGE_MISMATCH\|R2_DOWNLOAD=FAIL' \
+  && pass "R2-D invalid Content-Range rejected" || fail "R2-D should fail"
+[[ ! -f "${R2D}/.install-cache/r2/${base_d}" ]] && pass "R2-D no final package" || fail "R2-D finalized on error"
+kill "$R2_PID" 2>/dev/null || true; wait "$R2_PID" 2>/dev/null || true; R2_PID=""
+
+# R2-E: checksum mismatch (wrong sidecar) must fail at verify stage when using engine,
+# and r2_download itself keeps wrong sha — engine_verify covers reject. Here ensure download
+# stores sidecar and os_core verifier rejects mismatched package+sha pair.
+R2E="${WORKDIR}/r2-badsha"; mkdir -p "$R2E/r2-http"
+cp -f "$PKG_E" "$R2E/r2-http/"
+printf '0000000000000000000000000000000000000000000000000000000000000000  %s\n' "$(basename "$PKG_E")" \
+  >"$R2E/r2-http/$(basename "$PKG_E").sha256"
+start_r2 "$R2E/r2-http" normal
+URL_E="http://127.0.0.1:${R2_PORT}/$(basename "$PKG_E")"
+out_e="$(run_r2_download_only "${WORKDIR}/r2-badsha-mirror" "$URL_E")"
+pkg_e="$(printf '%s\n' "$out_e" | sed -n 's/^OS_CORE_PACKAGE=//p' | tail -1)"
+set +e
+python3 "$OS_CORE_PY" verify --package "$pkg_e" >/dev/null 2>&1
+rc_e=$?
+set -e
+[[ "$rc_e" -ne 0 ]] && pass "R2-E checksum mismatch rejected by verifier" || fail "R2-E should mismatch"
+kill "$R2_PID" 2>/dev/null || true; wait "$R2_PID" 2>/dev/null || true; R2_PID=""
+
 echo "======== P disk + lock + entrypoint ========"
+# Restore live mock servers for prepare-path tests (R2 resume section stops them).
+kill "$HTTP_PID" 2>/dev/null || true; wait "$HTTP_PID" 2>/dev/null || true; HTTP_PID=""
+kill "$R2_PID" 2>/dev/null || true; wait "$R2_PID" 2>/dev/null || true; R2_PID=""
+start_r2 "$R2_ROOT2" normal
+start_http "$ACPS_ROOT" none
+export OS_CORE_R2_URL="http://127.0.0.1:${R2_PORT}/$(basename "$PKG_E")"
+export DP_PHASE2_SOURCE_BASE="http://127.0.0.1:${HTTP_PORT}"
 export MM_MOCK_AVAILABLE_BYTES=1000
 export MM_LOCK_FILE="${WORKDIR}/lock-disk"
 export MM_MIRROR_ROOT="${WORKDIR}/mirror-disk"

@@ -40,8 +40,163 @@ r2_reject_html_body() {
   return 0
 }
 
+# Parse last HTTP status from a curl -D header dump.
+r2_http_last_status() {
+  local hdr="$1"
+  awk 'BEGIN{s=""} /^HTTP\//{s=$2} END{print s}' "$hdr"
+}
+
+# Parse Content-Range start offset: "bytes START-END/TOTAL" → START
+r2_content_range_start() {
+  local hdr="$1"
+  awk -F': ' '
+    tolower($1)=="content-range" {
+      gsub("\r","",$2)
+      if ($2 ~ /^bytes [0-9]+-/) {
+        sub(/^bytes /,"",$2)
+        sub(/-.*$/,"",$2)
+        print $2
+        exit
+      }
+    }
+  ' "$hdr"
+}
+
+# Safe resumable download into $part (not finalized).
+# Guarantees:
+# - Cache-Control/Pragma: no-cache on every request
+# - HTTP 206 + Content-Range start == local size → append only
+# - HTTP 200 with local partial present → discard partial, replace (never append)
+# - Wrong Content-Range → fail (no append)
+r2_http_download_to_part() {
+  local url="$1"
+  local part="$2"
+  local label="${3:-$(basename "$part")}"
+
+  local hdr err resp have status cr_start
+  hdr="$(mktemp)"
+  err="$(mktemp)"
+  resp="$(mktemp)"
+  have=0
+  if [[ -f "$part" ]]; then
+    have="$(stat -c%s "$part" 2>/dev/null || echo 0)"
+  fi
+  if ! [[ "$have" =~ ^[0-9]+$ ]]; then
+    have=0
+  fi
+
+  local -a curl_args=(
+    -sS -L
+    --connect-timeout "$R2_CURL_CONNECT_TIMEOUT"
+    --retry "$R2_CURL_RETRIES"
+    --retry-delay "$R2_CURL_RETRY_DELAY"
+    --retry-all-errors
+    -H "Cache-Control: no-cache"
+    -H "Pragma: no-cache"
+    -D "$hdr"
+    -o "$resp"
+  )
+
+  if [[ "$have" -gt 0 ]]; then
+    mm_info "R2_RESUME_ATTEMPT file=${label} local_bytes=${have}"
+    curl_args+=(-H "Range: bytes=${have}-")
+  fi
+
+  local rc=0
+  if ! curl "${curl_args[@]}" "$url" 2>"$err"; then
+    rc=$?
+    mm_redact <"$err" >&2 || true
+    rm -f "$hdr" "$err" "$resp"
+    return "$rc"
+  fi
+  rm -f "$err"
+
+  status="$(r2_http_last_status "$hdr")"
+  if [[ -z "$status" ]]; then
+    mm_error "R2_HTTP_STATUS_MISSING file=${label}"
+    rm -f "$hdr" "$resp"
+    return 1
+  fi
+
+  if [[ "$have" -gt 0 ]]; then
+    case "$status" in
+      206)
+        cr_start="$(r2_content_range_start "$hdr")"
+        if [[ -z "$cr_start" || "$cr_start" != "$have" ]]; then
+          mm_error "R2_CONTENT_RANGE_MISMATCH file=${label} local=${have} remote_start=${cr_start:-MISSING}"
+          rm -f "$hdr" "$resp" "$part"
+          return 1
+        fi
+        # Append remainder only.
+        cat "$resp" >>"$part"
+        rm -f "$resp"
+        mm_ok "R2_RESUME_APPEND=PASS file=${label} status=206"
+        ;;
+      200)
+        # Server ignored Range (e.g. Cloudflare cache HIT). Never append.
+        mm_warn "R2_RANGE_IGNORED=YES file=${label} action=clean_restart"
+        mv -f "$resp" "$part"
+        mm_ok "R2_CLEAN_RESTART=PASS file=${label} status=200"
+        ;;
+      *)
+        mm_error "R2_RESUME_UNEXPECTED_STATUS file=${label} status=${status}"
+        rm -f "$hdr" "$resp"
+        return 1
+        ;;
+    esac
+  else
+    # Fresh download: accept 200 (full) or 206 covering from 0.
+    case "$status" in
+      200)
+        mv -f "$resp" "$part"
+        ;;
+      206)
+        cr_start="$(r2_content_range_start "$hdr")"
+        if [[ -n "$cr_start" && "$cr_start" != "0" ]]; then
+          mm_error "R2_FRESH_BAD_RANGE file=${label} start=${cr_start}"
+          rm -f "$hdr" "$resp" "$part"
+          return 1
+        fi
+        mv -f "$resp" "$part"
+        ;;
+      *)
+        mm_error "R2_FRESH_UNEXPECTED_STATUS file=${label} status=${status}"
+        rm -f "$hdr" "$resp"
+        return 1
+        ;;
+    esac
+  fi
+  rm -f "$hdr"
+  return 0
+}
+
+# Small sidecar: always clean download (no resume / no append).
+r2_http_download_fresh() {
+  local url="$1"
+  local part="$2"
+  local label="${3:-$(basename "$part")}"
+  local err
+  err="$(mktemp)"
+  rm -f "$part"
+  if ! curl -f -L \
+    --connect-timeout "$R2_CURL_CONNECT_TIMEOUT" \
+    --retry "$R2_CURL_RETRIES" \
+    --retry-delay "$R2_CURL_RETRY_DELAY" \
+    --retry-all-errors \
+    -H "Cache-Control: no-cache" \
+    -H "Pragma: no-cache" \
+    -o "$part" \
+    "$url" 2>"$err"; then
+    mm_redact <"$err" >&2 || true
+    rm -f "$err" "$part"
+    return 1
+  fi
+  rm -f "$err"
+  return 0
+}
+
 r2_download_package() {
-  # Downloads OS Core .tar (+ attempts .sha256 sidecar) into cache; sets OS_CORE_PACKAGE.
+  # Downloads OS Core .tar (+ .sha256 sidecar) into cache; sets OS_CORE_PACKAGE.
   r2_require_url
   local dest_dir part final url start_ts now elapsed downloaded expected pct rate
   dest_dir="$(r2_cache_dir)"
@@ -64,7 +219,11 @@ r2_download_package() {
   local cl err_head
   err_head="$(mktemp)"
   cl="$(
-    curl -sS -I -L --connect-timeout "$R2_CURL_CONNECT_TIMEOUT" "$url" 2>"$err_head" \
+    curl -sS -I -L \
+      --connect-timeout "$R2_CURL_CONNECT_TIMEOUT" \
+      -H "Cache-Control: no-cache" \
+      -H "Pragma: no-cache" \
+      "$url" 2>"$err_head" \
       | tr -d '\r' | awk -F': ' 'tolower($1)=="content-length"{print $2; exit}'
   )" || true
   rm -f "$err_head"
@@ -72,8 +231,7 @@ r2_download_package() {
     expected="$cl"
   fi
 
-  local err progress_pid=""
-  err="$(mktemp)"
+  local progress_pid=""
   (
     while true; do
       sleep "$R2_PROGRESS_INTERVAL_SEC" || break
@@ -95,27 +253,17 @@ r2_download_package() {
   progress_pid=$!
 
   local rc=0
-  if ! curl -f -L \
-    --connect-timeout "$R2_CURL_CONNECT_TIMEOUT" \
-    --retry "$R2_CURL_RETRIES" \
-    --retry-delay "$R2_CURL_RETRY_DELAY" \
-    --retry-all-errors \
-    --continue-at - \
-    -o "$part" \
-    "$url" 2>"$err"; then
-    rc=$?
+  if ! r2_http_download_to_part "$url" "$part" "$base_name"; then
+    rc=1
   fi
   if [[ -n "$progress_pid" ]]; then
     kill "$progress_pid" 2>/dev/null || true
     wait "$progress_pid" 2>/dev/null || true
   fi
   if [[ "$rc" -ne 0 ]]; then
-    mm_redact <"$err" >&2 || true
-    rm -f "$err"
     mm_state_set R2_OS_CORE_DOWNLOADED FAIL
     mm_die "R2_DOWNLOAD=FAIL file=${base_name}"
   fi
-  rm -f "$err"
 
   if ! r2_reject_html_body "$part" "$base_name"; then
     rm -f "$part"
@@ -131,22 +279,11 @@ r2_download_package() {
   fi
   mv -f "$part" "$final"
 
-  # Download outer checksum (required)
-  err="$(mktemp)"
-  if ! curl -f -L \
-    --connect-timeout "$R2_CURL_CONNECT_TIMEOUT" \
-    --retry "$R2_CURL_RETRIES" \
-    --retry-delay "$R2_CURL_RETRY_DELAY" \
-    --retry-all-errors \
-    --continue-at - \
-    -o "$sha_part" \
-    "$sha_url" 2>"$err"; then
-    mm_redact <"$err" >&2 || true
-    rm -f "$err" "$sha_part"
+  # Download outer checksum (required) — always fresh, never resume-append.
+  if ! r2_http_download_fresh "$sha_url" "$sha_part" "${base_name}.sha256"; then
     mm_state_set R2_OS_CORE_CHECKSUM FAIL
     mm_die "R2_SHA256_DOWNLOAD=FAIL"
   fi
-  rm -f "$err"
   if ! r2_reject_html_body "$sha_part" "${base_name}.sha256"; then
     rm -f "$sha_part"
     mm_die "R2_SHA256_DOWNLOAD=FAIL reason=html_body"
@@ -156,7 +293,9 @@ r2_download_package() {
   # Optional signature sidecar (best-effort)
   local asc_url="${sha_url}.asc"
   local asc_final="${sha_final}.asc"
-  if curl -fsSL --connect-timeout 10 -o "${asc_final}.part" "$asc_url" 2>/dev/null; then
+  if curl -fsSL --connect-timeout 10 \
+    -H "Cache-Control: no-cache" -H "Pragma: no-cache" \
+    -o "${asc_final}.part" "$asc_url" 2>/dev/null; then
     if r2_reject_html_body "${asc_final}.part" 2>/dev/null; then
       mv -f "${asc_final}.part" "$asc_final"
     else
