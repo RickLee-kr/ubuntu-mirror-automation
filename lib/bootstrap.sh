@@ -415,15 +415,16 @@ um_bootstrap_deploy_client_http_artifacts() {
 
 um_bootstrap_verify_client_files() {
   local root="${1:-${BASE_PATH:-/var/spool/apt-mirror}/client}"
-  local f missing=0
+  local f
+  local missing_flag=0
   [[ -d "$root" ]] || return 1
   for f in "${UM_CLIENT_REQUIRED_FILES[@]}"; do
     if [[ ! -f "${root}/${f}" ]]; then
       um_error "CLIENT_FILE_MISSING=${f}"
-      missing=1
+      missing_flag=1
     fi
   done
-  [[ "$missing" -eq 0 ]] || return 1
+  [[ "$missing_flag" -eq 0 ]] || return 1
 
   # Verify sha256 sidecars for the four hop scripts + stage helper
   for f in \

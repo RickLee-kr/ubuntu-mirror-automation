@@ -121,27 +121,27 @@ preflight() {
   : >"${candidate_current}/dp_bundle_${TARGET_DP_VERSION}-current.tar"
   cp -a "$ENV_PATH" "${candidate_current}/release.env"
   chmod 0600 "${candidate_current}/release.env" 2>/dev/null || true
-  local ready_fix
-  ready_fix="$(mktemp)"
-  cp -a "$READY_PATH" "$ready_fix"
+  local ready_tmp
+  ready_tmp="$(mktemp)"
+  cp -a "$READY_PATH" "$ready_tmp"
   if ! DP_PHASE2_SKIP_ROOT_CHECK=1 \
       DP_PHASE2_ROOT="$candidate_root" \
-      READY_PATH="$ready_fix" \
+      READY_PATH="$ready_tmp" \
       bash "$PUBLISHER" "$TARGET_DP_VERSION" >/dev/null; then
-    rm -rf "$fixture" "$ready_fix"
+    rm -rf "$fixture" "$ready_tmp"
     fail_step "preflight_candidate_publisher"
   fi
   local cand_mode
   cand_mode="$(stat -c '%a' "${candidate_current}/release.env")"
   [[ "$cand_mode" == "644" ]] || {
-    rm -rf "$fixture" "$ready_stub"
+    rm -rf "$fixture" "$ready_tmp"
     fail_step "preflight_candidate_mode"
   }
   if dp2_release_has_secret "${candidate_current}/release.env"; then
-    rm -rf "$fixture" "$ready_stub"
+    rm -rf "$fixture" "$ready_tmp"
     fail_step "preflight_candidate_secret"
   fi
-  rm -rf "$fixture" "$ready_stub"
+  rm -rf "$fixture" "$ready_tmp"
   echo "PREFLIGHT=PASS"
 }
 

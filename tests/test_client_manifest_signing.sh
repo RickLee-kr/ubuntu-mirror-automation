@@ -1,40 +1,180 @@
 #!/usr/bin/env bash
 # Fail-closed client manifest signing / deploy gates (xenial→bionic).
+# Hermetic: ephemeral GPG keys + local HTTP hop mirror + mktemp selective root.
+# Does not commit private keys; does not require production selective/R2 state.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_PY="${ROOT}/scripts/lib/build_client_xenial_to_bionic.py"
-DEPLOY_SH="${ROOT}/scripts/deploy-client-xenial-to-bionic-atomic.sh"
-PUB_KEY="${ROOT}/config/client-signing/offline-client-manifest.gpg"
-PRIV_KEY="${ROOT}/config/client-signing/offline-client-manifest.private.gpg"
-MIRROR_BASE="${TEST_MIRROR_BASE:-http://221.139.249.111}"
-SEL_ROOT="${TEST_SELECTIVE_ROOT:-/var/spool/apt-mirror/selective}"
-PROD_ARTIFACT="${ROOT}/artifacts/client/dp-offline-upgrade-xenial-to-bionic.sh"
-READY_PATH="${SEL_ROOT}/state/READY"
-
 FAIL=0
 pass() { echo "  PASS: $*"; }
 fail() { echo "  FAIL: $*"; FAIL=1; }
 
 WORKDIR="$(mktemp -d)"
-trap 'rm -rf "$WORKDIR"' EXIT
+HTTP_PID=""
+cleanup() {
+  if [[ -n "${HTTP_PID}" ]] && kill -0 "$HTTP_PID" 2>/dev/null; then
+    kill "$HTTP_PID" 2>/dev/null || true
+    wait "$HTTP_PID" 2>/dev/null || true
+  fi
+  rm -rf "$WORKDIR"
+}
+trap cleanup EXIT
 
 echo "=== test_client_manifest_signing ==="
 
-# 1) production signing key exists → signed client build PASS
+SEL_ROOT="${WORKDIR}/selective"
+PROJ="${WORKDIR}/project"
+HTTP_ROOT="${WORKDIR}/http"
+mkdir -p \
+  "${SEL_ROOT}/keys" \
+  "${SEL_ROOT}/state" \
+  "${SEL_ROOT}/current/shared/offline/release-upgraders/bionic" \
+  "${PROJ}/config/client-signing" \
+  "${PROJ}/client/lib" \
+  "${PROJ}/scripts/lib" \
+  "${PROJ}/artifacts/client" \
+  "${HTTP_ROOT}/hops/xenial-to-bionic/ubuntu/dists/xenial/main/binary-amd64" \
+  "${HTTP_ROOT}/hops/xenial-to-bionic/ubuntu/dists/bionic/main/binary-amd64" \
+  "${HTTP_ROOT}/hops/xenial-to-bionic/ubuntu/pool/main/a/hello"
+
+cp "$BUILD_PY" "${PROJ}/scripts/lib/"
+cp "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh.in" "${PROJ}/client/"
+cp "${ROOT}/client/lib/dp-offline-destructive-confirmation.sh" "${PROJ}/client/lib/"
+# Tracked client script fingerprint (must stay unchanged by builds)
+cp "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh" "${PROJ}/client/" 2>/dev/null || \
+  printf '#!/bin/sh\necho stub\n' >"${PROJ}/client/dp-offline-upgrade-xenial-to-bionic.sh"
+PROD_ARTIFACT="${PROJ}/artifacts/client/dp-offline-upgrade-xenial-to-bionic.sh"
+printf '#!/bin/sh\necho prod-stub\n' >"$PROD_ARTIFACT"
+
+# --- ephemeral selective repo key (InRelease) ---
+GPG_SEL="${WORKDIR}/gpg-selective"
+mkdir -p "$GPG_SEL"
+chmod 700 "$GPG_SEL"
+cat >"${GPG_SEL}/batch" <<'EOF'
+Key-Type: RSA
+Key-Length: 2048
+Name-Real: Test Selective Mirror
+Name-Email: selective-test@local
+Expire-Date: 0
+%no-protection
+%commit
+EOF
+gpg --homedir "$GPG_SEL" --batch --gen-key "${GPG_SEL}/batch" >/dev/null 2>&1
+gpg --homedir "$GPG_SEL" --batch --export --armor \
+  >"${SEL_ROOT}/keys/ubuntu-mirror-selective.gpg"
+
+# --- ephemeral production client-signing keypair (never committed) ---
+GPG_SIGN="${WORKDIR}/gpg-signing"
+mkdir -p "$GPG_SIGN"
+chmod 700 "$GPG_SIGN"
+cat >"${GPG_SIGN}/batch" <<'EOF'
+Key-Type: RSA
+Key-Length: 2048
+Name-Real: Test Client Manifest
+Name-Email: offline-client-manifest@local
+Expire-Date: 0
+%no-protection
+%commit
+EOF
+gpg --homedir "$GPG_SIGN" --batch --gen-key "${GPG_SIGN}/batch" >/dev/null 2>&1
+PRIV_KEY="${PROJ}/config/client-signing/offline-client-manifest.private.gpg"
+PUB_KEY="${PROJ}/config/client-signing/offline-client-manifest.gpg"
+gpg --homedir "$GPG_SIGN" --batch --export-secret-keys --armor >"$PRIV_KEY"
+gpg --homedir "$GPG_SIGN" --batch --export >"$PUB_KEY"
+chmod 600 "$PRIV_KEY"
+chmod 644 "$PUB_KEY"
+
 if [[ -f "$PRIV_KEY" && -r "$PRIV_KEY" && -f "$PUB_KEY" ]]; then
-  pass "production signing key present"
+  pass "ephemeral signing key present"
 else
-  fail "production signing key missing/unreadable"
+  fail "ephemeral signing key missing/unreadable"
 fi
 
-READY_BEFORE=""
-[[ -f "$READY_PATH" ]] && READY_BEFORE="$(sha256sum "$READY_PATH" | awk '{print $1}')"
+# READY with required checksums
+printf 'selective_plan_checksum=deadbeefcafe\ndiscovery_artifact_checksum=cafebabedead\n' \
+  >"${SEL_ROOT}/state/READY"
+READY_PATH="${SEL_ROOT}/state/READY"
+READY_BEFORE="$(sha256sum "$READY_PATH" | awk '{print $1}')"
 
+# Upgrader stub with announcement files (required by extract_announcements)
+UPG="${WORKDIR}/upg"
+mkdir -p "$UPG"
+printf 'ReleaseAnnouncement stub\n' >"${UPG}/ReleaseAnnouncement"
+printf '<html>announcement</html>\n' >"${UPG}/ReleaseAnnouncement.html"
+UP_TAR="${SEL_ROOT}/current/shared/offline/release-upgraders/bionic/bionic.tar.gz"
+( cd "$UPG" && tar -czf "$UP_TAR" ./ReleaseAnnouncement ./ReleaseAnnouncement.html )
+gpg --homedir "$GPG_SEL" --batch --yes --detach-sign -o "${UP_TAR}.gpg" "$UP_TAR"
+
+# Local hop mirror Release/InRelease/Packages.gz
+write_release() {
+  local suite="$1" dest="$2"
+  cat >"$dest" <<EOF
+Origin: Ubuntu
+Label: Ubuntu
+Suite: ${suite}
+Codename: ${suite%%-*}
+Architectures: amd64
+Components: main restricted universe multiverse
+Description: Ubuntu ${suite} test fixture
+EOF
+}
+for suite in xenial bionic; do
+  d="${HTTP_ROOT}/hops/xenial-to-bionic/ubuntu/dists/${suite}"
+  mkdir -p "${d}/main/binary-amd64"
+  write_release "$suite" "${d}/Release"
+  gpg --homedir "$GPG_SEL" --batch --yes --clearsign \
+    -o "${d}/InRelease" "${d}/Release"
+done
+
+python3 - "$HTTP_ROOT" <<'PY'
+import gzip, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+body = (
+    b"Package: hello\n"
+    b"Version: 2.10\n"
+    b"Filename: pool/main/a/hello/hello_2.10_amd64.deb\n"
+    b"Size: 1\n"
+    b"SHA256: "
+    + (b"0" * 64)
+    + b"\n"
+)
+for suite in ("xenial", "bionic"):
+    p = root / f"hops/xenial-to-bionic/ubuntu/dists/{suite}/main/binary-amd64/Packages.gz"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(gzip.compress(body))
+deb = root / "hops/xenial-to-bionic/ubuntu/pool/main/a/hello/hello_2.10_amd64.deb"
+deb.parent.mkdir(parents=True, exist_ok=True)
+deb.write_bytes(b"x")
+PY
+
+PORT_FILE="${WORKDIR}/http.port"
+python3 - "$HTTP_ROOT" "$PORT_FILE" <<'PY' &
+import http.server, os, sys
+root, portf = sys.argv[1], sys.argv[2]
+os.chdir(root)
+httpd = http.server.ThreadingHTTPServer(
+    ("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler
+)
+open(portf, "w", encoding="utf-8").write(str(httpd.server_address[1]))
+httpd.serve_forever()
+PY
+HTTP_PID=$!
+for _ in $(seq 1 100); do
+  [[ -s "$PORT_FILE" ]] && break
+  sleep 0.05
+done
+PORT="$(cat "$PORT_FILE")"
+MIRROR_BASE="http://127.0.0.1:${PORT}"
+echo "  INFO: hermetic mirror ${MIRROR_BASE}"
+
+BUILD_PY_PROJ="${PROJ}/scripts/lib/build_client_xenial_to_bionic.py"
+
+# 1) ephemeral signing key → signed client build PASS
 PROD_OUT="${WORKDIR}/prod-client"
 set +e
-python3 "$BUILD_PY" \
-  --project-root "$ROOT" \
+python3 "$BUILD_PY_PROJ" \
+  --project-root "$PROJ" \
   --mirror-base "$MIRROR_BASE" \
   --selective-root "$SEL_ROOT" \
   --output-dir "$PROD_OUT" \
@@ -46,7 +186,7 @@ if [[ "$rc" -eq 0 ]] \
   && grep -q 'CLIENT_MANIFEST_SIGNATURE_STATUS=PASS' "${WORKDIR}/prod-build.log" \
   && grep -q 'CLIENT_MANIFEST_UNSIGNED_TEST_COUNT=0' "${WORKDIR}/prod-build.log" \
   && grep -q 'ARTIFACT_SIGNATURE_VERIFY=PASS' "${WORKDIR}/prod-build.log"; then
-  pass "1 production signing key → signed client build PASS"
+  pass "1 ephemeral signing key → signed client build PASS"
 else
   fail "1 production signed build"
   tail -40 "${WORKDIR}/prod-build.log" || true
@@ -66,10 +206,10 @@ fi
 
 # 2) signing key absent → production build FAIL
 NOKEY_ROOT="${WORKDIR}/nokey-project"
-mkdir -p "${NOKEY_ROOT}/client" "${NOKEY_ROOT}/scripts/lib" "${NOKEY_ROOT}/config"
+mkdir -p "${NOKEY_ROOT}/client/lib" "${NOKEY_ROOT}/scripts/lib" "${NOKEY_ROOT}/config"
 cp "$BUILD_PY" "${NOKEY_ROOT}/scripts/lib/"
 cp "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh.in" "${NOKEY_ROOT}/client/"
-# Intentionally omit config/client-signing keys
+cp "${ROOT}/client/lib/dp-offline-destructive-confirmation.sh" "${NOKEY_ROOT}/client/lib/"
 set +e
 python3 "${NOKEY_ROOT}/scripts/lib/build_client_xenial_to_bionic.py" \
   --project-root "$NOKEY_ROOT" \
@@ -86,24 +226,20 @@ else
   tail -20 "${WORKDIR}/nokey-build.log" || true
 fi
 
-# Helper: run deploy against a staged artifact tree (no real nginx write).
 run_deploy_gate() {
   local art_dir="$1"
   local dest="$2"
   local log="$3"
   local art="${art_dir}/dp-offline-upgrade-xenial-to-bionic.sh"
   local sha="${art}.sha256"
-  # Stage under a fake ROOT layout expected by deploy script paths via env override
-  # by invoking the python verify path + a thin wrapper.
-  DEST_ROOT="$dest" MIRROR_BASE="http://127.0.0.1:9" \
+  DEST_ROOT="$dest" \
     bash -c '
       set -euo pipefail
-      ROOT="'"$ROOT"'"
       ARTIFACT="'"$art"'"
       SHAFILE="'"$sha"'"
       DEST_ROOT="'"$dest"'"
       NAME="dp-offline-upgrade-xenial-to-bionic.sh"
-      BUILD_PY="'"$BUILD_PY"'"
+      BUILD_PY="'"$BUILD_PY_PROJ"'"
       PUB_KEY="'"$PUB_KEY"'"
       ART_SHA="$(sha256sum "$ARTIFACT" | awk "{print \$1}")"
       SIDECAR_SHA="$(awk "{print \$1}" "$SHAFILE")"
@@ -132,8 +268,8 @@ PY
 # 3) UNSIGNED_TEST artifact → deploy 거부
 UNSIGNED_OUT="${WORKDIR}/unsigned-client"
 set +e
-python3 "$BUILD_PY" \
-  --project-root "$ROOT" \
+python3 "$BUILD_PY_PROJ" \
+  --project-root "$PROJ" \
   --mirror-base "$MIRROR_BASE" \
   --selective-root "$SEL_ROOT" \
   --output-dir "$UNSIGNED_OUT" \
@@ -147,13 +283,13 @@ else
   fail "unsigned test build should succeed on non-production path"
   tail -20 "${WORKDIR}/unsigned-build.log" || true
 fi
-# Refuse skip-sign into production artifacts/client
+
 set +e
-python3 "$BUILD_PY" \
-  --project-root "$ROOT" \
+python3 "$BUILD_PY_PROJ" \
+  --project-root "$PROJ" \
   --mirror-base "$MIRROR_BASE" \
   --selective-root "$SEL_ROOT" \
-  --output-dir "${ROOT}/artifacts/client" \
+  --output-dir "${PROJ}/artifacts/client" \
   --skip-sign \
   >"${WORKDIR}/unsigned-prod-refuse.log" 2>&1
 rc=$?
@@ -181,7 +317,7 @@ if [[ -f "$PROD_SCRIPT" ]]; then
   mkdir -p "$WRONG"
   cp -a "$PROD_OUT/." "$WRONG/"
   set +e
-  python3 - "$BUILD_PY" "${WRONG}/dp-offline-upgrade-xenial-to-bionic.sh" <<'PY' >"${WORKDIR}/wrong-fpr.log" 2>&1
+  python3 - "$BUILD_PY_PROJ" "${WRONG}/dp-offline-upgrade-xenial-to-bionic.sh" <<'PY' >"${WORKDIR}/wrong-fpr.log" 2>&1
 import importlib.util, sys
 build_py, artifact = sys.argv[1:3]
 spec = importlib.util.spec_from_file_location("build_client_x2b", build_py)
@@ -208,7 +344,7 @@ fi
 # 5) tampered manifest → gpg verification FAIL
 if [[ -f "$PROD_SCRIPT" ]]; then
   set +e
-  python3 - "$BUILD_PY" "$PROD_SCRIPT" "$PUB_KEY" <<'PY' >"${WORKDIR}/tamper-manifest.log" 2>&1
+  python3 - "$BUILD_PY_PROJ" "$PROD_SCRIPT" "$PUB_KEY" <<'PY' >"${WORKDIR}/tamper-manifest.log" 2>&1
 import importlib.util, base64, re, sys, tempfile, os
 build_py, artifact, pub_key = sys.argv[1:4]
 spec = importlib.util.spec_from_file_location("build_client_x2b", build_py)
@@ -250,7 +386,6 @@ if [[ -f "$PROD_SCRIPT" ]]; then
   TAMPER_DIR="${WORKDIR}/tamper-client"
   mkdir -p "$TAMPER_DIR"
   cp -a "$PROD_OUT/." "$TAMPER_DIR/"
-  # Corrupt embedded detached signature bytes (keeps pins parseable).
   python3 - "${TAMPER_DIR}/dp-offline-upgrade-xenial-to-bionic.sh" <<'PY'
 import base64, re, sys
 path = sys.argv[1]
@@ -260,7 +395,6 @@ start = text.find(token) + len(token)
 end = text.find("'", start)
 raw = re.sub(r"\s+", "", text[start:end])
 data = bytearray(base64.b64decode(raw))
-# Flip a payload byte inside the armored sig body if possible
 if len(data) > 40:
     data[40] ^= 0x5A
 else:
@@ -279,7 +413,7 @@ PY
     fail "6 tampered client SHA should mismatch sidecar"
   fi
   set +e
-  python3 - "$BUILD_PY" "${TAMPER_DIR}/dp-offline-upgrade-xenial-to-bionic.sh" "$PUB_KEY" <<'PY' >"${WORKDIR}/tamper-client.log" 2>&1
+  python3 - "$BUILD_PY_PROJ" "${TAMPER_DIR}/dp-offline-upgrade-xenial-to-bionic.sh" "$PUB_KEY" <<'PY' >"${WORKDIR}/tamper-client.log" 2>&1
 import importlib.util, sys
 build_py, artifact, pub_key = sys.argv[1:4]
 spec = importlib.util.spec_from_file_location("build_client_x2b", build_py)
@@ -303,23 +437,20 @@ PY
   fi
 fi
 
-# 7 already covered above (skip-sign refuses artifacts/client)
-# Also ensure default --skip-sign path is client-unsigned-test and does not touch prod artifact mtime/sha
-PROD_SHA_BEFORE=""
-[[ -f "$PROD_ARTIFACT" ]] && PROD_SHA_BEFORE="$(sha256sum "$PROD_ARTIFACT" | awk '{print $1}')"
+# 7 default --skip-sign uses client-unsigned-test; production artifact untouched
+PROD_SHA_BEFORE="$(sha256sum "$PROD_ARTIFACT" | awk '{print $1}')"
 set +e
-python3 "$BUILD_PY" \
-  --project-root "$ROOT" \
+python3 "$BUILD_PY_PROJ" \
+  --project-root "$PROJ" \
   --mirror-base "$MIRROR_BASE" \
   --selective-root "$SEL_ROOT" \
   --skip-sign \
   >"${WORKDIR}/default-unsigned.log" 2>&1
 rc=$?
 set -e
-PROD_SHA_AFTER=""
-[[ -f "$PROD_ARTIFACT" ]] && PROD_SHA_AFTER="$(sha256sum "$PROD_ARTIFACT" | awk '{print $1}')"
+PROD_SHA_AFTER="$(sha256sum "$PROD_ARTIFACT" | awk '{print $1}')"
 if [[ "$rc" -eq 0 ]] \
-  && [[ -f "${ROOT}/artifacts/client-unsigned-test/dp-offline-upgrade-xenial-to-bionic.sh" ]] \
+  && [[ -f "${PROJ}/artifacts/client-unsigned-test/dp-offline-upgrade-xenial-to-bionic.sh" ]] \
   && [[ "$PROD_SHA_BEFORE" == "$PROD_SHA_AFTER" ]]; then
   pass "7 default --skip-sign uses client-unsigned-test; production artifact untouched"
 else
@@ -327,24 +458,21 @@ else
   tail -20 "${WORKDIR}/default-unsigned.log" || true
 fi
 
-# Final signed build must stay in a temp output dir (never rewrite tracked
-# artifacts/client or client/*.sh). Production publish is out of test scope.
+# Isolated signed rebuild must not mutate tracked client/artifacts under PROJ
 FINAL_OUT="${WORKDIR}/final-prod-isolated"
-CLIENT_SHA_BEFORE="$(sha256sum "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh" | awk '{print $1}')"
-ART_SHA_BEFORE=""
-[[ -f "$PROD_ARTIFACT" ]] && ART_SHA_BEFORE="$(sha256sum "$PROD_ARTIFACT" | awk '{print $1}')"
+CLIENT_SHA_BEFORE="$(sha256sum "${PROJ}/client/dp-offline-upgrade-xenial-to-bionic.sh" | awk '{print $1}')"
+ART_SHA_BEFORE="$(sha256sum "$PROD_ARTIFACT" | awk '{print $1}')"
 set +e
-python3 "$BUILD_PY" \
-  --project-root "$ROOT" \
+python3 "$BUILD_PY_PROJ" \
+  --project-root "$PROJ" \
   --mirror-base "$MIRROR_BASE" \
   --selective-root "$SEL_ROOT" \
   --output-dir "$FINAL_OUT" \
   >"${WORKDIR}/final-prod-build.log" 2>&1
 rc=$?
 set -e
-CLIENT_SHA_AFTER="$(sha256sum "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh" | awk '{print $1}')"
-ART_SHA_AFTER=""
-[[ -f "$PROD_ARTIFACT" ]] && ART_SHA_AFTER="$(sha256sum "$PROD_ARTIFACT" | awk '{print $1}')"
+CLIENT_SHA_AFTER="$(sha256sum "${PROJ}/client/dp-offline-upgrade-xenial-to-bionic.sh" | awk '{print $1}')"
+ART_SHA_AFTER="$(sha256sum "$PROD_ARTIFACT" | awk '{print $1}')"
 if [[ "$rc" -eq 0 ]] \
   && grep -q 'CLIENT_MANIFEST_SIGNATURE_MODE=PRODUCTION_SIGNED' "${WORKDIR}/final-prod-build.log" \
   && grep -q 'ARTIFACT_SIGNATURE_VERIFY=PASS' "${WORKDIR}/final-prod-build.log" \
@@ -359,16 +487,14 @@ else
   tail -40 "${WORKDIR}/final-prod-build.log" || true
 fi
 
-READY_AFTER=""
-[[ -f "$READY_PATH" ]] && READY_AFTER="$(sha256sum "$READY_PATH" | awk '{print $1}')"
-if [[ -n "$READY_BEFORE" && "$READY_BEFORE" == "$READY_AFTER" ]]; then
+READY_AFTER="$(sha256sum "$READY_PATH" | awk '{print $1}')"
+if [[ "$READY_BEFORE" == "$READY_AFTER" ]]; then
   pass "READY_UNCHANGED=YES"
   echo "READY_UNCHANGED=YES"
 else
   fail "READY changed during signing tests"
 fi
 
-# 11) no real DP / dro / publish — this suite never invokes them
 pass "11 no DP/do-release-upgrade/package transaction/publish/reboot/full-mirror"
 
 if [[ "$FAIL" -ne 0 ]]; then

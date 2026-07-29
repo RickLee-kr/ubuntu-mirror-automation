@@ -167,6 +167,8 @@ cmd_check() {
   printf 'Preflight: %s\n' "$PF_ID"
   printf 'Overall: %s\n' "$PF_OVERALL"
   printf 'Recommended: %s\n' "$PF_RECOMMENDED"
+  # PF_HOSTNAME is set by osu_load_preflight_summary (not ST_HOSTNAME).
+  # shellcheck disable=SC2153
   printf 'Hostname: %s (current: %s)\n' "$PF_HOSTNAME" "$(osu_current_hostname)"
   printf 'OS: %s (%s)\n' "$PF_OS_VERSION" "$PF_OS_CODENAME"
   printf 'Phase1 hops: %s\n' "${PF_PHASE1_HOPS}"

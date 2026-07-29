@@ -340,13 +340,13 @@ if [[ -n "$ARCHIVE_SMOKE" ]]; then
   fi
 fi
 
-# shellcheck if available
+# shellcheck when available (SC1003: intentional escape in collector string builder;
+# SC2009: inventory uses ps|grep for process evidence; SC2185: find without path is intentional)
 if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck -x -e SC1091,SC2015,SC2034,SC2119,SC2120,SC2317,SC2004,SC2086,SC2207 "$SCRIPT"; then
+  if shellcheck -x -e SC1091,SC2015,SC2034,SC2119,SC2120,SC2317,SC2004,SC2086,SC2207,SC1003,SC2009,SC2185 "$SCRIPT"; then
     pass "shellcheck clean (with project exclusions)"
   else
-    # Try without SC2004/SC2086 extras and report
-    if shellcheck -x -e SC1091,SC2015,SC2034,SC2119,SC2120,SC2317 "$SCRIPT"; then
+    if shellcheck -x -e SC1091,SC2015,SC2034,SC2119,SC2120,SC2317,SC1003,SC2009,SC2185 "$SCRIPT"; then
       pass "shellcheck clean"
     else
       fail "shellcheck warnings"

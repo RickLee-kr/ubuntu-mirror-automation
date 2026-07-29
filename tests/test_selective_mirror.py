@@ -2348,9 +2348,10 @@ class StagingProvenanceResumeTests(unittest.TestCase):
 
     def test_durable_script_renders_hop_scope(self):
         path = os.path.join(
-            ROOT, 'artifacts/upgrade-discovery/analysis/h7-republish-durable.sh',
+            ROOT, 'tests/fixtures/upgrade-discovery/analysis/h7-republish-durable.sh',
         )
-        body = open(path).read()
+        with open(path, encoding='utf-8') as fh:
+            body = fh.read()
         self.assertIn('materialize-selective "$H7_HOP"', body)
         self.assertIn('H7_HOP="${H7_HOP:-xenial-to-bionic}"', body)
         self.assertIn('verify-selective "$H7_HOP"', body)

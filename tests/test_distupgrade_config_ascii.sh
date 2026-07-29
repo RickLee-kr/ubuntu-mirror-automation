@@ -6,7 +6,17 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT_IN="${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh.in"
-UPGRADER_TAR="${TEST_UPGRADER_TAR:-/var/spool/apt-mirror/selective/current/shared/offline/release-upgraders/bionic/bionic.tar.gz}"
+FIXTURE_TAR="${ROOT}/tests/fixtures/distupgrade/bionic-upgrader/bionic.tar.gz"
+PROD_TAR="/var/spool/apt-mirror/selective/current/shared/offline/release-upgraders/bionic/bionic.tar.gz"
+if [[ -n "${TEST_UPGRADER_TAR:-}" && -f "${TEST_UPGRADER_TAR}" ]]; then
+  UPGRADER_TAR="$TEST_UPGRADER_TAR"
+elif [[ -f "$PROD_TAR" ]]; then
+  UPGRADER_TAR="$PROD_TAR"
+elif [[ -f "$FIXTURE_TAR" ]]; then
+  UPGRADER_TAR="$FIXTURE_TAR"
+else
+  UPGRADER_TAR="$FIXTURE_TAR"
+fi
 FAIL=0
 pass() { echo "  PASS: $*"; }
 fail() { echo "  FAIL: $*"; FAIL=1; }
@@ -21,15 +31,15 @@ echo "=== test_distupgrade_config_ascii ==="
 # ---------------------------------------------------------------------------
 # Locate exact non-ASCII generator strings (historical failure: U+2192 arrow)
 # ---------------------------------------------------------------------------
-python3 - <<'PY' || fail "generator still embeds non-ASCII into DistUpgrade cfg heredocs"
+python3 - "$SCRIPT_IN" <<'PY' || fail "generator still embeds non-ASCII into DistUpgrade cfg heredocs"
 from pathlib import Path
-text = Path("/home/aella/ubuntu-mirror-automation/client/dp-offline-upgrade-xenial-to-bionic.sh.in").read_text(encoding="utf-8")
+import re, sys
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
 # Extract apply_distupgrade_mirror_override body
 start = text.index("apply_distupgrade_mirror_override()")
 end = text.index("\ninstall_effective_source_gate()", start)
 body = text[start:end]
 # The cfg/mirrors heredoc payloads must be ASCII-only.
-import re
 for m in re.finditer(r"cat >\"\$\{(mirrors_path|cfg_path)\}\.new\" <<EOF\n(.*?)EOF", body, re.S):
     payload = m.group(2)
     raw = payload.encode("utf-8")
@@ -306,9 +316,10 @@ else
 fi
 
 # 17 failure classification
-python3 - <<'PY' || fail "17 classify_dro_failure missing DISTUPGRADE_CONFIG_TEXT_ENCODING"
+python3 - "$SCRIPT_IN" <<'PY' || fail "17 classify_dro_failure missing DISTUPGRADE_CONFIG_TEXT_ENCODING"
 from pathlib import Path
-text = Path("/home/aella/ubuntu-mirror-automation/client/dp-offline-upgrade-xenial-to-bionic.sh.in").read_text(encoding="utf-8")
+import sys
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
 assert "FAILURE_CLASS=\"DISTUPGRADE_CONFIG_TEXT_ENCODING\"" in text or 'FAILURE_CLASS="DISTUPGRADE_CONFIG_TEXT_ENCODING"' in text
 assert "DistUpgradeConfigParser" in text
 assert "DISTUPGRADE_CONFIG_PARSER_STAGE=INITIALIZATION" in text

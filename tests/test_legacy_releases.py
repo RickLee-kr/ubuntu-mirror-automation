@@ -840,10 +840,10 @@ class TestLegacyReleases(unittest.TestCase):
 
     def test_42_discovery_pattern_coverage(self):
         build_full_xenial(self.ubuntu)
-        discovery = os.path.join(ROOT, "artifacts", "upgrade-discovery")
+        discovery = os.path.join(ROOT, "tests", "fixtures", "upgrade-discovery")
         self.assertTrue(
             os.path.isdir(discovery),
-            "artifacts/upgrade-discovery must be present for coverage check",
+            "tests/fixtures/upgrade-discovery must be present for coverage check",
         )
         v = self._validate(discovery_root=discovery)
         self.assertEqual(v["validation_result"], "PASS")
@@ -869,16 +869,16 @@ class TestLegacyReleases(unittest.TestCase):
     def test_44_discovery_artifacts_unchanged(self):
         path = os.path.join(
             ROOT,
-            "artifacts/upgrade-discovery/xenial-to-bionic/export-summary.json",
+            "tests/fixtures/upgrade-discovery/xenial-to-bionic/export-summary.json",
         )
         self.assertTrue(os.path.isfile(path), "discovery export-summary.json required")
         before = open(path, "rb").read()
         data = json.loads(before.decode("utf-8"))
         self.assertEqual(data.get("validation"), "PASS")
-        # Re-run discovery cross-check must not mutate artifacts
+        # Re-run discovery cross-check must not mutate fixtures
         build_full_xenial(self.ubuntu)
         self._validate(
-            discovery_root=os.path.join(ROOT, "artifacts", "upgrade-discovery")
+            discovery_root=os.path.join(ROOT, "tests", "fixtures", "upgrade-discovery")
         )
         after = open(path, "rb").read()
         self.assertEqual(before, after)

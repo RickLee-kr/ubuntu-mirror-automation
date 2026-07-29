@@ -19,8 +19,8 @@ trap 'rm -rf "$WORKDIR"' EXIT
 
 echo "[test] dp-os-upgrade-preflight.sh (OS-only)"
 
-# Ensure fixtures exist
-if [[ ! -d "$FIX/xenial-aio-current-blocked" ]]; then
+# Ensure fixtures exist (regenerate if collection.log missing)
+if [[ ! -f "$FIX/noble-650-noop/collection.log" ]]; then
   bash "$FIX/generate_fixtures.sh"
 fi
 
@@ -467,9 +467,9 @@ WRC=$?
 set -e
 grep -qi deprecated "$WORKDIR/wrap/stderr" && [[ "$WRC" -eq 0 ]] && pass "wrapper deprecation + success" || fail "wrapper"
 
-# shellcheck if available
+# shellcheck when available (SC1003/SC2016: intentional escape / literal $() checks)
 if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck -x -e SC1090,SC1091,SC2034,SC2317 "$SCRIPT" "$LIB"; then
+  if shellcheck -x -e SC1090,SC1091,SC2034,SC2317,SC1003,SC2016 "$SCRIPT" "$LIB"; then
     pass "shellcheck clean"
   else
     fail "shellcheck reported issues"

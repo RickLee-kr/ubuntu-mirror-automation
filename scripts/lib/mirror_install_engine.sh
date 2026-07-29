@@ -51,7 +51,8 @@ engine_verify_os_core_package() {
 engine_materialize_os_mirror() {
   # Extract verified OS Core into selective root directly (no current/previous/releases).
   local package="$1"
-  local staging_extract="${MM_CACHE_ROOT}/os-core-extract/$(mm_run_id)"
+  local staging_extract
+  staging_extract="${MM_CACHE_ROOT}/os-core-extract/$(mm_run_id)"
   local final_tmp="${MM_SELECTIVE_ROOT}.new.$$"
 
   if [[ "${MM_DRY_RUN}" == "1" ]]; then
@@ -188,7 +189,7 @@ engine_place_dp_phase2_final() {
   stable="$(dp2_stable_bundle_name)"
 
   (
-    cd "$work_files"
+    cd "$work_files" || exit 1
     tar -cf "${staging}/${stable}" "${DP_PHASE2_REQUIRED_FILES[@]}"
   )
   dp2_assert_safe_tar_list "${staging}/${stable}"
@@ -561,8 +562,10 @@ engine_enable_http_distribution() {
   install -m 0644 "$ngx_tmp" "$site_avail"
   rm -f "$ngx_tmp"
   ln -sfn "$site_avail" "$site_en"
-  if [[ -e /etc/nginx/sites-enabled/default ]]; then
-    rm -f /etc/nginx/sites-enabled/default
+  local default_site
+  default_site="$(dirname "$site_en")/default"
+  if [[ -e "$default_site" ]]; then
+    rm -f "$default_site"
   fi
 
   local restore_nginx

@@ -948,7 +948,7 @@ rsync_copy() {
   # Path guards: refuse identical paths; refuse destination outside expected stage/source roles
   [[ "$src_c" != "$dst_c" ]] || die "rsync source and destination are identical"
   case "$dst_c" in
-    "${STAGE_PATH}"|$(canonical_path "$STAGE_PATH")) ;;
+    "${STAGE_PATH}"|"$(canonical_path "$STAGE_PATH")") ;;
     *)
       if [[ "$TEST_MODE" == "1" ]]; then
         :

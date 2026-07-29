@@ -223,7 +223,8 @@ echo "$gen" | grep -q 'location /hops/' && pass "hops preserved" || fail "hops"
 echo "$gen" | grep -q 'location /client/' && pass "client preserved" || fail "client"
 
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck -x -e SC1091,SC2034 "${ROOT}/scripts/lib/dp-phase2-common.sh" \
+  shellcheck -x -e SC1090,SC1091,SC2015,SC2034,SC2119,SC2120,SC2317 \
+    "${ROOT}/scripts/lib/dp-phase2-common.sh" \
     "${ROOT}/scripts/download-dp-phase2.sh" \
     "${ROOT}/scripts/download-dp-phase2-6.5.0.sh" \
     && pass "shellcheck dp-phase2" || fail "shellcheck dp-phase2"

@@ -188,7 +188,8 @@ release_global_lock() {
   if [[ "${LOCK_HELD:-0}" != "1" ]] && [[ -z "${LOCK_FD:-}" ]]; then
     return 0
   fi
-  local meta="$(_uom_lock_meta_path)"
+  local meta
+  meta="$(_uom_lock_meta_path)"
   if [[ -n "${LOCK_FD:-}" ]]; then
     flock -u "$LOCK_FD" 2>/dev/null || true
     eval "exec ${LOCK_FD}>&-" 2>/dev/null || true

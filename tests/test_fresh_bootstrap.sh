@@ -267,6 +267,8 @@ export TARGET_DP_VERSION=6.5.0
 export MM_STATUS_FILE="${WORKDIR}/http-status.env"
 export MM_CONFIG_FILE="${WORKDIR}/http-gui.conf"
 mkdir -p "$(dirname "$MM_NGINX_SITE_AVAIL")" "$(dirname "$MM_NGINX_SITE_ENABLED")"
+# Exercise default-site removal under the same sites-enabled as $site_en
+ln -sfn /dev/null "${WORKDIR}/nginx/sites-enabled/default"
 printf 'TARGET_DP_VERSION=6.5.0\nACPS_USERNAME=u\nACPS_PASSWORD=p\n' >"$MM_CONFIG_FILE"
 chmod 600 "$MM_CONFIG_FILE"
 dp2_set_version 6.5.0
@@ -309,6 +311,9 @@ if run_enable_http >/dev/null; then
   [[ -f "$MM_NGINX_SITE_AVAIL" ]] && pass "nginx site written" || fail "nginx site written"
   grep -qE 'selective/current|published\.previous' "$MM_NGINX_SITE_AVAIL" \
     && fail "enabled site has generation paths" || pass "enabled site clean"
+  [[ ! -e "${WORKDIR}/nginx/sites-enabled/default" ]] \
+    && pass "default site removed under sites-enabled" \
+    || fail "default site still present under sites-enabled"
 else
   fail "engine_enable_http_distribution"
 fi

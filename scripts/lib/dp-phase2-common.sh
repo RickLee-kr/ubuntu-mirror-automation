@@ -159,21 +159,23 @@ dp2_expected_file_set() {
 
 dp2_assert_exact_files_dir() {
   local dir="$1"
-  local f missing=0 extra=0
+  local f
+  local missing_flag=0
+  local extra_flag=0
   for f in "${DP_PHASE2_REQUIRED_FILES[@]}"; do
     if [[ ! -f "${dir}/${f}" ]]; then
       dp2_error "REQUIRED_FILE_MISSING=FAIL file=${f}"
-      missing=1
+      missing_flag=1
     fi
   done
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     if ! printf '%s\n' "${DP_PHASE2_REQUIRED_FILES[@]}" | grep -qxF "$f"; then
       dp2_error "EXTRA_FILE=FAIL file=${f}"
-      extra=1
+      extra_flag=1
     fi
   done < <(find "$dir" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort)
-  [[ "$missing" -eq 0 && "$extra" -eq 0 ]] || dp2_die "FILE_SET=FAIL dir=${dir}"
+  [[ "$missing_flag" -eq 0 && "$extra_flag" -eq 0 ]] || dp2_die "FILE_SET=FAIL dir=${dir}"
   local count
   count="$(find "$dir" -maxdepth 1 -type f | wc -l | tr -d ' ')"
   [[ "$count" -eq "$DP_PHASE2_FILE_COUNT" ]] || dp2_die "FILE_COUNT=FAIL got=${count} want=${DP_PHASE2_FILE_COUNT}"
@@ -257,7 +259,7 @@ dp2_write_manifest_sha256() {
   local tmp
   tmp="$(mktemp "${release_dir}/.manifest.XXXXXX")"
   (
-    cd "$release_dir"
+    cd "$release_dir" || exit 1
     find . -type f ! -name 'manifest.sha256' ! -name '.manifest.*' -printf '%P\n' \
       | LC_ALL=C sort \
       | while IFS= read -r rel; do
@@ -277,7 +279,7 @@ dp2_verify_manifest_sha256() {
     dp2_die "MANIFEST_SELF_REF=FAIL"
   fi
   (
-    cd "$release_dir"
+    cd "$release_dir" || exit 1
     while read -r hash path; do
       [[ -n "$hash" && -n "$path" ]] || continue
       [[ -f "$path" ]] || dp2_die "MANIFEST_VERIFY=FAIL missing_path=${path}"

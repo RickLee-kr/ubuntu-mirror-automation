@@ -160,11 +160,14 @@ fi
 
 if command -v shellcheck >/dev/null 2>&1; then
   NOTICE="${WORKDIR}/notice.sh"
-  awk '
-    /^# BEGIN_DP_RESUME_OPERATOR_NOTICE$/ {keep=1; next}
-    /^# END_DP_RESUME_OPERATOR_NOTICE$/ {keep=0; next}
-    keep {print}
-  ' "$BRINGUP" >"$NOTICE"
+  {
+    echo '# shellcheck shell=bash'
+    awk '
+      /^# BEGIN_DP_RESUME_OPERATOR_NOTICE$/ {keep=1; next}
+      /^# END_DP_RESUME_OPERATOR_NOTICE$/ {keep=0; next}
+      keep {print}
+    ' "$BRINGUP"
+  } >"$NOTICE"
   if shellcheck -x -e SC1091,SC2015,SC2034,SC2119,SC2120,SC2317 "$NOTICE"; then
     pass "shellcheck notice helpers"
   else

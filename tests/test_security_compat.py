@@ -110,7 +110,10 @@ class TestSecurityCompat(unittest.TestCase):
             repo["ubuntu_root"],
             "--quiet",
         ]
-        discovery = kwargs.pop("discovery_root", os.path.join(ROOT, "artifacts", "upgrade-discovery"))
+        discovery = kwargs.pop(
+            "discovery_root",
+            os.path.join(ROOT, "tests", "fixtures", "upgrade-discovery"),
+        )
         if discovery and os.path.isdir(discovery):
             argv.extend(["--discovery-root", discovery])
         sources = kwargs.pop("sources_root", "")
@@ -158,7 +161,7 @@ class TestSecurityCompat(unittest.TestCase):
         args.ubuntu_root = repo["ubuntu_root"]
         args.http_base = ""
         args.timeout = 5
-        args.discovery_root = os.path.join(ROOT, "artifacts", "upgrade-discovery")
+        args.discovery_root = os.path.join(ROOT, "tests", "fixtures", "upgrade-discovery")
         args.sources_root = ""
         args.check_host_header = False
         args.require_by_hash = False

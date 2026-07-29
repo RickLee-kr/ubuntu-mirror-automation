@@ -48,6 +48,8 @@ fi
 
 HELPERS="$(mktemp)"
 extract_helpers "$HELPERS"
+# Prepend shell directive for ShellCheck SC2148 on extracted fragments
+{ echo '# shellcheck shell=bash'; cat "$HELPERS"; } >"${HELPERS}.tmp" && mv "${HELPERS}.tmp" "$HELPERS"
 if bash -n "$HELPERS"; then
   pass "bash -n extracted helpers"
 else

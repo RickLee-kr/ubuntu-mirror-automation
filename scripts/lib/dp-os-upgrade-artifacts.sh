@@ -85,14 +85,14 @@ osu_capture_file_manifest() {
         rel="${rel#/}"
         target=""
         if [[ -L "$p" ]]; then
-          typ=symlink
+          typ="symlink"
           target="$(readlink "$p" 2>/dev/null || true)"
           size=0
         elif [[ -d "$p" ]]; then
-          typ=dir
+          typ="dir"
           size=0
         else
-          typ=file
+          typ="file"
           size="$(stat -c '%s' "$p" 2>/dev/null || echo 0)"
         fi
         mtime="$(stat -c '%Y' "$p" 2>/dev/null || echo 0)"

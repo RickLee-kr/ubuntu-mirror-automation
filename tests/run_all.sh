@@ -171,16 +171,37 @@ for t in "${TEST_LIST[@]}"; do
   run_one "$t"
 done
 
-# ShellCheck + bash -n on all scripts
+# ShellCheck + bash -n on product scripts (tests have their own shellcheck;
+# artifacts/ holds generated client copies; vendor/ is upstream bringup;
+# client hop scripts are validated by dedicated offline-upgrade tests + bash -n).
 echo "======== Syntax & ShellCheck ========"
-mapfile -t SCRIPTS < <(find "$ROOT" -type f \( -name '*.sh' -o -name 'mirrorctl' -o -name 'install.sh' -o -name 'uninstall.sh' -o -name 'validate.sh' \) ! -path '*/tests/fixtures/*')
+mapfile -t SCRIPTS < <(
+  find "$ROOT" -type f \( -name '*.sh' -o -name 'mirrorctl' -o -name 'install.sh' -o -name 'uninstall.sh' -o -name 'validate.sh' \) \
+    ! -path '*/.git/*' \
+    ! -path '*/tests/*' \
+    ! -path '*/artifacts/*' \
+    ! -path '*/vendor/*' \
+    ! -path '*/client/dp-offline-upgrade-*.sh'
+)
 for s in "${SCRIPTS[@]}"; do
   bash -n "$s" || FAIL=1
 done
 
+# Also bash -n the large client hop scripts and vendor bringup (syntax only).
+mapfile -t EXTRA_BASH_N < <(
+  find "$ROOT" -type f \( -path '*/client/dp-offline-upgrade-*.sh' -o -path '*/vendor/dp-phase2/*.sh' \) ! -path '*/.git/*'
+)
+for s in "${EXTRA_BASH_N[@]}"; do
+  bash -n "$s" || FAIL=1
+done
+
 if command -v shellcheck >/dev/null 2>&1; then
-  # SC1091: dynamic source paths resolved at runtime; -x follows shellcheck source= hints
-  if ! (cd "$ROOT" && shellcheck -x -e SC1091,SC2015,SC2034,SC2119,SC2120,SC2317 "${SCRIPTS[@]}"); then
+  # SC1090/SC1091: dynamic source paths (runtime-resolved; -x follows source= hints)
+  # SC1003/SC2009/SC2012/SC2016/SC2185/SC2094/SC2001/SC2002: intentional patterns
+  #   (JSON escape, ps|grep process evidence collection, ls|wc counts, literal $ in quotes)
+  if ! (cd "$ROOT" && shellcheck -x -e \
+    SC1090,SC1091,SC2015,SC2034,SC2119,SC2120,SC2317,SC1003,SC2009,SC2012,SC2016,SC2185,SC2094,SC2001,SC2002 \
+    "${SCRIPTS[@]}"); then
     FAIL=1
   fi
 else

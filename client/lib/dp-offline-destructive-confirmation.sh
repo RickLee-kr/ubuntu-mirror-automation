@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared destructive confirmation helpers for offline OS upgrade clients.
 # Injected into single-file clients at build / stub-render time.
 # Compatible with Bash 4.3+ and safe under `set -Eeuo pipefail`.

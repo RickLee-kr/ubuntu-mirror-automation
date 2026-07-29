@@ -11,6 +11,7 @@ PATCHED_BRINGUP="${ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh"
 FAIL=0
 pass() { echo "  PASS: $*"; }
 fail() { echo "  FAIL: $*"; FAIL=1; }
+skip() { echo "  SKIP: $*"; }
 
 WORKDIR="$(mktemp -d)"
 HTTP_PID=""
@@ -695,8 +696,14 @@ grep -nE "ACPS_PASS='|ACPS_USER=\"Aella" "${ROOT}/scripts/download-dp-phase2.sh"
 echo "======== Q. production safety ========"
 PROD_CUR="$(readlink /var/spool/apt-mirror/dp-phase2/6.5.0/current 2>/dev/null || true)"
 PROD_PREV="$(readlink /var/spool/apt-mirror/dp-phase2/6.5.0/previous 2>/dev/null || true)"
-[[ "$PROD_CUR" == "releases/20260728T110548Z" ]] && pass "Q production current" || fail "Q current=$PROD_CUR"
-[[ "$PROD_PREV" == "releases/20260726T155911Z" ]] && pass "Q production previous" || fail "Q previous=$PROD_PREV"
+if [[ -z "$PROD_CUR" && -z "$PROD_PREV" ]]; then
+  skip "Q production dp-phase2 current/previous absent (clean host; optional smoke)"
+elif [[ ! -e /var/spool/apt-mirror/dp-phase2/6.5.0/current ]]; then
+  skip "Q production current symlink absent (clean host; optional smoke)"
+else
+  [[ "$PROD_CUR" == "releases/20260728T110548Z" ]] && pass "Q production current" || fail "Q current=$PROD_CUR"
+  [[ "$PROD_PREV" == "releases/20260726T155911Z" ]] && pass "Q production previous" || fail "Q previous=$PROD_PREV"
+fi
 
 echo "======== DONE fail=${FAIL} ========"
 exit "$FAIL"

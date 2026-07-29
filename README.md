@@ -219,7 +219,10 @@ cat /etc/ubuntu-mirror/dp-upgrade-mirror.status
 - [docs/deployment/DP_UPGRADE_MIRROR_MANAGER.md](docs/deployment/DP_UPGRADE_MIRROR_MANAGER.md)
 - [docs/deployment/OS_CORE_ARTIFACT_FORMAT.md](docs/deployment/OS_CORE_ARTIFACT_FORMAT.md)
 
-## Development tests
+## Developer testing
+
+See [docs/development/testing.md](docs/development/testing.md) for Ubuntu 24.04
+dependencies, hermetic fixtures, and ShellCheck policy.
 
 ```bash
 bash tests/run_all.sh

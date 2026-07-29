@@ -192,7 +192,8 @@ else
 fi
 
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck -x -e SC1091,SC2015,SC2034,SC2119,SC2120,SC2317 \
+  # SC2009: process inventory via ps|grep; SC2016: intentional single-quoted pattern check
+  shellcheck -x -e SC1091,SC2015,SC2034,SC2119,SC2120,SC2317,SC2009,SC2016 \
     "${ROOT}/tests/lib/worktree_fingerprint.sh" \
     "${ROOT}/tests/test_worktree_isolation.sh" \
     && pass "shellcheck isolation helpers" || fail "shellcheck isolation"

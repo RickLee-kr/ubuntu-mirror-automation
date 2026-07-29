@@ -1083,62 +1083,11 @@ osu_append_hop_history() {
 # ---------------------------------------------------------------------------
 # Atomic state
 # ---------------------------------------------------------------------------
+# Deprecated wrapper: historical case used `|` as a from/to delimiter, but bash
+# case treats `|` as OR — never match literal "from|to". Delegate to the
+# authoritative pair list in osu_can_transition.
 osu_transition_allowed() {
-  local from="$1" to="$2"
-  [[ "$from" == "$to" ]] && return 0
-  case "$from->$to" in
-    NEW-\>PREFLIGHT_ACCEPTED|NEW-\>COMPLETED|NEW-\>BLOCKED|NEW-\>FAILED) return 0 ;;
-  esac
-  # bash case with -> needs careful quoting
-  case "${from}|${to}" in
-    NEW|PREFLIGHT_ACCEPTED) return 0 ;;
-    NEW|COMPLETED) return 0 ;;
-    NEW|BLOCKED|NEW|FAILED) return 0 ;;
-    PREFLIGHT_ACCEPTED|INITIALIZED) return 0 ;;
-    PREFLIGHT_ACCEPTED|BLOCKED|PREFLIGHT_ACCEPTED|FAILED) return 0 ;;
-    INITIALIZED|HOP_PRECHECK) return 0 ;;
-    INITIALIZED|COMPLETED) return 0 ;;
-    INITIALIZED|BLOCKED|INITIALIZED|FAILED|INITIALIZED|PAUSED) return 0 ;;
-    HOP_PRECHECK|HOP_SOURCE_PREPARING) return 0 ;;
-    HOP_PRECHECK|BLOCKED|HOP_PRECHECK|FAILED|HOP_PRECHECK|PAUSED) return 0 ;;
-    HOP_SOURCE_PREPARING|HOP_SOURCE_READY) return 0 ;;
-    HOP_SOURCE_PREPARING|BLOCKED|HOP_SOURCE_PREPARING|FAILED|HOP_SOURCE_PREPARING|PAUSED) return 0 ;;
-    HOP_SOURCE_READY|HOP_CURRENT_RELEASE_UPDATING) return 0 ;;
-    HOP_SOURCE_READY|BLOCKED|HOP_SOURCE_READY|FAILED|HOP_SOURCE_READY|PAUSED) return 0 ;;
-    HOP_CURRENT_RELEASE_UPDATING|HOP_RELEASE_UPGRADE_STARTING) return 0 ;;
-    HOP_CURRENT_RELEASE_UPDATING|BLOCKED|HOP_CURRENT_RELEASE_UPDATING|FAILED|HOP_CURRENT_RELEASE_UPDATING|PAUSED) return 0 ;;
-    HOP_RELEASE_UPGRADE_STARTING|HOP_RELEASE_UPGRADE_RUNNING) return 0 ;;
-    HOP_RELEASE_UPGRADE_STARTING|BLOCKED|HOP_RELEASE_UPGRADE_STARTING|FAILED) return 0 ;;
-    HOP_RELEASE_UPGRADE_RUNNING|REBOOT_REQUIRED) return 0 ;;
-    HOP_RELEASE_UPGRADE_RUNNING|HOP_VALIDATING) return 0 ;;
-    HOP_RELEASE_UPGRADE_RUNNING|FAILED|HOP_RELEASE_UPGRADE_RUNNING|BLOCKED) return 0 ;;
-    REBOOT_REQUIRED|REBOOT_REQUESTED) return 0 ;;
-    REBOOT_REQUIRED|FAILED|REBOOT_REQUIRED|BLOCKED|REBOOT_REQUIRED|PAUSED) return 0 ;;
-    REBOOT_REQUESTED|RESUMED) return 0 ;;
-    REBOOT_REQUESTED|FAILED|REBOOT_REQUESTED|BLOCKED) return 0 ;;
-    RESUMED|HOP_VALIDATING) return 0 ;;
-    RESUMED|FAILED|RESUMED|BLOCKED|RESUMED|PAUSED) return 0 ;;
-    HOP_VALIDATING|HOP_COMPLETED) return 0 ;;
-    HOP_VALIDATING|FAILED|HOP_VALIDATING|BLOCKED) return 0 ;;
-    HOP_COMPLETED|HOP_PRECHECK) return 0 ;;
-    HOP_COMPLETED|COMPLETED) return 0 ;;
-    HOP_COMPLETED|CHECKPOINT_REACHED) return 0 ;;
-    HOP_COMPLETED|PAUSED|HOP_COMPLETED|BLOCKED) return 0 ;;
-    CHECKPOINT_REACHED|PREFLIGHT_ACCEPTED) return 0 ;;
-    CHECKPOINT_REACHED|INITIALIZED) return 0 ;;
-    CHECKPOINT_REACHED|HOP_PRECHECK) return 0 ;;
-    CHECKPOINT_REACHED|BLOCKED|CHECKPOINT_REACHED|FAILED|CHECKPOINT_REACHED|PAUSED) return 0 ;;
-    PAUSED|HOP_PRECHECK|PAUSED|RESUMED|PAUSED|HOP_SOURCE_PREPARING|PAUSED|HOP_VALIDATING|PAUSED|INITIALIZED) return 0 ;;
-    BLOCKED|HOP_PRECHECK|BLOCKED|RESUMED|BLOCKED|INITIALIZED) return 0 ;;
-    # Allow pause from most non-terminal states
-    *|PAUSED) 
-      case "$from" in COMPLETED|FAILED) return 1 ;; *) return 0 ;; esac
-      ;;
-    *|BLOCKED|*|FAILED)
-      case "$from" in COMPLETED) return 1 ;; *) return 0 ;; esac
-      ;;
-    *) return 1 ;;
-  esac
+  osu_can_transition "$@"
 }
 
 # Fixed transition checker using explicit pairs
@@ -4690,7 +4639,7 @@ EOF
 # Does not run apt install, do-release-upgrade, or reboot.
 osu_recover_current_release_update() {
   local evidence lock_class hop_dir stamp state_bak evid_dir cur source_os
-  local reasons=""
+  local reason_text=""
 
   [[ -f "$(osu_state_path)" ]] || { osu_log ERROR "recover-current-release-update: no state.json"; return 1; }
   osu_verify_state_checksum || { osu_log ERROR "recover-current-release-update: state checksum mismatch"; return 1; }
@@ -4738,13 +4687,13 @@ osu_recover_current_release_update() {
   evid_dir="${OSU_STATE_DIR}/recovery/current-release-${stamp}"
   mkdir -p "$evid_dir"
   if ! osu_verify_current_release_update_complete "$evid_dir"; then
-    reasons="$(tr '\n' ',' <"${evid_dir}/block_reason.txt" 2>/dev/null | sed 's/,$//')"
-    osu_log ERROR "recover-current-release-update refused: verification failed (${reasons:-unknown})"
+    reason_text="$(tr '\n' ',' <"${evid_dir}/block_reason.txt" 2>/dev/null | sed 's/,$//')"
+    osu_log ERROR "recover-current-release-update refused: verification failed (${reason_text:-unknown})"
     # Keep BLOCKED with precise reason; do not claim success
     if [[ "$ST_STATE" != "BLOCKED" && "$ST_STATE" != "FAILED" ]]; then
-      osu_set_blocked "current_release_recovery_insufficient:${reasons:-unknown}" true || true
+      osu_set_blocked "current_release_recovery_insufficient:${reason_text:-unknown}" true || true
     else
-      ST_BLOCK_REASON="current_release_recovery_insufficient:${reasons:-unknown}"
+      ST_BLOCK_REASON="current_release_recovery_insufficient:${reason_text:-unknown}"
       ST_LAST_ERROR="$ST_BLOCK_REASON"
       ST_RETRYABLE=true
       osu_write_state_json "$(osu_build_state_json)" || true

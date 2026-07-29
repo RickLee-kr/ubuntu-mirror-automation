@@ -1095,7 +1095,8 @@ dur_hook() {
   local var="DUR_${name}_HOOK"
   if [[ -n "${!var:-}" ]]; then
     dur_log INFO "running hook ${name}"
-    # shellcheck disable=SC2086
+    # Intentional: DUR_*_HOOK holds an operator-provided command string.
+    # shellcheck disable=SC2086,SC2294
     eval "${!var}" "$@" || dur_log WARN "hook ${name} failed rc=$?"
   fi
 }
