@@ -84,25 +84,40 @@ acps_setup_curl_auth() {
 
 acps_test_connection() {
   acps_setup_curl_auth
-  local url="${ACPS_EFFECTIVE_BASE%/}/"
+  # Probe an authenticated artifact, not the directory index.
+  # ACPS nginx returns 403 for "/" even with valid Basic auth (no autoindex),
+  # which previously caused false ACPS_CONNECTION=FAIL.
+  local probe="${ACPS_CONNECTION_PROBE_FILE:-aelladeb_py3_common.tar.gz.sha1}"
+  local url="${ACPS_EFFECTIVE_BASE%/}/${probe}"
   local code
   code="$(
     curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 15 --max-time 30 \
       ${ACPS_CURL_TLS_ARGS[@]+"${ACPS_CURL_TLS_ARGS[@]}"} \
       ${ACPS_CURL_AUTH_ARGS[@]+"${ACPS_CURL_AUTH_ARGS[@]}"} \
-      -I -L "$url" 2>/dev/null || echo 000
+      -I -L "$url" 2>/dev/null || true
   )"
+  code="${code:-000}"
+  # curl may print "000" on failure; ignore non-numeric garbage
+  [[ "$code" =~ ^[0-9]{3}$ ]] || code="000"
   if [[ "$code" == "000" ]]; then
-    mm_error "ACPS_CONNECTION=FAIL code=${code}"
+    mm_error "ACPS_CONNECTION=FAIL code=${code} url=${probe}"
     return 1
   fi
-  # 401/403 = reachable but auth wrong; 2xx/3xx/404 = host reachable
-  if [[ "$code" == "401" || "$code" == "403" ]]; then
+  if [[ "$code" == "401" ]]; then
     mm_error "ACPS_CONNECTION=FAIL auth code=${code}"
     return 1
   fi
-  mm_ok "ACPS_CONNECTION=PASS code=${code}"
-  return 0
+  if [[ "$code" == "403" ]]; then
+    mm_error "ACPS_CONNECTION=FAIL forbidden code=${code} url=${probe}"
+    return 1
+  fi
+  if [[ "$code" =~ ^[23][0-9][0-9]$ ]]; then
+    mm_ok "ACPS_CONNECTION=PASS code=${code} probe=${probe}"
+    return 0
+  fi
+  # 404 after auth usually means wrong version/path, not bad password.
+  mm_error "ACPS_CONNECTION=FAIL unexpected code=${code} probe=${probe}"
+  return 1
 }
 
 acps_download_one() {
