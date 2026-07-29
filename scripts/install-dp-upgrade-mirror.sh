@@ -327,17 +327,44 @@ Then re-run Download and Prepare."
   if ! mm_whiptail_yesno "Confirm" \
       "Download and prepare upgrade files for DP ${TARGET_DP_VERSION}?
 
-OK / Enter starts the download."; then
+OK / Enter starts the download.
+Progress will print live in the terminal (R2 ~3.5GB may take a while)."; then
     return 0
   fi
-  local out rc
-  set +e
-  out="$(engine_download_and_prepare 2>&1)"
-  rc=$?
-  set -e
-  local tmp
+
+  # Leave the whiptail UI so operators can see live download progress.
+  clear 2>/dev/null || true
+  cat <<EOF
+============================================================
+Download and Prepare — live progress
+Target DP Version: ${TARGET_DP_VERSION}
+R2 OS Core + ACPS Phase 2 will download now.
+Progress lines print every few seconds. Do not interrupt.
+============================================================
+
+EOF
+  export MM_LIVE_PROGRESS=1
+  local tmp rc
   tmp="$(mktemp)"
-  printf '%s\n' "$out" >"$tmp"
+  set +e
+  set -o pipefail
+  # tee keeps a full transcript for the final summary textbox.
+  # MM_LIVE_PROGRESS also mirrors lines to /dev/tty so progress stays visible.
+  engine_download_and_prepare 2>&1 | tee "$tmp"
+  rc=$?
+  set +o pipefail
+  set -e
+  unset MM_LIVE_PROGRESS
+
+  printf '\n------------------------------------------------------------\n'
+  if [[ "$rc" -eq 0 ]]; then
+    printf 'Download and Prepare finished: PASS\n'
+  else
+    printf 'Download and Prepare finished: FAIL (see log above)\n'
+  fi
+  printf 'Press Enter to return to the menu...\n'
+  read -r _ || true
+
   if [[ "$rc" -eq 0 ]]; then
     mm_whiptail_textbox "Download and Prepare — PASS" "$tmp"
   else

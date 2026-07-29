@@ -11,7 +11,7 @@ R2_ACQUIRE_LOADED=1
 R2_CURL_CONNECT_TIMEOUT="${R2_CURL_CONNECT_TIMEOUT:-30}"
 R2_CURL_RETRIES="${R2_CURL_RETRIES:-5}"
 R2_CURL_RETRY_DELAY="${R2_CURL_RETRY_DELAY:-5}"
-R2_PROGRESS_INTERVAL_SEC="${R2_PROGRESS_INTERVAL_SEC:-5}"
+R2_PROGRESS_INTERVAL_SEC="${R2_PROGRESS_INTERVAL_SEC:-3}"
 
 r2_cache_dir() {
   printf '%s/r2\n' "${MM_CACHE_ROOT}"
@@ -248,6 +248,7 @@ r2_download_package() {
         rate=$((downloaded / elapsed))
       fi
       mm_info "R2_DOWNLOAD_PROGRESS file=${base_name} downloaded_bytes=${downloaded} expected_bytes=${expected:-UNKNOWN} percentage=${pct} elapsed=${elapsed}s rate_bps=${rate}"
+      mm_progress_line "R2 ${base_name}" "$downloaded" "${expected:-}" "$elapsed" "$rate"
     done
   ) &
   progress_pid=$!

@@ -13,7 +13,7 @@ ACPS_ACQUIRE_LOADED=1
 ACPS_CURL_CONNECT_TIMEOUT="${ACPS_CURL_CONNECT_TIMEOUT:-30}"
 ACPS_CURL_RETRIES="${ACPS_CURL_RETRIES:-5}"
 ACPS_CURL_RETRY_DELAY="${ACPS_CURL_RETRY_DELAY:-5}"
-ACPS_PROGRESS_INTERVAL_SEC="${ACPS_PROGRESS_INTERVAL_SEC:-5}"
+ACPS_PROGRESS_INTERVAL_SEC="${ACPS_PROGRESS_INTERVAL_SEC:-3}"
 
 acps_cache_dir() {
   local ver="${1:-$DP_PHASE2_VERSION}"
@@ -179,6 +179,7 @@ acps_download_one() {
         rate=$((downloaded / elapsed))
       fi
       mm_info "ACPS_DOWNLOAD_PROGRESS file=${name} downloaded_bytes=${downloaded} expected_bytes=${expected:-UNKNOWN} percentage=${pct} elapsed=${elapsed}s rate_bps=${rate}"
+      mm_progress_line "ACPS ${name}" "$downloaded" "${expected:-}" "$elapsed" "$rate"
     done
   ) &
   progress_pid=$!

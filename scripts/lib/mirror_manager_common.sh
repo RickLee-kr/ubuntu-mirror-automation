@@ -56,6 +56,32 @@ mm_redact() {
     -e 's/Authorization:[[:space:]]*Bearer[[:space:]]+[^[:space:]]+/Authorization: Bearer ***/Ig'
 }
 
+mm_format_bytes() {
+  local b="${1:-0}"
+  if ! [[ "$b" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$b"
+    return 0
+  fi
+  if [[ "$b" -ge $((1024 * 1024 * 1024)) ]]; then
+    awk -v n="$b" 'BEGIN { printf "%.2f GiB", n / (1024*1024*1024) }'
+  elif [[ "$b" -ge $((1024 * 1024)) ]]; then
+    awk -v n="$b" 'BEGIN { printf "%.1f MiB", n / (1024*1024) }'
+  elif [[ "$b" -ge 1024 ]]; then
+    awk -v n="$b" 'BEGIN { printf "%.1f KiB", n / 1024 }'
+  else
+    printf '%s B' "$b"
+  fi
+}
+
+mm_format_rate() {
+  local bps="${1:-0}"
+  if ! [[ "$bps" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$bps"
+    return 0
+  fi
+  printf '%s/s' "$(mm_format_bytes "$bps")"
+}
+
 mm_log() {
   local level="$1"; shift
   local msg="$*"
@@ -66,6 +92,12 @@ mm_log() {
     ERROR|WARN) printf '%s\n' "$line" >&2 ;;
     *) printf '%s\n' "$line" ;;
   esac
+  # Always mirror progress to the controlling terminal so GUI capture cannot hide it.
+  if [[ "${MM_LIVE_PROGRESS:-0}" == "1" ]]; then
+    if { printf '%s\n' "$line" >/dev/tty; } 2>/dev/null; then
+      :
+    fi
+  fi
   if [[ -n "${MM_LOG_FILE:-}" ]]; then
     mkdir -p "$(dirname "$MM_LOG_FILE")" 2>/dev/null || true
     printf '%s\n' "$line" >>"$MM_LOG_FILE" 2>/dev/null || true
@@ -76,6 +108,25 @@ mm_warn() { mm_log WARN "$*"; }
 mm_error() { mm_log ERROR "$*"; }
 mm_ok() { mm_log OK "$*"; }
 mm_die() { mm_error "$*"; exit 1; }
+
+mm_progress_line() {
+  # Human-readable download progress for operators watching the terminal.
+  local label="$1" downloaded="$2" expected="$3" elapsed="$4" rate="$5"
+  local pct="--" down_h exp_h rate_h
+  down_h="$(mm_format_bytes "$downloaded")"
+  if [[ "$expected" =~ ^[0-9]+$ && "$expected" -gt 0 ]]; then
+    pct=$((downloaded * 100 / expected))
+    exp_h="$(mm_format_bytes "$expected")"
+  else
+    exp_h="unknown"
+  fi
+  if [[ "$rate" =~ ^[0-9]+$ ]]; then
+    rate_h="$(mm_format_rate "$rate")"
+  else
+    rate_h="--"
+  fi
+  mm_info "PROGRESS ${label}: ${down_h} / ${exp_h} (${pct}%) elapsed=${elapsed}s rate=${rate_h}"
+}
 
 mm_require_root() {
   if [[ "${MM_SKIP_ROOT_CHECK}" == "1" ]]; then
