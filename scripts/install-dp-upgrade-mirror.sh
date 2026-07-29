@@ -300,7 +300,13 @@ OS Core Source: Cloudflare R2 — fixed" \
       5)
         mm_save_gui_config
         mm_status_set CONFIGURATION_READY PASS
-        mm_whiptail_msg "Configuration" "Configuration saved."
+        mm_whiptail_msg "Configuration" \
+          "Configuration saved.
+
+Next step:
+  Back → main menu → 2) Download and Prepare Upgrade Files
+
+Saving configuration does NOT start the download."
         ;;
       0|"") return 0 ;;
     esac
@@ -547,10 +553,13 @@ EOF
     exit 1
   fi
   while true; do
-    local choice
+    local choice rc=0
     choice="$(mm_whiptail_menu \
       "DP Ubuntu Upgrade Mirror Manager" \
-      "Single workflow: Cloudflare R2 OS Core + ACPS Phase 2" \
+      "Single workflow: Cloudflare R2 OS Core + ACPS Phase 2
+
+After Configuration, choose 2 to start the download.
+Cancel/ESC returns here; choose 0 to Exit." \
       "1" "Configuration" \
       "2" "Download and Prepare Upgrade Files" \
       "3" "Verify Upgrade Readiness" \
@@ -558,7 +567,11 @@ EOF
       "5" "Show Current Status" \
       "6" "View Logs" \
       "7" "Show DP Client Upgrade Instructions" \
-      "0" "Exit")" || exit 0
+      "0" "Exit")" || rc=$?
+    # Cancel/ESC on the main menu must NOT drop to the shell; only "0 Exit" leaves.
+    if [[ "$rc" -ne 0 ]]; then
+      continue
+    fi
     case "$choice" in
       1) gui_configuration ;;
       2) gui_download_and_prepare ;;
