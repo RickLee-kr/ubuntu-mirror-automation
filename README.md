@@ -31,18 +31,8 @@ RECOVERY_METHOD=HYPERVISOR_SNAPSHOT
 
 ## Install
 
-Public clone (HTTPS):
-
 ```bash
 git clone https://github.com/RickLee-kr/ubuntu-mirror-automation.git
-cd ubuntu-mirror-automation
-sudo ./install.sh
-```
-
-SSH clone (if you already use GitHub SSH keys):
-
-```bash
-git clone git@github.com:RickLee-kr/ubuntu-mirror-automation.git
 cd ubuntu-mirror-automation
 sudo ./install.sh
 ```
