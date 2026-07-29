@@ -102,9 +102,9 @@ um_load_config() {
   CLEAN_SCRIPT="${CLEAN_SCRIPT:-$VAR_PATH/clean.sh}"
   UBUNTU_MIRROR_ROOT="${UBUNTU_MIRROR_ROOT:-$MIRROR_PATH/archive.ubuntu.com/ubuntu}"
   DIST_ROOT="${DIST_ROOT:-$UBUNTU_MIRROR_ROOT/dists}"
-  # Canonical selective publish pointer (nginx root + atomic symlink target parent)
+  # Canonical selective tree (direct; no current/previous generation symlink)
   SELECTIVE_MIRROR_ROOT="${SELECTIVE_MIRROR_ROOT:-$BASE_PATH/selective}"
-  SELECTIVE_NGINX_ROOT="${SELECTIVE_NGINX_ROOT:-$SELECTIVE_MIRROR_ROOT/current}"
+  SELECTIVE_NGINX_ROOT="${SELECTIVE_NGINX_ROOT:-$SELECTIVE_MIRROR_ROOT}"
 
   # Disk capacity defaults
   DISK_RESERVE_PERCENT="${DISK_RESERVE_PERCENT:-20}"

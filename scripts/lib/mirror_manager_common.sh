@@ -144,6 +144,10 @@ ACPS_PASSWORD=${ACPS_PASSWORD}
 EOF
   chmod 600 "$tmp"
   mv -f "$tmp" "$MM_CONFIG_FILE"
+  chmod 600 "$MM_CONFIG_FILE"
+  if [[ "${EUID}" -eq 0 ]]; then
+    chown root:root "$MM_CONFIG_FILE" 2>/dev/null || true
+  fi
   mm_ok "CONFIGURATION_SAVED=PASS path=${MM_CONFIG_FILE}"
 }
 
@@ -304,4 +308,48 @@ mm_configured_label() {
   else
     printf 'not configured'
   fi
+}
+
+# Required HTTP client artifacts (must be real files; empty directory is FAIL)
+MM_CLIENT_REQUIRED_FILES=(
+  dp-offline-upgrade-xenial-to-bionic.sh
+  dp-offline-upgrade-xenial-to-bionic.sh.sha256
+  dp-offline-upgrade-bionic-to-focal.sh
+  dp-offline-upgrade-bionic-to-focal.sh.sha256
+  dp-offline-upgrade-focal-to-jammy.sh
+  dp-offline-upgrade-focal-to-jammy.sh.sha256
+  dp-offline-upgrade-jammy-to-noble.sh
+  dp-offline-upgrade-jammy-to-noble.sh.sha256
+  stage-dp-phase2.sh
+  stage-dp-phase2.sh.sha256
+)
+
+mm_client_files_ready() {
+  local root="${1:-${MM_CLIENT_ROOT}}"
+  local f
+  [[ -d "$root" ]] || return 1
+  for f in "${MM_CLIENT_REQUIRED_FILES[@]}"; do
+    [[ -f "${root}/${f}" ]] || return 1
+  done
+  for f in \
+    dp-offline-upgrade-xenial-to-bionic.sh \
+    dp-offline-upgrade-bionic-to-focal.sh \
+    dp-offline-upgrade-focal-to-jammy.sh \
+    dp-offline-upgrade-jammy-to-noble.sh \
+    stage-dp-phase2.sh
+  do
+    (cd "$root" && sha256sum -c "${f}.sha256" >/dev/null 2>&1) || return 1
+  done
+  return 0
+}
+
+mm_check_client_files_ready() {
+  if mm_client_files_ready "${MM_CLIENT_ROOT}"; then
+    mm_state_set CLIENT_FILES_READY PASS
+    mm_ok "CLIENT_FILES_READY=PASS"
+    return 0
+  fi
+  mm_state_set CLIENT_FILES_READY FAIL
+  mm_error "CLIENT_FILES_READY=FAIL (required scripts/checksums missing under ${MM_CLIENT_ROOT})"
+  return 1
 }

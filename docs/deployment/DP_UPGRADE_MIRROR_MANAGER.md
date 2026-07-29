@@ -4,13 +4,16 @@
 
 Build a DP Ubuntu upgrade HTTP mirror server in one fixed workflow:
 
-1. Download Ubuntu OS Core from Cloudflare R2
-2. Verify OS Core checksums
-3. Download DP Phase 2 artifacts from ACPS (GUI credentials + target version)
-4. Verify ACPS checksums and upstream bringup baseline
-5. Apply the local patched bringup
-6. Materialize one Phase 1 OS mirror set and one Phase 2 bundle
-7. Serve clients over HTTP only
+1. Bootstrap a clean Ubuntu 24.04 host with `sudo ./install.sh`
+2. Configure Target DP Version + ACPS credentials in the GUI
+3. Download Ubuntu OS Core from Cloudflare R2
+4. Verify OS Core checksums
+5. Download DP Phase 2 artifacts from ACPS
+6. Verify ACPS checksums and upstream bringup baseline
+7. Apply the local patched bringup
+8. Materialize one Phase 1 OS mirror set and one Phase 2 bundle
+9. Enable HTTP distribution (real nginx enable + smoke tests)
+10. Serve clients over HTTP only
 
 Contracts:
 
@@ -25,9 +28,24 @@ CLIENT_DOWNLOAD_SOURCE=MIRROR_SERVER_ONLY
 
 ## Entrypoint
 
+Fresh host bootstrap (authoritative):
+
+```bash
+git clone https://github.com/RickLee-kr/ubuntu-mirror-automation.git
+cd ubuntu-mirror-automation
+sudo ./install.sh
+```
+
+Re-open GUI after install (system command; no checkout required):
+
+```bash
+sudo ubuntu-offline-mirror mirror-manager
+```
+
+Repository-relative equivalents (development):
+
 ```bash
 sudo ./scripts/ubuntu-offline-mirror.sh mirror-manager
-# or
 sudo ./scripts/install-dp-upgrade-mirror.sh mirror-manager
 ```
 
@@ -73,12 +91,15 @@ OS_CORE_PACKAGE_URL=https://xdrsolutions.uk/ubuntu-os-core/ubuntu-os-core-xenial
 The checksum sidecar URL is derived as `${OS_CORE_PACKAGE_URL}.sha256` (no separate
 constant). Clients never download from R2; only the Mirror Manager host does.
 
+Credentials are stored root-owned mode `600` at
+`/etc/ubuntu-mirror/dp-upgrade-mirror.conf` and redacted from logs.
+
 ## Download and Prepare
 
-Automatic sequence: config check → R2 download (`.part`, safe resume, retry) → OS Core
-verify/extract → ACPS download → checksum → upstream bringup drift gate → patched
-bringup → Phase 2 bundle (9 entries) → place final HTTP files → delete download
-cache/staging.
+Automatic sequence: config check → client artifact check → R2 download
+(`.part`, safe resume, retry) → OS Core verify/extract → ACPS download →
+checksum → upstream bringup drift gate → patched bringup → Phase 2 bundle
+(9 entries) → place final HTTP files → delete download cache/staging.
 
 Resume rules for the R2 package download:
 
@@ -87,6 +108,20 @@ Resume rules for the R2 package download:
 - HTTP 200 while a `.part` exists (Range ignored) → discard `.part` and replace
   (never append a full body onto a partial).
 - Invalid `Content-Range` → fail; do not finalize.
+
+## Enable HTTP Distribution
+
+Not a status-only flag. On success the manager:
+
+1. Validates prepared layout and client files
+2. Renders/installs the nginx site
+3. Enables the site symlink and disables the default site when needed
+4. Runs `nginx -t`
+5. `systemctl enable` + reload/start nginx
+6. Smoke-tests concrete artifact URLs
+7. Sets `HTTP_DISTRIBUTION=ENABLED` only after smoke PASS
+
+On failure the previous nginx site is restored and ENABLED is not recorded.
 
 ## Storage
 
@@ -106,7 +141,8 @@ name only; it is not a symlink generation.
 
 OS selective tree is materialized directly under `selective/` for nginx paths
 `/ubuntu/`, `/ubuntu-security/`, `/offline/`, `/hops/`. Client scripts remain
-under `/client/`.
+under `/client/` and must include hop scripts plus `stage-dp-phase2.sh` and
+checksum sidecars (`CLIENT_FILES_READY` rejects an empty directory).
 
 ## Bringup drift gate
 
@@ -139,5 +175,5 @@ snapshots and does not provide rollback commands.
 ## Production note
 
 Repository tests use synthetic fixtures and mock HTTP only. Real R2/ACPS
-downloads, production path changes, and nginx reload require separate operator
-approval / canary on a fresh mirror VM.
+downloads on a disposable fresh mirror VM require separate operator approval.
+Bootstrap tests use temporary roots and must not modify production mirror data.

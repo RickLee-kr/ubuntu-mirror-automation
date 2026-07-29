@@ -544,16 +544,25 @@ usage() {
   cat <<EOF
 Usage: $0 <command>
 
+DP Ubuntu Upgrade Mirror Manager (single workflow: R2 OS Core + ACPS Phase 2).
+
+Fresh hosts should bootstrap with: sudo ./install.sh
+Re-open GUI after install:         sudo ubuntu-offline-mirror mirror-manager
+
 Commands:
   mirror-manager          Interactive whiptail Mirror Manager (default)
-  download-and-prepare    Non-interactive prepare (uses saved config + OS_CORE_R2_URL)
+  download-and-prepare    Non-interactive prepare (saved config + fixed R2 URL)
   verify-readiness        Print UPGRADE_READINESS
-  enable-http             Enable HTTP distribution after prepare
+  enable-http             Install/enable nginx site and smoke-test HTTP
 EOF
 }
 
 main() {
   local cmd="${1:-mirror-manager}"
+  if [[ "$cmd" == "-h" || "$cmd" == "--help" || "$cmd" == "help" ]]; then
+    usage
+    exit 0
+  fi
   shift || true
   while [[ $# -gt 0 ]]; do
     case "$1" in

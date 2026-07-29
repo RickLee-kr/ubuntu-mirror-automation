@@ -859,8 +859,10 @@ class TestLegacyReleases(unittest.TestCase):
         self.assertIn("validate-legacy-releases", text)
         self.assertIn("freeze-xenial-snapshot", text)
         self.assertIn("sync_legacy_releases", text)
-        install = open(os.path.join(ROOT, "install.sh"), encoding="utf-8").read()
-        self.assertIn("sync_legacy_releases.py", install)
+        # Legacy helper remains in repo and is wired through ubuntu-offline-mirror.sh.
+        # Fresh bootstrap install.sh no longer vendors apt-mirror selective sync tools.
+        helper = os.path.join(ROOT, "scripts", "lib", "sync_legacy_releases.py")
+        self.assertTrue(os.path.isfile(helper), "sync_legacy_releases.py must remain available")
         nginx = open(os.path.join(ROOT, "templates", "nginx.conf"), encoding="utf-8").read()
         self.assertIn("old-releases.ubuntu.com", nginx)
 

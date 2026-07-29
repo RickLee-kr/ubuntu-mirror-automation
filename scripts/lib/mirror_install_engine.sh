@@ -404,9 +404,11 @@ engine_download_and_prepare() {
   engine_preflight_host
   mm_acquire_install_lock
 
-  # Client tree presence (populated by separate client deploy; ensure dir exists)
+  # Client HTTP artifacts must already be present (installed by bootstrap)
   mkdir -p "$MM_CLIENT_ROOT"
-  mm_state_set CLIENT_FILES_READY PASS
+  if ! mm_check_client_files_ready; then
+    mm_die "CLIENT_FILES_READY=FAIL"
+  fi
 
   # R2 OS Core
   r2_download_package
@@ -461,16 +463,158 @@ engine_download_and_prepare() {
   mm_ok "DOWNLOAD_AND_PREPARE=PASS"
 }
 
+engine_render_nginx_site() {
+  # Render nginx site for the single final selective + Phase 2 layout.
+  local tpl=""
+  local base="${MM_MIRROR_ROOT}"
+  local ver="${TARGET_DP_VERSION:-6.5.0}"
+  local candidates=(
+    "${MM_PROJECT_ROOT}/templates/nginx.conf"
+    "${MM_PROJECT_ROOT}/../templates/nginx.conf"
+    /usr/local/lib/ubuntu-mirror/templates/nginx.conf
+  )
+  local c
+  for c in "${candidates[@]}"; do
+    if [[ -f "$c" ]]; then
+      tpl="$c"
+      break
+    fi
+  done
+  [[ -n "$tpl" ]] || mm_die "NGINX_TEMPLATE=FAIL"
+  sed \
+    -e "s|/var/spool/apt-mirror/selective|${base}/selective|g" \
+    -e "s|/var/spool/apt-mirror/client|${base}/client|g" \
+    -e "s|/var/spool/apt-mirror/dp-phase2/6.5.0|${base}/dp-phase2/${ver}|g" \
+    -e "s|/var/spool/apt-mirror/dp-phase2|${base}/dp-phase2|g" \
+    -e "s|/dp-phase2/6.5.0/|/dp-phase2/${ver}/|g" \
+    -e "s|location = /dp-phase2/6.5.0|location = /dp-phase2/${ver}|g" \
+    "$tpl"
+}
+
+engine_nginx_bin() { printf '%s\n' "${MM_NGINX_BIN:-nginx}"; }
+engine_systemctl_bin() { printf '%s\n' "${MM_SYSTEMCTL_BIN:-systemctl}"; }
+
 engine_enable_http_distribution() {
+  # Real nginx enable: layout check → site install → nginx -t → enable/reload → HTTP smoke.
+  # On any failure: restore previous site config and do NOT set HTTP_DISTRIBUTION=ENABLED.
   mm_load_gui_config
   engine_resolve_paths
   dp2_set_version "$TARGET_DP_VERSION"
-  if ! engine_validate_http_layout; then
+
+  if ! mm_check_client_files_ready; then
     mm_status_set HTTP_DISTRIBUTION DISABLED
     mm_state_set HTTP_DISTRIBUTION_READY NO
-    mm_die "HTTP_DISTRIBUTION=FAIL"
+    mm_die "HTTP_DISTRIBUTION=FAIL CLIENT_FILES_READY"
   fi
+
+  # Layout validation without requiring live HTTP yet
+  local prev_skip="${MM_SKIP_HTTP_VALIDATE:-0}"
+  MM_SKIP_HTTP_VALIDATE=1
+  if ! engine_validate_http_layout; then
+    MM_SKIP_HTTP_VALIDATE="$prev_skip"
+    mm_status_set HTTP_DISTRIBUTION DISABLED
+    mm_state_set HTTP_DISTRIBUTION_READY NO
+    mm_die "HTTP_DISTRIBUTION=FAIL layout"
+  fi
+  MM_SKIP_HTTP_VALIDATE="$prev_skip"
+
+  if [[ "${MM_DRY_RUN}" == "1" ]]; then
+    mm_info "DRY_RUN skip nginx enable"
+    mm_status_set HTTP_DISTRIBUTION ENABLED
+    mm_state_set HTTP_DISTRIBUTION_READY YES
+    mm_ok "HTTP_DISTRIBUTION=ENABLED (dry-run)"
+    return 0
+  fi
+
+  # Unit-test hook: layout already validated; skip writing /etc/nginx (see bootstrap tests for full path).
+  if [[ "${MM_SKIP_NGINX_APPLY:-0}" == "1" ]]; then
+    mm_warn "NGINX_APPLY=SKIPPED_TEST"
+    mm_status_set HTTP_DISTRIBUTION ENABLED
+    mm_state_set HTTP_DISTRIBUTION_READY YES
+    mm_status_set HTTP_CONFIGURATION_READY PASS
+    mm_ok "HTTP_DISTRIBUTION=ENABLED"
+    return 0
+  fi
+
+  local site_name="${MM_NGINX_SITE_NAME:-apt-mirror}"
+  local site_avail="${MM_NGINX_SITE_AVAIL:-/etc/nginx/sites-available/${site_name}}"
+  local site_en="${MM_NGINX_SITE_ENABLED:-/etc/nginx/sites-enabled/${site_name}}"
+  local nginx_bin systemctl_bin ngx_tmp backup=""
+  nginx_bin="$(engine_nginx_bin)"
+  systemctl_bin="$(engine_systemctl_bin)"
+
+  command -v "$nginx_bin" >/dev/null 2>&1 || mm_die "NGINX_PACKAGE=FAIL binary missing"
+  command -v "$systemctl_bin" >/dev/null 2>&1 || mm_die "SYSTEMCTL=FAIL missing"
+
+  ngx_tmp="$(mktemp)"
+  engine_render_nginx_site >"$ngx_tmp"
+  if grep -qE 'selective/current|published\.previous' "$ngx_tmp"; then
+    rm -f "$ngx_tmp"
+    mm_die "NGINX_CONFIG=FAIL generation path reference"
+  fi
+
+  mkdir -p "$(dirname "$site_avail")" "$(dirname "$site_en")"
+  if [[ -f "$site_avail" ]]; then
+    backup="${site_avail}.bak.mm.$(date -u +%Y%m%d%H%M%S)"
+    cp -a "$site_avail" "$backup"
+  fi
+  install -m 0644 "$ngx_tmp" "$site_avail"
+  rm -f "$ngx_tmp"
+  ln -sfn "$site_avail" "$site_en"
+  if [[ -e /etc/nginx/sites-enabled/default ]]; then
+    rm -f /etc/nginx/sites-enabled/default
+  fi
+
+  local restore_nginx
+  restore_nginx() {
+    if [[ -n "${backup:-}" && -f "$backup" ]]; then
+      cp -a "$backup" "$site_avail"
+      mm_warn "NGINX_ROLLBACK=YES restored ${backup}"
+    fi
+    mm_status_set HTTP_DISTRIBUTION DISABLED
+    mm_state_set HTTP_DISTRIBUTION_READY NO
+  }
+
+  if [[ "${MM_NGINX_TEST_FAIL:-0}" == "1" ]] || ! "$nginx_bin" -t; then
+    restore_nginx
+    mm_die "NGINX_TEST=FAIL"
+  fi
+  mm_ok "NGINX_TEST=PASS"
+
+  "$systemctl_bin" enable nginx >/dev/null 2>&1 || true
+  if "$systemctl_bin" is-active --quiet nginx 2>/dev/null; then
+    if ! "$systemctl_bin" reload nginx; then
+      "$systemctl_bin" restart nginx || {
+        restore_nginx
+        mm_die "NGINX_RELOAD=FAIL"
+      }
+    fi
+  else
+    "$systemctl_bin" start nginx || {
+      restore_nginx
+      mm_die "NGINX_START=FAIL"
+    }
+  fi
+  mm_ok "NGINX_ENABLE=PASS"
+
+  # Concrete artifact HTTP smoke (root URL / is not a failure criterion)
+  if [[ "${MM_SKIP_HTTP_VALIDATE:-0}" != "1" ]]; then
+    if [[ "${MM_HTTP_VALIDATE_MOCK_FAIL:-0}" == "1" ]] || ! engine_validate_http_layout; then
+      restore_nginx
+      if command -v "$systemctl_bin" >/dev/null 2>&1; then
+        "$systemctl_bin" reload nginx 2>/dev/null \
+          || "$systemctl_bin" restart nginx 2>/dev/null \
+          || true
+      fi
+      mm_die "HTTP_SMOKE=FAIL"
+    fi
+  else
+    mm_state_set HTTP_CONFIGURATION_READY PASS
+    mm_warn "HTTP_VALIDATION=SKIPPED_NETWORK"
+  fi
+
   mm_status_set HTTP_DISTRIBUTION ENABLED
   mm_state_set HTTP_DISTRIBUTION_READY YES
+  mm_status_set HTTP_CONFIGURATION_READY PASS
   mm_ok "HTTP_DISTRIBUTION=ENABLED"
 }

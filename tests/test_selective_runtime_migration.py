@@ -455,9 +455,13 @@ echo SIZE=$sz
                    encoding='utf-8').read()
         self.assertIn('migrate-selective-runtime', uom)
         self.assertIn('cmd_migrate_selective_runtime', uom)
-        install = open(os.path.join(ROOT, 'install.sh'), encoding='utf-8').read()
-        self.assertIn('um_has_runtime_drift', install)
-        self.assertIn('um_migrate_selective_runtime_config', install)
+        # Runtime drift/migration helpers live in lib/config.sh; bootstrap install
+        # no longer embeds the old selective install pipeline.
+        config = open(os.path.join(ROOT, 'lib', 'config.sh'), encoding='utf-8').read()
+        self.assertIn('um_has_runtime_drift', config)
+        self.assertIn('um_migrate_selective_runtime_config', config)
+        bootstrap = open(os.path.join(ROOT, 'lib', 'bootstrap.sh'), encoding='utf-8').read()
+        self.assertIn('um_bootstrap_install_runtime', bootstrap)
 
     def test_sync_start_does_not_call_apt_mirror(self):
         body = open(os.path.join(ROOT, 'scripts', 'mirrorctl'), encoding='utf-8').read()

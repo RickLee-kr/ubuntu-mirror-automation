@@ -21,6 +21,7 @@ TEST_LIST=(
   test_nginx.sh
   test_systemd.sh
   test_simplified_install.sh
+  test_fresh_bootstrap.sh
   test_dashboard.sh
   test_offline_mirror.sh
   test_upgrade_profile.py

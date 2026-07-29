@@ -2101,56 +2101,34 @@ usage() {
   cat <<EOF
 Usage: ${SCRIPT_NAME} <command>
 
-Primary (offline-upgrade-selective):
-  plan-selective            Analyze discovery → selective-mirror-plan.json (no copy/download)
-  materialize-selective [hop]  materialize plan (optional hop limits to one hop)
-  quarantine-staging-selective [evidence-dir]
-                            atomic quarantine of provenance-mismatch staging (no delete)
-  verify-selective          Pre-publish staging gates (no production nginx / READY)
-  publish-selective         Atomic publish + post-publish HTTP smoke + READY
-  quarantine-hop-selective  Mark one hop QUARANTINED/NOT_READY (no tree destroy)
-  refresh-hop-selective     Quarantine+plan+materialize+verify+publish (one hop refresh)
-  migrate-nginx-selective   Migrate managed apt-mirror site → selective/current root
-  migrate-selective-runtime Refresh installed mirrorctl/libs/config (no sync/publish)
-  status                    Selective profile counts, sizes, READY
-  verify                    Alias → verify-selective under selective profile
+Primary (fresh Ubuntu 24.04 Mirror Manager workflow):
+  mirror-manager          Interactive whiptail manager (R2 OS Core + ACPS Phase 2)
 
-Blocked / legacy:
-  sync                      Blocked under selective (UNSUPPORTED_FULL_MIRROR_SYNC)
-  sync-full-legacy          Disabled (preserves existing 2.2TB seed)
+  Bootstrap a clean host with: sudo ./install.sh
+  Re-open GUI after install:   sudo ubuntu-offline-mirror mirror-manager
 
-Also available:
-  check-profile / validate-profile / migrate-profile
-  sync-release-upgraders / validate-release-upgraders
-  sync-legacy-releases / validate-legacy-releases / freeze-xenial-snapshot
-  sync-by-hash / validate-by-hash   (legacy full-tree helpers; not READY gates)
-  freeze / sha256-all
+Client script builders (optional / development):
   build-client-xenial-to-bionic
   build-client-bionic-to-focal
   build-client-focal-to-jammy
   build-client-jammy-to-noble
-                          Render single-file DP client upgrade script + manifest
-                          into artifacts/client/ (and optional /var/spool/apt-mirror/client)
-                          Does not rematerialize/publish or change READY.
 
-DP Phase 2 (6.5.0 bringup artifacts; does not touch selective READY):
-  sync-dp-phase2          Download/verify/bundle/atomic-publish from ACPS
-  verify-dp-phase2        Offline verify of current Phase 2 release
-  status-dp-phase2        Show current/previous/bundle/disk/URL status
+Legacy selective tooling (not the default install path):
+  plan-selective / materialize-selective / verify-selective / publish-selective
+  quarantine-staging-selective / quarantine-hop-selective / refresh-hop-selective
+  migrate-nginx-selective / migrate-selective-runtime / status
+  sync-dp-phase2 / verify-dp-phase2 / status-dp-phase2
+  check-profile / validate-profile / migrate-profile
+  sync-release-upgraders / validate-release-upgraders
+  sync-legacy-releases / validate-legacy-releases / freeze-xenial-snapshot
+  sync-by-hash / validate-by-hash / freeze / sha256-all
 
-DP Upgrade Mirror Manager (single R2 + ACPS workflow):
-  mirror-manager          Interactive whiptail manager (R2 OS Core + ACPS Phase 2)
+Blocked:
+  sync                      UNSUPPORTED_FULL_MIRROR_SYNC
+  sync-full-legacy          Disabled
 
 Config: /etc/default/ubuntu-offline-mirror
-Profile SSOT: config/offline-upgrade-profile.json (offline-upgrade-selective)
-Selective root: ${SELECTIVE_MIRROR_ROOT}
-Seed (read-only): ${FULL_MIRROR_SEED_ROOT}
-Plan: ${SELECTIVE_PLAN}
-
-Included: discovery-exact .deb payloads, generated Packages/Release/InRelease,
-          local GPG signing, meta-release-lts, release upgraders, security URL alias.
-Excluded: full apt-mirror sync, Translation/DEP-11/CNF/Contents, official by-hash set,
-          i386, deb-src, Ubuntu Pro/ESM, PPAs.
+Mirror root: ${SELECTIVE_MIRROR_ROOT}
 EOF
 }
 
@@ -2521,6 +2499,7 @@ _mirror_manager_script() {
   local cand
   for cand in \
     "${PROJECT_ROOT}/scripts/install-dp-upgrade-mirror.sh" \
+    "/usr/local/lib/ubuntu-mirror/scripts/install-dp-upgrade-mirror.sh" \
     "/usr/local/lib/ubuntu-mirror/install-dp-upgrade-mirror.sh" \
     "${SCRIPT_DIR}/install-dp-upgrade-mirror.sh"
   do

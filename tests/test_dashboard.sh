@@ -74,57 +74,59 @@ um_is_sync_paused() {
 pgrep() { [[ "$MOCK_PROCESS" -eq 1 ]]; }
 
 # ---------------------------------------------------------------------------
-echo "[test_install_sync_nonblocking]"
-# Selective install runs plan-selective only; materialize is started non-blocking
-# from the menu resume path (apt-mirror.service → materialize-selective).
-if grep -q 'plan-selective' "${ROOT}/install.sh" \
-  && grep -q 'systemctl start --no-block apt-mirror.service' "${ROOT}/lib/install-menu.sh"; then
-  pass "Phase 6 plan-selective + menu non-blocking materialize"
+echo "[test_install_bootstrap_gui]"
+# Fresh install bootstraps Mirror Manager runtime and auto-starts GUI on TTY.
+# Large downloads are started from the GUI, not from install.sh.
+if grep -q 'um_bootstrap_run\|um_bootstrap_maybe_start_gui' "${ROOT}/install.sh" \
+  && grep -q 'um_bootstrap_install_runtime' "${ROOT}/lib/bootstrap.sh"; then
+  pass "bootstrap installs Mirror Manager runtime"
 else
-  fail "missing selective plan / --no-block materialize path"
+  fail "missing bootstrap runtime install path"
+fi
+if grep -q 'ubuntu-offline-mirror mirror-manager' "${ROOT}/install.sh" \
+  "${ROOT}/lib/bootstrap.sh"; then
+  pass "bootstrap documents GUI reopen command"
+else
+  fail "GUI reopen command missing"
+fi
+# Legacy menu materialize path remains available for operators/tools
+if grep -q 'systemctl start --no-block apt-mirror.service' "${ROOT}/lib/install-menu.sh"; then
+  pass "legacy menu non-blocking materialize still present"
+else
+  fail "legacy menu materialize path missing"
 fi
 if grep -q 'um_attach_dashboard\|mirrorctl watch\|mirror-dashboard\|Watch Live Progress' \
-  "${ROOT}/install.sh" "${ROOT}/lib/install-menu.sh"; then
-  pass "Phase 6 can attach dashboard"
+  "${ROOT}/lib/install-menu.sh" "${ROOT}/scripts/mirrorctl"; then
+  pass "dashboard attach still available via mirrorctl/menu"
 else
   fail "dashboard attach missing"
 fi
 
 # ---------------------------------------------------------------------------
-echo "[test_default_interactive_dashboard]"
+echo "[test_default_interactive_gui]"
 HELP="$(bash "${ROOT}/install.sh" --help)"
-echo "$HELP" | grep -q -- '--foreground' || fail "missing --foreground"
-echo "$HELP" | grep -q -- '--background' || fail "missing --background"
-pass "install help lists foreground/background"
-if grep -q 'um_resolve_sync_attach_mode' "${ROOT}/install.sh"; then
-  pass "default attach mode resolver present"
-else
-  fail "attach mode resolver missing"
-fi
-# Default with TTY → foreground; without → background (unit-level)
-# shellcheck disable=SC1090
-source /dev/null
-# Check resolver logic by grepping auto+tty branch
-grep -q '\[\[ -t 1 \]\]' "${ROOT}/install.sh" && pass "TTY detection for auto mode" || fail "no TTY detection"
+echo "$HELP" | grep -q -- '--no-gui' || fail "missing --no-gui"
+echo "$HELP" | grep -q -- '--non-interactive' || fail "missing --non-interactive"
+echo "$HELP" | grep -q 'Mirror Manager' || fail "missing Mirror Manager"
+pass "install help lists GUI bootstrap options"
+grep -q '\[\[ -t 0 && -t 1 \]\]\|\[\[ -t 0 \]\]' "${ROOT}/lib/bootstrap.sh" \
+  && pass "TTY detection for GUI auto-start" || fail "no TTY detection for GUI"
 
 # ---------------------------------------------------------------------------
-echo "[test_background_option_returns_prompt]"
-OUT="$(bash "${ROOT}/install.sh" --dry-run --background 2>&1 || true)"
-echo "$OUT" | grep -q 'Would attach mode: background' || fail "background dry-run mode"
-pass "background option selects background attach"
-if grep -q 'Initial synchronization started in background' "${ROOT}/install.sh"; then
-  pass "background hints present"
-else
-  fail "background hints missing"
-fi
-
-# ---------------------------------------------------------------------------
-echo "[test_foreground_option_attaches_dashboard]"
-OUT="$(bash "${ROOT}/install.sh" --dry-run --foreground 2>&1 || true)"
-echo "$OUT" | grep -q 'Would attach mode: foreground' || fail "foreground dry-run mode"
-pass "foreground option selects foreground attach"
+echo "[test_noninteractive_option_skips_gui]"
+OUT="$(bash "${ROOT}/install.sh" --dry-run --non-interactive 2>&1 || true)"
+echo "$OUT" | grep -qiE 'Would start Mirror Manager GUI|GUI auto-start skipped|--no-gui' \
+  || echo "$OUT" | grep -q '\[DRY-RUN\]' || fail "non-interactive dry-run"
+pass "non-interactive/dry-run bootstrap path"
 bash "${ROOT}/scripts/mirrorctl" --help 2>/dev/null | grep -q watch || fail "mirrorctl watch missing"
 pass "mirrorctl watch documented"
+
+# ---------------------------------------------------------------------------
+echo "[test_foreground_option_compat]"
+# Obsolete --foreground is ignored; bootstrap still completes dry-run
+OUT="$(bash "${ROOT}/install.sh" --dry-run --foreground --no-gui 2>&1 || true)"
+echo "$OUT" | grep -q '\[DRY-RUN\]' || fail "foreground compat dry-run"
+pass "obsolete --foreground ignored safely"
 
 # ---------------------------------------------------------------------------
 echo "[test_ctrl_c_detaches_not_stops_service]"
@@ -359,7 +361,8 @@ grep -q 'SIGCONT' "${ROOT}/scripts/mirrorctl" && pass "SIGCONT resume" || fail "
 
 # ---------------------------------------------------------------------------
 echo "[test_dry_run_non_tty_messaging]"
-# Ensure non-interactive path exists in installer
-grep -q 'No interactive terminal detected' "${ROOT}/install.sh" && pass "non-TTY install message" || fail "missing non-TTY msg"
+# Non-interactive bootstrap prints reopen command instead of forcing GUI
+grep -q 'NONINTERACTIVE_TTY=YES\|Re-open GUI' "${ROOT}/lib/bootstrap.sh" \
+  && pass "non-TTY bootstrap reopen message" || fail "missing non-TTY msg"
 
 exit "$FAIL"

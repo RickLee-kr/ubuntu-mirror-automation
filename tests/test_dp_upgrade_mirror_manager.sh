@@ -256,9 +256,26 @@ setup_project_shadow_if_needed() {
   cp -a "${WORKDIR}/vendor/dp-phase2" "${SHADOW_ROOT}/vendor/dp-phase2"
 }
 
+seed_client_files() {
+  local dest="${1:-${MM_CLIENT_ROOT}}"
+  mkdir -p "$dest"
+  local f
+  for f in \
+    dp-offline-upgrade-xenial-to-bionic.sh \
+    dp-offline-upgrade-bionic-to-focal.sh \
+    dp-offline-upgrade-focal-to-jammy.sh \
+    dp-offline-upgrade-jammy-to-noble.sh \
+    stage-dp-phase2.sh
+  do
+    cp -f "${ROOT}/client/${f}" "${dest}/${f}"
+    (cd "$dest" && sha256sum "$f" >"${f}.sha256")
+  done
+}
+
 common_env() {
   export MM_SKIP_ROOT_CHECK=1
   export MM_SKIP_HTTP_VALIDATE=1
+  export MM_SKIP_NGINX_APPLY=1
   export MM_LOG_DIR="${WORKDIR}/logs"
   export MM_STATE_ROOT="${WORKDIR}/runs"
   export MM_LOCK_FILE="${WORKDIR}/install.lock"
@@ -276,6 +293,7 @@ common_env() {
   export R2_PROGRESS_INTERVAL_SEC=30
   export ACPS_INSECURE_TLS=0
   mkdir -p "$MM_LOG_DIR" "$MM_STATE_ROOT" "$MM_CLIENT_ROOT"
+  seed_client_files "$MM_CLIENT_ROOT"
 }
 
 run_prepare() {
@@ -413,7 +431,7 @@ export MM_CACHE_ROOT="${WORKDIR}/mirror-html/.install-cache"
 export MM_SELECTIVE_ROOT="${WORKDIR}/mirror-html/selective"
 export MM_DP_PHASE2_ROOT="${WORKDIR}/mirror-html/dp-phase2"
 export MM_CLIENT_ROOT="${WORKDIR}/mirror-html/client"
-mkdir -p "$MM_CLIENT_ROOT"
+seed_client_files "$MM_CLIENT_ROOT"
 set +e
 out_html="$(run_prepare 2>&1)"; rc_html=$?
 set -e
@@ -435,7 +453,7 @@ export MM_CACHE_ROOT="${WORKDIR}/mirror-acps-bad/.install-cache"
 export MM_SELECTIVE_ROOT="${WORKDIR}/mirror-acps-bad/selective"
 export MM_DP_PHASE2_ROOT="${WORKDIR}/mirror-acps-bad/dp-phase2"
 export MM_CLIENT_ROOT="${WORKDIR}/mirror-acps-bad/client"
-mkdir -p "$MM_CLIENT_ROOT"
+seed_client_files "$MM_CLIENT_ROOT"
 set +e
 out_bad="$(run_prepare 2>&1)"; rc_bad=$?
 set -e
@@ -451,7 +469,7 @@ export MM_CACHE_ROOT="${WORKDIR}/mirror-auth/.install-cache"
 export MM_SELECTIVE_ROOT="${WORKDIR}/mirror-auth/selective"
 export MM_DP_PHASE2_ROOT="${WORKDIR}/mirror-auth/dp-phase2"
 export MM_CLIENT_ROOT="${WORKDIR}/mirror-auth/client"
-mkdir -p "$MM_CLIENT_ROOT"
+seed_client_files "$MM_CLIENT_ROOT"
 set +e
 out_auth="$(run_prepare 2>&1)"; rc_auth=$?
 set -e
@@ -475,7 +493,7 @@ export MM_CACHE_ROOT="${WORKDIR}/mirror-drift/.install-cache"
 export MM_SELECTIVE_ROOT="${WORKDIR}/mirror-drift/selective"
 export MM_DP_PHASE2_ROOT="${WORKDIR}/mirror-drift/dp-phase2"
 export MM_CLIENT_ROOT="${WORKDIR}/mirror-drift/client"
-mkdir -p "$MM_CLIENT_ROOT"
+seed_client_files "$MM_CLIENT_ROOT"
 set +e
 out_drift="$(run_prepare 2>&1)"; rc_drift=$?
 set -e
@@ -500,7 +518,8 @@ export MM_CACHE_ROOT="${WORKDIR}/mirror-g/.install-cache"
 export MM_SELECTIVE_ROOT="${WORKDIR}/mirror-g/selective"
 export MM_DP_PHASE2_ROOT="${WORKDIR}/mirror-g/dp-phase2"
 export MM_CLIENT_ROOT="${WORKDIR}/mirror-g/client"
-mkdir -p "${WORKDIR}/mirror-g/.install-cache/acps/6.5.0" "$MM_CLIENT_ROOT"
+mkdir -p "${WORKDIR}/mirror-g/.install-cache/acps/6.5.0"
+seed_client_files "$MM_CLIENT_ROOT"
 for f in aelladeb_py3_common.tar.gz aelladeb_py3_common.tar.gz.sha1 \
   aella-uvp-2404_6.5.0ubuntu1_amd64.deb aella-uvp-2404_6.5.0ubuntu1_amd64.deb.sha1 \
   bringup_py3_dp_after_os_upgrade.sh bringup_py3_dp_after_os_upgrade.sh.sha1 \
@@ -629,7 +648,7 @@ export MM_CACHE_ROOT="${WORKDIR}/mirror-disk/.install-cache"
 export MM_SELECTIVE_ROOT="${WORKDIR}/mirror-disk/selective"
 export MM_DP_PHASE2_ROOT="${WORKDIR}/mirror-disk/dp-phase2"
 export MM_CLIENT_ROOT="${WORKDIR}/mirror-disk/client"
-mkdir -p "$MM_CLIENT_ROOT"
+seed_client_files "$MM_CLIENT_ROOT"
 set +e
 out_disk="$(run_prepare 2>&1)"; rc_disk=$?
 set -e

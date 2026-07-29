@@ -1,151 +1,236 @@
-# Ubuntu Mirror Server Automation
+# DP Ubuntu Upgrade Mirror Manager
 
-Selective offline Ubuntu upgrade mirror for Stellar Cyber DP baselines
-(16.04 → 18.04 → 20.04 → 22.04 → 24.04), driven by discovery artifacts — **not** a general full Ubuntu mirror.
+Offline upgrade mirror for Stellar Cyber DP hosts:
+**Ubuntu 16.04 → 18.04 → 20.04 → 22.04 → 24.04**, then DP Phase 2 bringup.
 
-## Supported profile
+| Source | Role |
+|--------|------|
+| Cloudflare R2 | OS Core selective APT tree (Mirror Manager host only) |
+| ACPS | DP Phase 2 artifacts (Mirror Manager host only) |
+| Mirror Server HTTP | **Only** source used by DP clients |
 
-**`offline-upgrade-selective`** (`config/offline-upgrade-profile.json`)
-
-- Exact `.deb` payloads from `artifacts/upgrade-discovery`
-- Hop-separated APT snapshots (deterministic package sets)
-- Generated `Packages` / `Release` / `InRelease` via `apt-ftparchive`
-- Local GPG signing (no `trusted=yes`)
-- Meta-release + release upgraders
-- Existing full mirror under `/var/spool/apt-mirror/mirror/...` is **seed only** (never auto-deleted)
-
-## Operator flow
-
-```bash
-# 1) Analyze discovery (safe on ops host; no copy/download)
-sudo ./scripts/ubuntu-offline-mirror.sh plan-selective
-
-# 2) Materialize into /var/spool/apt-mirror/selective/staging
-#    (hardlink/reflink/copy from seed; download only missing)
-sudo ./scripts/ubuntu-offline-mirror.sh materialize-selective
-
-# 3) Pre-publish verify (staging only — independent of production nginx)
-#    Checks plan/discovery checksums, .deb SHA256/size, Packages coverage,
-#    Release/InRelease + local GPG, upgraders/meta-release, isolated APT (file://).
-#    PASS here does NOT mean published and does NOT write READY.
-sudo ./scripts/ubuntu-offline-mirror.sh verify-selective
-
-# 3b) One-time / idempotent: ensure production nginx root is selective/current
-#     (legacy installs may still point at /var/spool/apt-mirror/mirror).
-sudo ./scripts/ubuntu-offline-mirror.sh migrate-nginx-selective
-
-# 4) Atomic publish + post-publish HTTP smoke (concrete Release/Packages/.deb URLs)
-#    Preflight fails fast with SELECTIVE_NGINX_EFFECTIVE_ROOT_MISMATCH if nginx
-#    still serves the legacy full-mirror root (no HTTP endpoint storm).
-#    Switches selective/current → published; rolls back on HTTP failure; writes READY only on PASS.
-#    nginx URL `/` is NOT a readiness criterion (403/404 on `/` is ignored).
-sudo ./scripts/ubuntu-offline-mirror.sh publish-selective
-
-# Status — READY only after publish + post-publish HTTP PASS
-sudo ./scripts/ubuntu-offline-mirror.sh status
+```
+INSTALLATION_MODE_COUNT=1
+OS_CORE_SOURCE=R2
+DP_PHASE2_SOURCE=ACPS
+CLIENT_DOWNLOAD_SOURCE=MIRROR_SERVER_ONLY
+PROJECT_ROLLBACK_SUPPORTED=NO
+RECOVERY_METHOD=HYPERVISOR_SNAPSHOT
 ```
 
-`sync` / full `apt-mirror` are **blocked** under this profile (`UNSUPPORTED_FULL_MIRROR_SYNC`).
+## Supported environment
+
+- Clean **Ubuntu 24.04 LTS amd64**
+- `sudo` / root
+- Outbound HTTPS to:
+  - `https://xdrsolutions.uk` (R2 OS Core)
+  - fixed ACPS endpoint (credentials entered in GUI)
+  - Ubuntu apt repositories (bootstrap package install only)
+- Enough free space under `/var/spool/apt-mirror` (exact requirement is calculated at **Download and Prepare** from package size + extract + Phase 2 + safety margin)
+- Port **80** for HTTP distribution
 
 ## Install
 
+Public clone (HTTPS):
+
 ```bash
+git clone https://github.com/RickLee-kr/ubuntu-mirror-automation.git
+cd ubuntu-mirror-automation
 sudo ./install.sh
 ```
 
-Installs tooling, prepares `/var/spool/apt-mirror/selective`, runs **plan-selective**, and wires existing `mirrorctl` / systemd / nginx to the selective workflow. It does not publish, does not delete the seed mirror, and does not start a full apt-mirror sync.
-
-| Command | Purpose |
-|---------|---------|
-| `sudo ./install.sh` | Install + plan-selective (menu or `--no-menu`) |
-| `sudo mirrorctl sync start` | Start `materialize-selective` via apt-mirror.service |
-| `sudo mirrorctl watch` | Live progress dashboard |
-| `sudo mirrorctl status` | Selective counts / READY |
-| `sudo mirrorctl logs` | Materialize / service logs |
-| `sudo mirrorctl sync stop` | Stop selective materialize safely |
-
-Expected selective size ≈ **3.39 GiB** (3557 exact `.deb`s). `READY` only after pre-publish verify PASS **and** atomic publish with post-publish concrete HTTP smoke PASS.
-
-## Client
-
-### Phase 1 — Ubuntu OS-Only Offline Upgrade
-
-Phase 1 upgrades Ubuntu only (`16.04 → 18.04 → 20.04 → 22.04 → 24.04`) via the offline mirror.
-DP product install, topology, containers, and service health are **out of scope** (Phase 2).
-An uninstalled DP image is a valid Phase 1 test input.
-
-### One-hop offline OS upgrade (16.04 → 18.04 only)
-
-Build the single deliverable script from the READY selective mirror (does not rematerialize/publish):
+SSH clone (if you already use GitHub SSH keys):
 
 ```bash
-sudo ./scripts/ubuntu-offline-mirror.sh build-client-xenial-to-bionic \
-  --mirror-base http://MIRROR_IP
+git clone git@github.com:RickLee-kr/ubuntu-mirror-automation.git
+cd ubuntu-mirror-automation
+sudo ./install.sh
 ```
 
-Outputs:
+### What `sudo ./install.sh` does
 
-- `artifacts/client/dp-offline-upgrade-xenial-to-bionic.sh` (also copied to `client/`)
-- `artifacts/client/xenial-to-bionic/` (manifest, meta-release, announcements)
-- `/var/spool/apt-mirror/client/` for nginx `/client/` (separate from selective READY tree)
+1. Confirms Ubuntu 24.04 LTS amd64, root, systemd, apt
+2. Installs required packages (`nginx`, `whiptail`, `curl`, `python3`, …) — not `apt-mirror`
+3. Creates mirror directories (does **not** format disks)
+4. Installs Mirror Manager runtime under `/usr/local/lib/ubuntu-mirror`
+5. Installs nginx base site for the final HTTP layout
+6. On an interactive TTY, starts the Mirror Manager GUI
 
-On a Xenial host (installed or uninstalled DP image; after snapshot), run **only**:
+Large R2 / ACPS downloads are **not** started by bootstrap. Start them from the GUI.
+
+Non-interactive / CI:
 
 ```bash
-sudo ./dp-offline-upgrade-xenial-to-bionic.sh --mode os-only
+sudo ./install.sh --non-interactive
 ```
 
-Default mode is already `OS_ONLY_PHASE1`. Optional override: `--mirror-base http://MIRROR_IP`.
-This hop does **not** start 18.04→20.04 or DP product validation/bringup.
-Phase 1 success for this hop = Ubuntu 18.04 boots with OS health PASS.
-
-### APT client helpers (manual attach)
+Re-open the GUI later (no git checkout required):
 
 ```bash
-sudo ./client/client-setup.sh --mirror-url http://MIRROR_IP [--hop xenial-to-bionic]
-./client/client-validate.sh --mirror-url http://MIRROR_IP
+sudo ubuntu-offline-mirror mirror-manager
 ```
 
-APT prefs disable Translation / DEP-11 / CNF / Contents / Sources. Prefer hop URL `/hops/<hop>/ubuntu`. `/ubuntu-security` aliases the same selective tree.
+## Mirror Manager GUI
 
-### How to confirm sync is complete
+```
+1. Configuration
+2. Download and Prepare Upgrade Files
+3. Verify Upgrade Readiness
+4. Enable HTTP Distribution
+5. Show Current Status
+6. View Logs
+7. Show DP Client Upgrade Instructions
+0. Exit
+```
+
+### 1. Configuration
+
+Enter only:
+
+- Target DP Version (default `6.5.0`)
+- ACPS Username
+- ACPS Password (password box; not echoed)
+- Test ACPS Connection
+- Save Configuration
+
+Read-only:
+
+- ACPS Server: fixed
+- OS Core Source: Cloudflare R2 — fixed
+
+There is no install-mode menu, no local/USB OS Core picker, no R2/ACPS URL editor, and no rollback menu.
+
+Credentials are stored as root-owned mode `600` under `/etc/ubuntu-mirror/dp-upgrade-mirror.conf` and are redacted from logs.
+
+### 2. Download and Prepare Upgrade Files
+
+Downloads OS Core from R2 (safe resume), verifies checksums, materializes one selective tree, downloads ACPS Phase 2, applies the patched bringup, and publishes one final Phase 2 bundle. Staging is never served over HTTP.
+
+### 3. Verify Upgrade Readiness
+
+Expect:
+
+```
+CONFIGURATION_READY=PASS
+R2_OS_CORE_DOWNLOADED=PASS
+R2_OS_CORE_CHECKSUM=PASS
+OS_MIRROR_READY=PASS
+ACPS_CONNECTION=PASS
+ACPS_PHASE2_DOWNLOADED=PASS
+ACPS_CHECKSUM=PASS
+UPSTREAM_BRINGUP_DRIFT=NO
+PATCHED_BRINGUP_APPLIED=YES
+PHASE2_BUNDLE_ENTRY_COUNT=9
+PHASE2_BUNDLE_CHECKSUM=PASS
+CLIENT_FILES_READY=PASS
+HTTP_CONFIGURATION_READY=PASS
+UPGRADE_READINESS=PASS
+```
+
+### 4. Enable HTTP Distribution
+
+Validates the prepared layout, installs/enables the nginx site, runs `nginx -t`, reloads nginx, and smoke-tests concrete artifact URLs. Sets `HTTP_DISTRIBUTION=ENABLED` only on success. On failure, restores the previous nginx site and does not mark ENABLED.
+
+### 5–7. Status, logs, client instructions
+
+Status and redacted logs live under `/var/log/ubuntu-mirror-automation/`. Menu 7 prints DP client steps that use the mirror IP only.
+
+## HTTP layout
+
+One final selective tree and one final Phase 2 version directory (no `current`/`previous`/`releases/` generations):
+
+```
+/ubuntu/
+/ubuntu-security/
+/offline/
+/hops/
+/client/
+/dp-phase2/<version>/release.env
+/dp-phase2/<version>/dp_bundle_<version>-current.tar
+/dp-phase2/<version>/dp_bundle_<version>-current.tar.sha256
+```
+
+The `current` token in the Phase 2 **filename** is the client contract name only, not a symlink generation.
+
+### HTTP verify examples
+
+Replace `MIRROR_IP` with the mirror server address:
 
 ```bash
-sudo ./scripts/ubuntu-offline-mirror.sh status
+curl -fsSI http://MIRROR_IP/ubuntu/
+curl -fsSI http://MIRROR_IP/ubuntu-security/
+curl -fsSI http://MIRROR_IP/offline/
+curl -fsSI http://MIRROR_IP/client/dp-offline-upgrade-xenial-to-bionic.sh
+curl -fsS  http://MIRROR_IP/dp-phase2/6.5.0/release.env
+curl -fsSI http://MIRROR_IP/dp-phase2/6.5.0/dp_bundle_6.5.0-current.tar.sha256
 ```
 
-Look for selective `READY: yes` / `validation_result=PASS` after `publish-selective`.
-Dashboard `State: READY` means the published selective mirror gates passed.
+Root URL `/` returning 403/404 is ignored; use the concrete paths above.
 
-### How to delete existing mirror data
+## DP client usage
 
-Do **not** delete the 2.2TB seed automatically. After selective verify+publish PASS,
-review `selective/state/cleanup-plan.json` and only then manually remove the seed if
-the selective tree is independently complete (no hardlink dependency).
+DP clients must **not** reach R2 or ACPS. Use the mirror HTTP address only.
 
-## Development and Troubleshooting
-
-- Unit tests: `python3 tests/test_selective_mirror.py`
-- Profile tests: `python3 tests/test_upgrade_profile.py`
-- Full suite: `bash tests/run_all.sh`
-- Logs / status: `sudo mirrorctl status` (when installed)
-
-### Git backup staging (no commit/push)
-
-Do **not** paste `set -e` / `exit` audit blocks into an interactive SSH shell, and do **not** `source` the helper. Run only:
+Example Phase 1 hop:
 
 ```bash
-bash scripts/prepare-backup-staging.sh --audit-only
-bash scripts/prepare-backup-staging.sh --stage
+curl -fsSO http://MIRROR_IP/client/dp-offline-upgrade-xenial-to-bionic.sh
+curl -fsSO http://MIRROR_IP/client/dp-offline-upgrade-xenial-to-bionic.sh.sha256
+sha256sum -c dp-offline-upgrade-xenial-to-bionic.sh.sha256
+sudo bash ./dp-offline-upgrade-xenial-to-bionic.sh
 ```
 
-Audits staged blobs for complete PEM/PGP private-key blocks (not bare marker
-substrings), and cross-checks production client script SHA pins against
-sidecar/hop/manifest signature evidence. See [docs/operations.md](docs/operations.md)
-→ **Git backup staging**.
+Repeat for bionic→focal, focal→jammy, jammy→noble. Then stage Phase 2 from the same mirror:
 
-## Docs
+```bash
+sudo bash stage-dp-phase2.sh \
+  --source-dp-version <current-dp> \
+  --target-version 6.5.0 \
+  --mirror-url http://MIRROR_IP
+```
 
-- [docs/operations.md](docs/operations.md)
-- [docs/upgrade-discovery-analysis.md](docs/upgrade-discovery-analysis.md)
-- [docs/discover-upgrade-requirements.md](docs/discover-upgrade-requirements.md)
+## Jammy (22.04) intermediate note
+
+On Ubuntu 22.04 during the hop chain:
+
+- `aella_cli` may be absent
+- kubelet v1.19.12 can mismatch the Docker API and stop workloads
+
+Do **not** treat this as a Phase 1 failure. Do **not** temporarily repair kubelet/Docker. Continue OS upgrade to 24.04; Phase 2 `bringup_py3` reconfigures runtime.
+
+## Recovery
+
+```
+PROJECT_ROLLBACK_SUPPORTED=NO
+OS_ROLLBACK_SUPPORTED=NO
+DP_RUNTIME_ROLLBACK_SUPPORTED=NO
+RECOVERY_METHOD=HYPERVISOR_SNAPSHOT
+```
+
+Take a full hypervisor snapshot of the DP VM before upgrade. Intermediate Ubuntu releases are not recovery points. This project does not provide rollback commands.
+
+## Re-run / failure recovery
+
+- `sudo ./install.sh` is idempotent (safe to re-run)
+- Re-run **Download and Prepare** after a failed download (R2 `.part` resume is supported)
+- Re-enter ACPS credentials in Configuration if needed
+- Check logs via GUI menu 6 or `/var/log/ubuntu-mirror-automation/`
+
+## Status and logs
+
+```bash
+sudo ubuntu-offline-mirror mirror-manager   # GUI: status / logs
+ls -lt /var/log/ubuntu-mirror-automation/
+cat /etc/ubuntu-mirror/dp-upgrade-mirror.status
+```
+
+## Design docs
+
+- [docs/deployment/DP_UPGRADE_MIRROR_MANAGER.md](docs/deployment/DP_UPGRADE_MIRROR_MANAGER.md)
+- [docs/deployment/OS_CORE_ARTIFACT_FORMAT.md](docs/deployment/OS_CORE_ARTIFACT_FORMAT.md)
+
+## Development tests
+
+```bash
+bash tests/run_all.sh
+```

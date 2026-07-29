@@ -382,11 +382,13 @@ class SelectiveCliSmoke(unittest.TestCase):
             ['bash', os.path.join(ROOT, 'scripts', 'ubuntu-offline-mirror.sh'), '--help'],
             stderr=subprocess.STDOUT,
         ).decode('utf-8', 'replace')
+        # Primary entrypoint is Mirror Manager; selective tooling remains listed as legacy.
+        self.assertIn('mirror-manager', out)
         self.assertIn('plan-selective', out)
         self.assertIn('materialize-selective', out)
         self.assertIn('verify-selective', out)
         self.assertIn('publish-selective', out)
-        self.assertIn('offline-upgrade-selective', out)
+        self.assertIn('Legacy selective tooling', out)
 
 
 class SelectiveDownloadDiagnosticsTests(unittest.TestCase):
@@ -1009,11 +1011,18 @@ class SelectiveComponentPathTests(unittest.TestCase):
 
 class SelectiveIntegrationSurfaceTests(unittest.TestCase):
     def test_install_sh_references_selective_helpers(self):
-        body = open(os.path.join(ROOT, 'install.sh')).read()
-        self.assertIn('plan-selective', body)
-        self.assertIn('selective_mirror.py', body)
-        self.assertIn('build-selective-mirror-plan.py', body)
+        # Fresh install.sh is Mirror Manager bootstrap; selective helpers stay in runtime libs.
+        body = open(os.path.join(ROOT, 'install.sh'), encoding='utf-8').read()
+        self.assertIn('um_bootstrap_run', body)
+        self.assertIn('mirror-manager', body)
         self.assertIn('--full', body)
+        bootstrap = open(os.path.join(ROOT, 'lib', 'bootstrap.sh'), encoding='utf-8').read()
+        self.assertIn('install-dp-upgrade-mirror.sh', bootstrap)
+        self.assertIn('mirror_install_engine.sh', bootstrap)
+        # Legacy selective tooling remains available via ubuntu-offline-mirror.sh
+        uom = open(os.path.join(ROOT, 'scripts', 'ubuntu-offline-mirror.sh'), encoding='utf-8').read()
+        self.assertIn('plan-selective', uom)
+        self.assertIn('selective_mirror.py', uom)
 
     def test_mirrorctl_stops_selective_processes(self):
         body = open(os.path.join(ROOT, 'scripts', 'mirrorctl')).read()
