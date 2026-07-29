@@ -309,6 +309,14 @@ grep -q 'Configuration' "$INSTALLER" && grep -q 'Download and Prepare Upgrade Fi
   && grep -q 'Show Current Status' "$INSTALLER" && grep -q 'View Logs' "$INSTALLER" \
   && grep -q 'Show DP Client Upgrade Instructions' "$INSTALLER" && grep -q 'Exit' "$INSTALLER" \
   && pass "A main menu items" || fail "A main menu"
+grep -q 'mm_whiptail_yesno' "$INSTALLER" \
+  && grep -q 'Download and prepare upgrade files' "$INSTALLER" \
+  && pass "A download confirm is yesno" || fail "A download confirm still menu"
+if grep -n '"1" "Start".*"0" "Cancel"\|"1" "Start"' "$INSTALLER" | grep -q .; then
+  fail "A Start/Cancel menu still present"
+else
+  pass "A no Start/Cancel menu"
+fi
 grep -qE 'Mode 1|Mode 2|Mode 3|Fully Offline|Online Bootstrap|install-standard|Roll Back' "$INSTALLER" \
   && fail "A obsolete menu text" || pass "A no obsolete menus"
 grep -q 'passwordbox' "$INSTALLER" && grep -q 'Target DP Version' "$INSTALLER" \

@@ -218,6 +218,27 @@ mm_whiptail_textbox() {
   whiptail --title "${title}" --fb --textbox "$file" "$h" "$w" || true
 }
 
+mm_whiptail_yesno() {
+  # OK/Yes → 0; Cancel/No → 1
+  local title="$1" text="$2"
+  if ! mm_has_whiptail; then
+    printf '%s\n%b\n[Y/n]> ' "$title" "$text"
+    local ans; read -r ans || true
+    case "${ans:-Y}" in
+      Y|y|yes|YES|"") return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  local body line_count dims h w
+  body="$(printf '%b' "$text")"
+  line_count="$(printf '%b' "$body" | wc -l)"
+  dims="$(mm_calc_dialog_size "${line_count}" 70 6)"
+  read -r h w <<< "$dims"
+  whiptail --title "${title}" --fb \
+    --yes-button "OK" --no-button "Cancel" \
+    --yesno "${body}" "${h}" "${w}"
+}
+
 # ---------------------------------------------------------------------------
 # GUI screens
 # ---------------------------------------------------------------------------
@@ -303,8 +324,10 @@ scripts/lib/mirror_manager_common.sh
 Then re-run Download and Prepare."
     return 0
   fi
-  if ! mm_whiptail_menu "Confirm" "Download and prepare upgrade files for DP ${TARGET_DP_VERSION}?" \
-      "1" "Start" "0" "Cancel" >/dev/null; then
+  if ! mm_whiptail_yesno "Confirm" \
+      "Download and prepare upgrade files for DP ${TARGET_DP_VERSION}?
+
+OK / Enter starts the download."; then
     return 0
   fi
   local out rc
