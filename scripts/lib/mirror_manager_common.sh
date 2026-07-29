@@ -10,6 +10,11 @@ _COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_COMMON_DIR}/mirror_manager_common_base.sh"
 unset _COMMON_DIR
 
+# Keep the fixed-source contract visible in the active implementation as well
+# as in the preserved base file. Tests and operators intentionally audit this.
+OS_CORE_R2_URL_CONSTANT="https://xdrsolutions.uk/ubuntu-os-core/ubuntu-os-core-xenial-to-noble.tar"
+: "${OS_CORE_R2_URL:=${OS_CORE_R2_URL_CONSTANT}}"
+
 mm_log() {
   local level="$1"; shift
   local msg="$*"
