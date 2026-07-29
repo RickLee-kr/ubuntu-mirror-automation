@@ -1,0 +1,536 @@
+diff --git a/scripts/lib/mirror_manager_common.sh b/scripts/lib/mirror_manager_common.sh
+index 9dbca2f..0000000 100644
+--- a/scripts/lib/mirror_manager_common.sh
++++ b/scripts/lib/mirror_manager_common.sh
+@@ -94,12 +94,6 @@ mm_log() {
+     ERROR|WARN) printf '%s\n' "$line" >&2 ;;
+     *) printf '%s\n' "$line" ;;
+   esac
+-  # Always mirror progress to the controlling terminal so GUI capture cannot hide it.
+-  if [[ "${MM_LIVE_PROGRESS:-0}" == "1" ]]; then
+-    if { printf '%s\n' "$line" >/dev/tty; } 2>/dev/null; then
+-      :
+-    fi
+-  fi
+   if [[ -n "${MM_LOG_FILE:-}" ]]; then
+     mkdir -p "$(dirname "$MM_LOG_FILE")" 2>/dev/null || true
+     printf '%s\n' "$line" >>"$MM_LOG_FILE" 2>/dev/null || true
+@@ -327,18 +321,27 @@ mm_file_bytes() {
+ }
+ 
+ mm_calc_disk_requirements() {
++  # The R2 package has already been downloaded when this preflight runs, so
++  # its bytes are already reflected in AVAILABLE_BYTES and must not be counted
++  # again. The optimized pipeline renames the extracted OS payload into place,
++  # keeps one ACPS cache, and creates one final Phase 2 bundle directly in the
++  # atomic destination directory.
+   local os_pkg_bytes payload_bytes acps_bytes
+   os_pkg_bytes="${OS_CORE_PACKAGE_BYTES:-0}"
+   payload_bytes="${OS_CORE_PAYLOAD_BYTES:-0}"
+   acps_bytes="${ACPS_EXPECTED_BYTES:-0}"
+-  DP_BUILD_TEMP_BYTES=$((acps_bytes + acps_bytes + (512 * 1024 * 1024)))
++  OS_MATERIALIZE_TEMP_BYTES=$payload_bytes
++  DP_BUILD_TEMP_BYTES=$((acps_bytes + (512 * 1024 * 1024)))
+   SAFETY_MARGIN_BYTES=$((2 * 1024 * 1024 * 1024))
+-  local os_need=$((os_pkg_bytes + payload_bytes + payload_bytes))
+-  TOTAL_REQUIRED_BYTES=$((os_need + acps_bytes + DP_BUILD_TEMP_BYTES + SAFETY_MARGIN_BYTES))
++  TOTAL_REQUIRED_BYTES=$((OS_MATERIALIZE_TEMP_BYTES + acps_bytes + DP_BUILD_TEMP_BYTES + SAFETY_MARGIN_BYTES))
+   AVAILABLE_BYTES="$(mm_free_bytes "${MM_MIRROR_ROOT}")"
+   [[ -n "$AVAILABLE_BYTES" && "$AVAILABLE_BYTES" =~ ^[0-9]+$ ]] || mm_die "DISK_PREFLIGHT=FAIL cannot_read_df"
+   if [[ "$AVAILABLE_BYTES" -lt "$TOTAL_REQUIRED_BYTES" ]]; then
+@@ -351,6 +354,8 @@ mm_calc_disk_requirements() {
+   mm_info "OS_CORE_PACKAGE_BYTES=${os_pkg_bytes}"
+   mm_info "OS_CORE_PAYLOAD_BYTES=${payload_bytes}"
+   mm_info "ACPS_EXPECTED_BYTES=${acps_bytes}"
++  mm_info "OS_MATERIALIZE_TEMP_BYTES=${OS_MATERIALIZE_TEMP_BYTES}"
++  mm_info "DP_BUILD_TEMP_BYTES=${DP_BUILD_TEMP_BYTES}"
+   mm_info "TOTAL_REQUIRED_BYTES=${TOTAL_REQUIRED_BYTES}"
+   mm_info "AVAILABLE_BYTES=${AVAILABLE_BYTES}"
+   mm_info "DISK_PREFLIGHT=${DISK_PREFLIGHT}"
+diff --git a/scripts/lib/r2_acquire.sh b/scripts/lib/r2_acquire.sh
+index 995e4dd..0000000 100644
+--- a/scripts/lib/r2_acquire.sh
++++ b/scripts/lib/r2_acquire.sh
+@@ -76,9 +76,10 @@ r2_http_download_to_part() {
+   local label="${3:-$(basename "$part")}" 
+ 
+   local hdr err resp have status cr_start
+   hdr="$(mktemp)"
+   err="$(mktemp)"
+-  resp="$(mktemp)"
++  resp="${part}.download"
++  rm -f "$resp"
+   have=0
+   if [[ -f "$part" ]]; then
+     have="$(stat -c%s "$part" 2>/dev/null || echo 0)"
+@@ -105,12 +106,13 @@ r2_http_download_to_part() {
+   fi
+ 
+   local rc=0
+-  if ! curl "${curl_args[@]}" "$url" 2>"$err"; then
++  if curl "${curl_args[@]}" "$url" 2>"$err"; then
++    rc=0
++  else
+     rc=$?
+     mm_redact <"$err" >&2 || true
+     rm -f "$hdr" "$err" "$resp"
+     return "$rc"
+   fi
+@@ -200,7 +202,8 @@ r2_http_download_fresh() {
+ 
+ r2_download_package() {
+   # Downloads OS Core .tar (+ .sha256 sidecar) into cache; sets OS_CORE_PACKAGE.
+   r2_require_url
+-  local dest_dir part final url start_ts now elapsed downloaded expected pct rate
++  local dest_dir part final url start_ts now elapsed downloaded expected pct rate
++  local progress_file initial_bytes transfer_bytes
+   dest_dir="$(r2_cache_dir)"
+   mkdir -p "$dest_dir"
+   url="${OS_CORE_R2_URL}"
+@@ -210,6 +213,12 @@ r2_download_package() {
+   final="${dest_dir}/${base_name}"
+   part="${final}.part"
++  progress_file="${part}.download"
++  initial_bytes=0
++  if [[ -f "$part" ]]; then
++    initial_bytes="$(stat -c%s "$part" 2>/dev/null || echo 0)"
++    [[ "$initial_bytes" =~ ^[0-9]+$ ]] || initial_bytes=0
++  fi
+ 
+   # Sidecar checksum URL: same path + .sha256
+   local sha_url="${url}.sha256"
+@@ -240,8 +249,15 @@ r2_download_package() {
+       now="$(date +%s)"
+       elapsed=$((now - start_ts))
+-      downloaded=0
+-      [[ -f "$part" ]] && downloaded="$(stat -c%s "$part" 2>/dev/null || echo 0)"
++      transfer_bytes=0
++      if [[ -f "$progress_file" ]]; then
++        transfer_bytes="$(stat -c%s "$progress_file" 2>/dev/null || echo 0)"
++        [[ "$transfer_bytes" =~ ^[0-9]+$ ]] || transfer_bytes=0
++      fi
++      downloaded=$((initial_bytes + transfer_bytes))
++      if [[ -n "$expected" && "$expected" -gt 0 && "$downloaded" -gt "$expected" ]]; then
++        downloaded="$expected"
++      fi
+       pct="UNKNOWN"
+       rate="UNKNOWN"
+       if [[ -n "$expected" && "$expected" -gt 0 ]]; then
+@@ -268,6 +284,20 @@ r2_download_package() {
+     mm_state_set R2_OS_CORE_DOWNLOADED FAIL
+     mm_die "R2_DOWNLOAD=FAIL file=${base_name}"
+   fi
++
++  now="$(date +%s)"
++  elapsed=$((now - start_ts))
++  downloaded="$(stat -c%s "$part" 2>/dev/null || echo 0)"
++  pct="UNKNOWN"
++  rate="UNKNOWN"
++  if [[ -n "$expected" && "$expected" -gt 0 ]]; then
++    pct=$((downloaded * 100 / expected))
++  fi
++  if [[ "$elapsed" -gt 0 ]]; then
++    rate=$((downloaded / elapsed))
++  fi
++  mm_info "R2_DOWNLOAD_PROGRESS file=${base_name} downloaded_bytes=${downloaded} expected_bytes=${expected:-UNKNOWN} percentage=${pct} elapsed=${elapsed}s rate_bps=${rate} final=yes"
++  mm_progress_line "R2 ${base_name}" "$downloaded" "${expected:-}" "$elapsed" "$rate"
+ 
+   if ! r2_reject_html_body "$part" "$base_name"; then
+     rm -f "$part"
+@@ -317,6 +347,6 @@ r2_cleanup_package() {
+   local pkg="${OS_CORE_PACKAGE:-}"
+   [[ -n "$pkg" ]] || return 0
+-  rm -f "$pkg" "${pkg}.sha256" "${pkg}.sha256.asc" "${pkg}.part" "${pkg}.sha256.part" 2>/dev/null || true
++  rm -f "$pkg" "${pkg}.sha256" "${pkg}.sha256.asc" "${pkg}.part" "${pkg}.part.download" "${pkg}.sha256.part" 2>/dev/null || true
+   mm_info "R2_PACKAGE_CLEANUP=DONE"
+ }
+diff --git a/scripts/lib/acps_acquire.sh b/scripts/lib/acps_acquire.sh
+index 49c6f0e..0000000 100644
+--- a/scripts/lib/acps_acquire.sh
++++ b/scripts/lib/acps_acquire.sh
+@@ -187,8 +187,10 @@ acps_download_one() {
+   progress_pid=$!
+ 
+   local rc=0
+-  if ! curl "${curl_args[@]}" "$url" 2>"$err"; then
++  if curl "${curl_args[@]}" "$url" 2>"$err"; then
++    rc=0
++  else
+     rc=$?
+   fi
+   if [[ -n "$progress_pid" ]]; then
+@@ -210,8 +212,19 @@ acps_download_one() {
+   fi
+   mv -f "$part" "$final"
+   now="$(date +%s)"
+   elapsed=$((now - start_ts))
+-  mm_ok "ACPS_DOWNLOAD_COMPLETE file=${name} size=$(stat -c%s "$final") elapsed=${elapsed}s"
++  downloaded="$(stat -c%s "$final")"
++  pct="UNKNOWN"
++  rate="UNKNOWN"
++  if [[ -n "$expected" && "$expected" -gt 0 ]]; then
++    pct=$((downloaded * 100 / expected))
++  fi
++  if [[ "$elapsed" -gt 0 ]]; then
++    rate=$((downloaded / elapsed))
++  fi
++  mm_info "ACPS_DOWNLOAD_PROGRESS file=${name} downloaded_bytes=${downloaded} expected_bytes=${expected:-UNKNOWN} percentage=${pct} elapsed=${elapsed}s rate_bps=${rate} final=yes"
++  mm_progress_line "ACPS ${name}" "$downloaded" "${expected:-}" "$elapsed" "$rate"
++  mm_ok "ACPS_DOWNLOAD_COMPLETE file=${name} size=${downloaded} elapsed=${elapsed}s"
+   return 0
+ }
+diff --git a/scripts/lib/mirror_install_engine.sh b/scripts/lib/mirror_install_engine.sh
+index cd4a78e..0000000 100644
+--- a/scripts/lib/mirror_install_engine.sh
++++ b/scripts/lib/mirror_install_engine.sh
+@@ -74,9 +74,9 @@ engine_materialize_os_mirror() {
+   done
+ 
+   rm -rf "$final_tmp"
+-  mkdir -p "$final_tmp"
+-  cp -a "$payload"/. "$final_tmp"/
++  mkdir -p "$(dirname "$final_tmp")"
++  mv -f "$payload" "$final_tmp" || mm_die "OS_MIRROR_STAGE_MOVE=FAIL"
+   # Ensure ubuntu alias for nginx /ubuntu/
+   if [[ ! -e "${final_tmp}/ubuntu" ]]; then
+     ln -sfn hops/jammy-to-noble/ubuntu "${final_tmp}/ubuntu"
+@@ -147,10 +147,12 @@ engine_apply_local_bringup_patch() {
+     mm_info "DRY_RUN skip apply_local_bringup_patch"
+     return 0
+   fi
+-  cp -f "$patched" "${files_dir}/bringup_py3_dp_after_os_upgrade.sh"
++  cp -f "$patched" "${files_dir}/bringup_py3_dp_after_os_upgrade.sh" \
++    || mm_die "PATCHED_BRINGUP_COPY=FAIL"
+   sha1sum "${files_dir}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}' \
+-    >"${files_dir}/bringup_py3_dp_after_os_upgrade.sh.sha1"
++    >"${files_dir}/bringup_py3_dp_after_os_upgrade.sh.sha1" \
++    || mm_die "PATCHED_BRINGUP_SHA1_WRITE=FAIL"
+   BRINGUP_PATCHED_SHA1="$(sha1sum "${files_dir}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
+   local want
+   want="$(sha1sum "$patched" | awk '{print $1}')"
+@@ -161,101 +163,119 @@ engine_apply_local_bringup_patch() {
+ }
+ 
+ engine_place_dp_phase2_final() {
+-  # Build bundle in staging, then place ONLY final HTTP artifacts into version dir (direct, no symlink).
++  # Build the bundle directly in the atomic destination directory. This avoids
++  # copying the ~30 GiB Phase 2 payload into dp-build/files and then copying the
++  # completed bundle a second time before publication.
+   local files_src="$1"
+   local ver="$2"
+   dp2_set_version "$ver"
+   DP_PHASE2_ROOT="$MM_DP_PHASE2_ROOT"
+@@ -170,32 +190,29 @@ engine_place_dp_phase2_final() {
+     return 0
+   fi
+ 
+-  local staging work_files
+-  staging="${MM_CACHE_ROOT}/dp-build/$(mm_run_id)"
+-  work_files="${staging}/files"
+-  rm -rf "$staging"
+-  mkdir -p "$work_files"
+-
+-  local f
+-  for f in "${DP_PHASE2_REQUIRED_FILES[@]}"; do
+-    cp -f "${files_src}/${f}" "${work_files}/${f}"
+-  done
+-  dp2_assert_exact_files_dir "$work_files"
+-  dp2_verify_payload_checksums "$work_files"
+-
+-  local list_count stable
+-  list_count="$(dp2_check_image_list "${work_files}/images-${ver}.list" | tail -n1)"
++  local dest="${MM_DP_PHASE2_ROOT}/${ver}"
++  local dest_tmp="${dest}.new.$$"
++  local dest_old="${dest}.old.$$"
++  local list_count stable actual want
++  rm -rf "$dest_tmp" "$dest_old"
++  mkdir -p "$dest_tmp" || mm_die "DP_PHASE2_STAGE_CREATE=FAIL"
++
++  dp2_assert_exact_files_dir "$files_src"
++  dp2_verify_payload_checksums "$files_src"
++  list_count="$(dp2_check_image_list "${files_src}/images-${ver}.list" | tail -n1)"
+   stable="$(dp2_stable_bundle_name)"
+ 
+   (
+-    cd "$work_files"
+-    tar -cf "${staging}/${stable}" "${DP_PHASE2_REQUIRED_FILES[@]}"
+-  )
+-  dp2_assert_safe_tar_list "${staging}/${stable}"
+-  sha256sum "${staging}/${stable}" | awk '{print $1"  '"${stable}"'"}' >"${staging}/${stable}.sha256"
+-  dp2_verify_sha256_pair "${staging}/${stable}" "${staging}/${stable}.sha256"
++    cd "$files_src" || exit 1
++    tar -cf "${dest_tmp}/${stable}" "${DP_PHASE2_REQUIRED_FILES[@]}"
++  ) || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_BUNDLE_BUILD=FAIL"; }
++  dp2_assert_safe_tar_list "${dest_tmp}/${stable}"
++  sha256sum "${dest_tmp}/${stable}" | awk '{print $1"  '"${stable}"'"}' \
++    >"${dest_tmp}/${stable}.sha256" || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_BUNDLE_SHA256_WRITE=FAIL"; }
++  dp2_verify_sha256_pair "${dest_tmp}/${stable}" "${dest_tmp}/${stable}.sha256"
+ 
+   local created_at commit
+   created_at="$(mm_ts)"
+   commit="$(git -C "${MM_PROJECT_ROOT}" rev-parse HEAD 2>/dev/null || echo UNKNOWN)"
+-  cat >"${staging}/release.env" <<EOF
++  cat >"${dest_tmp}/release.env" <<EOF
+ TARGET_DP_VERSION=${ver}
+ PHASE2_ARTIFACT_VERSION=${ver}
+ # Deprecated alias for older consumers; prefer TARGET_DP_VERSION.
+@@ -216,41 +233,55 @@ BRINGUP_PATCHED_SHA1=${BRINGUP_PATCHED_SHA1:-}
+ ACPS_SOURCE_VERSION=${ver}
+ EOF
+-  if dp2_release_has_secret "${staging}/release.env"; then
++  if dp2_release_has_secret "${dest_tmp}/release.env"; then
++    rm -rf "$dest_tmp"
+     mm_die "RELEASE_ENV_SECRET=FAIL"
+   fi
+ 
+   # Validate patched bringup inside bundle entries
+-  local actual want
+-  actual="$(sha1sum "${work_files}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
++  actual="$(sha1sum "${files_src}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
+   want="$(sha1sum "${MM_PROJECT_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
+   [[ "${actual,,}" == "${want,,}" ]] || mm_die "VALIDATE_DP=FAIL patched_bringup_sha1"
+ 
+-  local dest="${MM_DP_PHASE2_ROOT}/${ver}"
+-  local dest_tmp="${dest}.new.$$"
+-  rm -rf "$dest_tmp"
+-  mkdir -p "$dest_tmp"
+-  cp -f "${staging}/release.env" "${dest_tmp}/release.env"
+-  cp -f "${staging}/${stable}" "${dest_tmp}/${stable}"
+-  cp -f "${staging}/${stable}.sha256" "${dest_tmp}/${stable}.sha256"
+-
+   # Replace final version directory with the single artifact set (no releases/, no current/previous).
+-  mkdir -p "$(dirname "$dest")"
+-  rm -rf "${dest}.old.$$"
++  mkdir -p "$(dirname "$dest")" || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_DEST_PARENT=FAIL"; }
+   if [[ -e "$dest" ]]; then
+-    mv -f "$dest" "${dest}.old.$$"
++    mv -f "$dest" "$dest_old" || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_OLD_MOVE=FAIL"; }
++  fi
++  if ! mv -f "$dest_tmp" "$dest"; then
++    if [[ -e "$dest_old" && ! -e "$dest" ]]; then
++      mv -f "$dest_old" "$dest" 2>/dev/null || true
++    fi
++    mm_die "DP_PHASE2_PUBLISH_MOVE=FAIL"
+   fi
+-  mv -f "$dest_tmp" "$dest"
+-  rm -rf "${dest}.old.$$" "$staging"
++
++  # Verify the exact published bytes before deleting the previous artifact set.
++  if ! dp2_verify_sha256_pair "${dest}/${stable}" "${dest}/${stable}.sha256"; then
++    rm -rf "$dest"
++    [[ -e "$dest_old" ]] && mv -f "$dest_old" "$dest" 2>/dev/null || true
++    mm_die "DP_PHASE2_PUBLISHED_SHA256=FAIL"
++  fi
++  if ! dp2_assert_safe_tar_list "${dest}/${stable}"; then
++    rm -rf "$dest"
++    [[ -e "$dest_old" ]] && mv -f "$dest_old" "$dest" 2>/dev/null || true
++    mm_die "DP_PHASE2_PUBLISHED_TAR=FAIL"
++  fi
++  rm -rf "$dest_old"
+ 
+   # Ensure obsolete generation paths are absent under this version root
+   rm -rf "${dest}/releases" "${dest}/current" "${dest}/previous" "${dest}/.staging" "${dest}/files" 2>/dev/null || true
+@@ -448,12 +479,23 @@ engine_download_and_prepare() {
+   work="${MM_CACHE_ROOT}/acps-work/${TARGET_DP_VERSION}/$(mm_run_id)"
+   rm -rf "$work"
+   mkdir -p "$work"
+   local f
+   for f in "${DP_PHASE2_REQUIRED_FILES[@]}"; do
+-    cp -f "${cache}/${f}" "${work}/${f}"
++    case "$f" in
++      bringup_py3_dp_after_os_upgrade.sh|bringup_py3_dp_after_os_upgrade.sh.sha1)
++        continue
++        ;;
++    esac
++    # Cache and work are normally on the same filesystem. Hard links keep the
++    # validated payload immutable without another full physical copy. Fall
++    # back to copy only for an explicitly split-filesystem deployment.
++    if ! ln "${cache}/${f}" "${work}/${f}" 2>/dev/null; then
++      cp -f "${cache}/${f}" "${work}/${f}" \
++        || mm_die "ACPS_WORK_STAGE=FAIL file=${f}"
++    fi
+   done
+   engine_apply_local_bringup_patch "$work"
++  dp2_assert_exact_files_dir "$work"
++  dp2_verify_payload_checksums "$work"
+   engine_place_dp_phase2_final "$work" "$TARGET_DP_VERSION"
+ 
+   engine_cleanup_temps
+diff --git a/tests/run_all.sh b/tests/run_all.sh
+index 5511767..0000000 100755
+--- a/tests/run_all.sh
++++ b/tests/run_all.sh
+@@ -56,6 +56,7 @@ TEST_LIST=(
+   test_dp_phase2_cache_resume.sh
+   test_dp_phase2_process_detect.sh
+   test_dp_upgrade_mirror_manager.sh
++  test_mirror_download_and_space_regressions.sh
+   test_bringup_image_import_heartbeat.sh
+   test_bringup_dp_resume_notice.sh
+   test_client_manifest_signing.sh
+diff --git a/tests/test_mirror_download_and_space_regressions.sh b/tests/test_mirror_download_and_space_regressions.sh
+new file mode 100755
+index 0000000..1111111
+--- /dev/null
++++ b/tests/test_mirror_download_and_space_regressions.sh
+@@ -0,0 +1,155 @@
++#!/usr/bin/env bash
++# Regression coverage for live progress, log de-duplication, and bounded disk use.
++set -euo pipefail
++
++ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++COMMON="${ROOT}/scripts/lib/mirror_manager_common.sh"
++R2="${ROOT}/scripts/lib/r2_acquire.sh"
++ACPS="${ROOT}/scripts/lib/acps_acquire.sh"
++ENGINE="${ROOT}/scripts/lib/mirror_install_engine.sh"
++
++fail() { echo "FAIL: $*" >&2; exit 1; }
++pass() { echo "PASS: $*"; }
++
++if grep -q '/dev/tty' "$COMMON"; then
++  fail "mm_log still mirrors every line to /dev/tty"
++fi
++pass "live output has one terminal writer"
++
++grep -q 'resp="${part}.download"' "$R2" || fail "R2 transfer file is not observable"
++grep -q 'final=yes' "$R2" || fail "R2 final progress missing"
++if grep -q 'if ! curl "${curl_args\[@\]}"' "$R2"; then
++  fail "R2 curl status is still inverted"
++fi
++if grep -q 'if ! curl "${curl_args\[@\]}"' "$ACPS"; then
++  fail "ACPS curl status is still inverted"
++fi
++pass "download failure status propagation"
++
++grep -q 'tar -cf "${dest_tmp}/${stable}"' "$ENGINE" || fail "bundle is not built in final staging"
++if grep -q 'cp -f "${staging}/${stable}" "${dest_tmp}/${stable}"' "$ENGINE"; then
++  fail "full bundle copy still present"
++fi
++grep -q 'if ! ln "${cache}/${f}" "${work}/${f}"' "$ENGINE" || fail "ACPS hard-link staging missing"
++grep -q 'mv -f "$payload" "$final_tmp"' "$ENGINE" || fail "OS payload rename missing"
++pass "bounded disk pipeline structure"
++
++TMP="$(mktemp -d)"
++SERVER_PID=""
++cleanup() {
++  if [[ -n "$SERVER_PID" ]]; then
++    kill "$SERVER_PID" 2>/dev/null || true
++    wait "$SERVER_PID" 2>/dev/null || true
++  fi
++  rm -rf "$TMP"
++}
++trap cleanup EXIT
++
++MM_PROJECT_ROOT="$ROOT"
++MM_MIRROR_ROOT="${TMP}/mirror"
++MM_CACHE_ROOT="${MM_MIRROR_ROOT}/.install-cache"
++MM_STATE_ROOT="${TMP}/state"
++MM_LOG_DIR="${TMP}/logs"
++MM_CONFIG_DIR="${TMP}/config"
++MM_STATUS_FILE="${TMP}/config/status"
++MM_MOCK_AVAILABLE_BYTES=$((100 * 1024 * 1024 * 1024))
++OS_CORE_PACKAGE_BYTES=100
++OS_CORE_PAYLOAD_BYTES=200
++ACPS_EXPECTED_BYTES=300
++
++# shellcheck source=../scripts/lib/mirror_manager_common.sh
++source "$COMMON"
++mm_calc_disk_requirements >/dev/null
++expected_total=$((200 + 300 + 300 + (512 * 1024 * 1024) + (2 * 1024 * 1024 * 1024)))
++[[ "$TOTAL_REQUIRED_BYTES" -eq "$expected_total" ]] \
++  || fail "disk estimate expected=${expected_total} actual=${TOTAL_REQUIRED_BYTES}"
++pass "disk estimate counts one OS payload, one ACPS cache, and one bundle"
++
++HTTP_ROOT="${TMP}/http"
++mkdir -p "$HTTP_ROOT"
++dd if=/dev/zero of="${HTTP_ROOT}/core.tar" bs=1M count=8 status=none
++(cd "$HTTP_ROOT" && sha256sum core.tar >core.tar.sha256)
++PORT_FILE="${TMP}/port"
++
++python3 - "$HTTP_ROOT" "$PORT_FILE" <<'PY' &
++import http.server
++import os
++import pathlib
++import socketserver
++import sys
++import time
++
++root = pathlib.Path(sys.argv[1])
++port_file = pathlib.Path(sys.argv[2])
++
++class Handler(http.server.BaseHTTPRequestHandler):
++    def path_on_disk(self):
++        return root / self.path.lstrip('/')
++
++    def do_HEAD(self):
++        path = self.path_on_disk()
++        if not path.is_file():
++            self.send_error(404)
++            return
++        self.send_response(200)
++        self.send_header('Content-Length', str(path.stat().st_size))
++        self.send_header('Accept-Ranges', 'bytes')
++        self.end_headers()
++
++    def do_GET(self):
++        path = self.path_on_disk()
++        if not path.is_file():
++            self.send_error(404)
++            return
++        size = path.stat().st_size
++        self.send_response(200)
++        self.send_header('Content-Length', str(size))
++        self.send_header('Accept-Ranges', 'bytes')
++        self.end_headers()
++        with path.open('rb') as fh:
++            while True:
++                chunk = fh.read(65536)
++                if not chunk:
++                    break
++                self.wfile.write(chunk)
++                self.wfile.flush()
++                time.sleep(0.02)
++
++    def log_message(self, *_):
++        pass
++
++class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
++    daemon_threads = True
++
++server = Server(('127.0.0.1', 0), Handler)
++port_file.write_text(str(server.server_address[1]))
++server.serve_forever()
++PY
++SERVER_PID=$!
++
++for _ in $(seq 1 50); do
++  [[ -s "$PORT_FILE" ]] && break
++  sleep 0.1
++done
++[[ -s "$PORT_FILE" ]] || fail "slow HTTP server did not start"
++
++PORT="$(cat "$PORT_FILE")"
++OS_CORE_R2_URL="http://127.0.0.1:${PORT}/core.tar"
++R2_PROGRESS_INTERVAL_SEC=1
++MM_LOG_FILE=""
++MM_RUN_ID="test"
++MM_STATE_DIR="${TMP}/state/test"
++mkdir -p "$MM_STATE_DIR"
++
++# shellcheck source=../scripts/lib/r2_acquire.sh
++source "$R2"
++out="$(r2_download_package 2>&1)"
++printf '%s\n' "$out"
++
++grep -Eq 'R2_DOWNLOAD_PROGRESS.*downloaded_bytes=[1-9][0-9]*.*final=' <<<"$out" \
++  || grep -Eq 'R2_DOWNLOAD_PROGRESS.*downloaded_bytes=[1-9][0-9]*' <<<"$out" \
++  || fail "R2 progress never advanced above zero"
++grep -q 'PROGRESS R2 core.tar:' <<<"$out" || fail "human-readable R2 progress missing"
++[[ -f "$OS_CORE_PACKAGE" ]] || fail "R2 final package missing"
++(cd "$(dirname "$OS_CORE_PACKAGE")" && sha256sum -c "$(basename "$OS_CORE_PACKAGE").sha256" >/dev/null) \
++  || fail "R2 checksum mismatch"
++find "$MM_CACHE_ROOT" -name '*.download' -o -name '*.part' | grep -q . \
++  && fail "R2 temporary transfer files remain"
++
++pass "R2 live progress advances and finalizes cleanly"
++echo "ALL TARGETED REGRESSION TESTS PASSED"
