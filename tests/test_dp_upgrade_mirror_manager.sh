@@ -312,6 +312,14 @@ grep -q 'Configuration' "$INSTALLER" && grep -q 'Download and Prepare Upgrade Fi
 grep -q 'mm_whiptail_yesno' "$INSTALLER" \
   && grep -q 'Download and prepare upgrade files' "$INSTALLER" \
   && pass "A download confirm is yesno" || fail "A download confirm still menu"
+grep -q 'MM_LIVE_PROGRESS=1' "$INSTALLER" \
+  && grep -q 'tee ' "$INSTALLER" \
+  && pass "A download live progress enabled" || fail "A download live progress missing"
+if grep -n 'out="$(engine_download_and_prepare 2>&1)"' "$INSTALLER" | grep -q .; then
+  fail "A silent capture still hides download progress"
+else
+  pass "A no silent download capture"
+fi
 if grep -n '"1" "Start".*"0" "Cancel"\|"1" "Start"' "$INSTALLER" | grep -q .; then
   fail "A Start/Cancel menu still present"
 else
