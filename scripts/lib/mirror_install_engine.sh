@@ -24,6 +24,22 @@ engine_resolve_paths() {
   MM_CLIENT_ROOT="${MM_CLIENT_ROOT:-${MM_MIRROR_ROOT}/client}"
   DP_PHASE2_ROOT="$MM_DP_PHASE2_ROOT"
   MM_CACHE_ROOT="${MM_CACHE_ROOT:-${MM_MIRROR_ROOT}/.install-cache}"
+  # GUI mode: keep path init in the log file, but do not spam the TTY
+  # (operators otherwise see only these three lines when a menu action exits).
+  if [[ "${MM_GUI_MODE:-0}" == "1" ]]; then
+    if [[ -n "${MM_LOG_FILE:-}" ]]; then
+      mkdir -p "$(dirname "$MM_LOG_FILE")" 2>/dev/null || true
+      local _line
+      for _line in \
+        "MIRROR_ROOT=${MM_MIRROR_ROOT}" \
+        "SELECTIVE_ROOT=${MM_SELECTIVE_ROOT}" \
+        "DP_PHASE2_ROOT=${MM_DP_PHASE2_ROOT}"
+      do
+        printf '%s\n' "$(mm_ts) [INFO] ${_line}" | mm_redact >>"$MM_LOG_FILE" 2>/dev/null || true
+      done
+    fi
+    return 0
+  fi
   mm_info "MIRROR_ROOT=${MM_MIRROR_ROOT}"
   mm_info "SELECTIVE_ROOT=${MM_SELECTIVE_ROOT}"
   mm_info "DP_PHASE2_ROOT=${MM_DP_PHASE2_ROOT}"
@@ -306,7 +322,8 @@ engine_validate_http_layout() {
   local u code
   for u in "${urls[@]}"; do
     code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 "$u" 2>/dev/null || echo 000)"
-    if [[ "$code" == "404" || "$code" == "000" || "$code" == "500" ]]; then
+    # Only HTTP 200 is PASS; 3xx/4xx (incl. 403)/5xx/000 are FAIL.
+    if [[ "$code" != "200" ]]; then
       mm_error "HTTP_VALIDATION=FAIL url=${u} code=${code}"
       mm_state_set HTTP_CONFIGURATION_READY FAIL
       return 1

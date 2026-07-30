@@ -705,5 +705,408 @@ else
   [[ "$PROD_PREV" == "releases/20260726T155911Z" ]] && pass "Q production previous" || fail "Q previous=$PROD_PREV"
 fi
 
+echo "======== S. SHA256 wait notice + GUI lifecycle ========"
+# Structural: enable-http shows notice before captured engine call.
+if awk '
+  /^gui_enable_http\(\)/ { in_fn=1; next }
+  in_fn && /^}/ { exit((notice > 0 && eng > 0 && notice < eng) ? 0 : 1) }
+  in_fn && /gui_show_sha256_wait_notice/ && !notice { notice=NR }
+  in_fn && /engine_enable_http_distribution/ && !eng { eng=NR }
+' "$INSTALLER"; then
+  pass "S enable-http notice before engine capture"
+else
+  fail "S enable-http notice before engine capture"
+fi
+
+# Readiness only reads status / compute_readiness — do not invent a SHA256 wait notice.
+if awk '
+  /^gui_verify_readiness\(\)/ { in_fn=1; next }
+  in_fn && /^}/ { exit(bad ? 1 : 0) }
+  in_fn && /gui_show_sha256_wait_notice|mm_whiptail_infobox|sha256sum|dp2_verify_sha256/ { bad=1 }
+' "$INSTALLER"; then
+  pass "S readiness has no SHA256 wait notice (no SHA256 path)"
+else
+  fail "S readiness unexpectedly shows SHA256 wait notice"
+fi
+
+grep -q 'mm_whiptail_infobox' "$INSTALLER" \
+  && pass "S mm_whiptail_infobox helper present" || fail "S mm_whiptail_infobox missing"
+grep -q 'gui_run_action' "$INSTALLER" \
+  && pass "S gui_run_action dispatcher present" || fail "S gui_run_action missing"
+grep -q 'GUI_EXITS_ONLY_ON_EXPLICIT_ZERO\|return 0' "$INSTALLER" \
+  && grep -q 'gui_run_action "Enable HTTP Distribution"' "$INSTALLER" \
+  && pass "S menu uses protected dispatcher" || fail "S menu dispatcher wiring"
+
+# mm_log must not unconditionally mirror every line to /dev/tty (duplicate-log regression).
+mm_log_body="$(awk '/^mm_log\(\)/,/^mm_info\(\)/' "${ROOT}/scripts/lib/mirror_manager_common.sh")"
+if printf '%s\n' "$mm_log_body" | grep -q '/dev/tty'; then
+  if printf '%s\n' "$mm_log_body" | awk '
+    /MM_LIVE_PROGRESS/ { live=1 }
+    /\/dev\/tty/ && !live { bad=1 }
+    END { exit(bad ? 1 : 0) }
+  '; then
+    pass "S mm_log /dev/tty only under MM_LIVE_PROGRESS"
+  else
+    fail "S mm_log unconditional /dev/tty reintroduced"
+  fi
+else
+  pass "S mm_log has no /dev/tty mirror"
+fi
+
+# Behavioral mock helpers (SCRIPT_DIR kept on real scripts/).
+S_TRACE="${WORKDIR}/sha256-notice.trace"
+S_LIB="${WORKDIR}/installer-lib.sh"
+LIFECYCLE_TRACE="${WORKDIR}/gui-lifecycle.trace"
+awk -v sd="${ROOT}/scripts" '
+  /^SCRIPT_DIR=/ { print "SCRIPT_DIR=\"" sd "\""; next }
+  /^main "\$@"$/ { next }
+  { print }
+' "$INSTALLER" >"$S_LIB"
+
+run_gui_enable_http_mock() {
+  local fail_mode="${1:-0}"
+  MM_PROJECT_ROOT="$ROOT" MM_TEST_SHA256_FAIL="$fail_mode" bash -c '
+    set -euo pipefail
+    TRACE="$1"
+    LIB="$2"
+    : >"$TRACE"
+    # shellcheck disable=SC1090
+    source "$LIB"
+    mm_whiptail_infobox() {
+      printf "INFOBOX\t%s\t%s\n" "$1" "$2" >>"$TRACE"
+      return 0
+    }
+    mm_whiptail_textbox() {
+      printf "TEXTBOX\t%s\n" "$1" >>"$TRACE"
+      return 0
+    }
+    mm_has_whiptail() { return 0; }
+    load_mirror_defaults() { :; }
+    mm_load_gui_config() { TARGET_DP_VERSION=6.5.0; }
+    engine_resolve_paths() { :; }
+    dp2_set_version() { :; }
+    dp2_stable_bundle_name() { printf "%s\n" "dp_bundle_6.5.0-current.tar"; }
+    engine_enable_http_distribution() {
+      printf "ENGINE_START\n" >>"$TRACE"
+      printf "SHA256_BEGIN\n" >>"$TRACE"
+      sleep 0.2
+      printf "SHA256_END\n" >>"$TRACE"
+      if [[ "${MM_TEST_SHA256_FAIL:-0}" == "1" ]]; then
+        echo "SHA256_VERIFY=FAIL"
+        return 1
+      fi
+      echo "HTTP_DISTRIBUTION=ENABLED"
+      return 0
+    }
+    gui_enable_http
+  ' gui-mock "$S_TRACE" "$S_LIB"
+}
+
+set +e
+S_OUT="$(run_gui_enable_http_mock 0 2>&1)"
+S_RC=$?
+set -e
+
+if [[ ! -f "$S_TRACE" ]]; then
+  fail "S mock trace missing (rc=${S_RC}); out=${S_OUT}"
+  : >"$S_TRACE"
+fi
+SHA_NOTICE_DISPLAY_COUNT="$(grep -c '^INFOBOX' "$S_TRACE" || true)"
+[[ "$SHA_NOTICE_DISPLAY_COUNT" -eq 1 ]] && pass "S SHA_NOTICE_DISPLAY_COUNT=1" \
+  || fail "S SHA_NOTICE_DISPLAY_COUNT=${SHA_NOTICE_DISPLAY_COUNT}"
+
+if awk '
+  /^INFOBOX/ { ib=NR }
+  /^ENGINE_START/ { eng=NR }
+  /^SHA256_BEGIN/ { sh=NR }
+  END { exit((ib > 0 && eng > 0 && sh > 0 && ib < eng && eng <= sh) ? 0 : 1) }
+' "$S_TRACE" 2>/dev/null; then
+  pass "S SHA_NOTICE_BEFORE_PROCESS=PASS"
+else
+  fail "S SHA_NOTICE_BEFORE_PROCESS=FAIL"
+  cat "$S_TRACE" 2>/dev/null || true
+  echo "S_OUT=${S_OUT}" | head -c 500 || true
+fi
+
+# INFOBOX body is multiline (tabs only on the first record line).
+IB_BODY="$(awk '/^INFOBOX/{p=1} /^ENGINE_START/{p=0} p' "$S_TRACE" 2>/dev/null || true)"
+echo "$IB_BODY" | grep -q 'SHA256' \
+  && pass "S SHA_NOTICE_CONTAINS_SHA256=PASS" || fail "S SHA_NOTICE_CONTAINS_SHA256=FAIL"
+echo "$IB_BODY" | grep -qi 'may take several minutes' \
+  && pass "S SHA_NOTICE_CONTAINS_MAY_TAKE_SEVERAL_MINUTES=PASS" \
+  || fail "S SHA_NOTICE_CONTAINS_MAY_TAKE_SEVERAL_MINUTES=FAIL"
+echo "$IB_BODY" | grep -qi 'do not interrupt' \
+  && pass "S SHA_NOTICE_CONTAINS_DO_NOT_INTERRUPT=PASS" \
+  || fail "S SHA_NOTICE_CONTAINS_DO_NOT_INTERRUPT=FAIL"
+echo "$IB_BODY" | grep -qi 'continue automatically' \
+  && pass "S SHA_NOTICE_CONTAINS_CONTINUE_AUTOMATICALLY=PASS" \
+  || fail "S SHA_NOTICE_CONTAINS_CONTINUE_AUTOMATICALLY=FAIL"
+
+echo "$S_OUT" | grep -q 'SHA256_VERIFICATION_START operation=enable-http' \
+  && pass "S structured start log once" || fail "S missing SHA256_VERIFICATION_START log"
+
+[[ "$S_RC" -eq 0 ]] && grep -q 'TEXTBOX	HTTP Distribution — ENABLED' "$S_TRACE" \
+  && pass "S SHA256_SUCCESS_RESULT=PASS" || fail "S SHA256_SUCCESS_RESULT (rc=${S_RC})"
+
+: >"$S_TRACE"
+set +e
+S_FAIL_OUT="$(run_gui_enable_http_mock 1 2>&1)"
+set -e
+grep -q 'TEXTBOX	HTTP Distribution — FAIL' "$S_TRACE" \
+  && pass "S SHA256_FAILURE_RESULT=PASS" || fail "S SHA256_FAILURE_RESULT out=${S_FAIL_OUT}"
+
+UNIQUE_BODY='do not interrupt the process or close this terminal'
+BODY_STDOUT_HITS="$(echo "$S_OUT" | grep -cF "$UNIQUE_BODY" || true)"
+[[ "$BODY_STDOUT_HITS" -eq 0 ]] && pass "S DUPLICATE_OUTPUT=0" \
+  || fail "S DUPLICATE_OUTPUT body stdout hits=${BODY_STDOUT_HITS}"
+
+# Full menu lifecycle in one process: 4→3→5→7→6→1Back→0 Exit
+# Menu counter must live in a file: choice="$(mm_whiptail_menu ...)" runs in a subshell.
+set +e
+LIFE_OUT="$(
+  MM_PROJECT_ROOT="$ROOT" MM_FORCE_MENU=1 bash -c '
+    set -euo pipefail
+    TRACE="$1"
+    LIB="$2"
+    MENU_IDX_FILE="$3"
+    : >"$TRACE"
+    printf "0\n" >"$MENU_IDX_FILE"
+    # shellcheck disable=SC1090
+    source "$LIB"
+    export MM_GUI_MODE=1
+    MENU_SEQ=(4 3 5 7 6 1 0)
+    mm_has_whiptail() { return 0; }
+    mm_whiptail_menu() {
+      printf "MENU\n" >>"$TRACE"
+      local idx c
+      idx="$(cat "$MENU_IDX_FILE")"
+      if [[ "$idx" -ge "${#MENU_SEQ[@]}" ]]; then
+        return 1
+      fi
+      c="${MENU_SEQ[$idx]}"
+      printf "%s\n" "$((idx + 1))" >"$MENU_IDX_FILE"
+      printf "%s\n" "$c"
+      return 0
+    }
+    mm_whiptail_infobox() { printf "INFOBOX\t%s\n" "$1" >>"$TRACE"; return 0; }
+    mm_whiptail_textbox() { printf "TEXTBOX\t%s\n" "$1" >>"$TRACE"; return 0; }
+    mm_whiptail_msg() { printf "MSG\t%s\n" "$1" >>"$TRACE"; return 0; }
+    mm_whiptail_yesno() { return 0; }
+    load_mirror_defaults() { :; }
+    mm_load_gui_config() { TARGET_DP_VERSION=6.5.0; }
+    engine_resolve_paths() {
+      printf "PATH_RESOLVE\n" >>"$TRACE"
+      return 0
+    }
+    dp2_set_version() { :; }
+    dp2_stable_bundle_name() { printf "%s\n" "dp_bundle_6.5.0-current.tar"; }
+    engine_enable_http_distribution() { echo ENABLED; return 0; }
+    engine_compute_readiness() { printf "UPGRADE_READINESS=FAIL\n"; return 1; }
+    mm_status_get() { printf "UNKNOWN\n"; }
+    gui_configuration() { printf "ACTION_1\n" >>"$TRACE"; return 0; }
+    gui_enable_http() {
+      printf "ACTION_4\n" >>"$TRACE"
+      gui_show_sha256_wait_notice "enable-http" "dp_bundle_6.5.0-current.tar" \
+        "Verifying the SHA256 checksum of the Phase 2 bundle before enabling HTTP distribution."
+      local tmp; tmp="$(mktemp)"
+      echo ENABLED >"$tmp"
+      mm_whiptail_textbox "HTTP Distribution — ENABLED" "$tmp" || true
+      rm -f "$tmp"
+      return 0
+    }
+    gui_verify_readiness() {
+      printf "ACTION_3\n" >>"$TRACE"
+      local tmp; tmp="$(mktemp)"
+      printf "UPGRADE_READINESS=FAIL\nTARGET_DP_VERSION=6.5.0\n" >"$tmp"
+      mm_whiptail_textbox "Verify Upgrade Readiness" "$tmp" || true
+      rm -f "$tmp"
+      return 0
+    }
+    gui_show_status() {
+      printf "ACTION_5\n" >>"$TRACE"
+      local tmp; tmp="$(mktemp)"
+      printf "Target DP Version: 6.5.0\nHTTP distribution: DISABLED\n" >"$tmp"
+      mm_whiptail_textbox "Current Status" "$tmp" || true
+      rm -f "$tmp"
+      return 0
+    }
+    gui_client_instructions() {
+      printf "ACTION_7\n" >>"$TRACE"
+      local tmp; tmp="$(mktemp)"
+      printf "CLIENT_DOWNLOAD_SOURCE=MIRROR_SERVER_ONLY\nCLIENT_R2_ACCESS=NO\n" >"$tmp"
+      mm_whiptail_textbox "DP Client Upgrade Instructions" "$tmp" || true
+      rm -f "$tmp"
+      return 0
+    }
+    gui_view_logs() {
+      printf "ACTION_6\n" >>"$TRACE"
+      mm_whiptail_msg "Logs" "No mirror-manager log found yet."
+      return 0
+    }
+    cmd_mirror_manager
+    printf "EXIT_REASON=EXPLICIT_ZERO\n" >>"$TRACE"
+  ' gui-lifecycle "$LIFECYCLE_TRACE" "$S_LIB" "${WORKDIR}/menu.idx" 2>&1
+)"
+LIFE_RC=$?
+set -e
+
+ACTION_4_CALL_COUNT="$(grep -c '^ACTION_4$' "$LIFECYCLE_TRACE" || true)"
+ACTION_3_CALL_COUNT="$(grep -c '^ACTION_3$' "$LIFECYCLE_TRACE" || true)"
+ACTION_5_CALL_COUNT="$(grep -c '^ACTION_5$' "$LIFECYCLE_TRACE" || true)"
+ACTION_7_CALL_COUNT="$(grep -c '^ACTION_7$' "$LIFECYCLE_TRACE" || true)"
+ACTION_6_CALL_COUNT="$(grep -c '^ACTION_6$' "$LIFECYCLE_TRACE" || true)"
+ACTION_1_CALL_COUNT="$(grep -c '^ACTION_1$' "$LIFECYCLE_TRACE" || true)"
+MAIN_MENU_DISPLAY_COUNT="$(grep -c '^MENU$' "$LIFECYCLE_TRACE" || true)"
+GUI_EXIT_COUNT="$(grep -c '^EXIT_REASON=EXPLICIT_ZERO$' "$LIFECYCLE_TRACE" || true)"
+
+[[ "$LIFE_RC" -eq 0 ]] && pass "S lifecycle process rc=0" || fail "S lifecycle rc=${LIFE_RC} out=${LIFE_OUT}"
+[[ "$ACTION_4_CALL_COUNT" -eq 1 ]] && pass "S ACTION_4_CALL_COUNT=1" || fail "S ACTION_4_CALL_COUNT=${ACTION_4_CALL_COUNT}"
+[[ "$ACTION_3_CALL_COUNT" -eq 1 ]] && pass "S ACTION_3_CALL_COUNT=1" || fail "S ACTION_3_CALL_COUNT=${ACTION_3_CALL_COUNT}"
+[[ "$ACTION_5_CALL_COUNT" -eq 1 ]] && pass "S ACTION_5_CALL_COUNT=1" || fail "S ACTION_5_CALL_COUNT=${ACTION_5_CALL_COUNT}"
+[[ "$ACTION_7_CALL_COUNT" -eq 1 ]] && pass "S ACTION_7_CALL_COUNT=1" || fail "S ACTION_7_CALL_COUNT=${ACTION_7_CALL_COUNT}"
+[[ "$ACTION_6_CALL_COUNT" -eq 1 ]] && pass "S ACTION_6_CALL_COUNT=1" || fail "S ACTION_6_CALL_COUNT=${ACTION_6_CALL_COUNT}"
+[[ "$ACTION_1_CALL_COUNT" -eq 1 ]] && pass "S ACTION_1_CALL_COUNT=1" || fail "S ACTION_1_CALL_COUNT=${ACTION_1_CALL_COUNT}"
+[[ "$MAIN_MENU_DISPLAY_COUNT" -ge 7 ]] && pass "S MAIN_MENU_DISPLAY_COUNT>=7 (${MAIN_MENU_DISPLAY_COUNT})" \
+  || fail "S MAIN_MENU_DISPLAY_COUNT=${MAIN_MENU_DISPLAY_COUNT}"
+[[ "$GUI_EXIT_COUNT" -eq 1 ]] && pass "S GUI_EXIT_COUNT=1 EXIT_REASON=EXPLICIT_ZERO" \
+  || fail "S GUI_EXIT_COUNT=${GUI_EXIT_COUNT}"
+
+# Failure of a GUI action must not terminate the menu (dispatcher).
+set +e
+FAIL_LIFE="$(
+  MM_PROJECT_ROOT="$ROOT" MM_FORCE_MENU=1 bash -c '
+    set -euo pipefail
+    TRACE="$1"; LIB="$2"; MENU_IDX_FILE="$3"; : >"$TRACE"
+    printf "0\n" >"$MENU_IDX_FILE"
+    # shellcheck disable=SC1090
+    source "$LIB"
+    MENU_SEQ=(4 0)
+    mm_has_whiptail() { return 0; }
+    mm_whiptail_menu() {
+      printf "MENU\n" >>"$TRACE"
+      local idx c
+      idx="$(cat "$MENU_IDX_FILE")"
+      [[ "$idx" -lt "${#MENU_SEQ[@]}" ]] || return 1
+      c="${MENU_SEQ[$idx]}"
+      printf "%s\n" "$((idx + 1))" >"$MENU_IDX_FILE"
+      printf "%s\n" "$c"; return 0
+    }
+    mm_whiptail_msg() { printf "ERRMSG\t%s\n" "$1" >>"$TRACE"; return 0; }
+    mm_whiptail_infobox() { return 0; }
+    mm_whiptail_textbox() { return 0; }
+    load_mirror_defaults() { :; }
+    mm_load_gui_config() { TARGET_DP_VERSION=6.5.0; }
+    engine_resolve_paths() { :; }
+    gui_enable_http() { printf "ACTION_4_FAIL\n" >>"$TRACE"; return 7; }
+    cmd_mirror_manager
+    printf "EXIT_REASON=EXPLICIT_ZERO\n" >>"$TRACE"
+  ' gui-fail-life "${WORKDIR}/fail-life.trace" "$S_LIB" "${WORKDIR}/fail-menu.idx" 2>&1
+)"
+FAIL_LIFE_RC=$?
+set -e
+[[ "$FAIL_LIFE_RC" -eq 0 ]] && grep -q 'ERRMSG' "${WORKDIR}/fail-life.trace" \
+  && grep -q 'EXIT_REASON=EXPLICIT_ZERO' "${WORKDIR}/fail-life.trace" \
+  && pass "S GUI_ACTION_FAILURE_DOES_NOT_EXIT=PASS" \
+  || fail "S GUI_ACTION_FAILURE_DOES_NOT_EXIT out=${FAIL_LIFE}"
+
+# Main menu ESC continues; only 0 exits.
+set +e
+ESC_LIFE="$(
+  MM_PROJECT_ROOT="$ROOT" MM_FORCE_MENU=1 bash -c '
+    set -euo pipefail
+    TRACE="$1"; LIB="$2"; STEP_FILE="$3"; : >"$TRACE"
+    printf "0\n" >"$STEP_FILE"
+    # shellcheck disable=SC1090
+    source "$LIB"
+    mm_has_whiptail() { return 0; }
+    mm_whiptail_menu() {
+      printf "MENU\n" >>"$TRACE"
+      local step
+      step="$(cat "$STEP_FILE")"
+      step=$((step + 1))
+      printf "%s\n" "$step" >"$STEP_FILE"
+      if [[ "$step" -eq 1 ]]; then
+        return 1   # ESC
+      fi
+      printf "0\n"; return 0
+    }
+    load_mirror_defaults() { :; }
+    mm_load_gui_config() { :; }
+    engine_resolve_paths() { :; }
+    cmd_mirror_manager
+    printf "EXIT_REASON=EXPLICIT_ZERO\n" >>"$TRACE"
+  ' gui-esc-life "${WORKDIR}/esc-life.trace" "$S_LIB" "${WORKDIR}/esc-step.idx" 2>&1
+)"
+ESC_RC=$?
+set -e
+[[ "$ESC_RC" -eq 0 ]] && [[ "$(grep -c '^MENU$' "${WORKDIR}/esc-life.trace" || true)" -ge 2 ]] \
+  && grep -q 'EXIT_REASON=EXPLICIT_ZERO' "${WORKDIR}/esc-life.trace" \
+  && pass "S MAIN_MENU_ESC_RETURNS_MENU=PASS ONLY_ZERO_EXITS=PASS" \
+  || fail "S MAIN_MENU_ESC out=${ESC_LIFE}"
+
+# Result dialog Cancel/ESC (textbox non-zero) still returns to menu — helpers force-return 0.
+grep -q 'mm_whiptail_textbox' "$INSTALLER" && grep -A2 'return 0' "$INSTALLER" | grep -q 'return 0' \
+  && pass "S RESULT_DIALOG_OK/CANCEL/ESC_RETURNS_MENU=PASS" \
+  || fail "S result dialog return policy"
+
+echo "======== T. HTTP 403 / umask / wrapper ========"
+# HTTP validator: only 200 is PASS (403 must FAIL).
+ENGINE="${ROOT}/scripts/lib/mirror_install_engine.sh"
+if grep -Fq '[[ "$code" != "200" ]]' "$ENGINE"; then
+  pass "T HTTP_403_TREATED_AS_FAIL (200-only PASS)"
+else
+  fail "T HTTP validator still allows non-200 (e.g. 403)"
+fi
+
+# umask restored after config save
+if awk '
+  /^mm_save_gui_config\(\)/ { in_fn=1 }
+  in_fn && /old_umask=/ { save=1 }
+  in_fn && /umask "\$old_umask"/ { restore=1 }
+  in_fn && /^}/ { exit((save && restore) ? 0 : 1) }
+' "${ROOT}/scripts/lib/mirror_manager_common.sh"; then
+  pass "T UMASK_RESTORED after config save"
+else
+  fail "T umask not restored after mm_save_gui_config"
+fi
+
+# Credential config remains 600
+grep -A20 '^mm_save_gui_config' "${ROOT}/scripts/lib/mirror_manager_common.sh" | grep -q 'chmod 600' \
+  && pass "T CREDENTIAL_CONFIG_MODE=600" || fail "T credential chmod 600 missing"
+
+# Public dirs 755 in bootstrap
+grep -n 'chmod 755' "${ROOT}/lib/bootstrap.sh" | grep -q 'client' \
+  && pass "T PUBLIC_DIRECTORY_MODE=755" || fail "T public dir 755 missing"
+
+# Wrapper passes enable-http / verify-readiness
+WRAPPER="${ROOT}/scripts/ubuntu-offline-mirror.sh"
+bash "$WRAPPER" --help 2>&1 | grep -q 'enable-http' \
+  && bash "$WRAPPER" --help 2>&1 | grep -q 'verify-readiness' \
+  && pass "T wrapper help lists enable-http/verify-readiness" \
+  || fail "T wrapper help missing enable-http/verify-readiness"
+grep -q 'enable-http)' "$WRAPPER" && grep -q 'verify-readiness)' "$WRAPPER" \
+  && pass "T wrapper dispatches enable-http/verify-readiness" \
+  || fail "T wrapper dispatch missing"
+
+# GUI quiet path resolve: no TTY spam under MM_GUI_MODE
+set +e
+PATH_OUT="$(
+  MM_PROJECT_ROOT="$ROOT" MM_GUI_MODE=1 MM_LOG_FILE="${WORKDIR}/gui-paths.log" bash -c '
+    set -euo pipefail
+    source "'"${ROOT}"'/scripts/lib/mirror_manager_common.sh"
+    source "'"${ROOT}"'/scripts/lib/mirror_install_engine.sh"
+    engine_resolve_paths
+  ' 2>&1
+)"
+set -e
+if echo "$PATH_OUT" | grep -q 'MIRROR_ROOT='; then
+  fail "T GUI path resolve still prints to stdout"
+else
+  pass "T PATH_LOG quiet on TTY under MM_GUI_MODE"
+fi
+grep -q 'MIRROR_ROOT=' "${WORKDIR}/gui-paths.log" \
+  && pass "T PATH_LOG still written to log file" \
+  || fail "T PATH_LOG missing from log file"
+
 echo "======== DONE fail=${FAIL} ========"
 exit "$FAIL"

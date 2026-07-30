@@ -35,11 +35,11 @@ OS_CORE_R2_URL_CONSTANT="https://xdrsolutions.uk/ubuntu-os-core/ubuntu-os-core-x
 
 MM_LOCK_FD=""
 MM_LOCK_HELD=0
-MM_RUN_ID=""
-MM_LOG_FILE=""
-MM_STATE_DIR=""
-MM_DRY_RUN=0
-MM_FILES_CHANGED=NO
+MM_RUN_ID="${MM_RUN_ID:-}"
+MM_LOG_FILE="${MM_LOG_FILE:-}"
+MM_STATE_DIR="${MM_STATE_DIR:-}"
+MM_DRY_RUN="${MM_DRY_RUN:-0}"
+MM_FILES_CHANGED="${MM_FILES_CHANGED:-NO}"
 TARGET_DP_VERSION="${TARGET_DP_VERSION:-6.5.0}"
 ACPS_USERNAME="${ACPS_USERNAME:-}"
 ACPS_PASSWORD="${ACPS_PASSWORD:-}"
@@ -183,8 +183,9 @@ mm_load_gui_config() {
 
 mm_save_gui_config() {
   mkdir -p "$(dirname "$MM_CONFIG_FILE")"
-  local tmp
+  local tmp old_umask
   tmp="$(mktemp)"
+  old_umask="$(umask)"
   umask 077
   cat >"$tmp" <<EOF
 # DP Upgrade Mirror Manager configuration (managed by GUI)
@@ -193,6 +194,7 @@ TARGET_DP_VERSION=${TARGET_DP_VERSION}
 ACPS_USERNAME=${ACPS_USERNAME}
 ACPS_PASSWORD=${ACPS_PASSWORD}
 EOF
+  umask "$old_umask"
   chmod 600 "$tmp"
   mv -f "$tmp" "$MM_CONFIG_FILE"
   chmod 600 "$MM_CONFIG_FILE"

@@ -2104,6 +2104,8 @@ Usage: ${SCRIPT_NAME} <command>
 
 Primary (fresh Ubuntu 24.04 Mirror Manager workflow):
   mirror-manager          Interactive whiptail manager (R2 OS Core + ACPS Phase 2)
+  enable-http             Enable nginx HTTP distribution (non-interactive)
+  verify-readiness        Print UPGRADE_READINESS (non-interactive)
 
   Bootstrap a clean host with: sudo ./install.sh
   Re-open GUI after install:   sudo ubuntu-offline-mirror mirror-manager
@@ -2518,6 +2520,18 @@ cmd_mirror_manager() {
   bash "$script" mirror-manager "$@"
 }
 
+cmd_enable_http() {
+  local script
+  script="$(_mirror_manager_script)" || die "install-dp-upgrade-mirror.sh not found"
+  bash "$script" enable-http "$@"
+}
+
+cmd_verify_readiness() {
+  local script
+  script="$(_mirror_manager_script)" || die "install-dp-upgrade-mirror.sh not found"
+  bash "$script" verify-readiness "$@"
+}
+
 main() {
   local cmd="${1:-}"
   case "$cmd" in
@@ -2554,6 +2568,8 @@ main() {
     verify-dp-phase2) shift; cmd_verify_dp_phase2 "$@" ;;
     status-dp-phase2) shift; cmd_status_dp_phase2 "$@" ;;
     mirror-manager) shift; cmd_mirror_manager "$@" ;;
+    enable-http) shift; cmd_enable_http "$@" ;;
+    verify-readiness) shift; cmd_verify_readiness "$@" ;;
     -h|--help|help|"") usage; [[ -n "$cmd" ]] || exit 1; exit 0 ;;
     *) die "Unknown command: $cmd (see --help)" ;;
   esac

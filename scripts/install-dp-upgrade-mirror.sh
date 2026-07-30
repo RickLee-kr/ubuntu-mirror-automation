@@ -216,6 +216,78 @@ mm_whiptail_textbox() {
     return 0
   fi
   whiptail --title "${title}" --fb --textbox "$file" "$h" "$w" || true
+  return 0
+}
+
+mm_whiptail_infobox() {
+  # Non-blocking notice that remains visible until the next whiptail dialog.
+  # Always returns 0 so callers never inherit dialog exit status.
+  local title="$1" text="$2"
+  if ! mm_has_whiptail; then
+    if [[ -w /dev/tty ]]; then
+      {
+        printf '\n== %s ==\n' "$title"
+        printf '%b\n\n' "$text"
+      } >/dev/tty 2>/dev/null || true
+    else
+      printf '\n== %s ==\n' "$title"
+      printf '%b\n\n' "$text"
+    fi
+    return 0
+  fi
+  local body line_count dims h w
+  body="$(printf '%b' "$text")"
+  line_count="$(printf '%b' "$body" | wc -l)"
+  dims="$(mm_calc_dialog_size "${line_count}" 72 6)"
+  read -r h w <<< "$dims"
+  whiptail --title "${title}" --fb --infobox "${body}" "${h}" "${w}" || true
+  return 0
+}
+
+# Operator notice before long Phase 2 bundle SHA256 (GUI capture hides engine stdout).
+gui_show_sha256_wait_notice() {
+  local operation="$1"
+  local file="$2"
+  local lead="${3:-Verifying the SHA256 checksum of the Phase 2 bundle.}"
+  local body
+  body="${lead}
+
+The bundle is large, so this step may take several minutes depending on disk performance.
+
+The program is still running normally.
+Please wait and do not interrupt the process or close this terminal.
+
+HTTP configuration will continue automatically after verification completes."
+  mm_info "SHA256_VERIFICATION_START operation=${operation} file=${file} message=\"large file; this may take several minutes\""
+  mm_whiptail_infobox "SHA256 Verification in Progress" "$body"
+  return 0
+}
+
+# Isolate GUI actions from set -e: backend FAIL must show a dialog, not exit the menu.
+gui_run_action() {
+  local action_name="$1"
+  shift
+  local action_rc=0
+  if [[ "${MM_DEBUG_GUI:-0}" == "1" ]]; then
+    mm_info "GUI_ACTION_START action=${action_name}"
+  fi
+  "$@" || action_rc=$?
+  if [[ "${MM_DEBUG_GUI:-0}" == "1" ]]; then
+    mm_info "GUI_ACTION_END action=${action_name} rc=${action_rc}"
+  fi
+  if [[ "$action_rc" -ne 0 ]]; then
+    mm_whiptail_msg \
+      "${action_name} — Error" \
+      "The operation failed with exit code ${action_rc}.
+
+See View Logs for details.
+
+Press OK, Cancel, or ESC to return to the main menu." || true
+  fi
+  if [[ "${MM_DEBUG_GUI:-0}" == "1" ]]; then
+    mm_info "GUI_MENU_RETURN action=${action_name}"
+  fi
+  return 0
 }
 
 mm_whiptail_yesno() {
@@ -350,20 +422,20 @@ Progress lines print every few seconds. Do not interrupt.
 
 EOF
   export MM_LIVE_PROGRESS=1
-  local tmp rc
+  local tmp backend_rc=0
   tmp="$(mktemp)"
   set +e
   set -o pipefail
   # tee keeps a full transcript for the final summary textbox.
   # MM_LIVE_PROGRESS also mirrors lines to /dev/tty so progress stays visible.
   engine_download_and_prepare 2>&1 | tee "$tmp"
-  rc=$?
+  backend_rc=$?
   set +o pipefail
   set -e
   unset MM_LIVE_PROGRESS
 
   printf '\n------------------------------------------------------------\n'
-  if [[ "$rc" -eq 0 ]]; then
+  if [[ "$backend_rc" -eq 0 ]]; then
     printf 'Download and Prepare finished: PASS\n'
   else
     printf 'Download and Prepare finished: FAIL (see log above)\n'
@@ -371,12 +443,13 @@ EOF
   printf 'Press Enter to return to the menu...\n'
   read -r _ || true
 
-  if [[ "$rc" -eq 0 ]]; then
-    mm_whiptail_textbox "Download and Prepare — PASS" "$tmp"
+  if [[ "$backend_rc" -eq 0 ]]; then
+    mm_whiptail_textbox "Download and Prepare — PASS" "$tmp" || true
   else
-    mm_whiptail_textbox "Download and Prepare — FAIL" "$tmp"
+    mm_whiptail_textbox "Download and Prepare — FAIL" "$tmp" || true
   fi
   rm -f "$tmp"
+  return 0
 }
 
 gui_verify_readiness() {
@@ -400,28 +473,41 @@ gui_verify_readiness() {
     printf 'CLIENT_FILES_READY=%s\n' "$(mm_status_get CLIENT_FILES_READY)"
     printf 'HTTP_CONFIGURATION_READY=%s\n' "$(mm_status_get HTTP_CONFIGURATION_READY)"
     printf 'TARGET_DP_VERSION=%s\n' "${TARGET_DP_VERSION}"
+    # No live SHA256 of the Phase 2 bundle here — status keys + compute only.
     engine_compute_readiness || true
-  } >"$tmp"
-  mm_whiptail_textbox "Verify Upgrade Readiness" "$tmp"
+  } >"$tmp" || {
+    rm -f "$tmp"
+    return 1
+  }
+  mm_whiptail_textbox "Verify Upgrade Readiness" "$tmp" || true
   rm -f "$tmp"
+  return 0
 }
 
 gui_enable_http() {
   load_mirror_defaults
   mm_load_gui_config
-  local out rc tmp
+  engine_resolve_paths
+  dp2_set_version "${TARGET_DP_VERSION}"
+  local out backend_rc=0 tmp stable
+  stable="$(dp2_stable_bundle_name)"
+  # Engine stdout is captured below; show wait notice before long SHA256 starts.
+  gui_show_sha256_wait_notice "enable-http" "$stable" \
+    "Verifying the SHA256 checksum of the Phase 2 bundle before enabling HTTP distribution."
   tmp="$(mktemp)"
   set +e
   out="$(engine_enable_http_distribution 2>&1)"
-  rc=$?
+  backend_rc=$?
   set -e
   printf '%s\n' "$out" >"$tmp"
-  if [[ "$rc" -eq 0 ]]; then
-    mm_whiptail_textbox "HTTP Distribution — ENABLED" "$tmp"
+  if [[ "$backend_rc" -eq 0 ]]; then
+    mm_whiptail_textbox "HTTP Distribution — ENABLED" "$tmp" || true
   else
-    mm_whiptail_textbox "HTTP Distribution — FAIL" "$tmp"
+    mm_whiptail_textbox "HTTP Distribution — FAIL" "$tmp" || true
   fi
   rm -f "$tmp"
+  # Backend failure is already shown; keep the main menu alive.
+  return 0
 }
 
 gui_show_status() {
@@ -448,8 +534,9 @@ ACPS Server: fixed
 PROJECT_ROLLBACK_SUPPORTED=NO
 RECOVERY_METHOD=HYPERVISOR_SNAPSHOT
 EOF
-  mm_whiptail_textbox "Current Status" "$tmp"
+  mm_whiptail_textbox "Current Status" "$tmp" || true
   rm -f "$tmp"
+  return 0
 }
 
 gui_view_logs() {
@@ -466,9 +553,10 @@ gui_view_logs() {
   local tmp
   tmp="$(mktemp)"
   # redact before display
-  mm_redact <"$log" >"$tmp"
-  mm_whiptail_textbox "Logs — ${log}" "$tmp"
+  mm_redact <"$log" >"$tmp" || true
+  mm_whiptail_textbox "Logs — ${log}" "$tmp" || true
   rm -f "$tmp"
+  return 0
 }
 
 gui_client_instructions() {
@@ -536,11 +624,13 @@ Also used by clients:
   ${mirror_hint}/offline/
   ${mirror_hint}/client/
 EOF
-  mm_whiptail_textbox "DP Client Upgrade Instructions" "$tmp"
+  mm_whiptail_textbox "DP Client Upgrade Instructions" "$tmp" || true
   rm -f "$tmp"
+  return 0
 }
 
 cmd_mirror_manager() {
+  export MM_GUI_MODE=1
   load_mirror_defaults
   engine_resolve_paths
   mm_load_gui_config
@@ -553,7 +643,7 @@ EOF
     exit 1
   fi
   while true; do
-    local choice rc=0
+    local choice="" menu_rc=0
     choice="$(mm_whiptail_menu \
       "DP Ubuntu Upgrade Mirror Manager" \
       "Single workflow: Cloudflare R2 OS Core + ACPS Phase 2
@@ -567,20 +657,29 @@ Cancel/ESC returns here; choose 0 to Exit." \
       "5" "Show Current Status" \
       "6" "View Logs" \
       "7" "Show DP Client Upgrade Instructions" \
-      "0" "Exit")" || rc=$?
+      "0" "Exit")" || menu_rc=$?
     # Cancel/ESC on the main menu must NOT drop to the shell; only "0 Exit" leaves.
-    if [[ "$rc" -ne 0 ]]; then
+    if [[ "$menu_rc" -ne 0 ]]; then
       continue
     fi
     case "$choice" in
-      1) gui_configuration ;;
-      2) gui_download_and_prepare ;;
-      3) gui_verify_readiness ;;
-      4) gui_enable_http ;;
-      5) gui_show_status ;;
-      6) gui_view_logs ;;
-      7) gui_client_instructions ;;
-      0|"") exit 0 ;;
+      1) gui_run_action "Configuration" gui_configuration ;;
+      2) gui_run_action "Download and Prepare" gui_download_and_prepare ;;
+      3) gui_run_action "Verify Upgrade Readiness" gui_verify_readiness ;;
+      4) gui_run_action "Enable HTTP Distribution" gui_enable_http ;;
+      5) gui_run_action "Show Current Status" gui_show_status ;;
+      6) gui_run_action "View Logs" gui_view_logs ;;
+      7) gui_run_action "DP Client Upgrade Instructions" gui_client_instructions ;;
+      0)
+        # GUI_EXITS_ONLY_ON_EXPLICIT_ZERO
+        return 0
+        ;;
+      "")
+        continue
+        ;;
+      *)
+        mm_whiptail_msg "Invalid selection" "Unknown menu selection: ${choice}" || true
+        ;;
     esac
   done
 }
