@@ -314,8 +314,14 @@ grep -q 'mm_whiptail_yesno' "$INSTALLER" \
   && grep -q 'Download and prepare upgrade files' "$INSTALLER" \
   && pass "A download confirm is yesno" || fail "A download confirm still menu"
 grep -q 'MM_LIVE_PROGRESS=1' "$INSTALLER" \
-  && grep -q 'tee ' "$INSTALLER" \
+  && grep -q 'engine_download_and_prepare >"$tmp" 2>&1' "$INSTALLER" \
   && pass "A download live progress enabled" || fail "A download live progress missing"
+# tee + MM_LIVE_PROGRESS /dev/tty caused exact adjacent duplicate progress lines.
+if grep -n 'engine_download_and_prepare 2>&1 | tee' "$INSTALLER" | grep -q .; then
+  fail "A download still tees (duplicates live tty progress)"
+else
+  pass "A download does not tee (tty live + file capture)"
+fi
 if grep -n 'out="$(engine_download_and_prepare 2>&1)"' "$INSTALLER" | grep -q .; then
   fail "A silent capture still hides download progress"
 else
@@ -1057,6 +1063,37 @@ if grep -Fq '[[ "$code" != "200" ]]' "$ENGINE"; then
 else
   fail "T HTTP validator still allows non-200 (e.g. 403)"
 fi
+
+# /offline/ directory GET is 403 with autoindex off; smoke must probe a file.
+if awk '
+  /^engine_validate_http_layout\(\)/ { in_fn=1 }
+  in_fn && /\/offline\/meta-release-lts/ { file=1 }
+  # Exact bare directory URL only (not a prefix of meta-release-lts).
+  in_fn && /"\$\{base\}\/offline\/"/ && $0 !~ /meta-release-lts/ { bare=1 }
+  in_fn && /^}/ { exit((file && !bare) ? 0 : 1) }
+' "$ENGINE"; then
+  pass "T offline smoke probes meta-release-lts (not bare /offline/)"
+else
+  fail "T offline smoke still uses bare /offline/ directory URL"
+fi
+
+# HTTP 200 alone is insufficient — empty body must FAIL.
+if grep -q 'empty_body' "$ENGINE"; then
+  pass "T HTTP smoke rejects empty body"
+else
+  fail "T HTTP smoke missing non-empty body check"
+fi
+
+# Bounded disk pipeline (no full ACPS/bundle re-copy on same FS).
+grep -q 'mv -f "$payload" "$final_tmp"' "$ENGINE" \
+  && grep -q 'engine_stage_acps_work_from_cache' "$ENGINE" \
+  && grep -q 'engine_link_acps_file_into_work' "$ENGINE" \
+  && grep -q 'hardlink_required' "$ENGINE" \
+  && grep -q 'tar -cf "${dest_tmp}/${stable}"' "$ENGINE" \
+  && grep -q 'engine_cleanup_phase2_sources' "$ENGINE" \
+  && grep -q 'DP_PHASE2_ATOMIC_PUBLISH=PASS' "$ENGINE" \
+  && pass "T disk-copy optimization present" \
+  || fail "T disk-copy optimization missing"
 
 # umask restored after config save
 if awk '

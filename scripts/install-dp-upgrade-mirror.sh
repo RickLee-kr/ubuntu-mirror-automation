@@ -425,12 +425,11 @@ EOF
   local tmp backend_rc=0
   tmp="$(mktemp)"
   set +e
-  set -o pipefail
-  # tee keeps a full transcript for the final summary textbox.
-  # MM_LIVE_PROGRESS also mirrors lines to /dev/tty so progress stays visible.
-  engine_download_and_prepare 2>&1 | tee "$tmp"
+  # Capture transcript for the result textbox. Live progress is mirrored to
+  # /dev/tty by mm_log under MM_LIVE_PROGRESS — do not also tee to the
+  # terminal (that created exact adjacent duplicate progress lines).
+  engine_download_and_prepare >"$tmp" 2>&1
   backend_rc=$?
-  set +o pipefail
   set -e
   unset MM_LIVE_PROGRESS
 

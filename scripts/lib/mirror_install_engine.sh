@@ -49,6 +49,77 @@ engine_verify_disk_space() {
   mm_calc_disk_requirements
 }
 
+engine_assert_same_filesystem_layout() {
+  # Hard links and atomic renames require one device for mirror root, cache,
+  # selective, and dp-phase2. Split mounts force full copies and break the
+  # 100GB-class peak model — fail closed with an explicit operator message.
+  local paths=("$MM_MIRROR_ROOT" "$MM_CACHE_ROOT" "$MM_SELECTIVE_ROOT" "$MM_DP_PHASE2_ROOT")
+  local p dev root_dev
+  for p in "${paths[@]}"; do
+    mkdir -p "$p" || mm_die "SAME_FILESYSTEM=FAIL mkdir path=${p}"
+  done
+  root_dev="$(stat -c %d "$MM_MIRROR_ROOT")"
+  [[ "$root_dev" =~ ^[0-9]+$ ]] || mm_die "SAME_FILESYSTEM=FAIL cannot_stat root=${MM_MIRROR_ROOT}"
+  for p in "${paths[@]}"; do
+    dev="$(stat -c %d "$p")"
+    if [[ "$dev" != "$root_dev" ]]; then
+      mm_error "SAME_FILESYSTEM=FAIL path=${p} device=${dev} root_device=${root_dev}"
+      mm_error "Place .install-cache, selective, and dp-phase2 on the same filesystem as ${MM_MIRROR_ROOT}."
+      mm_error "Cross-filesystem layouts require full ~30GiB copies and are not supported for 100GB-class disks."
+      mm_die "SAME_FILESYSTEM=FAIL"
+    fi
+  done
+  mm_ok "SAME_FILESYSTEM=PASS device=${root_dev}"
+}
+
+# Files at or above this size must be hard-linked (never silently copied).
+MM_LARGE_FILE_COPY_THRESHOLD_BYTES="${MM_LARGE_FILE_COPY_THRESHOLD_BYTES:-$((64 * 1024 * 1024))}"
+
+engine_link_acps_file_into_work() {
+  local src="$1"
+  local dst="$2"
+  local sz
+  [[ -f "$src" ]] || mm_die "ACPS_WORK_STAGE=FAIL missing_src=${src}"
+  sz="$(stat -c%s "$src" 2>/dev/null || echo 0)"
+  [[ "$sz" =~ ^[0-9]+$ ]] || sz=0
+  if ln "$src" "$dst" 2>/dev/null; then
+    mm_info "ACPS_WORK_HARDLINK file=$(basename "$src") bytes=${sz}"
+    return 0
+  fi
+  if [[ "$sz" -ge "$MM_LARGE_FILE_COPY_THRESHOLD_BYTES" ]]; then
+    mm_error "ACPS_WORK_STAGE=FAIL large_file_hardlink_failed file=$(basename "$src") bytes=${sz}"
+    mm_error "Refusing automatic full copy of large ACPS payload (same-filesystem hard link required)."
+    mm_die "ACPS_WORK_STAGE=FAIL hardlink_required"
+  fi
+  cp -f "$src" "$dst" || mm_die "ACPS_WORK_STAGE=FAIL file=$(basename "$src")"
+  mm_info "ACPS_WORK_SMALL_COPY file=$(basename "$src") bytes=${sz}"
+}
+
+engine_stage_acps_work_from_cache() {
+  local cache="$1"
+  local work="$2"
+  local f
+  rm -rf "$work"
+  mkdir -p "$work" || mm_die "ACPS_WORK_STAGE=FAIL mkdir"
+  for f in "${DP_PHASE2_REQUIRED_FILES[@]}"; do
+    case "$f" in
+      bringup_py3_dp_after_os_upgrade.sh|bringup_py3_dp_after_os_upgrade.sh.sha1)
+        continue
+        ;;
+    esac
+    engine_link_acps_file_into_work "${cache}/${f}" "${work}/${f}"
+  done
+}
+
+engine_cleanup_phase2_sources() {
+  # Drop ACPS source/work as soon as the verified bundle .new no longer needs them.
+  local ver="${1:-${TARGET_DP_VERSION:-}}"
+  if [[ -n "$ver" ]]; then
+    acps_cleanup_cache "$ver" || true
+  fi
+  rm -rf "${MM_CACHE_ROOT}/acps-work" "${MM_CACHE_ROOT}/dp-build" 2>/dev/null || true
+}
+
 engine_verify_os_core_package() {
   local package="$1"
   mm_assert_regular_file "$package" "os-core-package"
@@ -66,6 +137,7 @@ engine_verify_os_core_package() {
 
 engine_materialize_os_mirror() {
   # Extract verified OS Core into selective root directly (no current/previous/releases).
+  # Same-filesystem: rename payload into place (no second full copy). Cross-device: cp fallback.
   local package="$1"
   local staging_extract
   staging_extract="${MM_CACHE_ROOT}/os-core-extract/$(mm_run_id)"
@@ -76,47 +148,59 @@ engine_materialize_os_mirror() {
     return 0
   fi
 
-  rm -rf "$staging_extract"
+  rm -rf "$staging_extract" "$final_tmp"
   python3 "${MM_PROJECT_ROOT}/scripts/lib/os_core_package.py" extract-staging \
     --package "$package" \
     --staging-dir "$staging_extract" \
-    ${OS_CORE_PUBLIC_KEY:+--public-key "$OS_CORE_PUBLIC_KEY"}
+    ${OS_CORE_PUBLIC_KEY:+--public-key "$OS_CORE_PUBLIC_KEY"} \
+    || mm_die "OS_CORE_EXTRACT=FAIL"
 
   local payload="${staging_extract}/ubuntu-os-core/payload"
   [[ -d "$payload" ]] || mm_die "OS_CORE_PAYLOAD_MISSING"
 
+  local hop
   for hop in xenial-to-bionic bionic-to-focal focal-to-jammy jammy-to-noble; do
     [[ -d "${payload}/hops/${hop}" ]] || mm_die "OS_MIRROR_READY=FAIL hop=${hop}"
   done
 
-  rm -rf "$final_tmp"
-  mkdir -p "$final_tmp"
-  cp -a "$payload"/. "$final_tmp"/
+  mkdir -p "$(dirname "$final_tmp")"
+  local src_dev dst_dev
+  src_dev="$(stat -c %d "$payload")"
+  dst_dev="$(stat -c %d "$(dirname "$final_tmp")")"
+  if [[ "$src_dev" == "$dst_dev" ]]; then
+    mv -f "$payload" "$final_tmp" || mm_die "OS_MIRROR_STAGE_MOVE=FAIL"
+  else
+    mkdir -p "$final_tmp"
+    cp -a "$payload"/. "$final_tmp"/ || mm_die "OS_MIRROR_STAGE_COPY=FAIL"
+  fi
+
   # Ensure ubuntu alias for nginx /ubuntu/
   if [[ ! -e "${final_tmp}/ubuntu" ]]; then
     ln -sfn hops/jammy-to-noble/ubuntu "${final_tmp}/ubuntu"
   fi
 
-  mkdir -p "$(dirname "$MM_SELECTIVE_ROOT")"
-  # Replace selective content in place without current/previous generations.
   # Preserve keys/ if present outside payload.
   local keys_backup=""
   if [[ -d "${MM_SELECTIVE_ROOT}/keys" ]]; then
     keys_backup="${MM_CACHE_ROOT}/keys-backup.$$"
-    cp -a "${MM_SELECTIVE_ROOT}/keys" "$keys_backup"
+    rm -rf "$keys_backup"
+    cp -a "${MM_SELECTIVE_ROOT}/keys" "$keys_backup" || mm_die "OS_KEYS_BACKUP=FAIL"
   fi
 
-  # Remove obsolete generation dirs if somehow present under selective (do not touch production outside MM_MIRROR_ROOT tests).
-  rm -rf "${MM_SELECTIVE_ROOT}.old.$$"
+  local old="${MM_SELECTIVE_ROOT}.old.$$"
+  rm -rf "$old"
   if [[ -d "$MM_SELECTIVE_ROOT" ]]; then
-    mv -f "$MM_SELECTIVE_ROOT" "${MM_SELECTIVE_ROOT}.old.$$"
+    mv -f "$MM_SELECTIVE_ROOT" "$old" || mm_die "OS_MIRROR_OLD_MOVE=FAIL"
   fi
-  mv -f "$final_tmp" "$MM_SELECTIVE_ROOT"
+  if ! mv -f "$final_tmp" "$MM_SELECTIVE_ROOT"; then
+    [[ -e "$old" && ! -e "$MM_SELECTIVE_ROOT" ]] && mv -f "$old" "$MM_SELECTIVE_ROOT" 2>/dev/null || true
+    mm_die "OS_MIRROR_PUBLISH_MOVE=FAIL"
+  fi
   if [[ -n "$keys_backup" && -d "$keys_backup" ]]; then
     rm -rf "${MM_SELECTIVE_ROOT}/keys"
-    mv -f "$keys_backup" "${MM_SELECTIVE_ROOT}/keys"
+    mv -f "$keys_backup" "${MM_SELECTIVE_ROOT}/keys" || mm_die "OS_KEYS_RESTORE=FAIL"
   fi
-  rm -rf "${MM_SELECTIVE_ROOT}.old.$$" "$staging_extract"
+  rm -rf "$old" "$staging_extract"
 
   # Explicitly do not create current/previous/published.previous/os-core-releases
   rm -rf \
@@ -176,7 +260,8 @@ engine_apply_local_bringup_patch() {
 }
 
 engine_place_dp_phase2_final() {
-  # Build bundle in staging, then place ONLY final HTTP artifacts into version dir (direct, no symlink).
+  # Build the ~30GiB bundle directly in the atomic publish directory.
+  # Avoids an intermediate dp-build copy of files + a second full bundle copy.
   local files_src="$1"
   local ver="$2"
   dp2_set_version "$ver"
@@ -187,35 +272,42 @@ engine_place_dp_phase2_final() {
     return 0
   fi
 
-  local staging work_files
-  staging="${MM_CACHE_ROOT}/dp-build/$(mm_run_id)"
-  work_files="${staging}/files"
-  rm -rf "$staging"
-  mkdir -p "$work_files"
+  local dest="${MM_DP_PHASE2_ROOT}/${ver}"
+  local dest_tmp="${dest}.new.$$"
+  local dest_old="${dest}.old.$$"
+  local list_count stable actual want
+  rm -rf "$dest_tmp" "$dest_old"
+  mkdir -p "$dest_tmp" || mm_die "DP_PHASE2_STAGE_CREATE=FAIL"
 
-  local f
-  for f in "${DP_PHASE2_REQUIRED_FILES[@]}"; do
-    cp -f "${files_src}/${f}" "${work_files}/${f}"
-  done
-  dp2_assert_exact_files_dir "$work_files"
-  dp2_verify_payload_checksums "$work_files"
-
-  local list_count stable
-  list_count="$(dp2_check_image_list "${work_files}/images-${ver}.list" | tail -n1)"
+  # dp2_* helpers call exit on failure; run validation in a subshell so we can
+  # remove the empty .new dir and preserve any existing final artifact.
+  if ! (
+    dp2_assert_exact_files_dir "$files_src"
+    dp2_verify_payload_checksums "$files_src"
+  ); then
+    rm -rf "$dest_tmp"
+    mm_die "DP_PHASE2_SOURCE_VALIDATE=FAIL"
+  fi
+  list_count="$(dp2_check_image_list "${files_src}/images-${ver}.list" | tail -n1)" \
+    || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_IMAGE_LIST=FAIL"; }
   stable="$(dp2_stable_bundle_name)"
 
   (
-    cd "$work_files" || exit 1
-    tar -cf "${staging}/${stable}" "${DP_PHASE2_REQUIRED_FILES[@]}"
-  )
-  dp2_assert_safe_tar_list "${staging}/${stable}"
-  sha256sum "${staging}/${stable}" | awk '{print $1"  '"${stable}"'"}' >"${staging}/${stable}.sha256"
-  dp2_verify_sha256_pair "${staging}/${stable}" "${staging}/${stable}.sha256"
+    cd "$files_src" || exit 1
+    tar -cf "${dest_tmp}/${stable}" "${DP_PHASE2_REQUIRED_FILES[@]}"
+  ) || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_BUNDLE_BUILD=FAIL"; }
+  dp2_assert_safe_tar_list "${dest_tmp}/${stable}" \
+    || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_BUNDLE_TAR=FAIL"; }
+  sha256sum "${dest_tmp}/${stable}" | awk '{print $1"  '"${stable}"'"}' \
+    >"${dest_tmp}/${stable}.sha256" \
+    || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_BUNDLE_SHA256_WRITE=FAIL"; }
+  dp2_verify_sha256_pair "${dest_tmp}/${stable}" "${dest_tmp}/${stable}.sha256" \
+    || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_BUNDLE_SHA256=FAIL"; }
 
   local created_at commit
   created_at="$(mm_ts)"
   commit="$(git -C "${MM_PROJECT_ROOT}" rev-parse HEAD 2>/dev/null || echo UNKNOWN)"
-  cat >"${staging}/release.env" <<EOF
+  cat >"${dest_tmp}/release.env" <<EOF
 TARGET_DP_VERSION=${ver}
 PHASE2_ARTIFACT_VERSION=${ver}
 # Deprecated alias for older consumers; prefer TARGET_DP_VERSION.
@@ -232,40 +324,55 @@ BRINGUP_UPSTREAM_SHA1=${BRINGUP_UPSTREAM_SHA1:-}
 BRINGUP_PATCHED_SHA1=${BRINGUP_PATCHED_SHA1:-}
 ACPS_SOURCE_VERSION=${ver}
 EOF
-  if dp2_release_has_secret "${staging}/release.env"; then
+  if dp2_release_has_secret "${dest_tmp}/release.env"; then
+    rm -rf "$dest_tmp"
     mm_die "RELEASE_ENV_SECRET=FAIL"
   fi
 
   # Validate patched bringup inside bundle entries
-  local actual want
-  actual="$(sha1sum "${work_files}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
+  actual="$(sha1sum "${files_src}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
   want="$(sha1sum "${MM_PROJECT_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
-  [[ "${actual,,}" == "${want,,}" ]] || mm_die "VALIDATE_DP=FAIL patched_bringup_sha1"
+  if [[ "${actual,,}" != "${want,,}" ]]; then
+    rm -rf "$dest_tmp"
+    mm_die "VALIDATE_DP=FAIL patched_bringup_sha1"
+  fi
 
-  local dest="${MM_DP_PHASE2_ROOT}/${ver}"
-  local dest_tmp="${dest}.new.$$"
-  rm -rf "$dest_tmp"
-  mkdir -p "$dest_tmp"
-  cp -f "${staging}/release.env" "${dest_tmp}/release.env"
-  cp -f "${staging}/${stable}" "${dest_tmp}/${stable}"
-  cp -f "${staging}/${stable}.sha256" "${dest_tmp}/${stable}.sha256"
+  # .new is fully verified — free ACPS source/work before rename so peak never
+  # holds source + new + previous final at once. Keep MM_KEEP_PHASE2_SOURCES=1
+  # only for debugging (not for production 100GB-class hosts).
+  if [[ "${MM_KEEP_PHASE2_SOURCES:-0}" != "1" ]]; then
+    engine_cleanup_phase2_sources "$ver"
+  fi
+
+  sync -f "${dest_tmp}/${stable}" 2>/dev/null || sync
 
   # Replace final version directory with the single artifact set (no releases/, no current/previous).
-  mkdir -p "$(dirname "$dest")"
-  rm -rf "${dest}.old.$$"
+  mkdir -p "$(dirname "$dest")" || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_DEST_PARENT=FAIL"; }
   if [[ -e "$dest" ]]; then
-    mv -f "$dest" "${dest}.old.$$"
+    mv -f "$dest" "$dest_old" || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_OLD_MOVE=FAIL"; }
   fi
-  mv -f "$dest_tmp" "$dest"
-  rm -rf "${dest}.old.$$" "$staging"
+  if ! mv -f "$dest_tmp" "$dest"; then
+    [[ -e "$dest_old" && ! -e "$dest" ]] && mv -f "$dest_old" "$dest" 2>/dev/null || true
+    mm_die "DP_PHASE2_PUBLISH_MOVE=FAIL"
+  fi
+  mm_info "DP_PHASE2_ATOMIC_PUBLISH=PASS dest=${dest} bundle=${stable}"
+
+  # Verify the exact published bytes before deleting the previous artifact set.
+  if ! dp2_verify_sha256_pair "${dest}/${stable}" "${dest}/${stable}.sha256"; then
+    rm -rf "$dest"
+    [[ -e "$dest_old" ]] && mv -f "$dest_old" "$dest" 2>/dev/null || true
+    mm_die "DP_PHASE2_PUBLISHED_SHA256=FAIL"
+  fi
+  if ! dp2_assert_safe_tar_list "${dest}/${stable}"; then
+    rm -rf "$dest"
+    [[ -e "$dest_old" ]] && mv -f "$dest_old" "$dest" 2>/dev/null || true
+    mm_die "DP_PHASE2_PUBLISHED_TAR=FAIL"
+  fi
+  rm -rf "$dest_old"
 
   # Ensure obsolete generation paths are absent under this version root
-  rm -rf "${dest}/releases" "${dest}/current" "${dest}/previous" "${dest}/.staging" "${dest}/files" 2>/dev/null || true
-  # If current/previous were symlinks at version root level already replaced by dest dir — good.
-  # Clean any sibling generation leftovers only inside dest.
-  if [[ -L "${MM_DP_PHASE2_ROOT}/${ver}/current" || -d "${MM_DP_PHASE2_ROOT}/${ver}/releases" ]]; then
-    :
-  fi
+  rm -rf "${dest}/releases" "${dest}/current" "${dest}/previous" \
+    "${dest}/.staging" "${dest}/files" 2>/dev/null || true
 
   PHASE2_BUNDLE_ENTRY_COUNT="${DP_PHASE2_FILE_COUNT}"
   mm_state_set PHASE2_BUNDLE_ENTRY_COUNT "$PHASE2_BUNDLE_ENTRY_COUNT"
@@ -311,25 +418,37 @@ engine_validate_http_layout() {
   fi
 
   local base="${MM_VERIFY_HTTP_BASE}"
+  # Probe /offline/meta-release-lts (not /offline/): nginx keeps autoindex off for
+  # /offline/, so a bare directory GET returns 403 even when content is healthy.
   local urls=(
     "${base}/ubuntu/"
     "${base}/ubuntu-security/"
-    "${base}/offline/"
+    "${base}/offline/meta-release-lts"
     "${base}/client/"
     "${base}/dp-phase2/${ver}/release.env"
     "${base}/dp-phase2/${ver}/${stable}.sha256"
   )
-  local u code
+  local u code body bytes
+  body="$(mktemp)"
   for u in "${urls[@]}"; do
-    code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 "$u" 2>/dev/null || echo 000)"
-    # Only HTTP 200 is PASS; 3xx/4xx (incl. 403)/5xx/000 are FAIL.
+    code="$(curl -sS -o "$body" -w '%{http_code}' --connect-timeout 5 --max-time 15 "$u" 2>/dev/null || echo 000)"
+    bytes="$(wc -c <"$body" | tr -d ' ')"
+    # Only HTTP 200 with non-empty body is PASS; 3xx/4xx (incl. 403)/5xx/000/empty are FAIL.
     if [[ "$code" != "200" ]]; then
+      rm -f "$body"
       mm_error "HTTP_VALIDATION=FAIL url=${u} code=${code}"
       mm_state_set HTTP_CONFIGURATION_READY FAIL
       return 1
     fi
-    mm_info "HTTP_CHECK url=${u} code=${code}"
+    if ! [[ "$bytes" =~ ^[0-9]+$ ]] || [[ "$bytes" -le 0 ]]; then
+      rm -f "$body"
+      mm_error "HTTP_VALIDATION=FAIL url=${u} code=${code} empty_body=1"
+      mm_state_set HTTP_CONFIGURATION_READY FAIL
+      return 1
+    fi
+    mm_info "HTTP_CHECK url=${u} code=${code} bytes=${bytes}"
   done
+  rm -f "$body"
   mm_state_set HTTP_CONFIGURATION_READY PASS
   mm_ok "HTTP_VALIDATION=PASS"
   return 0
@@ -338,11 +457,13 @@ engine_validate_http_layout() {
 engine_cleanup_temps() {
   local ver="${TARGET_DP_VERSION:-}"
   r2_cleanup_package || true
-  if [[ -n "$ver" ]]; then
-    acps_cleanup_cache "$ver" || true
-  fi
-  rm -rf "${MM_CACHE_ROOT}/os-core-extract" "${MM_CACHE_ROOT}/dp-build" "${MM_CACHE_ROOT}/acps-work" 2>/dev/null || true
-  find "${MM_CACHE_ROOT}" -name '*.part' -type f -delete 2>/dev/null || true
+  engine_cleanup_phase2_sources "$ver"
+  rm -rf "${MM_CACHE_ROOT}/os-core-extract" 2>/dev/null || true
+  find "${MM_CACHE_ROOT}" \( -name '*.part' -o -name '*.download' -o -name '*.new.*' \) \
+    -type f -delete 2>/dev/null || true
+  # Stale version dirs left by interrupted publishes.
+  find "${MM_DP_PHASE2_ROOT}" -maxdepth 1 \( -name '*.new.*' -o -name '*.old.*' \) \
+    -exec rm -rf {} + 2>/dev/null || true
   mm_ok "TEMP_CLEANUP=PASS"
 }
 
@@ -421,6 +542,7 @@ engine_download_and_prepare() {
   r2_require_url
   engine_preflight_host
   mm_acquire_install_lock
+  engine_assert_same_filesystem_layout
 
   # Client HTTP artifacts must already be present (installed by bootstrap)
   mkdir -p "$MM_CLIENT_ROOT"
@@ -464,13 +586,12 @@ engine_download_and_prepare() {
   engine_verify_acps_upstream_bringup "$cache"
 
   work="${MM_CACHE_ROOT}/acps-work/${TARGET_DP_VERSION}/$(mm_run_id)"
-  rm -rf "$work"
-  mkdir -p "$work"
-  local f
-  for f in "${DP_PHASE2_REQUIRED_FILES[@]}"; do
-    cp -f "${cache}/${f}" "${work}/${f}"
-  done
+  # Unchanged large ACPS files are hard-linked (same inode); only patched
+  # bringup is written as a new small file. No cache→work full tree copy.
+  engine_stage_acps_work_from_cache "$cache" "$work"
   engine_apply_local_bringup_patch "$work"
+  dp2_assert_exact_files_dir "$work"
+  dp2_verify_payload_checksums "$work"
   engine_place_dp_phase2_final "$work" "$TARGET_DP_VERSION"
 
   engine_cleanup_temps

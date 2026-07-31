@@ -184,8 +184,11 @@ acps_download_one() {
   ) &
   progress_pid=$!
 
+  # Preserve real curl rc: `if ! curl; then rc=$?` yields 0 inside the then-branch.
   local rc=0
-  if ! curl "${curl_args[@]}" "$url" 2>"$err"; then
+  if curl "${curl_args[@]}" "$url" 2>"$err"; then
+    rc=0
+  else
     rc=$?
   fi
   if [[ -n "$progress_pid" ]]; then
@@ -196,8 +199,8 @@ acps_download_one() {
   if [[ "$rc" -ne 0 ]]; then
     mm_redact <"$err" >&2 || true
     rm -f "$err"
-    mm_error "ACPS_DOWNLOAD_FAILED file=${name}"
-    return 1
+    mm_error "ACPS_DOWNLOAD_FAILED file=${name} curl_rc=${rc}"
+    return "$rc"
   fi
   rm -f "$err"
 
@@ -206,10 +209,24 @@ acps_download_one() {
     mm_error "ACPS_DOWNLOAD_FAILED file=${name} reason=bad_payload"
     return 1
   fi
-  mv -f "$part" "$final"
+  mv -f "$part" "$final" || {
+    mm_error "ACPS_DOWNLOAD_FAILED file=${name} reason=finalize"
+    return 1
+  }
   now="$(date +%s)"
   elapsed=$((now - start_ts))
-  mm_ok "ACPS_DOWNLOAD_COMPLETE file=${name} size=$(stat -c%s "$final") elapsed=${elapsed}s"
+  downloaded="$(stat -c%s "$final")"
+  pct="UNKNOWN"
+  rate="UNKNOWN"
+  if [[ -n "$expected" && "$expected" -gt 0 ]]; then
+    pct=$((downloaded * 100 / expected))
+  fi
+  if [[ "$elapsed" -gt 0 ]]; then
+    rate=$((downloaded / elapsed))
+  fi
+  mm_info "ACPS_DOWNLOAD_PROGRESS file=${name} downloaded_bytes=${downloaded} expected_bytes=${expected:-UNKNOWN} percentage=${pct} elapsed=${elapsed}s rate_bps=${rate} final=yes"
+  mm_progress_line "ACPS ${name}" "$downloaded" "${expected:-}" "$elapsed" "$rate"
+  mm_ok "ACPS_DOWNLOAD_COMPLETE file=${name} size=${downloaded} elapsed=${elapsed}s"
   return 0
 }
 

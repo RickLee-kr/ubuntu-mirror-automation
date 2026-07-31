@@ -126,7 +126,8 @@ On failure the previous nginx site is restored and ENABLED is not recorded.
 ## Storage
 
 One final OS data set and one final DP bundle. No `releases/<timestamp>/`, no
-`current`/`previous` symlinks, no `published.previous`.
+`current`/`previous` symlinks, no `published.previous`. Keep only one Target DP
+Version artifact set on the mirror host.
 
 Final DP files:
 
@@ -143,6 +144,48 @@ OS selective tree is materialized directly under `selective/` for nginx paths
 `/ubuntu/`, `/ubuntu-security/`, `/offline/`, `/hops/`. Client scripts remain
 under `/client/` and must include hop scripts plus `stage-dp-phase2.sh` and
 checksum sidecars (`CLIENT_FILES_READY` rejects an empty directory).
+
+### Disk sizing (selective R2 + ACPS workflow)
+
+This workflow is **not** a 1TB/2TB full apt-mirror. Current DP 6.5.0 finals are
+approximately:
+
+| Artifact | Size (approx.) |
+| --- | --- |
+| R2 OS Core / selective tree | ~3.4 GiB |
+| Phase 2 final bundle | ~28.2 GiB (30307553280 bytes) |
+| Host after successful prepare | ~40 GiB used on a clean Ubuntu Server |
+
+Download-and-prepare peak model (same filesystem, optimized pipeline):
+
+- one ACPS source tree
+- one bundle `.new` being written directly under `dp-phase2/<version>.new.<pid>/`
+- OS payload materialize temp + small metadata overhead
+- safety reserve: `max(10 GiB, 10% of filesystem)`
+- existing final is retained until the new bundle verifies, then removed immediately
+
+Hard requirements:
+
+- `MM_MIRROR_ROOT`, `.install-cache`, `selective`, and `dp-phase2` must share one
+  filesystem (hard links + atomic rename). Split mounts are blocked in preflight.
+- Large ACPS payloads are hard-linked into the work staging dir; automatic full
+  copy of large files is refused.
+- ACPS cache/work is deleted as soon as the verified `.new` bundle exists, before
+  the atomic publish rename.
+- Checksums and entry-count checks are never skipped. Failed publishes restore the
+  previous final artifact when present.
+
+Sizing policy for current 6.5.0 data (clean install, one version, no stale
+partials):
+
+```
+MINIMUM_SUPPORTED_DISK=100GB
+RECOMMENDED_DISK=120GB
+```
+
+Preflight logs structured fields (`DISK_PREFLIGHT_*`). If a future ACPS bundle
+grows beyond the available budget, prepare fails closed with `DISK_PREFLIGHT=FAIL`
+rather than attempting multi-copy staging.
 
 ## Bringup drift gate
 

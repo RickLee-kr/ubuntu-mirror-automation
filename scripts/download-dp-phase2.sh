@@ -27,7 +27,9 @@ ACPS_PASS="${ACPS_PASS:-${ACPS_PASSWORD:-}}"
 
 _load_acps_credentials_from_gui_config() {
   local cfg="${DP_UPGRADE_MIRROR_CONFIG:-/etc/ubuntu-mirror/dp-upgrade-mirror.conf}"
-  if [[ -f "$cfg" ]]; then
+  # Config is mode 600 (root). Non-root callers (unit tests, operators without sudo)
+  # must not abort on Permission denied — fall through to ACPS_* environment.
+  if [[ -f "$cfg" && -r "$cfg" ]]; then
     # shellcheck disable=SC1090
     set -a
     # shellcheck source=/dev/null

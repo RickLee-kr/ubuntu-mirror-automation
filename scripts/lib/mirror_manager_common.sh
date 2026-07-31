@@ -324,27 +324,114 @@ mm_file_bytes() {
   fi
 }
 
+mm_fs_size_bytes() {
+  local path="$1"
+  if [[ -n "${MM_MOCK_FS_SIZE_BYTES:-}" ]]; then
+    printf '%s\n' "$MM_MOCK_FS_SIZE_BYTES"
+    return 0
+  fi
+  mkdir -p "$path" 2>/dev/null || true
+  local kib
+  kib="$(df -Pk "$path" 2>/dev/null | awk 'NR==2 {print $2}')"
+  if [[ "$kib" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$((kib * 1024))"
+    return 0
+  fi
+  df -PB1 "$path" 2>/dev/null | awk 'NR==2 {print $2}'
+}
+
 mm_calc_disk_requirements() {
-  local os_pkg_bytes payload_bytes acps_bytes
+  # Preflight runs after the R2 package is already on disk, so package bytes are
+  # reflected in AVAILABLE_BYTES and must not be double-counted.
+  #
+  # Same-filesystem optimized peak (concurrent physical data):
+  #   OS payload materialize temp + ACPS source (one tree) + bundle .new output
+  #   + brief existing-final replacement overhead + metadata + safety reserve.
+  # Full cache→work→dp-build→bundle re-copies are not part of this model.
+  local os_pkg_bytes payload_bytes acps_bytes ver existing_bundle
+  local reserve_floor_bytes reserve_pct_bytes fs_size_bytes
   os_pkg_bytes="${OS_CORE_PACKAGE_BYTES:-0}"
   payload_bytes="${OS_CORE_PAYLOAD_BYTES:-0}"
   acps_bytes="${ACPS_EXPECTED_BYTES:-0}"
-  DP_BUILD_TEMP_BYTES=$((acps_bytes + acps_bytes + (512 * 1024 * 1024)))
-  SAFETY_MARGIN_BYTES=$((2 * 1024 * 1024 * 1024))
-  local os_need=$((os_pkg_bytes + payload_bytes + payload_bytes))
-  TOTAL_REQUIRED_BYTES=$((os_need + acps_bytes + DP_BUILD_TEMP_BYTES + SAFETY_MARGIN_BYTES))
-  AVAILABLE_BYTES="$(mm_free_bytes "${MM_MIRROR_ROOT}")"
-  [[ -n "$AVAILABLE_BYTES" && "$AVAILABLE_BYTES" =~ ^[0-9]+$ ]] || mm_die "DISK_PREFLIGHT=FAIL cannot_read_df"
+  [[ "$os_pkg_bytes" =~ ^[0-9]+$ ]] || os_pkg_bytes=0
+  [[ "$payload_bytes" =~ ^[0-9]+$ ]] || payload_bytes=0
+  [[ "$acps_bytes" =~ ^[0-9]+$ ]] || acps_bytes=0
+
+  DISK_PREFLIGHT_R2_REQUIRED_BYTES=0
+  DISK_PREFLIGHT_ACPS_SOURCE_BYTES=$acps_bytes
+  # Bundle output is approximately the ACPS source tree size (9-file tar).
+  DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES=$acps_bytes
+  DISK_PREFLIGHT_TEMP_OVERHEAD_BYTES=$((payload_bytes + (512 * 1024 * 1024)))
+
+  DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES=0
+  ver="${TARGET_DP_VERSION:-${DP_PHASE2_VERSION:-6.5.0}}"
+  existing_bundle="${MM_DP_PHASE2_ROOT:-${MM_MIRROR_ROOT:-/var/spool/apt-mirror}/dp-phase2}/${ver}/dp_bundle_${ver}-current.tar"
+  if [[ -f "$existing_bundle" ]]; then
+    DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES="$(mm_file_bytes "$existing_bundle")"
+    [[ "$DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES" =~ ^[0-9]+$ ]] \
+      || DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES=0
+  fi
+
+  reserve_floor_bytes=$((10 * 1024 * 1024 * 1024))
+  if [[ -n "${MM_MOCK_SAFETY_RESERVE_BYTES:-}" ]]; then
+    DISK_PREFLIGHT_SAFETY_RESERVE_BYTES="$MM_MOCK_SAFETY_RESERVE_BYTES"
+  else
+    fs_size_bytes="$(mm_fs_size_bytes "${MM_MIRROR_ROOT}")"
+    [[ "$fs_size_bytes" =~ ^[0-9]+$ ]] || fs_size_bytes=0
+    reserve_pct_bytes=$((fs_size_bytes / 10))
+    if [[ "$reserve_pct_bytes" -gt "$reserve_floor_bytes" ]]; then
+      DISK_PREFLIGHT_SAFETY_RESERVE_BYTES=$reserve_pct_bytes
+    else
+      DISK_PREFLIGHT_SAFETY_RESERVE_BYTES=$reserve_floor_bytes
+    fi
+  fi
+  [[ "$DISK_PREFLIGHT_SAFETY_RESERVE_BYTES" =~ ^[0-9]+$ ]] \
+    || DISK_PREFLIGHT_SAFETY_RESERVE_BYTES=$reserve_floor_bytes
+
+  # Compat aliases used by older logs/tests.
+  OS_MATERIALIZE_TEMP_BYTES=$payload_bytes
+  DP_BUILD_TEMP_BYTES=$DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES
+  SAFETY_MARGIN_BYTES=$DISK_PREFLIGHT_SAFETY_RESERVE_BYTES
+
+  DISK_PREFLIGHT_TOTAL_REQUIRED_BYTES=$((
+    DISK_PREFLIGHT_R2_REQUIRED_BYTES
+    + DISK_PREFLIGHT_ACPS_SOURCE_BYTES
+    + DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES
+    + DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES
+    + DISK_PREFLIGHT_TEMP_OVERHEAD_BYTES
+    + DISK_PREFLIGHT_SAFETY_RESERVE_BYTES
+  ))
+  TOTAL_REQUIRED_BYTES=$DISK_PREFLIGHT_TOTAL_REQUIRED_BYTES
+
+  DISK_PREFLIGHT_CURRENT_AVAILABLE_BYTES="$(mm_free_bytes "${MM_MIRROR_ROOT}")"
+  AVAILABLE_BYTES="$DISK_PREFLIGHT_CURRENT_AVAILABLE_BYTES"
+  [[ -n "$AVAILABLE_BYTES" && "$AVAILABLE_BYTES" =~ ^[0-9]+$ ]] \
+    || mm_die "DISK_PREFLIGHT=FAIL cannot_read_df"
+
   if [[ "$AVAILABLE_BYTES" -lt "$TOTAL_REQUIRED_BYTES" ]]; then
+    DISK_PREFLIGHT_RESULT=FAIL
     DISK_PREFLIGHT=FAIL
   else
+    DISK_PREFLIGHT_RESULT=PASS
     DISK_PREFLIGHT=PASS
   fi
+
   mm_info "OS_CORE_PACKAGE_BYTES=${os_pkg_bytes}"
   mm_info "OS_CORE_PAYLOAD_BYTES=${payload_bytes}"
   mm_info "ACPS_EXPECTED_BYTES=${acps_bytes}"
+  mm_info "OS_MATERIALIZE_TEMP_BYTES=${OS_MATERIALIZE_TEMP_BYTES}"
+  mm_info "DP_BUILD_TEMP_BYTES=${DP_BUILD_TEMP_BYTES}"
+  mm_info "DISK_PREFLIGHT_CURRENT_AVAILABLE_BYTES=${DISK_PREFLIGHT_CURRENT_AVAILABLE_BYTES}"
+  mm_info "DISK_PREFLIGHT_R2_REQUIRED_BYTES=${DISK_PREFLIGHT_R2_REQUIRED_BYTES}"
+  mm_info "DISK_PREFLIGHT_ACPS_SOURCE_BYTES=${DISK_PREFLIGHT_ACPS_SOURCE_BYTES}"
+  mm_info "DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES=${DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES}"
+  mm_info "DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES=${DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES}"
+  mm_info "DISK_PREFLIGHT_TEMP_OVERHEAD_BYTES=${DISK_PREFLIGHT_TEMP_OVERHEAD_BYTES}"
+  mm_info "DISK_PREFLIGHT_SAFETY_RESERVE_BYTES=${DISK_PREFLIGHT_SAFETY_RESERVE_BYTES}"
+  mm_info "DISK_PREFLIGHT_TOTAL_REQUIRED_BYTES=${DISK_PREFLIGHT_TOTAL_REQUIRED_BYTES}"
   mm_info "TOTAL_REQUIRED_BYTES=${TOTAL_REQUIRED_BYTES}"
   mm_info "AVAILABLE_BYTES=${AVAILABLE_BYTES}"
+  mm_info "DISK_PREFLIGHT_RESULT=${DISK_PREFLIGHT_RESULT}"
   mm_info "DISK_PREFLIGHT=${DISK_PREFLIGHT}"
   [[ "$DISK_PREFLIGHT" == "PASS" ]] || mm_die "DISK_PREFLIGHT=FAIL"
 }
