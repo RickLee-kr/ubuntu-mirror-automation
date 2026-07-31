@@ -21,18 +21,14 @@ acps_cache_dir() {
 }
 
 acps_is_verified_cache() {
+  # Trust .VERIFIED written after a successful full checksum pass.
+  # Avoid a second silent full read of images-*.tar (~30GiB) on every reuse.
   local dir="$1"
   [[ -f "${dir}/.VERIFIED" ]] || return 1
   local f
   for f in "${DP_PHASE2_REQUIRED_FILES[@]}"; do
     [[ -f "${dir}/${f}" ]] || return 1
   done
-  if ! (
-    set +e
-    dp2_verify_payload_checksums "$dir" >/dev/null 2>&1
-  ); then
-    return 1
-  fi
   if ! (
     set +e
     for f in "${DP_PHASE2_REQUIRED_FILES[@]}"; do
@@ -237,6 +233,7 @@ acps_acquire_all() {
   mkdir -p "$cache"
   acps_setup_curl_auth
 
+  mm_set_phase "Downloading ACPS Artifacts"
   if acps_is_verified_cache "$cache"; then
     mm_ok "ACPS_DOWNLOAD=REUSED cache=${cache}"
     mm_state_set ACPS_PHASE2_DOWNLOADED REUSED
@@ -255,7 +252,7 @@ acps_acquire_all() {
   done
 
   dp2_assert_exact_files_dir "$cache"
-  if ! dp2_verify_payload_checksums "$cache"; then
+  if ! mm_acps_verify_payload_checksums "$cache"; then
     mm_state_set ACPS_CHECKSUM FAIL
     rm -f "${cache}/.VERIFIED"
     mm_die "ACPS_CHECKSUM=FAIL"
@@ -268,8 +265,13 @@ acps_acquire_all() {
 
 acps_cleanup_cache() {
   local ver="$1"
-  local cache
+  local cache start_ts elapsed
   cache="$(acps_cache_dir "$ver")"
+  start_ts="$(date +%s)"
+  mm_set_phase "Cleaning Temporary Files"
+  mm_info "ACPS_CACHE_CLEANUP_START cache=${cache}"
   rm -rf "$cache"
+  elapsed=$(( $(date +%s) - start_ts ))
+  mm_info "ACPS_CACHE_CLEANUP_COMPLETE elapsed=${elapsed}s"
   mm_info "ACPS_CACHE_CLEANUP=DONE"
 }

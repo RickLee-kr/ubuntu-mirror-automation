@@ -248,6 +248,7 @@ engine_apply_local_bringup_patch() {
     mm_info "DRY_RUN skip apply_local_bringup_patch"
     return 0
   fi
+  mm_set_phase "Preparing Patched Bringup Script"
   cp -f "$patched" "${files_dir}/bringup_py3_dp_after_os_upgrade.sh"
   sha1sum "${files_dir}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}' \
     >"${files_dir}/bringup_py3_dp_after_os_upgrade.sh.sha1"
@@ -257,6 +258,35 @@ engine_apply_local_bringup_patch() {
   [[ "${BRINGUP_PATCHED_SHA1,,}" == "${want,,}" ]] || mm_die "PATCHED_BRINGUP_SHA1=FAIL"
   mm_state_set PATCHED_BRINGUP_APPLIED YES
   mm_ok "PATCHED_BRINGUP_APPLIED=YES sha1=${BRINGUP_PATCHED_SHA1}"
+}
+
+# After hardlink staging + patched bringup: trust cache-verified large payloads
+# when device/inode match. Re-verify only the replaced bringup SHA1.
+engine_assert_work_ready_for_bundle() {
+  local cache_dir="$1"
+  local work_dir="$2"
+  local ver="${3:-$DP_PHASE2_VERSION}"
+  local img_c img_w c_dev c_ino w_dev w_ino
+  dp2_assert_exact_files_dir "$work_dir" || return 1
+  img_c="${cache_dir}/images-${ver}.tar"
+  img_w="${work_dir}/images-${ver}.tar"
+  [[ -f "$img_c" && -f "$img_w" ]] || mm_die "ACPS_WORK_IMAGES_MISSING"
+  c_dev="$(stat -c %d "$img_c")"
+  c_ino="$(stat -c %i "$img_c")"
+  w_dev="$(stat -c %d "$img_w")"
+  w_ino="$(stat -c %i "$img_w")"
+  if [[ "$c_dev" == "$w_dev" && "$c_ino" == "$w_ino" ]]; then
+    mm_ok "ACPS_WORK_IMAGES_HARDLINK_TRUSTED=YES device=${c_dev} inode=${c_ino}"
+    mm_info "Skipping redundant SHA256 of hard-linked images-${ver}.tar (already verified in ACPS cache)."
+    mm_verify_sha1_pair_logged \
+      "${work_dir}/bringup_py3_dp_after_os_upgrade.sh" \
+      "${work_dir}/bringup_py3_dp_after_os_upgrade.sh.sha1" \
+      "ACPS_CHECKSUM_VERIFY" || return 1
+    return 0
+  fi
+  mm_warn "ACPS_WORK_IMAGES_HARDLINK_TRUSTED=NO cache=${c_dev}:${c_ino} work=${w_dev}:${w_ino}"
+  mm_acps_verify_payload_checksums "$work_dir" || return 1
+  return 0
 }
 
 engine_place_dp_phase2_final() {
@@ -276,14 +306,17 @@ engine_place_dp_phase2_final() {
   local dest_tmp="${dest}.new.$$"
   local dest_old="${dest}.old.$$"
   local list_count stable actual want
+  local expected_input_bytes=0 f sz publish_start publish_elapsed
   rm -rf "$dest_tmp" "$dest_old"
   mkdir -p "$dest_tmp" || mm_die "DP_PHASE2_STAGE_CREATE=FAIL"
 
-  # dp2_* helpers call exit on failure; run validation in a subshell so we can
-  # remove the empty .new dir and preserve any existing final artifact.
+  # File-set + patched bringup only. Large ACPS payloads were verified once at
+  # cache acquire and are same-inode hardlinks — do not re-read ~30GiB here.
   if ! (
     dp2_assert_exact_files_dir "$files_src"
-    dp2_verify_payload_checksums "$files_src"
+    dp2_verify_sha1_pair \
+      "${files_src}/bringup_py3_dp_after_os_upgrade.sh" \
+      "${files_src}/bringup_py3_dp_after_os_upgrade.sh.sha1"
   ); then
     rm -rf "$dest_tmp"
     mm_die "DP_PHASE2_SOURCE_VALIDATE=FAIL"
@@ -292,17 +325,48 @@ engine_place_dp_phase2_final() {
     || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_IMAGE_LIST=FAIL"; }
   stable="$(dp2_stable_bundle_name)"
 
-  (
-    cd "$files_src" || exit 1
-    tar -cf "${dest_tmp}/${stable}" "${DP_PHASE2_REQUIRED_FILES[@]}"
-  ) || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_BUNDLE_BUILD=FAIL"; }
+  expected_input_bytes=0
+  for f in "${DP_PHASE2_REQUIRED_FILES[@]}"; do
+    sz="$(stat -c%s "${files_src}/${f}" 2>/dev/null || echo 0)"
+    expected_input_bytes=$((expected_input_bytes + sz))
+  done
+
+  mm_set_phase "Creating Phase 2 Bundle"
+  mm_human_lines \
+    "Creating the Phase 2 deployment bundle." \
+    "The bundle is approximately 28–30 GiB." \
+    "This step may take several minutes depending on disk performance." \
+    "The program is still running normally." \
+    "Please wait and do not close this terminal."
+  # Bundle is written directly as ${dest_tmp}/${stable} (no intermediate copy).
+  if ! mm_run_with_file_progress \
+    "PHASE2_BUNDLE_CREATE" \
+    "bundle=${stable} expected_input_bytes=${expected_input_bytes} destination=${dest_tmp}/${stable}" \
+    "${dest_tmp}/${stable}" \
+    "$expected_input_bytes" \
+    "Still creating the Phase 2 deployment bundle..." \
+    -- bash -c 'cd "$1" || exit 1; tar -cf "$2" "${@:3}"' \
+       _ "$files_src" "${dest_tmp}/${stable}" "${DP_PHASE2_REQUIRED_FILES[@]}"
+  then
+    rm -rf "$dest_tmp"
+    mm_die "DP_PHASE2_BUNDLE_BUILD=FAIL"
+  fi
   dp2_assert_safe_tar_list "${dest_tmp}/${stable}" \
     || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_BUNDLE_TAR=FAIL"; }
-  sha256sum "${dest_tmp}/${stable}" | awk '{print $1"  '"${stable}"'"}' \
-    >"${dest_tmp}/${stable}.sha256" \
-    || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_BUNDLE_SHA256_WRITE=FAIL"; }
-  dp2_verify_sha256_pair "${dest_tmp}/${stable}" "${dest_tmp}/${stable}.sha256" \
-    || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_BUNDLE_SHA256=FAIL"; }
+
+  mm_set_phase "Calculating Bundle SHA256"
+  if ! mm_sha256_write_sidecar_logged \
+    "${dest_tmp}/${stable}" \
+    "${dest_tmp}/${stable}.sha256" \
+    "PHASE2_BUNDLE_SHA256_CREATE" \
+    "bundle=${stable} bytes=$(stat -c%s "${dest_tmp}/${stable}")" \
+    "Still calculating Phase 2 bundle SHA256..."
+  then
+    rm -rf "$dest_tmp"
+    mm_die "DP_PHASE2_BUNDLE_SHA256_WRITE=FAIL"
+  fi
+  # Sidecar was just produced from this exact .new file; skip an immediate
+  # second full read. Final published bytes are verified after atomic rename.
 
   local created_at commit
   created_at="$(mm_ts)"
@@ -337,7 +401,7 @@ EOF
     mm_die "VALIDATE_DP=FAIL patched_bringup_sha1"
   fi
 
-  # .new is fully verified — free ACPS source/work before rename so peak never
+  # .new is fully built — free ACPS source/work before rename so peak never
   # holds source + new + previous final at once. Keep MM_KEEP_PHASE2_SOURCES=1
   # only for debugging (not for production 100GB-class hosts).
   if [[ "${MM_KEEP_PHASE2_SOURCES:-0}" != "1" ]]; then
@@ -347,6 +411,9 @@ EOF
   sync -f "${dest_tmp}/${stable}" 2>/dev/null || sync
 
   # Replace final version directory with the single artifact set (no releases/, no current/previous).
+  mm_set_phase "Publishing Phase 2 Artifacts"
+  publish_start="$(date +%s)"
+  mm_info "DP_PHASE2_ATOMIC_PUBLISH_START dest=${dest} bundle=${stable}"
   mkdir -p "$(dirname "$dest")" || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_DEST_PARENT=FAIL"; }
   if [[ -e "$dest" ]]; then
     mv -f "$dest" "$dest_old" || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_OLD_MOVE=FAIL"; }
@@ -355,10 +422,20 @@ EOF
     [[ -e "$dest_old" && ! -e "$dest" ]] && mv -f "$dest_old" "$dest" 2>/dev/null || true
     mm_die "DP_PHASE2_PUBLISH_MOVE=FAIL"
   fi
-  mm_info "DP_PHASE2_ATOMIC_PUBLISH=PASS dest=${dest} bundle=${stable}"
+  publish_elapsed=$(( $(date +%s) - publish_start ))
+  mm_ok "DP_PHASE2_ATOMIC_PUBLISH=PASS dest=${dest} bundle=${stable} elapsed=${publish_elapsed}s"
 
   # Verify the exact published bytes before deleting the previous artifact set.
-  if ! dp2_verify_sha256_pair "${dest}/${stable}" "${dest}/${stable}.sha256"; then
+  mm_set_phase "Verifying Published Bundle"
+  mm_human_lines \
+    "Verifying the published Phase 2 bundle before marking it ready." \
+    "This is the final integrity check and may take several minutes."
+  if ! mm_verify_sha256_pair_logged \
+    "${dest}/${stable}" \
+    "${dest}/${stable}.sha256" \
+    "PHASE2_FINAL_SHA256_VERIFY" \
+    "Still verifying the published Phase 2 bundle SHA256..."
+  then
     rm -rf "$dest"
     [[ -e "$dest_old" ]] && mv -f "$dest_old" "$dest" 2>/dev/null || true
     mm_die "DP_PHASE2_PUBLISHED_SHA256=FAIL"
@@ -590,8 +667,8 @@ engine_download_and_prepare() {
   # bringup is written as a new small file. No cache→work full tree copy.
   engine_stage_acps_work_from_cache "$cache" "$work"
   engine_apply_local_bringup_patch "$work"
-  dp2_assert_exact_files_dir "$work"
-  dp2_verify_payload_checksums "$work"
+  engine_assert_work_ready_for_bundle "$cache" "$work" "$TARGET_DP_VERSION" \
+    || mm_die "ACPS_WORK_VALIDATE=FAIL"
   engine_place_dp_phase2_final "$work" "$TARGET_DP_VERSION"
 
   engine_cleanup_temps

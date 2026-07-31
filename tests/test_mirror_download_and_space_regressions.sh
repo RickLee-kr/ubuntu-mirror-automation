@@ -45,7 +45,12 @@ if awk '
 fi
 pass "download failure status propagation"
 
-grep -q 'tar -cf "${dest_tmp}/${stable}"' "$ENGINE" || fail "bundle is not built in final staging"
+grep -qE 'tar -cf "\$\{?dest_tmp\}?/\$\{?stable\}?"|tar -cf "\$2"' "$ENGINE" \
+  || fail "bundle is not built in final staging"
+grep -q 'PHASE2_BUNDLE_CREATE' "$ENGINE" || fail "bundle create progress events missing"
+grep -q 'mm_run_with_file_progress\|mm_bg_with_heartbeat' "$COMMON" \
+  || fail "long-step heartbeat helpers missing"
+grep -q 'MM_LONG_STEP_HEARTBEAT_SEC' "$COMMON" || fail "heartbeat interval env missing"
 if grep -q 'cp -f "${staging}/${stable}" "${dest_tmp}/${stable}"' "$ENGINE"; then
   fail "full bundle copy still present"
 fi

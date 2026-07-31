@@ -116,6 +116,7 @@ mm_progress_line() {
   down_h="$(mm_format_bytes "$downloaded")"
   if [[ "$expected" =~ ^[0-9]+$ && "$expected" -gt 0 ]]; then
     pct=$((downloaded * 100 / expected))
+    [[ "$pct" -gt 100 ]] && pct=100
     exp_h="$(mm_format_bytes "$expected")"
   else
     exp_h="unknown"
@@ -126,6 +127,354 @@ mm_progress_line() {
     rate_h="--"
   fi
   mm_info "PROGRESS ${label}: ${down_h} / ${exp_h} (${pct}%) elapsed=${elapsed}s rate=${rate_h}"
+}
+
+# Long-running Download/Prepare steps: heartbeat every N seconds (tests may set 1).
+MM_LONG_STEP_HEARTBEAT_SEC="${MM_LONG_STEP_HEARTBEAT_SEC:-30}"
+
+mm_long_step_heartbeat_seconds() {
+  local hb="${MM_LONG_STEP_HEARTBEAT_SEC:-30}"
+  if ! [[ "$hb" =~ ^[1-9][0-9]*$ ]]; then
+    hb=30
+  fi
+  printf '%s\n' "$hb"
+}
+
+mm_set_phase() {
+  local phase="$1"
+  mm_info "DP_PHASE=${phase}"
+  mm_info "Phase: ${phase}"
+}
+
+mm_human_lines() {
+  # Emit one human-readable INFO line per argument (no adjacent duplicates).
+  local line prev=""
+  for line in "$@"; do
+    [[ -n "$line" ]] || continue
+    [[ "$line" == "$prev" ]] && continue
+    mm_info "$line"
+    prev="$line"
+  done
+}
+
+# Last successful command stdout from mm_bg_with_heartbeat (not mixed into logs).
+MM_LONG_STEP_LAST_STDOUT=""
+MM_LONG_STEP_LAST_ELAPSED=0
+
+# Background a command with heartbeat only. Caller emits START/COMPLETE.
+# Sets MM_LONG_STEP_LAST_STDOUT and MM_LONG_STEP_LAST_ELAPSED. Preserves child rc.
+# Usage: mm_bg_with_heartbeat EVENT_PREFIX "k=v ..." "human still..." -- cmd args...
+mm_bg_with_heartbeat() {
+  local event_prefix="$1"
+  local fields="$2"
+  local human_still="${3:-Still working...}"
+  shift 3
+  if [[ "${1:-}" != "--" ]]; then
+    mm_die "mm_bg_with_heartbeat: expected -- before command"
+  fi
+  shift
+
+  local start_ts hb_secs hb_pid="" cmd_pid="" rc=0 elapsed
+  local out err last_hb_line="" hb_line
+  MM_LONG_STEP_LAST_STDOUT=""
+  MM_LONG_STEP_LAST_ELAPSED=0
+  start_ts="$(date +%s)"
+  hb_secs="$(mm_long_step_heartbeat_seconds)"
+  out="$(mktemp)"
+  err="$(mktemp)"
+
+  "$@" >"$out" 2>"$err" &
+  cmd_pid=$!
+
+  _mm_hb_cleanup() {
+    kill "$cmd_pid" 2>/dev/null || true
+    kill "$hb_pid" 2>/dev/null || true
+  }
+  trap '_mm_hb_cleanup' INT TERM
+
+  (
+    while kill -0 "$cmd_pid" 2>/dev/null; do
+      sleep "$hb_secs" || break
+      kill -0 "$cmd_pid" 2>/dev/null || break
+      elapsed=$(( $(date +%s) - start_ts ))
+      hb_line="${event_prefix}_HEARTBEAT ${fields} elapsed=${elapsed}s status=running"
+      if [[ "$hb_line" != "$last_hb_line" ]]; then
+        mm_info "$hb_line"
+        mm_human_lines \
+          "$human_still" \
+          "Elapsed: ${elapsed} seconds" \
+          "The program is running normally."
+        last_hb_line="$hb_line"
+      fi
+    done
+  ) &
+  hb_pid=$!
+
+  if wait "$cmd_pid"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  if [[ -n "$hb_pid" ]]; then
+    kill "$hb_pid" 2>/dev/null || true
+    wait "$hb_pid" 2>/dev/null || true
+  fi
+  trap - INT TERM
+
+  elapsed=$(( $(date +%s) - start_ts ))
+  MM_LONG_STEP_LAST_ELAPSED="$elapsed"
+  if [[ "$rc" -eq 0 ]]; then
+    MM_LONG_STEP_LAST_STDOUT="$(cat "$out")"
+    rm -f "$out" "$err"
+    return 0
+  fi
+  mm_redact <"$err" >&2 || true
+  rm -f "$out" "$err"
+  return "$rc"
+}
+
+# Run a command with START / HEARTBEAT / COMPLETE|FAIL. Preserves child rc.
+# Usage: mm_run_with_heartbeat EVENT_PREFIX "k=v ..." "human still..." -- cmd args...
+mm_run_with_heartbeat() {
+  local event_prefix="$1"
+  local fields="$2"
+  local human_still="${3:-Still working...}"
+  shift 3
+  if [[ "${1:-}" != "--" ]]; then
+    mm_die "mm_run_with_heartbeat: expected -- before command"
+  fi
+  shift
+  local rc=0
+  mm_info "${event_prefix}_START ${fields}"
+  # Do not toggle set -e here — it would leak into the caller.
+  mm_bg_with_heartbeat "$event_prefix" "$fields" "$human_still" -- "$@" && rc=0 || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    mm_ok "${event_prefix}_COMPLETE ${fields} elapsed=${MM_LONG_STEP_LAST_ELAPSED}s result=PASS"
+    return 0
+  fi
+  mm_error "${event_prefix}_FAIL ${fields} elapsed=${MM_LONG_STEP_LAST_ELAPSED}s result=FAIL rc=${rc}"
+  return "$rc"
+}
+
+# Like mm_run_with_heartbeat but also reports growing output-file size as progress.
+# Usage: mm_run_with_file_progress EVENT_PREFIX "k=v" OUT_FILE EXPECTED_BYTES "human still" -- cmd...
+mm_run_with_file_progress() {
+  local event_prefix="$1"
+  local fields="$2"
+  local out_file="$3"
+  local expected_bytes="$4"
+  local human_still="${5:-Still working...}"
+  shift 5
+  if [[ "${1:-}" != "--" ]]; then
+    mm_die "mm_run_with_file_progress: expected -- before command"
+  fi
+  shift
+
+  local start_ts hb_secs hb_pid="" cmd_pid="" rc=0 elapsed
+  local err last_prog="" written pct written_h expected_h prog_line
+  start_ts="$(date +%s)"
+  hb_secs="$(mm_long_step_heartbeat_seconds)"
+  err="$(mktemp)"
+
+  mm_info "${event_prefix}_START ${fields}"
+
+  "$@" 2>"$err" &
+  cmd_pid=$!
+
+  _mm_prog_cleanup() {
+    kill "$cmd_pid" 2>/dev/null || true
+    kill "$hb_pid" 2>/dev/null || true
+  }
+  trap '_mm_prog_cleanup' INT TERM
+
+  (
+    while kill -0 "$cmd_pid" 2>/dev/null; do
+      sleep "$hb_secs" || break
+      kill -0 "$cmd_pid" 2>/dev/null || break
+      elapsed=$(( $(date +%s) - start_ts ))
+      written=0
+      [[ -f "$out_file" ]] && written="$(stat -c%s "$out_file" 2>/dev/null || echo 0)"
+      pct="UNKNOWN"
+      if [[ "$expected_bytes" =~ ^[0-9]+$ && "$expected_bytes" -gt 0 ]]; then
+        pct=$((written * 100 / expected_bytes))
+        [[ "$pct" -gt 100 ]] && pct=100
+      fi
+      prog_line="${event_prefix}_PROGRESS written_bytes=${written} expected_bytes=${expected_bytes:-UNKNOWN} percentage=${pct} elapsed=${elapsed}s"
+      [[ "$prog_line" == "$last_prog" ]] && continue
+      last_prog="$prog_line"
+      mm_info "$prog_line"
+      written_h="$(mm_format_bytes "$written")"
+      if [[ "$expected_bytes" =~ ^[0-9]+$ && "$expected_bytes" -gt 0 ]]; then
+        expected_h="$(mm_format_bytes "$expected_bytes")"
+        mm_info "PROGRESS PHASE2 BUNDLE: ${written_h} / approximately ${expected_h} (${pct}%) elapsed=${elapsed}s"
+      else
+        mm_info "PROGRESS PHASE2 BUNDLE: ${written_h} / approximately unknown (--) elapsed=${elapsed}s"
+      fi
+      mm_human_lines "$human_still" "Elapsed: ${elapsed} seconds" "The program is running normally."
+    done
+  ) &
+  hb_pid=$!
+
+  if wait "$cmd_pid"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  if [[ -n "$hb_pid" ]]; then
+    kill "$hb_pid" 2>/dev/null || true
+    wait "$hb_pid" 2>/dev/null || true
+  fi
+  trap - INT TERM
+
+  elapsed=$(( $(date +%s) - start_ts ))
+  if [[ "$rc" -eq 0 ]]; then
+    written=0
+    [[ -f "$out_file" ]] && written="$(stat -c%s "$out_file" 2>/dev/null || echo 0)"
+    mm_ok "${event_prefix}_COMPLETE ${fields} actual_bytes=${written} elapsed=${elapsed}s result=PASS"
+    rm -f "$err"
+    return 0
+  fi
+  mm_redact <"$err" >&2 || true
+  mm_error "${event_prefix}_FAIL ${fields} elapsed=${elapsed}s result=FAIL rc=${rc}"
+  rm -f "$err"
+  return "$rc"
+}
+
+# Write "HEX  basename" sidecar with heartbeat around the full-file read.
+mm_sha256_write_sidecar_logged() {
+  local file="$1"
+  local sidecar="$2"
+  local event_prefix="$3"
+  local fields="$4"
+  local human_still="$5"
+  local base hex rc=0
+  base="$(basename "$file")"
+  mm_info "${event_prefix}_START ${fields}"
+  mm_human_lines \
+    "Calculating the SHA256 checksum of the newly created Phase 2 bundle." \
+    "The bundle is large, so this step may take 5–10 minutes." \
+    "The program is still running normally." \
+    "Please wait and do not interrupt the process."
+  mm_bg_with_heartbeat "$event_prefix" "$fields" \
+    "Still calculating Phase 2 bundle SHA256..." -- sha256sum "$file" && rc=0 || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    mm_error "${event_prefix}_FAIL ${fields} elapsed=${MM_LONG_STEP_LAST_ELAPSED}s result=FAIL rc=${rc}"
+    return "$rc"
+  fi
+  hex="$(printf '%s\n' "$MM_LONG_STEP_LAST_STDOUT" | awk '{print $1; exit}')"
+  [[ -n "$hex" ]] || {
+    mm_error "${event_prefix}_FAIL ${fields} reason=empty_hash"
+    return 1
+  }
+  printf '%s  %s\n' "$hex" "$base" >"$sidecar" || {
+    mm_error "${event_prefix}_FAIL ${fields} reason=sidecar_write"
+    return 1
+  }
+  mm_ok "${event_prefix}_COMPLETE ${fields} elapsed=${MM_LONG_STEP_LAST_ELAPSED}s result=PASS"
+  return 0
+}
+
+# Verify data+sidecar SHA256 with labeled START/HEARTBEAT/COMPLETE.
+mm_verify_sha256_pair_logged() {
+  local data_file="$1"
+  local checksum_file="$2"
+  local event_prefix="$3"
+  local human_still="${4:-Still verifying SHA256...}"
+  local expected actual bytes fields rc=0
+  expected="$(dp2_read_hash_field "$checksum_file")"
+  dp2_validate_sha256_hex "$expected" || {
+    mm_error "${event_prefix}_FAIL file=$(basename "$data_file") reason=bad_hash_format"
+    return 1
+  }
+  bytes="$(stat -c%s "$data_file" 2>/dev/null || echo 0)"
+  fields="bundle=${data_file} file=$(basename "$data_file") algorithm=SHA256 bytes=${bytes}"
+  # Prefer shorter fields when path is long — keep basename form for ACPS.
+  if [[ "$event_prefix" == ACPS_CHECKSUM_VERIFY ]]; then
+    fields="file=$(basename "$data_file") algorithm=SHA256 bytes=${bytes}"
+  elif [[ "$event_prefix" == PHASE2_FINAL_SHA256_VERIFY ]]; then
+    fields="bundle=${data_file} bytes=${bytes}"
+  fi
+  mm_info "${event_prefix}_START ${fields}"
+  mm_bg_with_heartbeat "$event_prefix" "$fields" "$human_still" -- sha256sum "$data_file" && rc=0 || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    mm_error "${event_prefix}_FAIL ${fields} elapsed=${MM_LONG_STEP_LAST_ELAPSED}s result=FAIL rc=${rc}"
+    return "$rc"
+  fi
+  actual="$(printf '%s\n' "$MM_LONG_STEP_LAST_STDOUT" | awk '{print $1; exit}')"
+  if [[ "${expected,,}" != "${actual,,}" ]]; then
+    mm_error "SHA256_VERIFY=FAIL file=$(basename "$data_file") expected=${expected} actual=${actual}"
+    mm_error "${event_prefix}_FAIL ${fields} elapsed=${MM_LONG_STEP_LAST_ELAPSED}s result=FAIL"
+    return 1
+  fi
+  mm_ok "${event_prefix}_COMPLETE ${fields} elapsed=${MM_LONG_STEP_LAST_ELAPSED}s result=PASS"
+  mm_ok "SHA256_VERIFY=PASS file=$(basename "$data_file")"
+  return 0
+}
+
+# Verify SHA1 pair with explicit algorithm label (no SHA256 confusion).
+mm_verify_sha1_pair_logged() {
+  local data_file="$1"
+  local checksum_file="$2"
+  local event_prefix="${3:-ACPS_CHECKSUM_VERIFY}"
+  local expected actual bytes fields start_ts elapsed
+  expected="$(dp2_read_hash_field "$checksum_file")"
+  dp2_validate_sha1_hex "$expected" || {
+    mm_error "${event_prefix}_FAIL file=$(basename "$data_file") algorithm=SHA1 reason=bad_hash_format"
+    return 1
+  }
+  bytes="$(stat -c%s "$data_file" 2>/dev/null || echo 0)"
+  fields="file=$(basename "$data_file") algorithm=SHA1 bytes=${bytes}"
+  start_ts="$(date +%s)"
+  mm_info "${event_prefix}_START ${fields}"
+  mm_human_lines "Verifying SHA1 checksum of $(basename "$data_file")."
+  actual="$(sha1sum "$data_file" | awk '{print $1}')"
+  elapsed=$(( $(date +%s) - start_ts ))
+  if [[ "${expected,,}" != "${actual,,}" ]]; then
+    mm_error "SHA1_VERIFY=FAIL file=$(basename "$data_file") expected=${expected} actual=${actual}"
+    mm_error "${event_prefix}_FAIL ${fields} elapsed=${elapsed}s result=FAIL"
+    return 1
+  fi
+  mm_ok "${event_prefix}_COMPLETE ${fields} elapsed=${elapsed}s result=PASS"
+  mm_ok "SHA1_VERIFY=PASS file=$(basename "$data_file")"
+  return 0
+}
+
+# ACPS payload checksums with correct SHA1/SHA256 labels and heartbeat on images tar.
+mm_acps_verify_payload_checksums() {
+  local files_dir="$1"
+  local ver="${DP_PHASE2_VERSION}"
+  local img bytes img_h
+  mm_set_phase "Verifying ACPS Checksums"
+  mm_verify_sha1_pair_logged \
+    "${files_dir}/aelladeb_py3_common.tar.gz" \
+    "${files_dir}/aelladeb_py3_common.tar.gz.sha1" \
+    || return 1
+  mm_verify_sha1_pair_logged \
+    "${files_dir}/aella-uvp-2404_${ver}ubuntu1_amd64.deb" \
+    "${files_dir}/aella-uvp-2404_${ver}ubuntu1_amd64.deb.sha1" \
+    || return 1
+  mm_verify_sha1_pair_logged \
+    "${files_dir}/bringup_py3_dp_after_os_upgrade.sh" \
+    "${files_dir}/bringup_py3_dp_after_os_upgrade.sh.sha1" \
+    || return 1
+  img="${files_dir}/images-${ver}.tar"
+  bytes="$(stat -c%s "$img" 2>/dev/null || echo 0)"
+  img_h="$(mm_format_bytes "$bytes")"
+  mm_human_lines \
+    "Verifying SHA256 checksum of images-${ver}.tar." \
+    "This file is approximately ${img_h}." \
+    "Verification may take 5–10 minutes depending on disk performance." \
+    "The program is still running normally." \
+    "Please wait and do not interrupt the process."
+  mm_verify_sha256_pair_logged \
+    "$img" \
+    "${img}.sha256" \
+    "ACPS_CHECKSUM_VERIFY" \
+    "Still verifying images-${ver}.tar SHA256..." \
+    || return 1
+  return 0
 }
 
 mm_require_root() {

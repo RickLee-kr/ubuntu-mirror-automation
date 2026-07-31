@@ -101,6 +101,29 @@ Automatic sequence: config check → client artifact check → R2 download
 checksum → upstream bringup drift gate → patched bringup → Phase 2 bundle
 (9 entries) → place final HTTP files → delete download cache/staging.
 
+### Expected duration (disk-dependent)
+
+These times vary by host disk throughput. A long silent gap is **not** normal:
+the manager emits a heartbeat at least every 30 seconds during long steps.
+
+| Step | Algorithm / action | Typical duration |
+| --- | --- | --- |
+| ACPS `images-*.tar` verification | **SHA256** (not SHA1) | approximately 5–10 minutes |
+| Small ACPS sidecars / bringup | **SHA1** | seconds |
+| Phase 2 bundle creation (`tar -cf`) | archive write | several minutes |
+| Bundle SHA256 sidecar generation | **SHA256** full read | approximately 5–10 minutes |
+| Final published bundle verification | **SHA256** after atomic publish | approximately 5–10 minutes |
+
+Do not close the terminal or interrupt while heartbeats / progress lines are
+printing. Logs show the current `DP_PHASE=` name and `elapsed=` seconds.
+
+Integrity policy (same-filesystem hardlink pipeline):
+
+- Source `images-*.tar` is SHA256-verified once after ACPS download.
+- Hard-linked work-tree copies of that inode are not re-hashed.
+- Bundle SHA256 is computed when the `.new` archive is created, then verified
+  once more on the published final path (at most two full bundle reads).
+
 Resume rules for the R2 package download:
 
 - Requests send `Cache-Control: no-cache` and `Pragma: no-cache`.

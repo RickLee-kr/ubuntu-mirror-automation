@@ -55,6 +55,7 @@ TEST_LIST=(
   test_dp_phase2_process_detect.sh
   test_dp_upgrade_mirror_manager.sh
   test_mirror_download_and_space_regressions.sh
+  test_mirror_long_step_progress.sh
   test_bringup_image_import_heartbeat.sh
   test_bringup_dp_resume_notice.sh
   test_client_manifest_signing.sh

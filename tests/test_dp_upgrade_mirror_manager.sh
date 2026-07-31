@@ -1089,7 +1089,8 @@ grep -q 'mv -f "$payload" "$final_tmp"' "$ENGINE" \
   && grep -q 'engine_stage_acps_work_from_cache' "$ENGINE" \
   && grep -q 'engine_link_acps_file_into_work' "$ENGINE" \
   && grep -q 'hardlink_required' "$ENGINE" \
-  && grep -q 'tar -cf "${dest_tmp}/${stable}"' "$ENGINE" \
+  && grep -qE 'tar -cf "\$\{?dest_tmp\}?/\$\{?stable\}?"|tar -cf "\$2"' "$ENGINE" \
+  && grep -q 'PHASE2_BUNDLE_CREATE' "$ENGINE" \
   && grep -q 'engine_cleanup_phase2_sources' "$ENGINE" \
   && grep -q 'DP_PHASE2_ATOMIC_PUBLISH=PASS' "$ENGINE" \
   && pass "T disk-copy optimization present" \

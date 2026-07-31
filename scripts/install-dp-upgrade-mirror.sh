@@ -406,18 +406,31 @@ Then re-run Download and Prepare."
       "Download and prepare upgrade files for DP ${TARGET_DP_VERSION}?
 
 OK / Enter starts the download.
-Progress will print live in the terminal (R2 ~3.5GB may take a while)."; then
+Live progress prints in the terminal (no empty waits).
+Long steps emit a heartbeat every 30 seconds."; then
     return 0
   fi
 
-  # Leave the whiptail UI so operators can see live download progress.
+  # Leave the whiptail UI so operators can see live download/prepare progress.
+  # Do not use a blocking msgbox that requires OK before work starts.
   clear 2>/dev/null || true
   cat <<EOF
 ============================================================
 Download and Prepare — live progress
 Target DP Version: ${TARGET_DP_VERSION}
-R2 OS Core + ACPS Phase 2 will download now.
-Progress lines print every few seconds. Do not interrupt.
+
+Phases (names appear as each step starts):
+  1. Downloading ACPS Artifacts
+  2. Verifying ACPS Checksums
+  3. Preparing Patched Bringup Script
+  4. Creating Phase 2 Bundle
+  5. Calculating Bundle SHA256
+  6. Verifying Published Bundle
+  7. Cleaning Temporary Files
+  8. Publishing Phase 2 Artifacts
+
+Long checksum / bundle steps print a heartbeat every 30 seconds.
+Do not interrupt or close this terminal.
 ============================================================
 
 EOF
