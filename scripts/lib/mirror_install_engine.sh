@@ -497,11 +497,15 @@ engine_validate_http_layout() {
   local base="${MM_VERIFY_HTTP_BASE}"
   # Probe /offline/meta-release-lts (not /offline/): nginx keeps autoindex off for
   # /offline/, so a bare directory GET returns 403 even when content is healthy.
+  # Include concrete client hop + stage helper scripts (not only /client/).
   local urls=(
     "${base}/ubuntu/"
     "${base}/ubuntu-security/"
     "${base}/offline/meta-release-lts"
-    "${base}/client/"
+    "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh"
+    "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh.sha256"
+    "${base}/client/stage-dp-phase2.sh"
+    "${base}/client/stage-dp-phase2.sh.sha256"
     "${base}/dp-phase2/${ver}/release.env"
     "${base}/dp-phase2/${ver}/${stable}.sha256"
   )
@@ -562,6 +566,10 @@ engine_compute_readiness() {
     HTTP_CONFIGURATION_READY
   )
   local k v all=PASS
+  # Readiness requires HTTP distribution enabled (menu order: enable before verify).
+  if ! mm_http_distribution_enabled; then
+    all=FAIL
+  fi
   for k in "${keys[@]}"; do
     v="$(mm_status_get "$k")"
     case "$k" in

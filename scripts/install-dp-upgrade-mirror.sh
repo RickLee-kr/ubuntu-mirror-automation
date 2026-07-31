@@ -378,6 +378,10 @@ OS Core Source: Cloudflare R2 — fixed" \
 Next step:
   Back → main menu → 2) Download and Prepare Upgrade Files
 
+Then:
+  3) Enable HTTP Distribution
+  4) Verify Upgrade Readiness
+
 Saving configuration does NOT start the download."
         ;;
       0|"") return 0 ;;
@@ -464,42 +468,20 @@ EOF
   return 0
 }
 
-gui_verify_readiness() {
-  load_mirror_defaults
-  mm_load_gui_config
-  engine_resolve_paths
-  local tmp
-  tmp="$(mktemp)"
-  {
-    printf 'CONFIGURATION_READY=%s\n' "$(mm_status_get CONFIGURATION_READY)"
-    printf 'R2_OS_CORE_DOWNLOADED=%s\n' "$(mm_status_get R2_OS_CORE_DOWNLOADED)"
-    printf 'R2_OS_CORE_CHECKSUM=%s\n' "$(mm_status_get R2_OS_CORE_CHECKSUM)"
-    printf 'OS_MIRROR_READY=%s\n' "$(mm_status_get OS_MIRROR_READY)"
-    printf 'ACPS_CONNECTION=%s\n' "$(mm_status_get ACPS_CONNECTION)"
-    printf 'ACPS_PHASE2_DOWNLOADED=%s\n' "$(mm_status_get ACPS_PHASE2_DOWNLOADED)"
-    printf 'ACPS_CHECKSUM=%s\n' "$(mm_status_get ACPS_CHECKSUM)"
-    printf 'UPSTREAM_BRINGUP_DRIFT=%s\n' "$(mm_status_get UPSTREAM_BRINGUP_DRIFT)"
-    printf 'PATCHED_BRINGUP_APPLIED=%s\n' "$(mm_status_get PATCHED_BRINGUP_APPLIED)"
-    printf 'PHASE2_BUNDLE_ENTRY_COUNT=%s\n' "$(mm_status_get PHASE2_BUNDLE_ENTRY_COUNT)"
-    printf 'PHASE2_BUNDLE_CHECKSUM=%s\n' "$(mm_status_get PHASE2_BUNDLE_CHECKSUM)"
-    printf 'CLIENT_FILES_READY=%s\n' "$(mm_status_get CLIENT_FILES_READY)"
-    printf 'HTTP_CONFIGURATION_READY=%s\n' "$(mm_status_get HTTP_CONFIGURATION_READY)"
-    printf 'TARGET_DP_VERSION=%s\n' "${TARGET_DP_VERSION}"
-    # No live SHA256 of the Phase 2 bundle here — status keys + compute only.
-    engine_compute_readiness || true
-  } >"$tmp" || {
-    rm -f "$tmp"
-    return 1
-  }
-  mm_whiptail_textbox "Verify Upgrade Readiness" "$tmp" || true
-  rm -f "$tmp"
-  return 0
-}
-
 gui_enable_http() {
   load_mirror_defaults
   mm_load_gui_config
   engine_resolve_paths
+  if ! mm_artifacts_ready_for_http; then
+    mm_whiptail_msg "Enable HTTP Distribution" \
+      "Upgrade files are not ready.
+
+Run:
+2 Download and Prepare Upgrade Files
+
+before enabling HTTP distribution."
+    return 0
+  fi
   dp2_set_version "${TARGET_DP_VERSION}"
   local out backend_rc=0 tmp stable
   stable="$(dp2_stable_bundle_name)"
@@ -522,29 +504,88 @@ gui_enable_http() {
   return 0
 }
 
+gui_verify_readiness() {
+  load_mirror_defaults
+  mm_load_gui_config
+  engine_resolve_paths
+  local tmp http_rc=0 ready_line=""
+  tmp="$(mktemp)"
+  if ! mm_http_distribution_enabled; then
+    cat >"$tmp" <<EOF
+UPGRADE_READINESS=FAIL
+
+HTTP distribution is not enabled.
+
+Run:
+3 Enable HTTP Distribution
+
+before verifying upgrade readiness.
+EOF
+    mm_status_set UPGRADE_READINESS FAIL
+    mm_whiptail_textbox "Verify Upgrade Readiness" "$tmp" || true
+    rm -f "$tmp"
+    return 0
+  fi
+  dp2_set_version "${TARGET_DP_VERSION}"
+  {
+    printf 'Target DP Version: %s\n' "${TARGET_DP_VERSION}"
+    printf 'HTTP Distribution: %s\n' "$(mm_status_get HTTP_DISTRIBUTION)"
+  } >"$tmp"
+  # Live HTTP probes (200-only). Isolate mm_die/exit from menu process.
+  set +e
+  ( engine_validate_http_layout ) >>"$tmp" 2>&1
+  http_rc=$?
+  set -e
+  if [[ "$http_rc" -eq 0 ]]; then
+    printf 'HTTP URL checks: PASS\n' >>"$tmp"
+  else
+    printf 'HTTP URL checks: FAIL\n' >>"$tmp"
+    mm_status_set UPGRADE_READINESS FAIL
+    printf 'UPGRADE_READINESS=FAIL\n' >>"$tmp"
+    mm_whiptail_textbox "Verify Upgrade Readiness" "$tmp" || true
+    rm -f "$tmp"
+    return 0
+  fi
+  set +e
+  ready_line="$(engine_compute_readiness 2>>"$tmp")"
+  set -e
+  printf '%s\n' "$ready_line" >>"$tmp"
+  mm_whiptail_textbox "Verify Upgrade Readiness" "$tmp" || true
+  rm -f "$tmp"
+  return 0
+}
+
 gui_show_status() {
   load_mirror_defaults
   mm_load_gui_config
-  local tmp
+  local tmp ver entries bundle_state os_state http_state
+  ver="${TARGET_DP_VERSION:-6.5.0}"
+  entries="$(mm_status_get PHASE2_BUNDLE_ENTRY_COUNT)"
+  if [[ "$(mm_status_get PHASE2_BUNDLE_CHECKSUM)" == "PASS" && "$entries" == "9" ]]; then
+    bundle_state="READY (9 files)"
+  else
+    bundle_state="NOT READY"
+  fi
+  if [[ "$(mm_status_get OS_MIRROR_READY)" == "PASS" ]]; then
+    os_state="READY"
+  else
+    os_state="NOT READY"
+  fi
+  http_state="$(mm_status_get HTTP_DISTRIBUTION)"
+  [[ -n "$http_state" ]] || http_state="DISABLED"
   tmp="$(mktemp)"
   cat >"$tmp" <<EOF
-Target DP Version: ${TARGET_DP_VERSION}
+DP Upgrade Mirror Status
+========================
+
+Target DP Version: ${ver}
 Configuration: $(mm_status_get CONFIGURATION_READY)
-R2 OS Core download: $(mm_status_get R2_OS_CORE_DOWNLOADED)
-R2 OS Core checksum: $(mm_status_get R2_OS_CORE_CHECKSUM)
-OS mirror readiness: $(mm_status_get OS_MIRROR_READY)
-ACPS Phase 2 download: $(mm_status_get ACPS_PHASE2_DOWNLOADED)
-ACPS checksum: $(mm_status_get ACPS_CHECKSUM)
-Bringup drift: $(mm_status_get UPSTREAM_BRINGUP_DRIFT)
-Patched bringup: $(mm_status_get PATCHED_BRINGUP_APPLIED)
-Phase 2 bundle: $(mm_status_get PHASE2_BUNDLE_CHECKSUM) (entries=$(mm_status_get PHASE2_BUNDLE_ENTRY_COUNT))
-HTTP distribution: $(mm_status_get HTTP_DISTRIBUTION)
-Last execution result: $(mm_status_get LAST_EXECUTION_RESULT)
-Log path: $(mm_status_get LOG_PATH)
-OS Core Source: Cloudflare R2 — configured by installer
-ACPS Server: fixed
-PROJECT_ROLLBACK_SUPPORTED=NO
-RECOVERY_METHOD=HYPERVISOR_SNAPSHOT
+OS Upgrade Files: ${os_state}
+DP ${ver} Bundle: ${bundle_state}
+HTTP Distribution: ${http_state}
+Upgrade Readiness: $(mm_status_get UPGRADE_READINESS)
+Last Operation: $(mm_status_get LAST_EXECUTION_RESULT)
+Log File: $(mm_status_get LOG_PATH)
 EOF
   mm_whiptail_textbox "Current Status" "$tmp" || true
   rm -f "$tmp"
@@ -571,78 +612,178 @@ gui_view_logs() {
   return 0
 }
 
+# One physical line: rm → curl script → curl sha → sha256sum -c → sudo bash.
+gui_client_hop_command() {
+  local mirror="$1" script="$2"
+  printf 'cd /home/aella && rm -f %s %s.sha256 && curl -fsSLO %s/client/%s && curl -fsSLO %s/client/%s.sha256 && sha256sum -c %s.sha256 && sudo bash ./%s' \
+    "$script" "$script" "$mirror" "$script" "$mirror" "$script" "$script" "$script"
+}
+
+gui_build_client_commands() {
+  # Writes command text to stdout. Args: mirror source_ver topology worker_ips
+  local mirror="$1" source_ver="$2" topology="$3" worker_ips="${4:-}"
+  local ver="${TARGET_DP_VERSION:-6.5.0}"
+  local snap_line step5 step6
+  if [[ "$topology" == "cluster" ]]; then
+    snap_line="Before Step 1, create a full hypervisor snapshot of every DP VM."
+  else
+    snap_line="Before Step 1, create a full hypervisor snapshot of the DP VM."
+  fi
+  step5="cd /home/aella && rm -f stage-dp-phase2.sh stage-dp-phase2.sh.sha256 && curl -fsSLO ${mirror}/client/stage-dp-phase2.sh && curl -fsSLO ${mirror}/client/stage-dp-phase2.sh.sha256 && sha256sum -c stage-dp-phase2.sh.sha256 && sudo bash ./stage-dp-phase2.sh --source-dp-version ${source_ver} --target-version ${ver} --mirror-url ${mirror}"
+  if [[ "$topology" == "cluster" ]]; then
+    step6="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download --worker-ips \"${worker_ips}\""
+  else
+    step6="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download"
+  fi
+  cat <<EOF
+DP Client Upgrade Commands
+==========================
+
+Mirror Server: ${mirror}
+
+Run these commands on the DP, not on the Mirror Server.
+
+${snap_line}
+
+After each step finishes and the DP reboots, reconnect to the DP and run the next step.
+
+Step 1 — Ubuntu 16.04 to 18.04
+
+$(gui_client_hop_command "$mirror" "dp-offline-upgrade-xenial-to-bionic.sh")
+
+Step 2 — Ubuntu 18.04 to 20.04
+
+$(gui_client_hop_command "$mirror" "dp-offline-upgrade-bionic-to-focal.sh")
+
+Step 3 — Ubuntu 20.04 to 22.04
+
+$(gui_client_hop_command "$mirror" "dp-offline-upgrade-focal-to-jammy.sh")
+
+Step 4 — Ubuntu 22.04 to 24.04
+
+$(gui_client_hop_command "$mirror" "dp-offline-upgrade-jammy-to-noble.sh")
+
+Step 5 — Download and stage DP ${ver} files
+
+${step5}
+
+EOF
+  if [[ "$topology" == "cluster" ]]; then
+    cat <<EOF
+Step 6 — Start DP ${ver} cluster bringup
+
+Run this command on the cluster master.
+
+Complete the DL cluster first, then run the DA cluster.
+
+${step6}
+
+EOF
+  else
+    cat <<EOF
+Step 6 — Start DP ${ver} bringup
+
+${step6}
+
+EOF
+  fi
+  cat <<EOF
+Step 7 — Watch bringup log
+
+sudo tail -F /var/log/aella/aella_py3_bringup.log
+
+A copy of these commands was saved to:
+$(mm_client_commands_file)
+EOF
+}
+
 gui_client_instructions() {
   load_mirror_defaults
   mm_load_gui_config
+  engine_resolve_paths
   local ver="${TARGET_DP_VERSION:-6.5.0}"
-  local mirror_hint="http://<MIRROR_IP>"
-  # Prefer documented default mirror if present in client scripts
-  if [[ -f "${PROJECT_ROOT}/client/stage-dp-phase2.sh" ]]; then
-    local def
-    def="$(awk -F= '/^DEFAULT_MIRROR_URL=/{gsub(/"/,"",$2); print $2; exit}' "${PROJECT_ROOT}/client/stage-dp-phase2.sh" || true)"
-    [[ -n "$def" ]] && mirror_hint="$def"
+  local mirror source_ver topology worker_ips="" topo_choice out_file tmp
+  mirror="$(mm_client_mirror_url)" || {
+    mm_whiptail_msg "DP Client Upgrade Commands" \
+      "Could not determine the Mirror Server HTTP address.
+
+Set MIRROR_HTTP_URL in ${MM_CONFIG_FILE} (example: http://221.139.249.111)
+or ensure this host has a reachable IPv4 address."
+    return 0
+  }
+  # Persist resolved URL for next runs (no secrets).
+  if [[ -z "${MIRROR_HTTP_URL:-}" ]]; then
+    MIRROR_HTTP_URL="$mirror"
+    mm_save_gui_config >/dev/null 2>&1 || true
   fi
-  local tmp
+
+  source_ver="$(mm_whiptail_input \
+    "Current DP software version" \
+    "Enter the current DP software version on the DP (example: 6.3.0).
+
+This value is used in Step 5 --source-dp-version." \
+    "6.3.0")" || return 0
+  if ! mm_validate_source_dp_version "$source_ver"; then
+    mm_whiptail_msg "Invalid version" "Version must be X.Y.Z (got: ${source_ver})"
+    return 0
+  fi
+
+  topo_choice="$(mm_whiptail_menu \
+    "DP topology" \
+    "Select the DP deployment type for Step 6 bringup." \
+    "1" "Single DP / AIO / master without workers" \
+    "2" "Cluster master with workers")" || return 0
+  case "$topo_choice" in
+    1) topology="single" ;;
+    2)
+      topology="cluster"
+      worker_ips="$(mm_whiptail_input \
+        "Worker management IPs" \
+        "Enter comma-separated worker management IPv4 addresses.
+
+Example: 192.168.124.23,192.168.124.24" \
+        "")" || return 0
+      worker_ips="$(mm_validate_worker_ips "$worker_ips")" || {
+        mm_whiptail_msg "Invalid worker IPs" \
+          "Provide a non-empty comma-separated list of IPv4 addresses.
+Shell metacharacters are not allowed."
+        return 0
+      }
+      ;;
+    *) return 0 ;;
+  esac
+
   tmp="$(mktemp)"
-  cat >"$tmp" <<EOF
-DP Client Upgrade Instructions
-==============================
+  gui_build_client_commands "$mirror" "$source_ver" "$topology" "$worker_ips" >"$tmp"
+  out_file="$(mm_client_commands_file)"
+  if ! mkdir -p "$(dirname "$out_file")" || ! cp -f "$tmp" "$out_file" || ! chmod 0644 "$out_file"; then
+    mm_whiptail_msg "DP Client Upgrade Commands" \
+      "Could not write command file:
+${out_file}
 
-CLIENT_DOWNLOAD_SOURCE=MIRROR_SERVER_ONLY
-CLIENT_R2_ACCESS=NO
-CLIENT_ACPS_ACCESS=NO
-
-Use the mirror server HTTP address only. Do not connect to Cloudflare R2 or ACPS from the DP client.
-
-Target DP Version: ${ver}
-
-Before upgrade — REQUIRED:
-  Create a full hypervisor snapshot of the entire DP VM.
-  PROJECT_ROLLBACK_SUPPORTED=NO
-  OS_ROLLBACK_SUPPORTED=NO
-  DP_RUNTIME_ROLLBACK_SUPPORTED=NO
-  RECOVERY_METHOD=HYPERVISOR_SNAPSHOT
-  RECOVERY_TARGET=PRE_UPGRADE_UBUNTU_16_04_STATE
-  INTERMEDIATE_OS_RECOVERY_SUPPORTED=NO
-
-  Intermediate Ubuntu versions (18.04/20.04/22.04) are NOT recovery points.
-  This project does not provide OS or DP rollback. Restore the hypervisor snapshot on failure.
-
-Phase 1 — OS hop client scripts (example mirror ${mirror_hint}):
-  curl -fsSO ${mirror_hint}/client/dp-offline-upgrade-xenial-to-bionic.sh
-  curl -fsSO ${mirror_hint}/client/dp-offline-upgrade-xenial-to-bionic.sh.sha256
-  sha256sum -c dp-offline-upgrade-xenial-to-bionic.sh.sha256
-  sudo bash ./dp-offline-upgrade-xenial-to-bionic.sh
-
-  Repeat similarly for:
-    dp-offline-upgrade-bionic-to-focal.sh
-    dp-offline-upgrade-focal-to-jammy.sh
-    dp-offline-upgrade-jammy-to-noble.sh
-
-Phase 2 — stage artifacts from mirror only:
-  sudo bash stage-dp-phase2.sh \\
-    --source-dp-version <current-dp> \\
-    --target-version ${ver} \\
-    --mirror-url ${mirror_hint}
-
-Phase 2 HTTP paths:
-  ${mirror_hint}/dp-phase2/${ver}/release.env
-  ${mirror_hint}/dp-phase2/${ver}/dp_bundle_${ver}-current.tar
-  ${mirror_hint}/dp-phase2/${ver}/dp_bundle_${ver}-current.tar.sha256
-
-Also used by clients:
-  ${mirror_hint}/ubuntu/
-  ${mirror_hint}/ubuntu-security/
-  ${mirror_hint}/offline/
-  ${mirror_hint}/client/
-EOF
-  mm_whiptail_textbox "DP Client Upgrade Instructions" "$tmp" || true
+Mirror Manager must run as root:
+  sudo ubuntu-offline-mirror mirror-manager"
+    rm -f "$tmp"
+    return 0
+  fi
+  mm_whiptail_textbox "DP Client Upgrade Commands" "$tmp" || true
+  # Optional tty reprint for mouse-copy after textbox (interactive sessions only).
+  if [[ -t 0 ]]; then
+    {
+      printf '\n------------------------------------------------------------\n'
+      cat "$tmp"
+      printf '------------------------------------------------------------\n'
+    } >/dev/tty 2>/dev/null || true
+  fi
   rm -f "$tmp"
   return 0
 }
 
 cmd_mirror_manager() {
   export MM_GUI_MODE=1
+  # Official entry: sudo ubuntu-offline-mirror mirror-manager (root only).
+  # Check before loading root-owned config/logs to avoid raw Permission denied.
+  mm_require_root
   load_mirror_defaults
   engine_resolve_paths
   mm_load_gui_config
@@ -658,17 +799,17 @@ EOF
     local choice="" menu_rc=0
     choice="$(mm_whiptail_menu \
       "DP Ubuntu Upgrade Mirror Manager" \
-      "Single workflow: Cloudflare R2 OS Core + ACPS Phase 2
+      "Workflow: Configuration → Download → Enable HTTP → Verify Readiness
 
 After Configuration, choose 2 to start the download.
 Cancel/ESC returns here; choose 0 to Exit." \
       "1" "Configuration" \
       "2" "Download and Prepare Upgrade Files" \
-      "3" "Verify Upgrade Readiness" \
-      "4" "Enable HTTP Distribution" \
+      "3" "Enable HTTP Distribution" \
+      "4" "Verify Upgrade Readiness" \
       "5" "Show Current Status" \
       "6" "View Logs" \
-      "7" "Show DP Client Upgrade Instructions" \
+      "7" "Show DP Client Upgrade Commands" \
       "0" "Exit")" || menu_rc=$?
     # Cancel/ESC on the main menu must NOT drop to the shell; only "0 Exit" leaves.
     if [[ "$menu_rc" -ne 0 ]]; then
@@ -677,11 +818,11 @@ Cancel/ESC returns here; choose 0 to Exit." \
     case "$choice" in
       1) gui_run_action "Configuration" gui_configuration ;;
       2) gui_run_action "Download and Prepare" gui_download_and_prepare ;;
-      3) gui_run_action "Verify Upgrade Readiness" gui_verify_readiness ;;
-      4) gui_run_action "Enable HTTP Distribution" gui_enable_http ;;
+      3) gui_run_action "Enable HTTP Distribution" gui_enable_http ;;
+      4) gui_run_action "Verify Upgrade Readiness" gui_verify_readiness ;;
       5) gui_run_action "Show Current Status" gui_show_status ;;
       6) gui_run_action "View Logs" gui_view_logs ;;
-      7) gui_run_action "DP Client Upgrade Instructions" gui_client_instructions ;;
+      7) gui_run_action "DP Client Upgrade Commands" gui_client_instructions ;;
       0)
         # GUI_EXITS_ONLY_ON_EXPLICIT_ZERO
         return 0
@@ -698,11 +839,13 @@ Cancel/ESC returns here; choose 0 to Exit." \
 
 # Non-interactive helpers for tests
 cmd_download_and_prepare() {
+  mm_require_root
   load_mirror_defaults
   engine_download_and_prepare
 }
 
 cmd_verify_readiness() {
+  mm_require_root
   load_mirror_defaults
   mm_load_gui_config
   engine_resolve_paths
@@ -710,6 +853,7 @@ cmd_verify_readiness() {
 }
 
 cmd_enable_http() {
+  mm_require_root
   load_mirror_defaults
   engine_enable_http_distribution
 }

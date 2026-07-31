@@ -53,12 +53,21 @@ sudo ./scripts/install-dp-upgrade-mirror.sh mirror-manager
 
 1. Configuration
 2. Download and Prepare Upgrade Files
-3. Verify Upgrade Readiness
-4. Enable HTTP Distribution
+3. Enable HTTP Distribution
+4. Verify Upgrade Readiness
 5. Show Current Status
 6. View Logs
-7. Show DP Client Upgrade Instructions
+7. Show DP Client Upgrade Commands
 0. Exit
+
+Order is intentional: enable HTTP before verifying readiness (readiness checks live HTTP URLs).
+
+Menu 3 refuses to run until Download and Prepare has produced OS + Phase 2 artifacts.
+Menu 4 refuses to PASS until HTTP distribution is ENABLED.
+
+Menu 7 shows copy-paste one-line DP commands (download + checksum + execute) and
+writes the same text to
+`/var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt`.
 
 There is no install-mode menu, no local OS Core path picker, no R2/ACPS URL editor, and no rollback menu.
 

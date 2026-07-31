@@ -305,11 +305,32 @@ run_prepare() {
 
 # ===========================================================================
 echo "======== A/B/P. GUI + obsolete absence ========"
-grep -q 'Configuration' "$INSTALLER" && grep -q 'Download and Prepare Upgrade Files' "$INSTALLER" \
-  && grep -q 'Verify Upgrade Readiness' "$INSTALLER" && grep -q 'Enable HTTP Distribution' "$INSTALLER" \
+# Menu order must be Enable HTTP (3) before Verify Readiness (4).
+# Anchor on the main-menu tag/item pairs (not the file header comment).
+awk '
+  /"1" "Configuration"/ { in_menu=1 }
+  in_menu && /"3" "Enable HTTP Distribution"/ { m3=NR }
+  in_menu && /"4" "Verify Upgrade Readiness"/ { m4=NR }
+  in_menu && /"7" "Show DP Client Upgrade Commands"/ { m7=NR }
+  in_menu && /"0" "Exit"/ { m0=NR }
+  END { exit((m3 && m4 && m7 && m0 && m3 < m4 && m4 < m7 && m7 < m0) ? 0 : 1) }
+' "$INSTALLER" && pass "A menu order 3=Enable HTTP before 4=Verify" \
+  || fail "A menu order wrong"
+grep -q 'Show DP Client Upgrade Commands' "$INSTALLER" \
+  && grep -q 'Configuration' "$INSTALLER" \
+  && grep -q 'Download and Prepare Upgrade Files' "$INSTALLER" \
   && grep -q 'Show Current Status' "$INSTALLER" && grep -q 'View Logs' "$INSTALLER" \
-  && grep -q 'Show DP Client Upgrade Instructions' "$INSTALLER" && grep -q 'Exit' "$INSTALLER" \
+  && grep -q 'Exit' "$INSTALLER" \
   && pass "A main menu items" || fail "A main menu"
+# Dispatch wiring: 3→enable, 4→verify
+awk '
+  /^cmd_mirror_manager\(\)/ { in_fn=1 }
+  in_fn && /3\) gui_run_action "Enable HTTP Distribution" gui_enable_http/ { d3=1 }
+  in_fn && /4\) gui_run_action "Verify Upgrade Readiness" gui_verify_readiness/ { d4=1 }
+  in_fn && /3\) gui_run_action "Verify Upgrade Readiness"/ { bad=1 }
+  in_fn && /4\) gui_run_action "Enable HTTP Distribution"/ { bad=1 }
+  in_fn && /^}/ { exit((d3 && d4 && !bad) ? 0 : 1) }
+' "$INSTALLER" && pass "A menu dispatch 3=enable 4=verify" || fail "A menu dispatch"
 grep -q 'mm_whiptail_yesno' "$INSTALLER" \
   && grep -q 'Download and prepare upgrade files' "$INSTALLER" \
   && pass "A download confirm is yesno" || fail "A download confirm still menu"
@@ -338,8 +359,19 @@ grep -q 'passwordbox' "$INSTALLER" && grep -q 'Target DP Version' "$INSTALLER" \
   && pass "B configuration fields" || fail "B config"
 grep -qE 'Enter R2 URL|Enter ACPS URL|R2 URL input|ACPS URL input|Set R2 URL|Set ACPS URL' "$INSTALLER" \
   && fail "B URL menus present" || pass "B no URL menus"
-grep -q 'HYPERVISOR_SNAPSHOT' "$INSTALLER" && grep -q 'PROJECT_ROLLBACK_SUPPORTED=NO' "$INSTALLER" \
+# Snapshot guidance must remain; PROJECT_ROLLBACK_SUPPORTED must not appear in GUI screens.
+grep -q 'hypervisor snapshot' "$INSTALLER" \
   && pass "O snapshot instructions" || fail "O instructions"
+if awk '
+  /^gui_show_status\(\)/ || /^gui_client_instructions\(\)/ || /^gui_build_client_commands\(\)/ { in_fn=1 }
+  in_fn && /^}/ { in_fn=0 }
+  in_fn && /PROJECT_ROLLBACK_SUPPORTED|Bringup drift|CLIENT_R2_ACCESS|Cloudflare R2|ACPS Server/ { bad=1 }
+  END { exit(bad ? 1 : 0) }
+' "$INSTALLER"; then
+  pass "O user GUI omits internal rollback/drift fields"
+else
+  fail "O user GUI still shows internal fields"
+fi
 
 echo "======== C. R2 constant / checksum derivation ========"
 common_env
@@ -866,11 +898,11 @@ BODY_STDOUT_HITS="$(echo "$S_OUT" | grep -cF "$UNIQUE_BODY" || true)"
 [[ "$BODY_STDOUT_HITS" -eq 0 ]] && pass "S DUPLICATE_OUTPUT=0" \
   || fail "S DUPLICATE_OUTPUT body stdout hits=${BODY_STDOUT_HITS}"
 
-# Full menu lifecycle in one process: 4→3→5→7→6→1Back→0 Exit
+# Full menu lifecycle in one process: 3(enable)→4(verify)→5→7→6→1→0 Exit
 # Menu counter must live in a file: choice="$(mm_whiptail_menu ...)" runs in a subshell.
 set +e
 LIFE_OUT="$(
-  MM_PROJECT_ROOT="$ROOT" MM_FORCE_MENU=1 bash -c '
+  MM_PROJECT_ROOT="$ROOT" MM_FORCE_MENU=1 MM_SKIP_ROOT_CHECK=1 bash -c '
     set -euo pipefail
     TRACE="$1"
     LIB="$2"
@@ -880,7 +912,7 @@ LIFE_OUT="$(
     # shellcheck disable=SC1090
     source "$LIB"
     export MM_GUI_MODE=1
-    MENU_SEQ=(4 3 5 7 6 1 0)
+    MENU_SEQ=(3 4 5 7 6 1 0)
     mm_has_whiptail() { return 0; }
     mm_whiptail_menu() {
       printf "MENU\n" >>"$TRACE"
@@ -898,8 +930,9 @@ LIFE_OUT="$(
     mm_whiptail_textbox() { printf "TEXTBOX\t%s\n" "$1" >>"$TRACE"; return 0; }
     mm_whiptail_msg() { printf "MSG\t%s\n" "$1" >>"$TRACE"; return 0; }
     mm_whiptail_yesno() { return 0; }
+    mm_whiptail_input() { printf "%s\n" "${3:-6.3.0}"; return 0; }
     load_mirror_defaults() { :; }
-    mm_load_gui_config() { TARGET_DP_VERSION=6.5.0; }
+    mm_load_gui_config() { TARGET_DP_VERSION=6.5.0; MIRROR_HTTP_URL="http://221.139.249.111"; }
     engine_resolve_paths() {
       printf "PATH_RESOLVE\n" >>"$TRACE"
       return 0
@@ -908,10 +941,14 @@ LIFE_OUT="$(
     dp2_stable_bundle_name() { printf "%s\n" "dp_bundle_6.5.0-current.tar"; }
     engine_enable_http_distribution() { echo ENABLED; return 0; }
     engine_compute_readiness() { printf "UPGRADE_READINESS=FAIL\n"; return 1; }
+    engine_validate_http_layout() { return 0; }
     mm_status_get() { printf "UNKNOWN\n"; }
+    mm_artifacts_ready_for_http() { return 0; }
+    mm_http_distribution_enabled() { return 0; }
+    mm_save_gui_config() { return 0; }
     gui_configuration() { printf "ACTION_1\n" >>"$TRACE"; return 0; }
     gui_enable_http() {
-      printf "ACTION_4\n" >>"$TRACE"
+      printf "ACTION_3\n" >>"$TRACE"
       gui_show_sha256_wait_notice "enable-http" "dp_bundle_6.5.0-current.tar" \
         "Verifying the SHA256 checksum of the Phase 2 bundle before enabling HTTP distribution."
       local tmp; tmp="$(mktemp)"
@@ -921,7 +958,7 @@ LIFE_OUT="$(
       return 0
     }
     gui_verify_readiness() {
-      printf "ACTION_3\n" >>"$TRACE"
+      printf "ACTION_4\n" >>"$TRACE"
       local tmp; tmp="$(mktemp)"
       printf "UPGRADE_READINESS=FAIL\nTARGET_DP_VERSION=6.5.0\n" >"$tmp"
       mm_whiptail_textbox "Verify Upgrade Readiness" "$tmp" || true
@@ -931,7 +968,7 @@ LIFE_OUT="$(
     gui_show_status() {
       printf "ACTION_5\n" >>"$TRACE"
       local tmp; tmp="$(mktemp)"
-      printf "Target DP Version: 6.5.0\nHTTP distribution: DISABLED\n" >"$tmp"
+      printf "Target DP Version: 6.5.0\nHTTP Distribution: DISABLED\n" >"$tmp"
       mm_whiptail_textbox "Current Status" "$tmp" || true
       rm -f "$tmp"
       return 0
@@ -939,8 +976,8 @@ LIFE_OUT="$(
     gui_client_instructions() {
       printf "ACTION_7\n" >>"$TRACE"
       local tmp; tmp="$(mktemp)"
-      printf "CLIENT_DOWNLOAD_SOURCE=MIRROR_SERVER_ONLY\nCLIENT_R2_ACCESS=NO\n" >"$tmp"
-      mm_whiptail_textbox "DP Client Upgrade Instructions" "$tmp" || true
+      gui_build_client_commands "http://221.139.249.111" "6.3.0" "single" "" >"$tmp"
+      mm_whiptail_textbox "DP Client Upgrade Commands" "$tmp" || true
       rm -f "$tmp"
       return 0
     }
@@ -956,8 +993,8 @@ LIFE_OUT="$(
 LIFE_RC=$?
 set -e
 
-ACTION_4_CALL_COUNT="$(grep -c '^ACTION_4$' "$LIFECYCLE_TRACE" || true)"
 ACTION_3_CALL_COUNT="$(grep -c '^ACTION_3$' "$LIFECYCLE_TRACE" || true)"
+ACTION_4_CALL_COUNT="$(grep -c '^ACTION_4$' "$LIFECYCLE_TRACE" || true)"
 ACTION_5_CALL_COUNT="$(grep -c '^ACTION_5$' "$LIFECYCLE_TRACE" || true)"
 ACTION_7_CALL_COUNT="$(grep -c '^ACTION_7$' "$LIFECYCLE_TRACE" || true)"
 ACTION_6_CALL_COUNT="$(grep -c '^ACTION_6$' "$LIFECYCLE_TRACE" || true)"
@@ -966,8 +1003,8 @@ MAIN_MENU_DISPLAY_COUNT="$(grep -c '^MENU$' "$LIFECYCLE_TRACE" || true)"
 GUI_EXIT_COUNT="$(grep -c '^EXIT_REASON=EXPLICIT_ZERO$' "$LIFECYCLE_TRACE" || true)"
 
 [[ "$LIFE_RC" -eq 0 ]] && pass "S lifecycle process rc=0" || fail "S lifecycle rc=${LIFE_RC} out=${LIFE_OUT}"
-[[ "$ACTION_4_CALL_COUNT" -eq 1 ]] && pass "S ACTION_4_CALL_COUNT=1" || fail "S ACTION_4_CALL_COUNT=${ACTION_4_CALL_COUNT}"
-[[ "$ACTION_3_CALL_COUNT" -eq 1 ]] && pass "S ACTION_3_CALL_COUNT=1" || fail "S ACTION_3_CALL_COUNT=${ACTION_3_CALL_COUNT}"
+[[ "$ACTION_3_CALL_COUNT" -eq 1 ]] && pass "S ACTION_3_CALL_COUNT=1 (enable-http)" || fail "S ACTION_3_CALL_COUNT=${ACTION_3_CALL_COUNT}"
+[[ "$ACTION_4_CALL_COUNT" -eq 1 ]] && pass "S ACTION_4_CALL_COUNT=1 (verify)" || fail "S ACTION_4_CALL_COUNT=${ACTION_4_CALL_COUNT}"
 [[ "$ACTION_5_CALL_COUNT" -eq 1 ]] && pass "S ACTION_5_CALL_COUNT=1" || fail "S ACTION_5_CALL_COUNT=${ACTION_5_CALL_COUNT}"
 [[ "$ACTION_7_CALL_COUNT" -eq 1 ]] && pass "S ACTION_7_CALL_COUNT=1" || fail "S ACTION_7_CALL_COUNT=${ACTION_7_CALL_COUNT}"
 [[ "$ACTION_6_CALL_COUNT" -eq 1 ]] && pass "S ACTION_6_CALL_COUNT=1" || fail "S ACTION_6_CALL_COUNT=${ACTION_6_CALL_COUNT}"
@@ -980,13 +1017,13 @@ GUI_EXIT_COUNT="$(grep -c '^EXIT_REASON=EXPLICIT_ZERO$' "$LIFECYCLE_TRACE" || tr
 # Failure of a GUI action must not terminate the menu (dispatcher).
 set +e
 FAIL_LIFE="$(
-  MM_PROJECT_ROOT="$ROOT" MM_FORCE_MENU=1 bash -c '
+  MM_PROJECT_ROOT="$ROOT" MM_FORCE_MENU=1 MM_SKIP_ROOT_CHECK=1 bash -c '
     set -euo pipefail
     TRACE="$1"; LIB="$2"; MENU_IDX_FILE="$3"; : >"$TRACE"
     printf "0\n" >"$MENU_IDX_FILE"
     # shellcheck disable=SC1090
     source "$LIB"
-    MENU_SEQ=(4 0)
+    MENU_SEQ=(3 0)
     mm_has_whiptail() { return 0; }
     mm_whiptail_menu() {
       printf "MENU\n" >>"$TRACE"
@@ -1003,7 +1040,7 @@ FAIL_LIFE="$(
     load_mirror_defaults() { :; }
     mm_load_gui_config() { TARGET_DP_VERSION=6.5.0; }
     engine_resolve_paths() { :; }
-    gui_enable_http() { printf "ACTION_4_FAIL\n" >>"$TRACE"; return 7; }
+    gui_enable_http() { printf "ACTION_3_FAIL\n" >>"$TRACE"; return 7; }
     cmd_mirror_manager
     printf "EXIT_REASON=EXPLICIT_ZERO\n" >>"$TRACE"
   ' gui-fail-life "${WORKDIR}/fail-life.trace" "$S_LIB" "${WORKDIR}/fail-menu.idx" 2>&1
@@ -1018,7 +1055,7 @@ set -e
 # Main menu ESC continues; only 0 exits.
 set +e
 ESC_LIFE="$(
-  MM_PROJECT_ROOT="$ROOT" MM_FORCE_MENU=1 bash -c '
+  MM_PROJECT_ROOT="$ROOT" MM_FORCE_MENU=1 MM_SKIP_ROOT_CHECK=1 bash -c '
     set -euo pipefail
     TRACE="$1"; LIB="$2"; STEP_FILE="$3"; : >"$TRACE"
     printf "0\n" >"$STEP_FILE"

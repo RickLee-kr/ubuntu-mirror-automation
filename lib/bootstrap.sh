@@ -532,13 +532,14 @@ Logs:
 Next steps (Mirror Manager GUI):
   1. Configuration — Target DP Version, ACPS username/password
   2. Download and Prepare Upgrade Files — R2 OS Core + ACPS Phase 2
-  3. Verify Upgrade Readiness
-  4. Enable HTTP Distribution
+  3. Enable HTTP Distribution
+  4. Verify Upgrade Readiness
+  7. Show DP Client Upgrade Commands
 
 Large downloads are NOT started by bootstrap. Start them from the GUI.
 
-PROJECT_ROLLBACK_SUPPORTED=NO
-RECOVERY_METHOD=HYPERVISOR_SNAPSHOT
+Recovery: take a full hypervisor snapshot of the DP VM before upgrade.
+This project does not provide rollback commands.
 
 EOF
 }

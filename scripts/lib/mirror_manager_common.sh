@@ -481,7 +481,14 @@ mm_require_root() {
   if [[ "${MM_SKIP_ROOT_CHECK}" == "1" ]]; then
     return 0
   fi
-  [[ "${EUID}" -eq 0 ]] || mm_die "ROOT_REQUIRED=FAIL"
+  if [[ "${EUID}" -ne 0 ]]; then
+    # Operator-facing guidance (official entry is always sudo).
+    cat >&2 <<'EOF'
+This command requires sudo.
+Run: sudo ubuntu-offline-mirror mirror-manager
+EOF
+    mm_die "ROOT_REQUIRED=FAIL"
+  fi
   mm_ok "ROOT_REQUIRED=PASS"
 }
 
@@ -517,6 +524,7 @@ mm_load_gui_config() {
   TARGET_DP_VERSION="${TARGET_DP_VERSION:-6.5.0}"
   ACPS_USERNAME="${ACPS_USERNAME:-}"
   ACPS_PASSWORD="${ACPS_PASSWORD:-}"
+  MIRROR_HTTP_URL="${MIRROR_HTTP_URL:-}"
   if [[ -f "${MM_CONFIG_FILE}" ]]; then
     # shellcheck disable=SC1090
     set -a
@@ -527,6 +535,7 @@ mm_load_gui_config() {
   TARGET_DP_VERSION="${TARGET_DP_VERSION:-6.5.0}"
   ACPS_USERNAME="${ACPS_USERNAME:-${ACPS_USER:-}}"
   ACPS_PASSWORD="${ACPS_PASSWORD:-${ACPS_PASS:-}}"
+  MIRROR_HTTP_URL="${MIRROR_HTTP_URL:-}"
   ACPS_BASE_URL="${ACPS_BASE_URL_FIXED}"
 }
 
@@ -542,6 +551,7 @@ mm_save_gui_config() {
 TARGET_DP_VERSION=${TARGET_DP_VERSION}
 ACPS_USERNAME=${ACPS_USERNAME}
 ACPS_PASSWORD=${ACPS_PASSWORD}
+MIRROR_HTTP_URL=${MIRROR_HTTP_URL:-}
 EOF
   umask "$old_umask"
   chmod 600 "$tmp"
@@ -551,6 +561,84 @@ EOF
     chown root:root "$MM_CONFIG_FILE" 2>/dev/null || true
   fi
   mm_ok "CONFIGURATION_SAVED=PASS path=${MM_CONFIG_FILE}"
+}
+
+# Public HTTP base clients use (no trailing slash). Never logs credentials.
+mm_client_mirror_url() {
+  local url ip def stage
+  mm_load_gui_config
+  url="${MIRROR_HTTP_URL:-}"
+  if [[ -z "$url" ]]; then
+    ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      url="http://${ip}"
+    fi
+  fi
+  if [[ -z "$url" ]]; then
+    stage="${MM_PROJECT_ROOT:-}/client/stage-dp-phase2.sh"
+    if [[ -f "$stage" ]]; then
+      def="$(awk -F= '/^DEFAULT_MIRROR_URL=/{gsub(/"/,"",$2); print $2; exit}' "$stage" || true)"
+      [[ -n "$def" ]] && url="$def"
+    fi
+  fi
+  url="${url%/}"
+  if [[ -z "$url" ]]; then
+    return 1
+  fi
+  if ! [[ "$url" =~ ^https?://[A-Za-z0-9._:-]+(/.*)?$ ]]; then
+    return 1
+  fi
+  printf '%s\n' "$url"
+}
+
+mm_validate_source_dp_version() {
+  local ver="$1"
+  [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  case "$ver" in
+    6.2.0|6.3.0|6.4.0|6.5.0) return 0 ;;
+    *)
+      # Allow other X.Y.Z above policy floor; reject obvious junk.
+      [[ "$ver" =~ ^6\.[0-9]+\.[0-9]+$ ]] || return 1
+      return 0
+      ;;
+  esac
+}
+
+# Comma-separated IPv4 list for --worker-ips. Rejects shell metacharacters.
+mm_validate_worker_ips() {
+  local raw="$1"
+  local cleaned item
+  cleaned="$(printf '%s' "$raw" | tr -d '[:space:]')"
+  [[ -n "$cleaned" ]] || return 1
+  # Allow only digits, dots, and commas.
+  [[ "$cleaned" =~ ^[0-9.,]+$ ]] || return 1
+  IFS=',' read -r -a _mm_ips <<<"$cleaned"
+  [[ "${#_mm_ips[@]}" -ge 1 ]] || return 1
+  for item in "${_mm_ips[@]}"; do
+    [[ -n "$item" ]] || return 1
+    [[ "$item" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+  done
+  printf '%s\n' "$cleaned"
+}
+
+mm_artifacts_ready_for_http() {
+  local bundle_ck os_ready
+  os_ready="$(mm_status_get OS_MIRROR_READY)"
+  bundle_ck="$(mm_status_get PHASE2_BUNDLE_CHECKSUM)"
+  [[ "$os_ready" == "PASS" ]] || return 1
+  [[ "$bundle_ck" == "PASS" ]] || return 1
+  mm_client_files_ready "${MM_CLIENT_ROOT}" || return 1
+  return 0
+}
+
+mm_http_distribution_enabled() {
+  local v
+  v="$(mm_status_get HTTP_DISTRIBUTION)"
+  [[ "$v" == "ENABLED" ]]
+}
+
+mm_client_commands_file() {
+  printf '%s/dp-client-upgrade-commands.txt\n' "${MM_LOG_DIR:-/var/log/ubuntu-mirror-automation}"
 }
 
 mm_config_ready() {

@@ -194,9 +194,16 @@ echo "======== G. GUI surface ========"
 INST="${ROOT}/scripts/install-dp-upgrade-mirror.sh"
 for item in Configuration "Download and Prepare" "Verify Upgrade Readiness" \
   "Enable HTTP Distribution" "Show Current Status" "View Logs" \
-  "Show DP Client Upgrade Instructions"; do
+  "Show DP Client Upgrade Commands"; do
   grep -q "$item" "$INST" || fail "menu missing $item"
 done
+# Menu numbers: 3=Enable HTTP, 4=Verify (order in main menu tags).
+awk '
+  /"1" "Configuration"/ { in_menu=1 }
+  in_menu && /"3" "Enable HTTP Distribution"/ { m3=NR }
+  in_menu && /"4" "Verify Upgrade Readiness"/ { m4=NR }
+  END { exit((m3 && m4 && m3 < m4) ? 0 : 1) }
+' "$INST" || fail "menu order 3/4 wrong"
 pass "GUI menu items 1-7"
 grep -qE 'Enter R2 URL|Set R2 URL|install-standard|Roll Back|Mode 1|Mode 2' "$INST" \
   && fail "GUI has forbidden menus" || pass "GUI no URL/mode/rollback"
