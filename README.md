@@ -63,15 +63,20 @@ sudo ubuntu-offline-mirror mirror-manager
 ## Mirror Manager GUI
 
 ```
-1. Configuration
-2. Download and Prepare Upgrade Files
-3. Enable HTTP Distribution
-4. Verify Upgrade Readiness
-5. Show Current Status
-6. View Logs
-7. Show DP Client Upgrade Commands
-0. Exit
+Workflow: Configuration → Download → Enable HTTP → Verify Readiness
+Progress: 3 of 4 workflow steps completed
+
+1 Configuration [COMPLETED]
+2 Download and Prepare Upgrade Files [COMPLETED]
+3 Enable HTTP Distribution [COMPLETED]
+4 Verify Upgrade Readiness
+5 Show Current Status
+6 View Logs
+7 Show DP Client Upgrade Commands
+0 Exit
 ```
+
+`[COMPLETED]` means the step is currently valid. The label is removed automatically if its configuration, artifacts, HTTP service, or readiness state is no longer valid. SHA256 verification displays a heartbeat every 30 seconds.
 
 Enable HTTP (3) before Verify Readiness (4). Menu 7 prints one-line DP commands and saves them to `/var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt`.
 

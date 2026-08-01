@@ -197,12 +197,14 @@ for item in Configuration "Download and Prepare" "Verify Upgrade Readiness" \
   "Show DP Client Upgrade Commands"; do
   grep -q "$item" "$INST" || fail "menu missing $item"
 done
-# Menu numbers: 3=Enable HTTP, 4=Verify (order in main menu tags).
+# Menu numbers: 3=Enable HTTP, 4=Verify (order via label vars + tags).
 awk '
-  /"1" "Configuration"/ { in_menu=1 }
-  in_menu && /"3" "Enable HTTP Distribution"/ { m3=NR }
-  in_menu && /"4" "Verify Upgrade Readiness"/ { m4=NR }
-  END { exit((m3 && m4 && m3 < m4) ? 0 : 1) }
+  /^cmd_mirror_manager\(\)/ { in_fn=1 }
+  in_fn && /mm_menu_label "Enable HTTP Distribution"/ { c3=1 }
+  in_fn && /mm_menu_label "Verify Upgrade Readiness"/ { c4=1 }
+  in_fn && /"3" "\$\{http_label\}"/ { m3=NR }
+  in_fn && /"4" "\$\{readiness_label\}"/ { m4=NR }
+  in_fn && /^}/ { exit((c3 && c4 && m3 && m4 && m3 < m4) ? 0 : 1) }
 ' "$INST" || fail "menu order 3/4 wrong"
 pass "GUI menu items 1-7"
 grep -qE 'Enter R2 URL|Set R2 URL|install-standard|Roll Back|Mode 1|Mode 2' "$INST" \

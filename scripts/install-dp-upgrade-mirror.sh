@@ -73,15 +73,16 @@ mm_calc_menu_size() {
   mm_term_size
   local menu_list_height=$((item_count + 1))
   [[ "${menu_list_height}" -lt "${min_list}" ]] && menu_list_height="${min_list}"
-  local dialog_height=$((menu_list_height + 10))
-  local max_list=$((HEIGHT - 12))
+  # +12 leaves room for a multi-line instruction block (workflow + progress).
+  local dialog_height=$((menu_list_height + 12))
+  local max_list=$((HEIGHT - 14))
   [[ "${max_list}" -lt 6 ]] && max_list=6
   if [[ "${menu_list_height}" -gt "${max_list}" ]]; then
     menu_list_height="${max_list}"
     dialog_height=$((HEIGHT - 2))
   fi
   [[ "${dialog_height}" -gt $((HEIGHT - 2)) ]] && dialog_height=$((HEIGHT - 2))
-  [[ "${dialog_height}" -lt 14 ]] && dialog_height=14
+  [[ "${dialog_height}" -lt 16 ]] && dialog_height=16
   local dialog_width=$((WIDTH - 6))
   [[ "${dialog_width}" -lt "${min_width}" ]] && dialog_width="${min_width}"
   [[ "${dialog_width}" -gt 100 ]] && dialog_width=100
@@ -244,7 +245,7 @@ mm_whiptail_infobox() {
   return 0
 }
 
-# Operator notice before long Phase 2 bundle SHA256 (GUI capture hides engine stdout).
+# Operator notice before long Phase 2 bundle SHA256 (legacy helper; prefer live progress).
 gui_show_sha256_wait_notice() {
   local operation="$1"
   local file="$2"
@@ -371,7 +372,7 @@ OS Core Source: Cloudflare R2 — fixed" \
         ;;
       5)
         mm_save_gui_config
-        mm_status_set CONFIGURATION_READY PASS
+        mm_record_config_validated
         mm_whiptail_msg "Configuration" \
           "Configuration saved.
 
@@ -483,17 +484,46 @@ before enabling HTTP distribution."
     return 0
   fi
   dp2_set_version "${TARGET_DP_VERSION}"
-  local out backend_rc=0 tmp stable
+  local backend_rc=0 tmp stable bytes
   stable="$(dp2_stable_bundle_name)"
-  # Engine stdout is captured below; show wait notice before long SHA256 starts.
-  gui_show_sha256_wait_notice "enable-http" "$stable" \
-    "Verifying the SHA256 checksum of the Phase 2 bundle before enabling HTTP distribution."
+  bytes="$(stat -c%s "${MM_DP_PHASE2_ROOT}/${TARGET_DP_VERSION}/${stable}" 2>/dev/null || echo 0)"
+
+  # Leave whiptail so SHA256 heartbeats are visible (same pattern as Download).
+  clear 2>/dev/null || true
+  cat <<EOF
+============================================================
+Enable HTTP Distribution — live progress
+Target DP Version: ${TARGET_DP_VERSION}
+Phase 2 bundle: ${stable}
+Size: $(mm_format_bytes "$bytes")
+
+Verifying the Phase 2 bundle SHA256 before enabling HTTP distribution.
+Long checksum steps print a heartbeat every 30 seconds.
+Do not interrupt or close this terminal.
+============================================================
+
+EOF
+  export MM_LIVE_PROGRESS=1
+  export MM_SHA256_OPERATION=enable-http
   tmp="$(mktemp)"
   set +e
-  out="$(engine_enable_http_distribution 2>&1)"
+  # Capture transcript for the result textbox. Live progress is mirrored to
+  # /dev/tty by mm_log under MM_LIVE_PROGRESS — do not also tee.
+  engine_enable_http_distribution >"$tmp" 2>&1
   backend_rc=$?
   set -e
-  printf '%s\n' "$out" >"$tmp"
+  unset MM_LIVE_PROGRESS
+  unset MM_SHA256_OPERATION
+
+  printf '\n------------------------------------------------------------\n'
+  if [[ "$backend_rc" -eq 0 ]]; then
+    printf 'Enable HTTP Distribution finished: PASS\n'
+  else
+    printf 'Enable HTTP Distribution finished: FAIL (see log above)\n'
+  fi
+  printf 'Press Enter to return to the menu...\n'
+  read -r _ || true
+
   if [[ "$backend_rc" -eq 0 ]]; then
     mm_whiptail_textbox "HTTP Distribution — ENABLED" "$tmp" || true
   else
@@ -508,7 +538,7 @@ gui_verify_readiness() {
   load_mirror_defaults
   mm_load_gui_config
   engine_resolve_paths
-  local tmp http_rc=0 ready_line=""
+  local tmp http_rc=0 ready_line="" backend_rc=0
   tmp="$(mktemp)"
   if ! mm_http_distribution_enabled; then
     cat >"$tmp" <<EOF
@@ -522,6 +552,7 @@ Run:
 before verifying upgrade readiness.
 EOF
     mm_status_set UPGRADE_READINESS FAIL
+    mm_status_set READINESS_RESULT FAIL
     mm_whiptail_textbox "Verify Upgrade Readiness" "$tmp" || true
     rm -f "$tmp"
     return 0
@@ -531,25 +562,60 @@ EOF
     printf 'Target DP Version: %s\n' "${TARGET_DP_VERSION}"
     printf 'HTTP Distribution: %s\n' "$(mm_status_get HTTP_DISTRIBUTION)"
   } >"$tmp"
-  # Live HTTP probes (200-only). Isolate mm_die/exit from menu process.
+
+  clear 2>/dev/null || true
+  cat <<EOF
+============================================================
+Verify Upgrade Readiness — live progress
+Target DP Version: ${TARGET_DP_VERSION}
+
+HTTP URL checks and status validation run next.
+If a Phase 2 SHA256 check is required, a heartbeat prints every 30 seconds.
+Do not interrupt or close this terminal.
+============================================================
+
+EOF
+  export MM_LIVE_PROGRESS=1
+  export MM_SHA256_OPERATION=verify-readiness
   set +e
+  # Prefer fingerprint skip when artifacts match last Download verify.
+  if mm_download_completed; then
+    export MM_SKIP_BUNDLE_SHA256=1
+  fi
   ( engine_validate_http_layout ) >>"$tmp" 2>&1
   http_rc=$?
+  unset MM_SKIP_BUNDLE_SHA256
   set -e
   if [[ "$http_rc" -eq 0 ]]; then
     printf 'HTTP URL checks: PASS\n' >>"$tmp"
   else
     printf 'HTTP URL checks: FAIL\n' >>"$tmp"
     mm_status_set UPGRADE_READINESS FAIL
+    mm_status_set READINESS_RESULT FAIL
     printf 'UPGRADE_READINESS=FAIL\n' >>"$tmp"
+    unset MM_LIVE_PROGRESS
+    unset MM_SHA256_OPERATION
+    printf '\nPress Enter to return to the menu...\n'
+    read -r _ || true
     mm_whiptail_textbox "Verify Upgrade Readiness" "$tmp" || true
     rm -f "$tmp"
     return 0
   fi
   set +e
   ready_line="$(engine_compute_readiness 2>>"$tmp")"
+  backend_rc=$?
   set -e
   printf '%s\n' "$ready_line" >>"$tmp"
+  unset MM_LIVE_PROGRESS
+  unset MM_SHA256_OPERATION
+  printf '\n------------------------------------------------------------\n'
+  if [[ "$backend_rc" -eq 0 ]]; then
+    printf 'Verify Upgrade Readiness finished: PASS\n'
+  else
+    printf 'Verify Upgrade Readiness finished: FAIL\n'
+  fi
+  printf 'Press Enter to return to the menu...\n'
+  read -r _ || true
   mm_whiptail_textbox "Verify Upgrade Readiness" "$tmp" || true
   rm -f "$tmp"
   return 0
@@ -558,34 +624,49 @@ EOF
 gui_show_status() {
   load_mirror_defaults
   mm_load_gui_config
-  local tmp ver entries bundle_state os_state http_state
+  engine_resolve_paths
+  local tmp ver config_state os_state bundle_state http_state ready_state
   ver="${TARGET_DP_VERSION:-6.5.0}"
-  entries="$(mm_status_get PHASE2_BUNDLE_ENTRY_COUNT)"
-  if [[ "$(mm_status_get PHASE2_BUNDLE_CHECKSUM)" == "PASS" && "$entries" == "9" ]]; then
+  mm_collect_workflow_status
+  if [[ "${MM_WF_CONFIG_COMPLETED}" == "1" ]]; then
+    config_state="PASS"
+  else
+    config_state="FAIL"
+  fi
+  if [[ "${MM_WF_DOWNLOAD_COMPLETED}" == "1" ]]; then
+    os_state="READY"
     bundle_state="READY (9 files)"
   else
+    os_state="NOT READY"
     bundle_state="NOT READY"
   fi
-  if [[ "$(mm_status_get OS_MIRROR_READY)" == "PASS" ]]; then
-    os_state="READY"
+  if [[ "${MM_WF_HTTP_COMPLETED}" == "1" ]]; then
+    http_state="ENABLED"
   else
-    os_state="NOT READY"
+    http_state="$(mm_status_get HTTP_DISTRIBUTION)"
+    [[ -n "$http_state" ]] || http_state="DISABLED"
+    [[ "$http_state" == "ENABLED" ]] || http_state="DISABLED"
   fi
-  http_state="$(mm_status_get HTTP_DISTRIBUTION)"
-  [[ -n "$http_state" ]] || http_state="DISABLED"
+  if [[ "${MM_WF_READINESS_COMPLETED}" == "1" ]]; then
+    ready_state="PASS"
+  else
+    ready_state="FAIL"
+  fi
   tmp="$(mktemp)"
   cat >"$tmp" <<EOF
 DP Upgrade Mirror Status
 ========================
 
 Target DP Version: ${ver}
-Configuration: $(mm_status_get CONFIGURATION_READY)
+Configuration: ${config_state}
 OS Upgrade Files: ${os_state}
 DP ${ver} Bundle: ${bundle_state}
 HTTP Distribution: ${http_state}
-Upgrade Readiness: $(mm_status_get UPGRADE_READINESS)
+Upgrade Readiness: ${ready_state}
 Last Operation: $(mm_status_get LAST_EXECUTION_RESULT)
 Log File: $(mm_status_get LOG_PATH)
+
+$(mm_workflow_progress_text)
 EOF
   mm_whiptail_textbox "Current Status" "$tmp" || true
   rm -f "$tmp"
@@ -797,16 +878,22 @@ EOF
   fi
   while true; do
     local choice="" menu_rc=0
+    local configuration_label download_label http_label readiness_label progress_line
+    mm_collect_workflow_status
+    configuration_label="$(mm_menu_label "Configuration" "${MM_WF_CONFIG_COMPLETED}")"
+    download_label="$(mm_menu_label "Download and Prepare Upgrade Files" "${MM_WF_DOWNLOAD_COMPLETED}")"
+    http_label="$(mm_menu_label "Enable HTTP Distribution" "${MM_WF_HTTP_COMPLETED}")"
+    readiness_label="$(mm_menu_label "Verify Upgrade Readiness" "${MM_WF_READINESS_COMPLETED}")"
+    progress_line="$(mm_workflow_progress_text)"
     choice="$(mm_whiptail_menu \
       "DP Ubuntu Upgrade Mirror Manager" \
       "Workflow: Configuration → Download → Enable HTTP → Verify Readiness
-
-After Configuration, choose 2 to start the download.
+${progress_line}
 Cancel/ESC returns here; choose 0 to Exit." \
-      "1" "Configuration" \
-      "2" "Download and Prepare Upgrade Files" \
-      "3" "Enable HTTP Distribution" \
-      "4" "Verify Upgrade Readiness" \
+      "1" "${configuration_label}" \
+      "2" "${download_label}" \
+      "3" "${http_label}" \
+      "4" "${readiness_label}" \
       "5" "Show Current Status" \
       "6" "View Logs" \
       "7" "Show DP Client Upgrade Commands" \

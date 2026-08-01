@@ -463,16 +463,47 @@ engine_validate_http_layout() {
   local ver="${TARGET_DP_VERSION:-$DP_PHASE2_VERSION}"
   local sel="$MM_SELECTIVE_ROOT"
   local dp="${MM_DP_PHASE2_ROOT}/${ver}"
-  local stable
+  local stable bundle sidecar fp op human
   stable="$(dp2_stable_bundle_name)"
+  bundle="${dp}/${stable}"
+  sidecar="${dp}/${stable}.sha256"
 
   [[ -d "${sel}/ubuntu" || -L "${sel}/ubuntu" ]] || mm_die "HTTP_LAYOUT=FAIL missing /ubuntu tree"
   [[ -d "${sel}/shared/offline" ]] || mm_die "HTTP_LAYOUT=FAIL missing /offline tree"
   [[ -d "${MM_CLIENT_ROOT}" ]] || mkdir -p "${MM_CLIENT_ROOT}"
   [[ -f "${dp}/release.env" ]] || mm_die "HTTP_LAYOUT=FAIL missing release.env"
-  [[ -f "${dp}/${stable}" ]] || mm_die "HTTP_LAYOUT=FAIL missing ${stable}"
-  [[ -f "${dp}/${stable}.sha256" ]] || mm_die "HTTP_LAYOUT=FAIL missing ${stable}.sha256"
-  dp2_verify_sha256_pair "${dp}/${stable}" "${dp}/${stable}.sha256"
+  [[ -f "$bundle" ]] || mm_die "HTTP_LAYOUT=FAIL missing ${stable}"
+  [[ -f "$sidecar" ]] || mm_die "HTTP_LAYOUT=FAIL missing ${stable}.sha256"
+
+  # Full SHA256 only when needed. Menu status collection must set MM_SKIP_BUNDLE_SHA256=1.
+  # Within one Enable HTTP run, verify once then reuse via MM_BUNDLE_SHA256_DONE_FP.
+  if [[ "${MM_SKIP_BUNDLE_SHA256:-0}" != "1" ]]; then
+    fp="$(mm_file_fingerprint "$bundle" 2>/dev/null || true)"
+    if [[ -n "${MM_BUNDLE_SHA256_DONE_FP:-}" && -n "$fp" && "${MM_BUNDLE_SHA256_DONE_FP}" == "$fp" ]]; then
+      mm_info "SHA256_VERIFICATION_SKIP reason=already_verified_this_run file=${stable}"
+    else
+      op="${MM_SHA256_OPERATION:-layout}"
+      human="Still verifying the Phase 2 bundle SHA256..."
+      case "$op" in
+        enable-http)
+          human="Still verifying the Phase 2 bundle SHA256 before enabling HTTP distribution..."
+          ;;
+        verify-readiness)
+          human="Still verifying the Phase 2 bundle SHA256 for upgrade readiness..."
+          ;;
+      esac
+      if ! mm_verify_sha256_pair_logged \
+        "$bundle" \
+        "$sidecar" \
+        "SHA256_VERIFICATION" \
+        "$human" \
+        "operation=${op}"
+      then
+        mm_die "HTTP_LAYOUT=FAIL sha256"
+      fi
+      MM_BUNDLE_SHA256_DONE_FP="$fp"
+    fi
+  fi
 
   # Refuse generation structures
   if [[ -L "${dp}/current" || -L "${dp}/previous" || -d "${dp}/releases" ]]; then
@@ -589,6 +620,11 @@ engine_compute_readiness() {
   done
   mm_status_set TARGET_DP_VERSION "${TARGET_DP_VERSION}"
   mm_status_set UPGRADE_READINESS "$all"
+  if [[ "$all" == "PASS" ]]; then
+    mm_record_readiness_validated
+  else
+    mm_status_set READINESS_RESULT FAIL
+  fi
   printf 'UPGRADE_READINESS=%s\n' "$all"
   [[ "$all" == "PASS" ]]
 }
@@ -683,6 +719,7 @@ engine_download_and_prepare() {
 
   mm_state_set HTTP_DISTRIBUTION_READY NO
   mm_status_set HTTP_DISTRIBUTION DISABLED
+  mm_record_download_validated
   engine_write_install_report PASS
   mm_ok "DOWNLOAD_AND_PREPARE=PASS"
 }
@@ -724,6 +761,9 @@ engine_enable_http_distribution() {
   mm_load_gui_config
   engine_resolve_paths
   dp2_set_version "$TARGET_DP_VERSION"
+  # Heartbeat-labeled SHA256 during Enable HTTP (once per run via DONE_FP).
+  export MM_SHA256_OPERATION="${MM_SHA256_OPERATION:-enable-http}"
+  MM_BUNDLE_SHA256_DONE_FP=""
 
   if ! mm_check_client_files_ready; then
     mm_status_set HTTP_DISTRIBUTION DISABLED
@@ -746,6 +786,7 @@ engine_enable_http_distribution() {
     mm_info "DRY_RUN skip nginx enable"
     mm_status_set HTTP_DISTRIBUTION ENABLED
     mm_state_set HTTP_DISTRIBUTION_READY YES
+    mm_record_http_validated
     mm_ok "HTTP_DISTRIBUTION=ENABLED (dry-run)"
     return 0
   fi
@@ -756,6 +797,7 @@ engine_enable_http_distribution() {
     mm_status_set HTTP_DISTRIBUTION ENABLED
     mm_state_set HTTP_DISTRIBUTION_READY YES
     mm_status_set HTTP_CONFIGURATION_READY PASS
+    mm_record_http_validated
     mm_ok "HTTP_DISTRIBUTION=ENABLED"
     return 0
   fi
@@ -799,6 +841,7 @@ engine_enable_http_distribution() {
     fi
     mm_status_set HTTP_DISTRIBUTION DISABLED
     mm_state_set HTTP_DISTRIBUTION_READY NO
+    mm_status_set HTTP_ENABLE_RESULT FAIL
   }
 
   if [[ "${MM_NGINX_TEST_FAIL:-0}" == "1" ]] || ! "$nginx_bin" -t; then
@@ -842,5 +885,6 @@ engine_enable_http_distribution() {
   mm_status_set HTTP_DISTRIBUTION ENABLED
   mm_state_set HTTP_DISTRIBUTION_READY YES
   mm_status_set HTTP_CONFIGURATION_READY PASS
+  mm_record_http_validated
   mm_ok "HTTP_DISTRIBUTION=ENABLED"
 }

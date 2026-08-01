@@ -377,11 +377,13 @@ mm_sha256_write_sidecar_logged() {
 }
 
 # Verify data+sidecar SHA256 with labeled START/HEARTBEAT/COMPLETE.
+# Optional 5th arg: extra fields (e.g. operation=enable-http).
 mm_verify_sha256_pair_logged() {
   local data_file="$1"
   local checksum_file="$2"
   local event_prefix="$3"
   local human_still="${4:-Still verifying SHA256...}"
+  local extra_fields="${5:-}"
   local expected actual bytes fields rc=0
   expected="$(dp2_read_hash_field "$checksum_file")"
   dp2_validate_sha256_hex "$expected" || {
@@ -395,21 +397,32 @@ mm_verify_sha256_pair_logged() {
     fields="file=$(basename "$data_file") algorithm=SHA256 bytes=${bytes}"
   elif [[ "$event_prefix" == PHASE2_FINAL_SHA256_VERIFY ]]; then
     fields="bundle=${data_file} bytes=${bytes}"
+  elif [[ "$event_prefix" == SHA256_VERIFICATION ]]; then
+    fields="file=$(basename "$data_file") bytes=${bytes} algorithm=SHA256"
+  fi
+  if [[ -n "$extra_fields" ]]; then
+    fields="${extra_fields} ${fields}"
   fi
   mm_info "${event_prefix}_START ${fields}"
   mm_bg_with_heartbeat "$event_prefix" "$fields" "$human_still" -- sha256sum "$data_file" && rc=0 || rc=$?
   if [[ "$rc" -ne 0 ]]; then
+    mm_error "${event_prefix}_COMPLETE ${fields} elapsed=${MM_LONG_STEP_LAST_ELAPSED}s result=FAIL rc=${rc}"
     mm_error "${event_prefix}_FAIL ${fields} elapsed=${MM_LONG_STEP_LAST_ELAPSED}s result=FAIL rc=${rc}"
     return "$rc"
   fi
   actual="$(printf '%s\n' "$MM_LONG_STEP_LAST_STDOUT" | awk '{print $1; exit}')"
   if [[ "${expected,,}" != "${actual,,}" ]]; then
     mm_error "SHA256_VERIFY=FAIL file=$(basename "$data_file") expected=${expected} actual=${actual}"
+    mm_error "${event_prefix}_COMPLETE ${fields} elapsed=${MM_LONG_STEP_LAST_ELAPSED}s result=FAIL"
     mm_error "${event_prefix}_FAIL ${fields} elapsed=${MM_LONG_STEP_LAST_ELAPSED}s result=FAIL"
     return 1
   fi
   mm_ok "${event_prefix}_COMPLETE ${fields} elapsed=${MM_LONG_STEP_LAST_ELAPSED}s result=PASS"
-  mm_ok "SHA256_VERIFY=PASS file=$(basename "$data_file")"
+  if [[ -n "$extra_fields" ]]; then
+    mm_ok "SHA256_VERIFY=PASS ${extra_fields} file=$(basename "$data_file")"
+  else
+    mm_ok "SHA256_VERIFY=PASS file=$(basename "$data_file")"
+  fi
   return 0
 }
 
@@ -658,16 +671,31 @@ mm_status_set() {
   local key="$1"
   local val="$2"
   local f="${MM_STATUS_FILE}"
-  mkdir -p "$(dirname "$f")"
-  touch "$f"
-  if grep -q "^${key}=" "$f" 2>/dev/null; then
-    local tmp
-    tmp="$(mktemp)"
-    awk -F= -v k="$key" -v v="$val" 'BEGIN{done=0} $1==k && !done {print k"="v; done=1; next} {print} END{if(!done) print k"="v}' "$f" >"$tmp"
-    mv -f "$tmp" "$f"
-  else
-    printf '%s=%s\n' "$key" "$val" >>"$f"
+  local tmp dir old_umask
+  dir="$(dirname "$f")"
+  mkdir -p "$dir"
+  if [[ ! -f "$f" ]]; then
+    old_umask="$(umask)"
+    umask 077
+    : >"$f"
+    umask "$old_umask"
+    chmod 600 "$f" 2>/dev/null || true
   fi
+  tmp="$(mktemp "${dir}/.status.XXXXXX")"
+  old_umask="$(umask)"
+  umask 077
+  if [[ -f "$f" ]] && grep -q "^${key}=" "$f" 2>/dev/null; then
+    awk -F= -v k="$key" -v v="$val" 'BEGIN{done=0} $1==k && !done {print k"="v; done=1; next} {print} END{if(!done) print k"="v}' "$f" >"$tmp"
+  elif [[ -f "$f" ]]; then
+    cat "$f" >"$tmp"
+    printf '%s=%s\n' "$key" "$val" >>"$tmp"
+  else
+    printf '%s=%s\n' "$key" "$val" >"$tmp"
+  fi
+  umask "$old_umask"
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$f"
+  chmod 600 "$f" 2>/dev/null || true
 }
 
 mm_status_get() {
@@ -675,6 +703,279 @@ mm_status_get() {
   local f="${MM_STATUS_FILE}"
   [[ -f "$f" ]] || { printf ''; return 0; }
   awk -F= -v k="$key" '$1==k {print substr($0, index($0,$2)); exit}' "$f"
+}
+
+# Cheap file identity for menu completion (no full-file hash).
+# Format: path|dev:inode:size:mtime_ns_or_sec
+mm_file_fingerprint() {
+  local path="$1"
+  local st
+  [[ -e "$path" ]] || { printf ''; return 1; }
+  st="$(stat -c '%d:%i:%s:%Y' "$path" 2>/dev/null || true)"
+  [[ -n "$st" ]] || { printf ''; return 1; }
+  printf '%s|%s\n' "$path" "$st"
+}
+
+mm_config_fingerprint() {
+  local path="${MM_CONFIG_FILE}"
+  mm_file_fingerprint "$path" 2>/dev/null || printf ''
+}
+
+mm_phase2_paths() {
+  local ver="${TARGET_DP_VERSION:-6.5.0}"
+  local dp="${MM_DP_PHASE2_ROOT}/${ver}"
+  local stable
+  if command -v dp2_stable_bundle_name >/dev/null 2>&1; then
+    stable="$(dp2_stable_bundle_name 2>/dev/null || printf 'dp_bundle_%s-current.tar' "$ver")"
+  else
+    stable="dp_bundle_${ver}-current.tar"
+  fi
+  MM_WF_PHASE2_DIR="$dp"
+  MM_WF_PHASE2_BUNDLE="${dp}/${stable}"
+  MM_WF_PHASE2_SIDECAR="${dp}/${stable}.sha256"
+  MM_WF_PHASE2_RELEASE="${dp}/release.env"
+  MM_WF_PHASE2_STABLE="$stable"
+}
+
+mm_artifact_fingerprint() {
+  # Combined OS-mirror + Phase 2 identity for readiness invalidation.
+  local os_fp bundle_fp side_fp rel_fp
+  mm_phase2_paths
+  os_fp=""
+  if [[ -e "${MM_SELECTIVE_ROOT}/ubuntu" ]]; then
+    os_fp="$(mm_file_fingerprint "${MM_SELECTIVE_ROOT}/ubuntu" 2>/dev/null || true)"
+  fi
+  bundle_fp="$(mm_file_fingerprint "${MM_WF_PHASE2_BUNDLE}" 2>/dev/null || true)"
+  side_fp="$(mm_file_fingerprint "${MM_WF_PHASE2_SIDECAR}" 2>/dev/null || true)"
+  rel_fp="$(mm_file_fingerprint "${MM_WF_PHASE2_RELEASE}" 2>/dev/null || true)"
+  printf 'os=%s;bundle=%s;sidecar=%s;release=%s\n' \
+    "${os_fp}" "${bundle_fp}" "${side_fp}" "${rel_fp}"
+}
+
+mm_temps_present() {
+  # Incomplete publish leftovers invalidate Download completion.
+  if [[ -d "${MM_DP_PHASE2_ROOT}" ]] \
+    && find "${MM_DP_PHASE2_ROOT}" -maxdepth 1 \( -name '*.new.*' -o -name '*.old.*' \) \
+      -print -quit 2>/dev/null | grep -q .; then
+    return 0
+  fi
+  if [[ -d "${MM_CACHE_ROOT}" ]] \
+    && find "${MM_CACHE_ROOT}" \( -name '*.part' -o -name '*.download' -o -name '*.new.*' \) \
+      -type f -print -quit 2>/dev/null | grep -q .; then
+    return 0
+  fi
+  return 1
+}
+
+mm_configuration_completed() {
+  local mode
+  [[ -f "${MM_CONFIG_FILE}" ]] || return 1
+  mode="$(stat -c '%a' "${MM_CONFIG_FILE}" 2>/dev/null || true)"
+  [[ "$mode" == "600" ]] || return 1
+  # Readable by current process (Mirror Manager is root-only).
+  [[ -r "${MM_CONFIG_FILE}" ]] || return 1
+  mm_load_gui_config
+  mm_config_ready || return 1
+  mm_r2_url_configured || return 1
+  # Optional Mirror URL: if set, must be a valid http(s) base.
+  if [[ -n "${MIRROR_HTTP_URL:-}" ]]; then
+    [[ "${MIRROR_HTTP_URL}" =~ ^https?://[A-Za-z0-9._:-]+(/.*)?$ ]] || return 1
+  fi
+  [[ "$(mm_status_get CONFIGURATION_READY)" == "PASS" ]] || return 1
+  return 0
+}
+
+mm_download_completed() {
+  local stored_fp current_fp entries bundle_ck os_ready
+  mm_configuration_completed || return 1
+  engine_resolve_paths 2>/dev/null || true
+  mm_phase2_paths
+  [[ -d "${MM_SELECTIVE_ROOT}/ubuntu" || -L "${MM_SELECTIVE_ROOT}/ubuntu" ]] || return 1
+  [[ -f "${MM_WF_PHASE2_RELEASE}" ]] || return 1
+  [[ -f "${MM_WF_PHASE2_BUNDLE}" ]] || return 1
+  [[ -f "${MM_WF_PHASE2_SIDECAR}" ]] || return 1
+  os_ready="$(mm_status_get OS_MIRROR_READY)"
+  bundle_ck="$(mm_status_get PHASE2_BUNDLE_CHECKSUM)"
+  entries="$(mm_status_get PHASE2_BUNDLE_ENTRY_COUNT)"
+  [[ "$os_ready" == "PASS" ]] || return 1
+  [[ "$bundle_ck" == "PASS" ]] || return 1
+  [[ "$entries" == "9" ]] || return 1
+  [[ "$(mm_status_get R2_OS_CORE_CHECKSUM)" == "PASS" ]] || return 1
+  [[ "$(mm_status_get DOWNLOAD_PREPARE_RESULT)" == "PASS" \
+    || "$(mm_status_get LAST_EXECUTION_RESULT)" == "PASS" \
+    || "$(mm_status_get INSTALL_RESULT)" == "PASS" ]] || return 1
+  if mm_temps_present; then
+    return 1
+  fi
+  current_fp="$(mm_artifact_fingerprint)"
+  stored_fp="$(mm_status_get DOWNLOAD_ARTIFACT_FINGERPRINT)"
+  if [[ -z "$stored_fp" ]]; then
+    # Self-heal older installs: persist fingerprint once artifacts look valid.
+    mm_status_set DOWNLOAD_ARTIFACT_FINGERPRINT "$current_fp"
+    mm_status_set DOWNLOAD_PREPARE_RESULT PASS
+    mm_status_set DOWNLOAD_VALIDATED_AT "$(mm_ts)"
+    mm_status_set PHASE2_BUNDLE_SIZE "$(mm_file_bytes "${MM_WF_PHASE2_BUNDLE}")"
+    mm_status_set PHASE2_BUNDLE_MTIME "$(stat -c '%Y' "${MM_WF_PHASE2_BUNDLE}" 2>/dev/null || echo 0)"
+    mm_status_set PHASE2_SIDECAR_MTIME "$(stat -c '%Y' "${MM_WF_PHASE2_SIDECAR}" 2>/dev/null || echo 0)"
+    return 0
+  fi
+  [[ "$stored_fp" == "$current_fp" ]] || return 1
+  return 0
+}
+
+mm_http_probe_ok() {
+  # Fast localhost probes for menu rendering (200-only).
+  local url="$1"
+  local code
+  code="$(curl -sS -o /dev/null -w '%{http_code}' \
+    --connect-timeout "${MM_MENU_HTTP_CONNECT_TIMEOUT:-2}" \
+    --max-time "${MM_MENU_HTTP_MAX_TIME:-3}" \
+    "$url" 2>/dev/null || echo 000)"
+  [[ "$code" == "200" ]]
+}
+
+mm_http_required_urls_ok() {
+  local ver="${TARGET_DP_VERSION:-6.5.0}"
+  local base="${MM_VERIFY_HTTP_BASE:-http://127.0.0.1}"
+  local stable
+  mm_phase2_paths
+  stable="${MM_WF_PHASE2_STABLE}"
+  mm_http_probe_ok "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh" || return 1
+  mm_http_probe_ok "${base}/dp-phase2/${ver}/release.env" || return 1
+  mm_http_probe_ok "${base}/dp-phase2/${ver}/${stable}.sha256" || return 1
+  mm_http_probe_ok "${base}/offline/meta-release-lts" || return 1
+  mm_http_probe_ok "${base}/client/stage-dp-phase2.sh" || return 1
+  mm_http_probe_ok "${base}/client/stage-dp-phase2.sh.sha256" || return 1
+  return 0
+}
+
+mm_nginx_distribution_live() {
+  local nginx_bin systemctl_bin site_en
+  nginx_bin="${MM_NGINX_BIN:-nginx}"
+  systemctl_bin="${MM_SYSTEMCTL_BIN:-systemctl}"
+  site_en="${MM_NGINX_SITE_ENABLED:-/etc/nginx/sites-enabled/${MM_NGINX_SITE_NAME:-apt-mirror}}"
+  command -v "$systemctl_bin" >/dev/null 2>&1 || return 1
+  "$systemctl_bin" is-active --quiet nginx 2>/dev/null || return 1
+  command -v "$nginx_bin" >/dev/null 2>&1 || return 1
+  "$nginx_bin" -t >/dev/null 2>&1 || return 1
+  [[ -e "$site_en" ]] || return 1
+  return 0
+}
+
+mm_http_completed() {
+  mm_download_completed || return 1
+  [[ "$(mm_status_get HTTP_DISTRIBUTION)" == "ENABLED" ]] || return 1
+  [[ "$(mm_status_get HTTP_CONFIGURATION_READY)" == "PASS" ]] || return 1
+  mm_nginx_distribution_live || return 1
+  mm_http_required_urls_ok || return 1
+  return 0
+}
+
+mm_readiness_completed() {
+  local stored_art cur_art stored_cfg cur_cfg
+  mm_configuration_completed || return 1
+  mm_download_completed || return 1
+  mm_http_completed || return 1
+  [[ "$(mm_status_get UPGRADE_READINESS)" == "PASS" ]] || return 1
+  [[ "$(mm_status_get READINESS_RESULT)" == "PASS" \
+    || "$(mm_status_get UPGRADE_READINESS)" == "PASS" ]] || return 1
+  cur_art="$(mm_artifact_fingerprint)"
+  stored_art="$(mm_status_get READINESS_ARTIFACT_FINGERPRINT)"
+  if [[ -z "$stored_art" ]]; then
+    mm_status_set READINESS_ARTIFACT_FINGERPRINT "$cur_art"
+    mm_status_set READINESS_RESULT PASS
+    mm_status_set READINESS_VALIDATED_AT "$(mm_ts)"
+    mm_status_set READINESS_CONFIG_FINGERPRINT "$(mm_config_fingerprint)"
+    return 0
+  fi
+  [[ "$stored_art" == "$cur_art" ]] || return 1
+  cur_cfg="$(mm_config_fingerprint)"
+  stored_cfg="$(mm_status_get READINESS_CONFIG_FINGERPRINT)"
+  if [[ -n "$stored_cfg" && "$stored_cfg" != "$cur_cfg" ]]; then
+    return 1
+  fi
+  return 0
+}
+
+# Populate MM_WF_* for menu + status screens (cheap; no full SHA256).
+mm_collect_workflow_status() {
+  MM_WF_CONFIG_COMPLETED=0
+  MM_WF_DOWNLOAD_COMPLETED=0
+  MM_WF_HTTP_COMPLETED=0
+  MM_WF_READINESS_COMPLETED=0
+  MM_WF_PROGRESS_COUNT=0
+  mm_load_gui_config
+  engine_resolve_paths 2>/dev/null || true
+  if mm_configuration_completed; then
+    MM_WF_CONFIG_COMPLETED=1
+    MM_WF_PROGRESS_COUNT=$((MM_WF_PROGRESS_COUNT + 1))
+  fi
+  if mm_download_completed; then
+    MM_WF_DOWNLOAD_COMPLETED=1
+    MM_WF_PROGRESS_COUNT=$((MM_WF_PROGRESS_COUNT + 1))
+  fi
+  if mm_http_completed; then
+    MM_WF_HTTP_COMPLETED=1
+    MM_WF_PROGRESS_COUNT=$((MM_WF_PROGRESS_COUNT + 1))
+  fi
+  if mm_readiness_completed; then
+    MM_WF_READINESS_COMPLETED=1
+    MM_WF_PROGRESS_COUNT=$((MM_WF_PROGRESS_COUNT + 1))
+  fi
+}
+
+mm_menu_label() {
+  local base="$1"
+  local completed="${2:-0}"
+  if [[ "$completed" == "1" ]]; then
+    printf '%s [COMPLETED]\n' "$base"
+  else
+    printf '%s\n' "$base"
+  fi
+}
+
+mm_workflow_progress_text() {
+  printf 'Progress: %s of 4 workflow steps completed\n' "${MM_WF_PROGRESS_COUNT:-0}"
+}
+
+mm_record_config_validated() {
+  mm_status_set CONFIGURATION_READY PASS
+  mm_status_set CONFIG_FINGERPRINT "$(mm_config_fingerprint)"
+  mm_status_set CONFIG_VALIDATED_AT "$(mm_ts)"
+}
+
+mm_record_download_validated() {
+  local fp
+  engine_resolve_paths 2>/dev/null || true
+  mm_phase2_paths
+  fp="$(mm_artifact_fingerprint)"
+  mm_status_set DOWNLOAD_PREPARE_RESULT PASS
+  mm_status_set DOWNLOAD_VALIDATED_AT "$(mm_ts)"
+  mm_status_set DOWNLOAD_ARTIFACT_FINGERPRINT "$fp"
+  mm_status_set PHASE2_BUNDLE_SIZE "$(mm_file_bytes "${MM_WF_PHASE2_BUNDLE}")"
+  mm_status_set PHASE2_BUNDLE_MTIME "$(stat -c '%Y' "${MM_WF_PHASE2_BUNDLE}" 2>/dev/null || echo 0)"
+  mm_status_set PHASE2_SIDECAR_MTIME "$(stat -c '%Y' "${MM_WF_PHASE2_SIDECAR}" 2>/dev/null || echo 0)"
+  # Changing artifacts invalidates readiness until Menu 4 re-runs.
+  mm_status_set READINESS_RESULT ""
+  mm_status_set READINESS_ARTIFACT_FINGERPRINT ""
+  mm_status_set UPGRADE_READINESS FAIL
+}
+
+mm_record_http_validated() {
+  mm_status_set HTTP_ENABLE_RESULT PASS
+  mm_status_set HTTP_VALIDATED_AT "$(mm_ts)"
+  mm_status_set HTTP_DISTRIBUTION ENABLED
+  mm_status_set HTTP_CONFIGURATION_READY PASS
+}
+
+mm_record_readiness_validated() {
+  local fp
+  fp="$(mm_artifact_fingerprint)"
+  mm_status_set READINESS_RESULT PASS
+  mm_status_set READINESS_VALIDATED_AT "$(mm_ts)"
+  mm_status_set READINESS_ARTIFACT_FINGERPRINT "$fp"
+  mm_status_set READINESS_CONFIG_FINGERPRINT "$(mm_config_fingerprint)"
+  mm_status_set UPGRADE_READINESS PASS
 }
 
 mm_state_init() {

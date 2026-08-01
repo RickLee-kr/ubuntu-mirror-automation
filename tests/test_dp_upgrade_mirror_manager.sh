@@ -306,22 +306,31 @@ run_prepare() {
 # ===========================================================================
 echo "======== A/B/P. GUI + obsolete absence ========"
 # Menu order must be Enable HTTP (3) before Verify Readiness (4).
-# Anchor on the main-menu tag/item pairs (not the file header comment).
+# Tags stay "1".."7"/"0"; [COMPLETED] belongs only in description variables.
 awk '
-  /"1" "Configuration"/ { in_menu=1 }
-  in_menu && /"3" "Enable HTTP Distribution"/ { m3=NR }
-  in_menu && /"4" "Verify Upgrade Readiness"/ { m4=NR }
-  in_menu && /"7" "Show DP Client Upgrade Commands"/ { m7=NR }
-  in_menu && /"0" "Exit"/ { m0=NR }
-  END { exit((m3 && m4 && m7 && m0 && m3 < m4 && m4 < m7 && m7 < m0) ? 0 : 1) }
+  /^cmd_mirror_manager\(\)/ { in_fn=1 }
+  in_fn && /mm_menu_label "Configuration"/ { c1=1 }
+  in_fn && /mm_menu_label "Download and Prepare Upgrade Files"/ { c2=1 }
+  in_fn && /mm_menu_label "Enable HTTP Distribution"/ { c3=1 }
+  in_fn && /mm_menu_label "Verify Upgrade Readiness"/ { c4=1 }
+  in_fn && /"3" "\$\{http_label\}"/ { m3=NR }
+  in_fn && /"4" "\$\{readiness_label\}"/ { m4=NR }
+  in_fn && /"7" "Show DP Client Upgrade Commands"/ { m7=NR }
+  in_fn && /"0" "Exit"/ { m0=NR }
+  in_fn && /^}/ {
+    exit((c1 && c2 && c3 && c4 && m3 && m4 && m7 && m0 && m3 < m4 && m4 < m7 && m7 < m0) ? 0 : 1)
+  }
 ' "$INSTALLER" && pass "A menu order 3=Enable HTTP before 4=Verify" \
   || fail "A menu order wrong"
 grep -q 'Show DP Client Upgrade Commands' "$INSTALLER" \
-  && grep -q 'Configuration' "$INSTALLER" \
-  && grep -q 'Download and Prepare Upgrade Files' "$INSTALLER" \
+  && grep -q 'mm_menu_label "Configuration"' "$INSTALLER" \
+  && grep -q 'mm_menu_label "Download and Prepare Upgrade Files"' "$INSTALLER" \
   && grep -q 'Show Current Status' "$INSTALLER" && grep -q 'View Logs' "$INSTALLER" \
   && grep -q 'Exit' "$INSTALLER" \
   && pass "A main menu items" || fail "A main menu"
+grep -q 'mm_collect_workflow_status' "$INSTALLER" \
+  && grep -q 'mm_workflow_progress_text' "$INSTALLER" \
+  && pass "A workflow progress on main menu" || fail "A workflow progress missing"
 # Dispatch wiring: 3→enable, 4→verify
 awk '
   /^cmd_mirror_manager\(\)/ { in_fn=1 }
@@ -743,26 +752,27 @@ else
   [[ "$PROD_PREV" == "releases/20260726T155911Z" ]] && pass "Q production previous" || fail "Q previous=$PROD_PREV"
 fi
 
-echo "======== S. SHA256 wait notice + GUI lifecycle ========"
-# Structural: enable-http shows notice before captured engine call.
+echo "======== S. SHA256 live progress + GUI lifecycle ========"
+# Structural: enable-http uses live progress (MM_LIVE_PROGRESS), not silent capture.
 if awk '
   /^gui_enable_http\(\)/ { in_fn=1; next }
-  in_fn && /^}/ { exit((notice > 0 && eng > 0 && notice < eng) ? 0 : 1) }
-  in_fn && /gui_show_sha256_wait_notice/ && !notice { notice=NR }
-  in_fn && /engine_enable_http_distribution/ && !eng { eng=NR }
+  in_fn && /^}/ { exit((live > 0 && eng > 0 && live < eng && !silent) ? 0 : 1) }
+  in_fn && /MM_LIVE_PROGRESS=1/ && !live { live=NR }
+  in_fn && /engine_enable_http_distribution >"\$tmp" 2>&1/ && !eng { eng=NR }
+  in_fn && /out="\$\(engine_enable_http_distribution 2>&1\)"/ { silent=1 }
 ' "$INSTALLER"; then
-  pass "S enable-http notice before engine capture"
+  pass "S enable-http live progress before engine"
 else
-  fail "S enable-http notice before engine capture"
+  fail "S enable-http live progress before engine"
 fi
 
-# Readiness only reads status / compute_readiness — do not invent a SHA256 wait notice.
+# Readiness must not call the static SHA256 wait notice helper.
 if awk '
   /^gui_verify_readiness\(\)/ { in_fn=1; next }
   in_fn && /^}/ { exit(bad ? 1 : 0) }
-  in_fn && /gui_show_sha256_wait_notice|mm_whiptail_infobox|sha256sum|dp2_verify_sha256/ { bad=1 }
+  in_fn && /gui_show_sha256_wait_notice/ { bad=1 }
 ' "$INSTALLER"; then
-  pass "S readiness has no SHA256 wait notice (no SHA256 path)"
+  pass "S readiness has no SHA256 wait notice"
 else
   fail "S readiness unexpectedly shows SHA256 wait notice"
 fi
@@ -810,22 +820,24 @@ run_gui_enable_http_mock() {
     : >"$TRACE"
     # shellcheck disable=SC1090
     source "$LIB"
-    mm_whiptail_infobox() {
-      printf "INFOBOX\t%s\t%s\n" "$1" "$2" >>"$TRACE"
-      return 0
-    }
+    trap - EXIT
     mm_whiptail_textbox() {
       printf "TEXTBOX\t%s\n" "$1" >>"$TRACE"
       return 0
     }
+    mm_whiptail_msg() { printf "MSG\t%s\n" "$1" >>"$TRACE"; return 0; }
     mm_has_whiptail() { return 0; }
+    clear() { return 0; }
     load_mirror_defaults() { :; }
     mm_load_gui_config() { TARGET_DP_VERSION=6.5.0; }
     engine_resolve_paths() { :; }
     dp2_set_version() { :; }
     dp2_stable_bundle_name() { printf "%s\n" "dp_bundle_6.5.0-current.tar"; }
+    mm_format_bytes() { printf "%s\n" "$1"; }
+    mm_artifacts_ready_for_http() { return 0; }
     engine_enable_http_distribution() {
       printf "ENGINE_START\n" >>"$TRACE"
+      printf "SHA256_VERIFICATION_START operation=enable-http file=dp_bundle_6.5.0-current.tar\n" | tee -a "$TRACE"
       printf "SHA256_BEGIN\n" >>"$TRACE"
       sleep 0.2
       printf "SHA256_END\n" >>"$TRACE"
@@ -836,6 +848,8 @@ run_gui_enable_http_mock() {
       echo "HTTP_DISTRIBUTION=ENABLED"
       return 0
     }
+    # Avoid interactive Enter wait in tests.
+    read() { return 0; }
     gui_enable_http
   ' gui-mock "$S_TRACE" "$S_LIB"
 }
@@ -849,38 +863,22 @@ if [[ ! -f "$S_TRACE" ]]; then
   fail "S mock trace missing (rc=${S_RC}); out=${S_OUT}"
   : >"$S_TRACE"
 fi
-SHA_NOTICE_DISPLAY_COUNT="$(grep -c '^INFOBOX' "$S_TRACE" || true)"
-[[ "$SHA_NOTICE_DISPLAY_COUNT" -eq 1 ]] && pass "S SHA_NOTICE_DISPLAY_COUNT=1" \
-  || fail "S SHA_NOTICE_DISPLAY_COUNT=${SHA_NOTICE_DISPLAY_COUNT}"
 
 if awk '
-  /^INFOBOX/ { ib=NR }
   /^ENGINE_START/ { eng=NR }
   /^SHA256_BEGIN/ { sh=NR }
-  END { exit((ib > 0 && eng > 0 && sh > 0 && ib < eng && eng <= sh) ? 0 : 1) }
+  END { exit((eng > 0 && sh > 0 && eng <= sh) ? 0 : 1) }
 ' "$S_TRACE" 2>/dev/null; then
-  pass "S SHA_NOTICE_BEFORE_PROCESS=PASS"
+  pass "S ENGINE_START before SHA256 work"
 else
-  fail "S SHA_NOTICE_BEFORE_PROCESS=FAIL"
+  fail "S ENGINE_START before SHA256 work"
   cat "$S_TRACE" 2>/dev/null || true
-  echo "S_OUT=${S_OUT}" | head -c 500 || true
 fi
 
-# INFOBOX body is multiline (tabs only on the first record line).
-IB_BODY="$(awk '/^INFOBOX/{p=1} /^ENGINE_START/{p=0} p' "$S_TRACE" 2>/dev/null || true)"
-echo "$IB_BODY" | grep -q 'SHA256' \
-  && pass "S SHA_NOTICE_CONTAINS_SHA256=PASS" || fail "S SHA_NOTICE_CONTAINS_SHA256=FAIL"
-echo "$IB_BODY" | grep -qi 'may take several minutes' \
-  && pass "S SHA_NOTICE_CONTAINS_MAY_TAKE_SEVERAL_MINUTES=PASS" \
-  || fail "S SHA_NOTICE_CONTAINS_MAY_TAKE_SEVERAL_MINUTES=FAIL"
-echo "$IB_BODY" | grep -qi 'do not interrupt' \
-  && pass "S SHA_NOTICE_CONTAINS_DO_NOT_INTERRUPT=PASS" \
-  || fail "S SHA_NOTICE_CONTAINS_DO_NOT_INTERRUPT=FAIL"
-echo "$IB_BODY" | grep -qi 'continue automatically' \
-  && pass "S SHA_NOTICE_CONTAINS_CONTINUE_AUTOMATICALLY=PASS" \
-  || fail "S SHA_NOTICE_CONTAINS_CONTINUE_AUTOMATICALLY=FAIL"
-
-echo "$S_OUT" | grep -q 'SHA256_VERIFICATION_START operation=enable-http' \
+echo "$S_OUT" | grep -q 'Enable HTTP Distribution — live progress' \
+  && pass "S live progress banner" || fail "S live progress banner missing"
+# START is emitted by the engine into the transcript (and TRACE in this mock).
+grep -q 'SHA256_VERIFICATION_START operation=enable-http' "$S_TRACE" \
   && pass "S structured start log once" || fail "S missing SHA256_VERIFICATION_START log"
 
 [[ "$S_RC" -eq 0 ]] && grep -q 'TEXTBOX	HTTP Distribution — ENABLED' "$S_TRACE" \
@@ -893,6 +891,7 @@ set -e
 grep -q 'TEXTBOX	HTTP Distribution — FAIL' "$S_TRACE" \
   && pass "S SHA256_FAILURE_RESULT=PASS" || fail "S SHA256_FAILURE_RESULT out=${S_FAIL_OUT}"
 
+# No static infobox body leaked to stdout as duplicate operator noise.
 UNIQUE_BODY='do not interrupt the process or close this terminal'
 BODY_STDOUT_HITS="$(echo "$S_OUT" | grep -cF "$UNIQUE_BODY" || true)"
 [[ "$BODY_STDOUT_HITS" -eq 0 ]] && pass "S DUPLICATE_OUTPUT=0" \
@@ -902,7 +901,10 @@ BODY_STDOUT_HITS="$(echo "$S_OUT" | grep -cF "$UNIQUE_BODY" || true)"
 # Menu counter must live in a file: choice="$(mm_whiptail_menu ...)" runs in a subshell.
 set +e
 LIFE_OUT="$(
-  MM_PROJECT_ROOT="$ROOT" MM_FORCE_MENU=1 MM_SKIP_ROOT_CHECK=1 bash -c '
+  MM_PROJECT_ROOT="$ROOT" MM_FORCE_MENU=1 MM_SKIP_ROOT_CHECK=1 \
+  MM_STATUS_FILE="${WORKDIR}/life-status.env" \
+  MM_CONFIG_FILE="${WORKDIR}/life-gui.conf" \
+  bash -c '
     set -euo pipefail
     TRACE="$1"
     LIB="$2"
@@ -911,6 +913,7 @@ LIFE_OUT="$(
     printf "0\n" >"$MENU_IDX_FILE"
     # shellcheck disable=SC1090
     source "$LIB"
+    trap - EXIT
     export MM_GUI_MODE=1
     MENU_SEQ=(3 4 5 7 6 1 0)
     mm_has_whiptail() { return 0; }
@@ -946,11 +949,18 @@ LIFE_OUT="$(
     mm_artifacts_ready_for_http() { return 0; }
     mm_http_distribution_enabled() { return 0; }
     mm_save_gui_config() { return 0; }
+    mm_collect_workflow_status() {
+      MM_WF_CONFIG_COMPLETED=0
+      MM_WF_DOWNLOAD_COMPLETED=0
+      MM_WF_HTTP_COMPLETED=0
+      MM_WF_READINESS_COMPLETED=0
+      MM_WF_PROGRESS_COUNT=0
+    }
+    mm_menu_label() { printf "%s\n" "$1"; }
+    mm_workflow_progress_text() { printf "Progress: 0 of 4 workflow steps completed\n"; }
     gui_configuration() { printf "ACTION_1\n" >>"$TRACE"; return 0; }
     gui_enable_http() {
       printf "ACTION_3\n" >>"$TRACE"
-      gui_show_sha256_wait_notice "enable-http" "dp_bundle_6.5.0-current.tar" \
-        "Verifying the SHA256 checksum of the Phase 2 bundle before enabling HTTP distribution."
       local tmp; tmp="$(mktemp)"
       echo ENABLED >"$tmp"
       mm_whiptail_textbox "HTTP Distribution — ENABLED" "$tmp" || true
@@ -1017,12 +1027,16 @@ GUI_EXIT_COUNT="$(grep -c '^EXIT_REASON=EXPLICIT_ZERO$' "$LIFECYCLE_TRACE" || tr
 # Failure of a GUI action must not terminate the menu (dispatcher).
 set +e
 FAIL_LIFE="$(
-  MM_PROJECT_ROOT="$ROOT" MM_FORCE_MENU=1 MM_SKIP_ROOT_CHECK=1 bash -c '
+  MM_PROJECT_ROOT="$ROOT" MM_FORCE_MENU=1 MM_SKIP_ROOT_CHECK=1 \
+  MM_STATUS_FILE="${WORKDIR}/fail-life-status.env" \
+  MM_CONFIG_FILE="${WORKDIR}/fail-life-gui.conf" \
+  bash -c '
     set -euo pipefail
     TRACE="$1"; LIB="$2"; MENU_IDX_FILE="$3"; : >"$TRACE"
     printf "0\n" >"$MENU_IDX_FILE"
     # shellcheck disable=SC1090
     source "$LIB"
+    trap - EXIT
     MENU_SEQ=(3 0)
     mm_has_whiptail() { return 0; }
     mm_whiptail_menu() {
@@ -1040,6 +1054,15 @@ FAIL_LIFE="$(
     load_mirror_defaults() { :; }
     mm_load_gui_config() { TARGET_DP_VERSION=6.5.0; }
     engine_resolve_paths() { :; }
+    mm_collect_workflow_status() {
+      MM_WF_CONFIG_COMPLETED=0
+      MM_WF_DOWNLOAD_COMPLETED=0
+      MM_WF_HTTP_COMPLETED=0
+      MM_WF_READINESS_COMPLETED=0
+      MM_WF_PROGRESS_COUNT=0
+    }
+    mm_menu_label() { printf "%s\n" "$1"; }
+    mm_workflow_progress_text() { printf "Progress: 0 of 4 workflow steps completed\n"; }
     gui_enable_http() { printf "ACTION_3_FAIL\n" >>"$TRACE"; return 7; }
     cmd_mirror_manager
     printf "EXIT_REASON=EXPLICIT_ZERO\n" >>"$TRACE"
@@ -1055,12 +1078,16 @@ set -e
 # Main menu ESC continues; only 0 exits.
 set +e
 ESC_LIFE="$(
-  MM_PROJECT_ROOT="$ROOT" MM_FORCE_MENU=1 MM_SKIP_ROOT_CHECK=1 bash -c '
+  MM_PROJECT_ROOT="$ROOT" MM_FORCE_MENU=1 MM_SKIP_ROOT_CHECK=1 \
+  MM_STATUS_FILE="${WORKDIR}/esc-life-status.env" \
+  MM_CONFIG_FILE="${WORKDIR}/esc-life-gui.conf" \
+  bash -c '
     set -euo pipefail
     TRACE="$1"; LIB="$2"; STEP_FILE="$3"; : >"$TRACE"
     printf "0\n" >"$STEP_FILE"
     # shellcheck disable=SC1090
     source "$LIB"
+    trap - EXIT
     mm_has_whiptail() { return 0; }
     mm_whiptail_menu() {
       printf "MENU\n" >>"$TRACE"
@@ -1076,6 +1103,15 @@ ESC_LIFE="$(
     load_mirror_defaults() { :; }
     mm_load_gui_config() { :; }
     engine_resolve_paths() { :; }
+    mm_collect_workflow_status() {
+      MM_WF_CONFIG_COMPLETED=0
+      MM_WF_DOWNLOAD_COMPLETED=0
+      MM_WF_HTTP_COMPLETED=0
+      MM_WF_READINESS_COMPLETED=0
+      MM_WF_PROGRESS_COUNT=0
+    }
+    mm_menu_label() { printf "%s\n" "$1"; }
+    mm_workflow_progress_text() { printf "Progress: 0 of 4 workflow steps completed\n"; }
     cmd_mirror_manager
     printf "EXIT_REASON=EXPLICIT_ZERO\n" >>"$TRACE"
   ' gui-esc-life "${WORKDIR}/esc-life.trace" "$S_LIB" "${WORKDIR}/esc-step.idx" 2>&1

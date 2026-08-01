@@ -57,6 +57,7 @@ TEST_LIST=(
   test_gui_client_commands.sh
   test_mirror_download_and_space_regressions.sh
   test_mirror_long_step_progress.sh
+  test_mirror_manager_menu_status.sh
   test_bringup_image_import_heartbeat.sh
   test_bringup_dp_resume_notice.sh
   test_client_manifest_signing.sh
