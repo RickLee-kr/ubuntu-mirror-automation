@@ -84,7 +84,8 @@ Enable HTTP (3) before Verify Readiness (4). Menu 7 prints one-line DP commands 
 
 Enter only:
 
-- Target DP Version (default `6.5.0`)
+- Current DP Version (installed product version before upgrade; used as `--source-dp-version`)
+- Target DP Version (default `6.5.0`; upgrade destination)
 - ACPS Username
 - ACPS Password (password box; not echoed)
 - Test ACPS Connection
@@ -105,15 +106,17 @@ Downloads OS Core from R2 (safe resume), verifies checksums, materializes one se
 
 ### 3. Enable HTTP Distribution
 
-Requires Download and Prepare artifacts. Validates the prepared layout, installs/enables the nginx site, runs `nginx -t`, reloads nginx, and smoke-tests concrete artifact URLs. Sets `HTTP_DISTRIBUTION=ENABLED` only on success. On failure, restores the previous nginx site and does not mark ENABLED.
+Requires Download and Prepare artifacts. Validates the prepared layout (HTTP probes deferred until nginx is up), installs/enables the nginx site, runs `nginx -t`, reloads nginx, then runs live HTTP validation. Sets `HTTP_DISTRIBUTION=ENABLED` only on success. On failure, restores the previous nginx site and does not mark ENABLED.
 
 ### 4. Verify Upgrade Readiness
 
-Requires HTTP distribution ENABLED. Probes live HTTP URLs (200-only) for client scripts, stage helper, OS metadata, and Phase 2 release/checksum paths. Sets `UPGRADE_READINESS=PASS` only when status keys and HTTP checks succeed.
+Requires HTTP distribution ENABLED. Probes live HTTP URLs (200-only) for client scripts, stage helper, OS metadata, and Phase 2 release/checksum paths. Sets `UPGRADE_READINESS=PASS` only when status keys and HTTP checks succeed. Status shows exactly one of: `PASS`, `NOT VERIFIED`, `NOT READY`, or `FAIL`.
 
 ### 5–7. Status, logs, client commands
 
-Status shows a short operator summary. Redacted logs live under `/var/log/ubuntu-mirror-automation/`. Menu 7 prints copy-paste DP upgrade commands using the configured mirror HTTP address.
+Status shows a short operator summary including Current/Target DP versions and Upgrade Readiness. Redacted logs live under `/var/log/ubuntu-mirror-automation/`. Menu 7 prints copy-paste DP upgrade commands using the configured mirror HTTP address, Current DP Version (source), and Target DP Version.
+
+Worker `--worker-ips` may use management IPs or cluster IPs; cluster IPs are recommended when reachable. Do not include the master IP. Pause DP services in `aella_cli` before the first OS hop; resume only after DP 6.5.0 bringup completes; verify pods/nodes/host services after resume.
 
 ## HTTP layout
 

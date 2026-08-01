@@ -84,7 +84,8 @@ There is no install-mode menu, no local OS Core path picker, no R2/ACPS URL edit
 
 GUI fields only:
 
-- Target DP Version (default `6.5.0`)
+- Current DP Version (installed product version before upgrade; `--source-dp-version`)
+- Target DP Version (default `6.5.0`; upgrade destination)
 - ACPS Username
 - ACPS Password
 - Test ACPS Connection
@@ -111,6 +112,10 @@ constant). Clients never download from R2; only the Mirror Manager host does.
 
 Credentials are stored root-owned mode `600` at
 `/etc/ubuntu-mirror/dp-upgrade-mirror.conf` and redacted from logs.
+
+Current DP Version comes from Configuration and is the single source of truth for
+Menu 7 `--source-dp-version`. Target DP Version is the upgrade destination.
+Command generation is blocked when current and target are the same.
 
 ## Download and Prepare
 
@@ -154,15 +159,30 @@ Resume rules for the R2 package download:
 
 Not a status-only flag. On success the manager:
 
-1. Validates prepared layout and client files
+1. Validates prepared layout and client files (HTTP probes deferred until nginx is enabled)
 2. Renders/installs the nginx site
 3. Enables the site symlink and disables the default site when needed
 4. Runs `nginx -t`
 5. `systemctl enable` + reload/start nginx
-6. Smoke-tests concrete artifact URLs
+6. Runs live HTTP validation (200-only smoke tests)
 7. Sets `HTTP_DISTRIBUTION=ENABLED` only after smoke PASS
 
 On failure the previous nginx site is restored and ENABLED is not recorded.
+
+Pre-nginx layout checks may log `HTTP_VALIDATION=DEFERRED`; they must not warn
+`SKIPPED_NETWORK`. Final Menu 3 success requires `HTTP_VALIDATION=PASS`.
+
+## Client upgrade command order (Menu 7)
+
+1. Hypervisor snapshot
+2. `aella_cli` → `pause` on Ubuntu 16.04 (before first OS hop)
+3. OS hops 16.04 → 18.04 → 20.04 → 22.04 → 24.04 (do not resume during hops)
+4. Stage DP artifacts (`--source-dp-version` = Current DP Version, `--target-version` = Target)
+5. Bringup (`--worker-ips` optional; management or cluster IPs; cluster IPs recommended when reachable; no master IP)
+6. `aella_cli` → `resume` after bringup completes
+7. Wait for pods/host services, then `aella_cli` → `show status` (health after resume)
+
+Upgrade Readiness status values are exactly: `PASS`, `NOT VERIFIED`, `NOT READY`, or `FAIL`.
 
 ## Storage
 

@@ -514,7 +514,13 @@ engine_validate_http_layout() {
   fi
 
   if [[ "${MM_SKIP_HTTP_VALIDATE:-0}" == "1" ]]; then
-    mm_warn "HTTP_VALIDATION=SKIPPED_NETWORK"
+    # Pre-nginx layout checks defer live probes; never WARN as a network failure.
+    if [[ "${MM_HTTP_VALIDATE_DEFER:-0}" == "1" ]]; then
+      mm_info "HTTP_VALIDATION=DEFERRED reason=nginx_not_enabled_yet"
+      mm_info "HTTP validation will run after nginx is enabled."
+    else
+      mm_info "HTTP_VALIDATION=DEFERRED reason=skip_http_validate"
+    fi
     mm_state_set HTTP_CONFIGURATION_READY PASS
     return 0
   fi
@@ -541,6 +547,7 @@ engine_validate_http_layout() {
     "${base}/dp-phase2/${ver}/${stable}.sha256"
   )
   local u code body bytes
+  mm_info "HTTP_VALIDATION_START"
   body="$(mktemp)"
   for u in "${urls[@]}"; do
     code="$(curl -sS -o "$body" -w '%{http_code}' --connect-timeout 5 --max-time 15 "$u" 2>/dev/null || echo 000)"
@@ -771,16 +778,20 @@ engine_enable_http_distribution() {
     mm_die "HTTP_DISTRIBUTION=FAIL CLIENT_FILES_READY"
   fi
 
-  # Layout validation without requiring live HTTP yet
+  # Layout validation without requiring live HTTP yet (defer probes until nginx is up)
   local prev_skip="${MM_SKIP_HTTP_VALIDATE:-0}"
+  local prev_defer="${MM_HTTP_VALIDATE_DEFER:-0}"
   MM_SKIP_HTTP_VALIDATE=1
+  MM_HTTP_VALIDATE_DEFER=1
   if ! engine_validate_http_layout; then
     MM_SKIP_HTTP_VALIDATE="$prev_skip"
+    MM_HTTP_VALIDATE_DEFER="$prev_defer"
     mm_status_set HTTP_DISTRIBUTION DISABLED
     mm_state_set HTTP_DISTRIBUTION_READY NO
     mm_die "HTTP_DISTRIBUTION=FAIL layout"
   fi
   MM_SKIP_HTTP_VALIDATE="$prev_skip"
+  MM_HTTP_VALIDATE_DEFER="$prev_defer"
 
   if [[ "${MM_DRY_RUN}" == "1" ]]; then
     mm_info "DRY_RUN skip nginx enable"
@@ -878,8 +889,9 @@ engine_enable_http_distribution() {
       mm_die "HTTP_SMOKE=FAIL"
     fi
   else
+    # Test-only path: live probes intentionally skipped. Never WARN as network failure.
     mm_state_set HTTP_CONFIGURATION_READY PASS
-    mm_warn "HTTP_VALIDATION=SKIPPED_NETWORK"
+    mm_info "HTTP_VALIDATION=DEFERRED reason=skip_http_validate"
   fi
 
   mm_status_set HTTP_DISTRIBUTION ENABLED

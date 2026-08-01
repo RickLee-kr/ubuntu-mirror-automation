@@ -40,6 +40,7 @@ MM_LOG_FILE="${MM_LOG_FILE:-}"
 MM_STATE_DIR="${MM_STATE_DIR:-}"
 MM_DRY_RUN="${MM_DRY_RUN:-0}"
 MM_FILES_CHANGED="${MM_FILES_CHANGED:-NO}"
+CURRENT_DP_VERSION="${CURRENT_DP_VERSION:-}"
 TARGET_DP_VERSION="${TARGET_DP_VERSION:-6.5.0}"
 ACPS_USERNAME="${ACPS_USERNAME:-}"
 ACPS_PASSWORD="${ACPS_PASSWORD:-}"
@@ -534,6 +535,7 @@ mm_assert_regular_file() {
 }
 
 mm_load_gui_config() {
+  CURRENT_DP_VERSION="${CURRENT_DP_VERSION:-}"
   TARGET_DP_VERSION="${TARGET_DP_VERSION:-6.5.0}"
   ACPS_USERNAME="${ACPS_USERNAME:-}"
   ACPS_PASSWORD="${ACPS_PASSWORD:-}"
@@ -545,6 +547,7 @@ mm_load_gui_config() {
     source "${MM_CONFIG_FILE}"
     set +a
   fi
+  CURRENT_DP_VERSION="${CURRENT_DP_VERSION:-}"
   TARGET_DP_VERSION="${TARGET_DP_VERSION:-6.5.0}"
   ACPS_USERNAME="${ACPS_USERNAME:-${ACPS_USER:-}}"
   ACPS_PASSWORD="${ACPS_PASSWORD:-${ACPS_PASS:-}}"
@@ -561,6 +564,7 @@ mm_save_gui_config() {
   cat >"$tmp" <<EOF
 # DP Upgrade Mirror Manager configuration (managed by GUI)
 # Do not store secrets in world-readable locations.
+CURRENT_DP_VERSION=${CURRENT_DP_VERSION:-}
 TARGET_DP_VERSION=${TARGET_DP_VERSION}
 ACPS_USERNAME=${ACPS_USERNAME}
 ACPS_PASSWORD=${ACPS_PASSWORD}
@@ -606,32 +610,76 @@ mm_client_mirror_url() {
 
 mm_validate_source_dp_version() {
   local ver="$1"
+  local cmp
+  # Strict X.Y.Z only — reject empty, v-prefix, partial, metacharacters, newlines.
+  [[ -n "$ver" ]] || return 1
   [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  # Policy floor matches stage-dp-phase2.sh MIN_SUPPORTED_SOURCE_DP_VERSION=6.2.0
   case "$ver" in
     6.2.0|6.3.0|6.4.0|6.5.0) return 0 ;;
-    *)
-      # Allow other X.Y.Z above policy floor; reject obvious junk.
-      [[ "$ver" =~ ^6\.[0-9]+\.[0-9]+$ ]] || return 1
-      return 0
-      ;;
   esac
+  [[ "$ver" =~ ^6\.[0-9]+\.[0-9]+$ ]] || return 1
+  # Reject below 6.2.0 via version sort.
+  cmp="$(printf '%s\n' "6.2.0" "$ver" | sort -V | head -1)"
+  [[ "$cmp" == "6.2.0" ]] || return 1
+  return 0
 }
 
-# Comma-separated IPv4 list for --worker-ips. Rejects shell metacharacters.
+# Comma-separated IPv4 list for --worker-ips. Rejects shell metacharacters,
+# invalid octets, duplicates, and broadcast/unspecified addresses.
 mm_validate_worker_ips() {
   local raw="$1"
-  local cleaned item
+  local cleaned item octet parts seen
+  # Reject newlines / CR explicitly before stripping other whitespace.
+  [[ "$raw" != *$'\n'* && "$raw" != *$'\r'* ]] || return 1
   cleaned="$(printf '%s' "$raw" | tr -d '[:space:]')"
   [[ -n "$cleaned" ]] || return 1
+  # Trailing / leading comma or empty items.
+  [[ "$cleaned" != *, && "$cleaned" != ,* && "$cleaned" != *,,* ]] || return 1
   # Allow only digits, dots, and commas.
   [[ "$cleaned" =~ ^[0-9.,]+$ ]] || return 1
   IFS=',' read -r -a _mm_ips <<<"$cleaned"
   [[ "${#_mm_ips[@]}" -ge 1 ]] || return 1
+  seen="|"
   for item in "${_mm_ips[@]}"; do
     [[ -n "$item" ]] || return 1
-    [[ "$item" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+    [[ "$item" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+    parts=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}")
+    for octet in "${parts[@]}"; do
+      if (( 10#$octet > 255 )); then
+        return 1
+      fi
+    done
+    [[ "$item" != "0.0.0.0" && "$item" != "255.255.255.255" ]] || return 1
+    if [[ "$seen" == *"|${item}|"* ]]; then
+      return 1
+    fi
+    seen="${seen}${item}|"
   done
   printf '%s\n' "$cleaned"
+}
+
+# Operator-facing Upgrade Readiness label for status screens.
+# Exactly one of: PASS | NOT VERIFIED | NOT READY | FAIL (never blank).
+mm_upgrade_readiness_display() {
+  local readiness_result
+  # Suppress path-resolution INFO lines from nested completed-check helpers.
+  if mm_readiness_completed >/dev/null 2>&1; then
+    printf 'PASS\n'
+    return 0
+  fi
+  if ! mm_configuration_completed >/dev/null 2>&1 \
+    || ! mm_download_completed >/dev/null 2>&1 \
+    || ! mm_http_completed >/dev/null 2>&1; then
+    printf 'NOT READY\n'
+    return 0
+  fi
+  readiness_result="$(mm_status_get READINESS_RESULT)"
+  if [[ "$readiness_result" == "FAIL" ]]; then
+    printf 'FAIL\n'
+    return 0
+  fi
+  printf 'NOT VERIFIED\n'
 }
 
 mm_artifacts_ready_for_http() {

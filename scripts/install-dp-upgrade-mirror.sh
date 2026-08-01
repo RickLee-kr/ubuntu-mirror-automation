@@ -320,19 +320,44 @@ gui_configuration() {
   while true; do
     local choice
     choice="$(mm_whiptail_menu "Configuration" \
-      "Target DP Version: ${TARGET_DP_VERSION}
+      "Current DP Version: ${CURRENT_DP_VERSION:-"(not set)"}
+Target DP Version: ${TARGET_DP_VERSION}
 ACPS Username: $(mm_configured_label "$ACPS_USERNAME")
 ACPS Password: $(mm_configured_label "$ACPS_PASSWORD")
 ACPS Server: fixed
 OS Core Source: Cloudflare R2 — fixed" \
-      "1" "Target DP Version" \
-      "2" "ACPS Username" \
-      "3" "ACPS Password" \
-      "4" "Test ACPS Connection" \
-      "5" "Save Configuration" \
+      "1" "Current DP Version" \
+      "2" "Target DP Version" \
+      "3" "ACPS Username" \
+      "4" "ACPS Password" \
+      "5" "Test ACPS Connection" \
+      "6" "Save Configuration" \
       "0" "Back")" || return 0
     case "$choice" in
       1)
+        local cv
+        cv="$(mm_whiptail_input "Current DP Version" \
+          "Enter the DP software version currently installed on the DP (X.Y.Z).
+
+This is the source version used by Stage (--source-dp-version).
+It must differ from the Target DP Version." \
+          "${CURRENT_DP_VERSION:-}")" || continue
+        if [[ -n "$cv" ]]; then
+          if mm_validate_source_dp_version "$cv"; then
+            if [[ "$cv" == "${TARGET_DP_VERSION}" ]]; then
+              mm_whiptail_msg "Invalid" \
+                "The current DP version and target DP version are the same.
+
+Verify the Current DP Version in Configuration."
+            else
+              CURRENT_DP_VERSION="$cv"
+            fi
+          else
+            mm_whiptail_msg "Invalid" "Version must be X.Y.Z at or above 6.2.0 (got: ${cv})"
+          fi
+        fi
+        ;;
+      2)
         local v
         v="$(mm_whiptail_input "Target DP Version" "Enter target DP version (X.Y.Z)" "${TARGET_DP_VERSION}")" || continue
         if [[ -n "$v" ]]; then
@@ -343,17 +368,17 @@ OS Core Source: Cloudflare R2 — fixed" \
           fi
         fi
         ;;
-      2)
+      3)
         local u
         u="$(mm_whiptail_input "ACPS Username" "Enter ACPS username" "${ACPS_USERNAME}")" || continue
         ACPS_USERNAME="$u"
         ;;
-      3)
+      4)
         local p
         p="$(mm_whiptail_password "ACPS Password" "Enter ACPS password (not displayed later)")" || continue
         ACPS_PASSWORD="$p"
         ;;
-      4)
+      5)
         load_mirror_defaults
         engine_resolve_paths
         mm_load_gui_config
@@ -370,7 +395,7 @@ OS Core Source: Cloudflare R2 — fixed" \
           mm_whiptail_msg "ACPS" "ACPS_CONNECTION=FAIL"
         fi
         ;;
-      5)
+      6)
         mm_save_gui_config
         mm_record_config_validated
         mm_whiptail_msg "Configuration" \
@@ -647,16 +672,14 @@ gui_show_status() {
     [[ -n "$http_state" ]] || http_state="DISABLED"
     [[ "$http_state" == "ENABLED" ]] || http_state="DISABLED"
   fi
-  if [[ "${MM_WF_READINESS_COMPLETED}" == "1" ]]; then
-    ready_state="PASS"
-  else
-    ready_state="FAIL"
-  fi
+  ready_state="$(mm_upgrade_readiness_display)"
+  [[ -n "$ready_state" ]] || ready_state="NOT VERIFIED"
   tmp="$(mktemp)"
   cat >"$tmp" <<EOF
 DP Upgrade Mirror Status
 ========================
 
+Current DP Version: ${CURRENT_DP_VERSION:-"(not set)"}
 Target DP Version: ${ver}
 Configuration: ${config_state}
 OS Upgrade Files: ${os_state}
@@ -704,75 +727,128 @@ gui_build_client_commands() {
   # Writes command text to stdout. Args: mirror source_ver topology worker_ips
   local mirror="$1" source_ver="$2" topology="$3" worker_ips="${4:-}"
   local ver="${TARGET_DP_VERSION:-6.5.0}"
-  local snap_line step5 step6
+  local snap_line step6 step7
   if [[ "$topology" == "cluster" ]]; then
-    snap_line="Before Step 1, create a full hypervisor snapshot of every DP VM."
+    snap_line="Create a full hypervisor snapshot of every DP VM."
   else
-    snap_line="Before Step 1, create a full hypervisor snapshot of the DP VM."
+    snap_line="Create a full hypervisor snapshot of the DP VM."
   fi
-  step5="cd /home/aella && rm -f stage-dp-phase2.sh stage-dp-phase2.sh.sha256 && curl -fsSLO ${mirror}/client/stage-dp-phase2.sh && curl -fsSLO ${mirror}/client/stage-dp-phase2.sh.sha256 && sha256sum -c stage-dp-phase2.sh.sha256 && sudo bash ./stage-dp-phase2.sh --source-dp-version ${source_ver} --target-version ${ver} --mirror-url ${mirror}"
+  step6="cd /home/aella && rm -f stage-dp-phase2.sh stage-dp-phase2.sh.sha256 && curl -fsSLO ${mirror}/client/stage-dp-phase2.sh && curl -fsSLO ${mirror}/client/stage-dp-phase2.sh.sha256 && sha256sum -c stage-dp-phase2.sh.sha256 && sudo bash ./stage-dp-phase2.sh --source-dp-version ${source_ver} --target-version ${ver} --mirror-url ${mirror}"
   if [[ "$topology" == "cluster" ]]; then
-    step6="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download --worker-ips \"${worker_ips}\""
+    step7="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download --worker-ips \"${worker_ips}\""
   else
-    step6="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download"
+    step7="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download"
   fi
   cat <<EOF
 DP Client Upgrade Commands
 ==========================
 
 Mirror Server: ${mirror}
+Current DP Version: ${source_ver}
+Target DP Version: ${ver}
 
-Run these commands on the DP, not on the Mirror Server.
+Run these steps on the DP, not on the Mirror Server.
+
+Step 0 — Create a snapshot
 
 ${snap_line}
 
-After each step finishes and the DP reboots, reconnect to the DP and run the next step.
+Step 1 — Pause DP services
 
-Step 1 — Ubuntu 16.04 to 18.04
+Run \`aella_cli\` on the Ubuntu 16.04 DP.
+Select or enter \`pause\`.
+Wait until the pause completes.
+
+Do not run \`pause\` directly in the Linux bash shell.
+Do not resume the DP during the intermediate Ubuntu upgrades.
+
+Step 2 — Ubuntu 16.04 to 18.04
 
 $(gui_client_hop_command "$mirror" "dp-offline-upgrade-xenial-to-bionic.sh")
 
-Step 2 — Ubuntu 18.04 to 20.04
+Step 3 — Ubuntu 18.04 to 20.04
 
 $(gui_client_hop_command "$mirror" "dp-offline-upgrade-bionic-to-focal.sh")
 
-Step 3 — Ubuntu 20.04 to 22.04
+Step 4 — Ubuntu 20.04 to 22.04
 
 $(gui_client_hop_command "$mirror" "dp-offline-upgrade-focal-to-jammy.sh")
 
-Step 4 — Ubuntu 22.04 to 24.04
+Step 5 — Ubuntu 22.04 to 24.04
 
 $(gui_client_hop_command "$mirror" "dp-offline-upgrade-jammy-to-noble.sh")
 
-Step 5 — Download and stage DP ${ver} files
+Do not resume the DP during Steps 2–5.
 
-${step5}
+Step 6 — Download and stage DP ${ver} files
+
+${step6}
 
 EOF
   if [[ "$topology" == "cluster" ]]; then
     cat <<EOF
-Step 6 — Start DP ${ver} cluster bringup
+Step 7 — Start DP ${ver} bringup
 
-Run this command on the cluster master.
+Run this command on the cluster master only.
 
-Complete the DL cluster first, then run the DA cluster.
+Complete the DL cluster first, then run the corresponding command on the DA master using the DA worker IPs.
 
-${step6}
+Do not include the master IP.
+Do not mix DL and DA worker IPs in one command.
+
+Management IPs or cluster IPs can be used for \`--worker-ips\`.
+Cluster IPs are recommended when the master can reach them.
+
+${step7}
 
 EOF
   else
     cat <<EOF
-Step 6 — Start DP ${ver} bringup
+Step 7 — Start DP ${ver} bringup
 
-${step6}
+${step7}
 
 EOF
   fi
   cat <<EOF
-Step 7 — Watch bringup log
+Step 8 — Resume DP services
 
-sudo tail -F /var/log/aella/aella_py3_bringup.log
+After the bringup script completes, run \`aella_cli\`.
+Select or enter \`resume\`.
+Wait for resume to complete and allow several minutes for pods and host services to start.
 
+Resume is an aella_cli menu command.
+Do not run \`resume\` directly in the Linux bash shell.
+
+The DP health checks must be performed after resume.
+Pods and host services may not become ready until the DP services are resumed.
+
+Step 9 — Verify DP health
+
+After resume, wait for the DP services to start.
+Then run \`aella_cli\` and select or enter \`show status\`.
+
+Confirm that:
+- All pods are running
+- All cluster nodes are ready
+- All host services are ready
+- System Ready (or the normal ready state for this role)
+- License status is normal
+- Provision status is normal when required for this role
+
+The status may take several minutes to become ready after resume.
+Do not treat the DP as healthy immediately after running resume.
+
+EOF
+  if [[ "$topology" == "cluster" ]]; then
+    cat <<EOF
+Run the status check on the cluster master.
+Confirm that all worker nodes are ready.
+Confirm the DL cluster first, then confirm the DA cluster.
+
+EOF
+  fi
+  cat <<EOF
 A copy of these commands was saved to:
 $(mm_client_commands_file)
 EOF
@@ -783,7 +859,7 @@ gui_client_instructions() {
   mm_load_gui_config
   engine_resolve_paths
   local ver="${TARGET_DP_VERSION:-6.5.0}"
-  local mirror source_ver topology worker_ips="" topo_choice out_file tmp
+  local mirror source_ver topology worker_ips="" topo_choice out_file tmp source_default=""
   mirror="$(mm_client_mirror_url)" || {
     mm_whiptail_msg "DP Client Upgrade Commands" \
       "Could not determine the Mirror Server HTTP address.
@@ -798,20 +874,36 @@ or ensure this host has a reachable IPv4 address."
     mm_save_gui_config >/dev/null 2>&1 || true
   fi
 
+  if mm_validate_source_dp_version "${CURRENT_DP_VERSION:-}" 2>/dev/null \
+    && [[ "${CURRENT_DP_VERSION}" != "$ver" ]]; then
+    source_default="${CURRENT_DP_VERSION}"
+  else
+    source_default=""
+  fi
+
   source_ver="$(mm_whiptail_input \
     "Current DP software version" \
-    "Enter the current DP software version on the DP (example: 6.3.0).
+    "Enter the current DP software version on the DP (X.Y.Z).
 
-This value is used in Step 5 --source-dp-version." \
-    "6.3.0")" || return 0
+This value is used in Step 6 --source-dp-version.
+It must match Configuration Current DP Version and must differ from Target DP Version (${ver})." \
+    "${source_default}")" || return 0
   if ! mm_validate_source_dp_version "$source_ver"; then
-    mm_whiptail_msg "Invalid version" "Version must be X.Y.Z (got: ${source_ver})"
+    mm_whiptail_msg "Invalid version" \
+      "Version must be X.Y.Z at or above 6.2.0 (got: ${source_ver})"
+    return 0
+  fi
+  if [[ "$source_ver" == "$ver" ]]; then
+    mm_whiptail_msg "Invalid versions" \
+      "The current DP version and target DP version are the same.
+
+Verify the Current DP Version in Configuration."
     return 0
   fi
 
   topo_choice="$(mm_whiptail_menu \
     "DP topology" \
-    "Select the DP deployment type for Step 6 bringup." \
+    "Select the DP deployment type for Step 7 bringup." \
     "1" "Single DP / AIO / master without workers" \
     "2" "Cluster master with workers")" || return 0
   case "$topo_choice" in
@@ -819,14 +911,23 @@ This value is used in Step 5 --source-dp-version." \
     2)
       topology="cluster"
       worker_ips="$(mm_whiptail_input \
-        "Worker management IPs" \
-        "Enter comma-separated worker management IPv4 addresses.
+        "Worker IP addresses" \
+        "Enter the worker IP addresses for this cluster master.
 
-Example: 192.168.124.23,192.168.124.24" \
+Recommended: use the worker cluster IP addresses.
+Use management IP addresses only when the cluster network is not reachable from the master.
+
+- Management IPs or cluster IPs can be used.
+- Cluster IPs are recommended when they are reachable because the cluster network usually provides more reliable node-to-node communication.
+- Enter worker IPs only. Do not enter the master IP.
+- Separate multiple IPs with commas.
+- Do not mix management and cluster IPs in the same cluster unless required by the network design.
+- Example: 192.168.124.23,192.168.124.24" \
         "")" || return 0
       worker_ips="$(mm_validate_worker_ips "$worker_ips")" || {
         mm_whiptail_msg "Invalid worker IPs" \
-          "Provide a non-empty comma-separated list of IPv4 addresses.
+          "Provide a non-empty comma-separated list of valid IPv4 addresses.
+Do not include trailing commas, duplicates, 0.0.0.0, or 255.255.255.255.
 Shell metacharacters are not allowed."
         return 0
       }
