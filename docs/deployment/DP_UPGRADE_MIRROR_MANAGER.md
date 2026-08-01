@@ -5,7 +5,7 @@
 Build a DP Ubuntu upgrade HTTP mirror server in one fixed workflow:
 
 1. Bootstrap a clean Ubuntu 24.04 host with `sudo ./install.sh`
-2. Configure Target DP Version + ACPS credentials in the GUI
+2. Configure DP Version + ACPS credentials in the GUI
 3. Download Ubuntu OS Core from Cloudflare R2
 4. Verify OS Core checksums
 5. Download DP Phase 2 artifacts from ACPS
@@ -84,8 +84,7 @@ There is no install-mode menu, no local OS Core path picker, no R2/ACPS URL edit
 
 GUI fields only:
 
-- Current DP Version (installed product version before upgrade; `--source-dp-version`)
-- Target DP Version (default `6.5.0`; upgrade destination)
+- DP Version (default `6.5.0`)
 - ACPS Username
 - ACPS Password
 - Test ACPS Connection
@@ -113,9 +112,11 @@ constant). Clients never download from R2; only the Mirror Manager host does.
 Credentials are stored root-owned mode `600` at
 `/etc/ubuntu-mirror/dp-upgrade-mirror.conf` and redacted from logs.
 
-Current DP Version comes from Configuration and is the single source of truth for
-Menu 7 `--source-dp-version`. Target DP Version is the upgrade destination.
-Command generation is blocked when current and target are the same.
+This workflow upgrades Ubuntu OS from 16.04 to 24.04. DP software remains 6.5.0
+before and after. Phase 2 bringup restores the DP 6.5.0 runtime after the OS
+upgrade (`COMPLETED_NOBLE`). There is no Current/Target DP Version split in the
+GUI. Menu 7 generates Stage with `--target-version 6.5.0 --same-version-recovery`
+and does not prompt for a source version.
 
 ## Download and Prepare
 
@@ -177,7 +178,7 @@ Pre-nginx layout checks may log `HTTP_VALIDATION=DEFERRED`; they must not warn
 1. Hypervisor snapshot
 2. `aella_cli` → `pause` on Ubuntu 16.04 (before first OS hop)
 3. OS hops 16.04 → 18.04 → 20.04 → 22.04 → 24.04 (do not resume during hops)
-4. Stage DP artifacts (`--source-dp-version` = Current DP Version, `--target-version` = Target)
+4. Stage DP 6.5.0 recovery artifacts (`--target-version 6.5.0 --same-version-recovery`; source auto-detected on the DP)
 5. Bringup (`--worker-ips` optional; management or cluster IPs; cluster IPs recommended when reachable; no master IP)
 6. `aella_cli` → `resume` after bringup completes
 7. Wait for pods/host services, then `aella_cli` → `show status` (health after resume)
@@ -187,8 +188,8 @@ Upgrade Readiness status values are exactly: `PASS`, `NOT VERIFIED`, `NOT READY`
 ## Storage
 
 One final OS data set and one final DP bundle. No `releases/<timestamp>/`, no
-`current`/`previous` symlinks, no `published.previous`. Keep only one Target DP
-Version artifact set on the mirror host.
+`current`/`previous` symlinks, no `published.previous`. Keep only one DP Version
+artifact set on the mirror host.
 
 Final DP files:
 
@@ -217,13 +218,30 @@ approximately:
 | Phase 2 final bundle | ~28.2 GiB (30307553280 bytes) |
 | Host after successful prepare | ~40 GiB used on a clean Ubuntu Server |
 
-Download-and-prepare peak model (same filesystem, optimized pipeline):
+Distinguish two workflows:
 
-- one ACPS source tree
-- one bundle `.new` being written directly under `dp-phase2/<version>.new.<pid>/`
-- OS payload materialize temp + small metadata overhead
-- safety reserve: `max(10 GiB, 10% of filesystem)`
-- existing final is retained until the new bundle verifies, then removed immediately
+**Fresh prepare** (no existing final bundle):
+
+- Peak ≈ base OS + R2/selective + ACPS source + bundle `.new` ≈ **70–73 GiB**
+- OS materialization and Phase 2 build are sequential (do not sum both peaks)
+
+**Re-prepare** (existing final retained until the new bundle verifies):
+
+- Peak ≈ base + R2/selective + existing final + new ACPS source + new bundle ≈ **~100 GiB**
+- Rename of existing final to `.old` is the same inode (no extra blocks)
+
+Preflight free-space model (`CURRENT_AVAILABLE_BASED_REQUIRED_BYTES`):
+
+```
+OS_STAGE_EXTRA = OS payload temp + metadata
+PHASE2_STAGE_EXTRA = ACPS source + new bundle + metadata
+REQUIRED = max(OS_STAGE_EXTRA, PHASE2_STAGE_EXTRA) + SAFETY_RESERVE
+```
+
+Existing final and selective already reduce `df` available, so they are **not**
+added again to future required (`DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES=0`).
+`TOTAL_CAPACITY_BASED_PROJECTED_PEAK_BYTES` reports capacity peak including
+already-used artifacts.
 
 Hard requirements:
 
@@ -236,16 +254,23 @@ Hard requirements:
 - Checksums and entry-count checks are never skipped. Failed publishes restore the
   previous final artifact when present.
 
-Sizing policy for current 6.5.0 data (clean install, one version, no stale
-partials):
+Sizing policy for current 6.5.0 data (GB = decimal; one version; same filesystem):
 
 ```
-MINIMUM_SUPPORTED_DISK=100GB
-RECOMMENDED_DISK=120GB
+MINIMUM_FRESH_INSTALL_DISK=100GB   # PROJECTED; clean Ubuntu, no existing final
+RECOMMENDED_FRESH_INSTALL_DISK=120GB
+RECOMMENDED_OPERATIONAL_DISK=150GB # covers re-prepare with safety headroom
+FUTURE_GROWTH_DISK=200GB
 ```
 
-Preflight logs structured fields (`DISK_PREFLIGHT_*`). If a future ACPS bundle
-grows beyond the available budget, prepare fails closed with `DISK_PREFLIGHT=FAIL`
+100GB decimal (~93.1 GiB) is supported only as PROJECTED for a clean fresh
+prepare of current 6.5.0 sizes with no stale partials. Re-prepare on 120GB
+decimal cannot reliably keep a 10 GiB safety margin; use 150GB for operations.
+
+Preflight logs structured fields (`DISK_PREFLIGHT_*`,
+`CURRENT_AVAILABLE_BASED_REQUIRED_BYTES`,
+`TOTAL_CAPACITY_BASED_PROJECTED_PEAK_BYTES`). If a future ACPS bundle grows
+beyond the available budget, prepare fails closed with `DISK_PREFLIGHT=FAIL`
 rather than attempting multi-copy staging.
 
 ## Bringup drift gate

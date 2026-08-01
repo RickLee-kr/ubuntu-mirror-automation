@@ -176,30 +176,34 @@ Phase 1 enables and validates **Ubuntu OS hops only** using the offline selectiv
 
 **Support contract**
 
-- Supported starting DP version: **6.2.0 or above**
-- Current Phase 2 artifact target version: **6.5.0** (bundle filenames remain versioned)
-- Source DP version is detected separately from the artifact target version
-- Phase 2 lands the DP on the selected target (currently 6.5.0 Py3)
-- Versions above the selected target must not be downgraded
-- A healthy host already on the target version on Ubuntu 24.04 normally needs no staging
+- Supported starting DP version: **6.2.0 or above** (auto-detected on the DP)
+- DP Version / Phase 2 artifact version: **6.5.0** (bundle filenames remain versioned)
+- Ubuntu OS is upgraded from 16.04 to 24.04; DP software remains 6.5.0
+- Phase 2 bringup restores the DP 6.5.0 runtime after the OS upgrade
+- Versions above 6.5.0 must not be downgraded
+- A healthy host already on 6.5.0 on Ubuntu 24.04 normally needs no staging
 - After Phase 1 OS-only upgrade (`COMPLETED_NOBLE`, product validation `NOT_RUN_PHASE1`), same-version staging is allowed only with explicit `--same-version-recovery` after a powered-off snapshot
 
 **Client helpers (internal mirror `/client/`)**
 
 ```bash
-# Canonical
+# Canonical (Menu 7 default): same-version recovery after COMPLETED_NOBLE
 sudo bash stage-dp-phase2.sh \
-  --source-dp-version 6.3.0 \
   --target-version 6.5.0 \
+  --same-version-recovery \
   --mirror-url http://221.139.249.111
 
-# Compatibility wrapper (target fixed to 6.5.0; source still required/detected)
+# Compatibility wrapper (target fixed to 6.5.0; source auto-detected)
 sudo bash stage-dp-phase2-6.5.0.sh \
-  --source-dp-version 6.3.0 \
+  --same-version-recovery \
   --mirror-url http://221.139.249.111
 ```
 
 Staging never executes `bringup_py3_dp_after_os_upgrade.sh`. Do not run bringup until `NTP_BRINGUP_READINESS=PASS` (internal NTP only).
+
+`--source-dp-version` remains an optional operator fallback inside the stage
+helper when auto-detection fails; Mirror Manager generated commands do not
+include it.
 
 **Mirror apply (SSH-safe interactive wrapper)**
 

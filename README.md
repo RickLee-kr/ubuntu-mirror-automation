@@ -84,8 +84,7 @@ Enable HTTP (3) before Verify Readiness (4). Menu 7 prints one-line DP commands 
 
 Enter only:
 
-- Current DP Version (installed product version before upgrade; used as `--source-dp-version`)
-- Target DP Version (default `6.5.0`; upgrade destination)
+- DP Version (default `6.5.0`)
 - ACPS Username
 - ACPS Password (password box; not echoed)
 - Test ACPS Connection
@@ -97,6 +96,7 @@ Read-only:
 - OS Core Source: Cloudflare R2 — fixed
 
 There is no install-mode menu, no local/USB OS Core picker, no R2/ACPS URL editor, and no rollback menu.
+There is no Current/Target DP Version split. Ubuntu OS is upgraded from 16.04 to 24.04; DP software remains 6.5.0.
 
 Credentials are stored as root-owned mode `600` under `/etc/ubuntu-mirror/dp-upgrade-mirror.conf` and are redacted from logs.
 
@@ -114,7 +114,7 @@ Requires HTTP distribution ENABLED. Probes live HTTP URLs (200-only) for client 
 
 ### 5–7. Status, logs, client commands
 
-Status shows a short operator summary including Current/Target DP versions and Upgrade Readiness. Redacted logs live under `/var/log/ubuntu-mirror-automation/`. Menu 7 prints copy-paste DP upgrade commands using the configured mirror HTTP address, Current DP Version (source), and Target DP Version.
+Status shows a short operator summary including DP Version and Upgrade Readiness. Redacted logs live under `/var/log/ubuntu-mirror-automation/`. Menu 7 prints copy-paste DP commands using the configured mirror HTTP address and DP Version. Stage uses `--target-version 6.5.0 --same-version-recovery` after COMPLETED_NOBLE (source auto-detected on the DP).
 
 Worker `--worker-ips` may use management IPs or cluster IPs; cluster IPs are recommended when reachable. Do not include the master IP. Pause DP services in `aella_cli` before the first OS hop; resume only after DP 6.5.0 bringup completes; verify pods/nodes/host services after resume.
 

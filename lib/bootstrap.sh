@@ -530,7 +530,7 @@ Logs:
   /var/log/ubuntu-mirror-automation/
 
 Next steps (Mirror Manager GUI):
-  1. Configuration — Current DP Version, Target DP Version, ACPS username/password
+  1. Configuration — DP Version, ACPS username/password
   2. Download and Prepare Upgrade Files — R2 OS Core + ACPS Phase 2
   3. Enable HTTP Distribution
   4. Verify Upgrade Readiness

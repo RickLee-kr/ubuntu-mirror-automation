@@ -40,7 +40,9 @@ MM_LOG_FILE="${MM_LOG_FILE:-}"
 MM_STATE_DIR="${MM_STATE_DIR:-}"
 MM_DRY_RUN="${MM_DRY_RUN:-0}"
 MM_FILES_CHANGED="${MM_FILES_CHANGED:-NO}"
-CURRENT_DP_VERSION="${CURRENT_DP_VERSION:-}"
+# User-facing label is "DP Version". Internal TARGET_DP_VERSION remains for
+# artifact paths and API compatibility. Legacy CURRENT_DP_VERSION in old
+# config files is ignored (never required, never written back).
 TARGET_DP_VERSION="${TARGET_DP_VERSION:-6.5.0}"
 ACPS_USERNAME="${ACPS_USERNAME:-}"
 ACPS_PASSWORD="${ACPS_PASSWORD:-}"
@@ -535,7 +537,6 @@ mm_assert_regular_file() {
 }
 
 mm_load_gui_config() {
-  CURRENT_DP_VERSION="${CURRENT_DP_VERSION:-}"
   TARGET_DP_VERSION="${TARGET_DP_VERSION:-6.5.0}"
   ACPS_USERNAME="${ACPS_USERNAME:-}"
   ACPS_PASSWORD="${ACPS_PASSWORD:-}"
@@ -547,7 +548,8 @@ mm_load_gui_config() {
     source "${MM_CONFIG_FILE}"
     set +a
   fi
-  CURRENT_DP_VERSION="${CURRENT_DP_VERSION:-}"
+  # Legacy CURRENT_DP_VERSION may appear in older configs; ignore it.
+  unset CURRENT_DP_VERSION 2>/dev/null || true
   TARGET_DP_VERSION="${TARGET_DP_VERSION:-6.5.0}"
   ACPS_USERNAME="${ACPS_USERNAME:-${ACPS_USER:-}}"
   ACPS_PASSWORD="${ACPS_PASSWORD:-${ACPS_PASS:-}}"
@@ -564,7 +566,7 @@ mm_save_gui_config() {
   cat >"$tmp" <<EOF
 # DP Upgrade Mirror Manager configuration (managed by GUI)
 # Do not store secrets in world-readable locations.
-CURRENT_DP_VERSION=${CURRENT_DP_VERSION:-}
+# DP Version (user-facing) is stored as TARGET_DP_VERSION for artifact paths.
 TARGET_DP_VERSION=${TARGET_DP_VERSION}
 ACPS_USERNAME=${ACPS_USERNAME}
 ACPS_PASSWORD=${ACPS_PASSWORD}
@@ -1128,42 +1130,65 @@ mm_fs_size_bytes() {
 
 mm_calc_disk_requirements() {
   # Preflight runs after the R2 package is already on disk, so package bytes are
-  # reflected in AVAILABLE_BYTES and must not be double-counted.
+  # reflected in CURRENT_AVAILABLE and must not be double-counted.
   #
-  # Same-filesystem optimized peak (concurrent physical data):
-  #   OS payload materialize temp + ACPS source (one tree) + bundle .new output
-  #   + brief existing-final replacement overhead + metadata + safety reserve.
-  # Full cache→work→dp-build→bundle re-copies are not part of this model.
+  # OS materialization and Phase 2 build run sequentially. Future free-space
+  # need is therefore max(OS_STAGE_EXTRA, PHASE2_STAGE_EXTRA) + SAFETY_RESERVE.
+  #
+  # Existing final bundle / selective tree already reduce df available, so they
+  # are NOT added again to CURRENT_AVAILABLE_BASED_REQUIRED_BYTES. Renaming an
+  # existing final to .old is the same inode (no extra blocks). The new bundle
+  # is already counted as BUNDLE_OUTPUT_BYTES.
+  #
+  # TOTAL_CAPACITY_BASED_PROJECTED_PEAK_BYTES reports peak used capacity
+  # (current used + sequential stage peak) for operator sizing guidance.
   local os_pkg_bytes payload_bytes acps_bytes ver existing_bundle
-  local reserve_floor_bytes reserve_pct_bytes fs_size_bytes
+  local reserve_floor_bytes reserve_pct_bytes fs_size_bytes metadata_oh
+  local stage_peak_bytes current_used_bytes existing_final_bytes
   os_pkg_bytes="${OS_CORE_PACKAGE_BYTES:-0}"
   payload_bytes="${OS_CORE_PAYLOAD_BYTES:-0}"
   acps_bytes="${ACPS_EXPECTED_BYTES:-0}"
   [[ "$os_pkg_bytes" =~ ^[0-9]+$ ]] || os_pkg_bytes=0
   [[ "$payload_bytes" =~ ^[0-9]+$ ]] || payload_bytes=0
   [[ "$acps_bytes" =~ ^[0-9]+$ ]] || acps_bytes=0
+  metadata_oh=$((512 * 1024 * 1024))
 
   DISK_PREFLIGHT_R2_REQUIRED_BYTES=0
   DISK_PREFLIGHT_ACPS_SOURCE_BYTES=$acps_bytes
   # Bundle output is approximately the ACPS source tree size (9-file tar).
   DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES=$acps_bytes
-  DISK_PREFLIGHT_TEMP_OVERHEAD_BYTES=$((payload_bytes + (512 * 1024 * 1024)))
 
+  # Existing final is already on disk (df available). Rename is not a copy.
   DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES=0
+  existing_final_bytes=0
   ver="${TARGET_DP_VERSION:-${DP_PHASE2_VERSION:-6.5.0}}"
   existing_bundle="${MM_DP_PHASE2_ROOT:-${MM_MIRROR_ROOT:-/var/spool/apt-mirror}/dp-phase2}/${ver}/dp_bundle_${ver}-current.tar"
   if [[ -f "$existing_bundle" ]]; then
-    DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES="$(mm_file_bytes "$existing_bundle")"
-    [[ "$DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES" =~ ^[0-9]+$ ]] \
-      || DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES=0
+    existing_final_bytes="$(mm_file_bytes "$existing_bundle")"
+    [[ "$existing_final_bytes" =~ ^[0-9]+$ ]] || existing_final_bytes=0
   fi
+  DISK_PREFLIGHT_EXISTING_FINAL_BYTES=$existing_final_bytes
+
+  DISK_PREFLIGHT_OS_STAGE_EXTRA_BYTES=$((payload_bytes + metadata_oh))
+  DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES=$((
+    DISK_PREFLIGHT_ACPS_SOURCE_BYTES
+    + DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES
+    + metadata_oh
+  ))
+  if [[ "$DISK_PREFLIGHT_OS_STAGE_EXTRA_BYTES" -gt "$DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES" ]]; then
+    stage_peak_bytes=$DISK_PREFLIGHT_OS_STAGE_EXTRA_BYTES
+  else
+    stage_peak_bytes=$DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES
+  fi
+  DISK_PREFLIGHT_SEQUENTIAL_STAGE_PEAK_BYTES=$stage_peak_bytes
+  DISK_PREFLIGHT_TEMP_OVERHEAD_BYTES=$metadata_oh
 
   reserve_floor_bytes=$((10 * 1024 * 1024 * 1024))
+  fs_size_bytes="$(mm_fs_size_bytes "${MM_MIRROR_ROOT}")"
+  [[ "$fs_size_bytes" =~ ^[0-9]+$ ]] || fs_size_bytes=0
   if [[ -n "${MM_MOCK_SAFETY_RESERVE_BYTES:-}" ]]; then
     DISK_PREFLIGHT_SAFETY_RESERVE_BYTES="$MM_MOCK_SAFETY_RESERVE_BYTES"
   else
-    fs_size_bytes="$(mm_fs_size_bytes "${MM_MIRROR_ROOT}")"
-    [[ "$fs_size_bytes" =~ ^[0-9]+$ ]] || fs_size_bytes=0
     reserve_pct_bytes=$((fs_size_bytes / 10))
     if [[ "$reserve_pct_bytes" -gt "$reserve_floor_bytes" ]]; then
       DISK_PREFLIGHT_SAFETY_RESERVE_BYTES=$reserve_pct_bytes
@@ -1179,20 +1204,24 @@ mm_calc_disk_requirements() {
   DP_BUILD_TEMP_BYTES=$DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES
   SAFETY_MARGIN_BYTES=$DISK_PREFLIGHT_SAFETY_RESERVE_BYTES
 
-  DISK_PREFLIGHT_TOTAL_REQUIRED_BYTES=$((
-    DISK_PREFLIGHT_R2_REQUIRED_BYTES
-    + DISK_PREFLIGHT_ACPS_SOURCE_BYTES
-    + DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES
-    + DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES
-    + DISK_PREFLIGHT_TEMP_OVERHEAD_BYTES
-    + DISK_PREFLIGHT_SAFETY_RESERVE_BYTES
+  CURRENT_AVAILABLE_BASED_REQUIRED_BYTES=$((
+    stage_peak_bytes + DISK_PREFLIGHT_SAFETY_RESERVE_BYTES
   ))
-  TOTAL_REQUIRED_BYTES=$DISK_PREFLIGHT_TOTAL_REQUIRED_BYTES
+  DISK_PREFLIGHT_TOTAL_REQUIRED_BYTES=$CURRENT_AVAILABLE_BASED_REQUIRED_BYTES
+  TOTAL_REQUIRED_BYTES=$CURRENT_AVAILABLE_BASED_REQUIRED_BYTES
 
   DISK_PREFLIGHT_CURRENT_AVAILABLE_BYTES="$(mm_free_bytes "${MM_MIRROR_ROOT}")"
   AVAILABLE_BYTES="$DISK_PREFLIGHT_CURRENT_AVAILABLE_BYTES"
   [[ -n "$AVAILABLE_BYTES" && "$AVAILABLE_BYTES" =~ ^[0-9]+$ ]] \
     || mm_die "DISK_PREFLIGHT=FAIL cannot_read_df"
+
+  if [[ "$fs_size_bytes" -ge "$AVAILABLE_BYTES" ]]; then
+    current_used_bytes=$((fs_size_bytes - AVAILABLE_BYTES))
+  else
+    current_used_bytes=0
+  fi
+  TOTAL_CAPACITY_BASED_PROJECTED_PEAK_BYTES=$((current_used_bytes + stage_peak_bytes))
+  DISK_PREFLIGHT_PROJECTED_PEAK_BYTES=$TOTAL_CAPACITY_BASED_PROJECTED_PEAK_BYTES
 
   if [[ "$AVAILABLE_BYTES" -lt "$TOTAL_REQUIRED_BYTES" ]]; then
     DISK_PREFLIGHT_RESULT=FAIL
@@ -1211,9 +1240,15 @@ mm_calc_disk_requirements() {
   mm_info "DISK_PREFLIGHT_R2_REQUIRED_BYTES=${DISK_PREFLIGHT_R2_REQUIRED_BYTES}"
   mm_info "DISK_PREFLIGHT_ACPS_SOURCE_BYTES=${DISK_PREFLIGHT_ACPS_SOURCE_BYTES}"
   mm_info "DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES=${DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES}"
+  mm_info "DISK_PREFLIGHT_EXISTING_FINAL_BYTES=${DISK_PREFLIGHT_EXISTING_FINAL_BYTES}"
   mm_info "DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES=${DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES}"
+  mm_info "DISK_PREFLIGHT_OS_STAGE_EXTRA_BYTES=${DISK_PREFLIGHT_OS_STAGE_EXTRA_BYTES}"
+  mm_info "DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES=${DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES}"
+  mm_info "DISK_PREFLIGHT_SEQUENTIAL_STAGE_PEAK_BYTES=${DISK_PREFLIGHT_SEQUENTIAL_STAGE_PEAK_BYTES}"
   mm_info "DISK_PREFLIGHT_TEMP_OVERHEAD_BYTES=${DISK_PREFLIGHT_TEMP_OVERHEAD_BYTES}"
   mm_info "DISK_PREFLIGHT_SAFETY_RESERVE_BYTES=${DISK_PREFLIGHT_SAFETY_RESERVE_BYTES}"
+  mm_info "CURRENT_AVAILABLE_BASED_REQUIRED_BYTES=${CURRENT_AVAILABLE_BASED_REQUIRED_BYTES}"
+  mm_info "TOTAL_CAPACITY_BASED_PROJECTED_PEAK_BYTES=${TOTAL_CAPACITY_BASED_PROJECTED_PEAK_BYTES}"
   mm_info "DISK_PREFLIGHT_TOTAL_REQUIRED_BYTES=${DISK_PREFLIGHT_TOTAL_REQUIRED_BYTES}"
   mm_info "TOTAL_REQUIRED_BYTES=${TOTAL_REQUIRED_BYTES}"
   mm_info "AVAILABLE_BYTES=${AVAILABLE_BYTES}"

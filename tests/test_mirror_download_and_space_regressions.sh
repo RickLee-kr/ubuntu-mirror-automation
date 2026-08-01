@@ -101,22 +101,39 @@ TARGET_DP_VERSION=6.5.0
 # shellcheck source=../scripts/lib/mirror_manager_common.sh
 source "$COMMON"
 mm_calc_disk_requirements >/dev/null
-expected_total=$((0 + 300 + 300 + 200 + (512 * 1024 * 1024) + (10 * 1024 * 1024 * 1024)))
+# Sequential peaks: max(OS=payload+512MiB, PHASE2=acps+bundle+512MiB) + safety
+# With ACPS=300, payload=200 → phase2 peak wins.
+os_stage=$((200 + (512 * 1024 * 1024)))
+phase2_stage=$((300 + 300 + (512 * 1024 * 1024)))
+if [[ "$os_stage" -gt "$phase2_stage" ]]; then
+  stage_peak=$os_stage
+else
+  stage_peak=$phase2_stage
+fi
+expected_total=$((stage_peak + (10 * 1024 * 1024 * 1024)))
 [[ "$TOTAL_REQUIRED_BYTES" -eq "$expected_total" ]] \
   || fail "disk estimate expected=${expected_total} actual=${TOTAL_REQUIRED_BYTES}"
+[[ "$CURRENT_AVAILABLE_BASED_REQUIRED_BYTES" -eq "$expected_total" ]] \
+  || fail "available-based required mismatch"
 [[ "$DISK_PREFLIGHT_SAFETY_RESERVE_BYTES" -eq $((10 * 1024 * 1024 * 1024)) ]] \
   || fail "safety reserve not 10GiB"
 [[ "$DISK_PREFLIGHT_RESULT" == "PASS" ]] || fail "disk preflight should PASS with 100GiB mock free"
-pass "disk estimate counts one OS payload, one ACPS cache, and one bundle"
+[[ "$DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES" -eq 0 ]] \
+  || fail "fresh replacement overhead must be 0"
+pass "disk estimate uses sequential max(OS,PHASE2) + safety"
 
-# Replacement overhead must count an existing final bundle.
+# Existing final must NOT double-count against current available (overhead=0).
 mkdir -p "${MM_DP_PHASE2_ROOT}/6.5.0"
 dd if=/dev/zero of="${MM_DP_PHASE2_ROOT}/6.5.0/dp_bundle_6.5.0-current.tar" bs=1 count=400 status=none
 mm_calc_disk_requirements >/dev/null
-[[ "$DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES" -eq 400 ]] \
-  || fail "replacement overhead expected=400 actual=${DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES}"
+[[ "$DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES" -eq 0 ]] \
+  || fail "replacement overhead expected=0 actual=${DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES}"
+[[ "$DISK_PREFLIGHT_EXISTING_FINAL_BYTES" -eq 400 ]] \
+  || fail "existing final bytes expected=400 actual=${DISK_PREFLIGHT_EXISTING_FINAL_BYTES}"
+[[ "$TOTAL_REQUIRED_BYTES" -eq "$expected_total" ]] \
+  || fail "reprepare available-based required changed incorrectly: ${TOTAL_REQUIRED_BYTES}"
 rm -f "${MM_DP_PHASE2_ROOT}/6.5.0/dp_bundle_6.5.0-current.tar"
-pass "disk estimate includes existing final replacement overhead"
+pass "existing final is reported but not double-counted in future required"
 
 HTTP_ROOT="${TMP}/http"
 mkdir -p "$HTTP_ROOT"
@@ -313,6 +330,65 @@ mkdir -p "$MM_CACHE_ROOT" "$MM_SELECTIVE_ROOT" "$MM_DP_PHASE2_ROOT" "$MM_STATE_D
 engine_assert_same_filesystem_layout >/dev/null
 pass "same-filesystem preflight PASS on single tmpfs/dir tree"
 
+# Existing selective tree must not inflate available-based future required.
+mkdir -p "${MM_SELECTIVE_ROOT}/ubuntu/pool"
+dd if=/dev/zero of="${MM_SELECTIVE_ROOT}/ubuntu/pool/hello.deb" bs=1 count=250 status=none
+OS_CORE_PACKAGE_BYTES=100
+OS_CORE_PAYLOAD_BYTES=200
+ACPS_EXPECTED_BYTES=300
+MM_MOCK_AVAILABLE_BYTES=$((100 * 1024 * 1024 * 1024))
+MM_MOCK_SAFETY_RESERVE_BYTES=$((10 * 1024 * 1024 * 1024))
+unset MM_MOCK_FS_SIZE_BYTES || true
+mm_calc_disk_requirements >/dev/null
+sel_expected=$((300 + 300 + (512 * 1024 * 1024) + (10 * 1024 * 1024 * 1024)))
+[[ "$CURRENT_AVAILABLE_BASED_REQUIRED_BYTES" -eq "$sel_expected" ]] \
+  || fail "selective tree changed available-based required: ${CURRENT_AVAILABLE_BASED_REQUIRED_BYTES}"
+pass "existing selective tree not double-counted in future required"
+
+# Interrupted .part files are cleaned by engine helpers and must not be in the
+# permanent final layout model (preflight still uses ACPS expected sizes).
+mkdir -p "${MM_CACHE_ROOT}/r2" "${MM_CACHE_ROOT}/acps/6.5.0"
+: >"${MM_CACHE_ROOT}/r2/pkg.tar.part"
+: >"${MM_CACHE_ROOT}/acps/6.5.0/images-6.5.0.tar.part"
+mm_calc_disk_requirements >/dev/null
+[[ "$CURRENT_AVAILABLE_BASED_REQUIRED_BYTES" -eq "$sel_expected" ]] \
+  || fail ".part presence changed available-based required"
+pass "interrupted .part does not change preflight formula"
+
+# Cross-filesystem layouts are blocked.
+CROSS="${TMP}/cross-fs"
+mkdir -p "${CROSS}/mirror" "${CROSS}/other"
+# Bind-mount another path as selective when possible; otherwise simulate via
+# mismatched device check by pointing selective at a path we force-fail.
+if command -v mountpoint >/dev/null 2>&1 && [[ -d /dev/shm ]]; then
+  CROSS_SEL="${CROSS}/sel-shm"
+  mkdir -p "${CROSS}/mirror/.install-cache" "${CROSS}/mirror/dp-phase2" "$CROSS_SEL"
+  if mount --bind /dev/shm "$CROSS_SEL" 2>/dev/null; then
+    MM_MIRROR_ROOT="${CROSS}/mirror"
+    MM_CACHE_ROOT="${CROSS}/mirror/.install-cache"
+    MM_SELECTIVE_ROOT="$CROSS_SEL"
+    MM_DP_PHASE2_ROOT="${CROSS}/mirror/dp-phase2"
+    set +e
+    out="$(engine_assert_same_filesystem_layout 2>&1)"
+    rc=$?
+    set -e
+    umount "$CROSS_SEL" 2>/dev/null || true
+    [[ "$rc" -ne 0 ]] || fail "cross-filesystem should be blocked"
+    echo "$out" | grep -q 'SAME_FILESYSTEM=FAIL' || fail "cross-filesystem missing FAIL marker"
+    pass "cross-filesystem blocked"
+  else
+    pass "cross-filesystem bind skipped (no mount privileges)"
+  fi
+else
+  pass "cross-filesystem bind skipped (no /dev/shm)"
+fi
+
+# Restore pipe roots after cross-fs probe
+MM_MIRROR_ROOT="$PIPE"
+MM_CACHE_ROOT="${PIPE}/.install-cache"
+MM_SELECTIVE_ROOT="${PIPE}/selective"
+MM_DP_PHASE2_ROOT="${PIPE}/dp-phase2"
+
 dp2_set_version 6.5.0
 EMPTY_BYTES="$(du -xsb "$PIPE" | awk '{print $1}')"
 CACHE="$(acps_cache_dir 6.5.0)"
@@ -462,25 +538,88 @@ awk -v m="$MULT" 'BEGIN{ exit !(m >= 1.80 && m <= 2.40) }' \
   || fail "peak multiplier ${MULT} outside 1.80-2.40 (increment=${PEAK_INCREMENT} source=${SOURCE_TOTAL_BYTES})"
 pass "fixture peak multiplier ${MULT} in 1.80-2.40"
 
-# Project real 6.5.0 sizes onto a 100GiB filesystem.
+# Project real 6.5.0 sizes for fresh vs re-prepare (GB decimal ≠ GiB).
+# 100GB decimal ≈ 93.13 GiB; 120GB ≈ 111.76 GiB; 150GB ≈ 139.70 GiB.
 REAL_SOURCE=30307553280
 REAL_BUNDLE=30307553280
 REAL_R2=3562915840
+REAL_PAYLOAD=$REAL_R2
 BASE_OS=$((10 * 1024 * 1024 * 1024))
-# Peak ≈ base + selective/R2 + ACPS source + bundle .new + temp OH (no multi-copy)
-PROJECTED_PEAK=$((BASE_OS + REAL_R2 + REAL_SOURCE + REAL_BUNDLE + (512 * 1024 * 1024)))
-FS_100=$((100 * 1024 * 1024 * 1024))
-# df available ≈ size - used - ~5% reserve on ext4; use 0.95*FS - peak as approx margin
-PROJECTED_AVAIL=$((FS_100 * 95 / 100 - PROJECTED_PEAK))
-PROJECTED_MARGIN_GIB=$((PROJECTED_AVAIL / 1024 / 1024 / 1024))
-printf 'PROJECTED_REAL_SOURCE_BYTES=%s\n' "$REAL_SOURCE"
-printf 'PROJECTED_REAL_BUNDLE_BYTES=%s\n' "$REAL_BUNDLE"
-printf 'PROJECTED_PEAK_USED_BYTES=%s\n' "$PROJECTED_PEAK"
-printf 'PROJECTED_AVAILABLE_ON_100GB_BYTES=%s\n' "$PROJECTED_AVAIL"
-printf 'PROJECTED_SAFETY_MARGIN_GIB=%s\n' "$PROJECTED_MARGIN_GIB"
-[[ "$PROJECTED_MARGIN_GIB" -ge 10 ]] \
-  || fail "projected 100GB safety margin ${PROJECTED_MARGIN_GIB}GiB < 10"
-pass "projected 100GB safety margin ${PROJECTED_MARGIN_GIB}GiB"
+METADATA_OH=$((512 * 1024 * 1024))
+GIB=$((1024 * 1024 * 1024))
+
+# Fresh: sequential peaks → phase2 (source+bundle+meta) dominates OS (payload+meta)
+FRESH_OS_STAGE=$((REAL_PAYLOAD + METADATA_OH))
+FRESH_PHASE2_STAGE=$((REAL_SOURCE + REAL_BUNDLE + METADATA_OH))
+if [[ "$FRESH_OS_STAGE" -gt "$FRESH_PHASE2_STAGE" ]]; then
+  FRESH_STAGE_PEAK=$FRESH_OS_STAGE
+else
+  FRESH_STAGE_PEAK=$FRESH_PHASE2_STAGE
+fi
+# Capacity peak ≈ base + R2/selective + stage peak (R2 already present during phase2)
+FRESH_PROJECTED_PEAK=$((BASE_OS + REAL_R2 + FRESH_STAGE_PEAK))
+FRESH_PROJECTED_PEAK_GIB=$((FRESH_PROJECTED_PEAK / GIB))
+printf 'FRESH_PROJECTED_PEAK_BYTES=%s\n' "$FRESH_PROJECTED_PEAK"
+printf 'FRESH_PROJECTED_PEAK_GIB=%s\n' "$FRESH_PROJECTED_PEAK_GIB"
+[[ "$FRESH_PROJECTED_PEAK_GIB" -ge 70 && "$FRESH_PROJECTED_PEAK_GIB" -le 73 ]] \
+  || fail "fresh projected peak ${FRESH_PROJECTED_PEAK_GIB}GiB outside 70-73"
+
+FS_100_DEC=$((100 * 1000 * 1000 * 1000))   # 100GB decimal
+FS_120_DEC=$((120 * 1000 * 1000 * 1000))
+FS_150_DEC=$((150 * 1000 * 1000 * 1000))
+# Usable ≈ 0.95 of capacity (ext4 reserve approx)
+usable_margin() {
+  local fs="$1" peak="$2"
+  awk -v fs="$fs" -v peak="$peak" 'BEGIN { printf "%d", (fs * 95 / 100 - peak) / (1024*1024*1024) }'
+}
+FRESH_100_MARGIN="$(usable_margin "$FS_100_DEC" "$FRESH_PROJECTED_PEAK")"
+FRESH_120_MARGIN="$(usable_margin "$FS_120_DEC" "$FRESH_PROJECTED_PEAK")"
+printf 'FRESH_100GB_MARGIN_GIB=%s\n' "$FRESH_100_MARGIN"
+printf 'FRESH_120GB_MARGIN_GIB=%s\n' "$FRESH_120_MARGIN"
+# 100GB decimal is PROJECTED-capable (≥0 after peak) but not recommended operational headroom
+[[ "$FRESH_100_MARGIN" -ge 0 ]] || fail "fresh 100GB projection negative margin ${FRESH_100_MARGIN}"
+[[ "$FRESH_120_MARGIN" -ge 10 ]] || fail "fresh 120GB margin ${FRESH_120_MARGIN}GiB < 10"
+pass "fresh 100GB PROJECTED / 120GB recommended (peak=${FRESH_PROJECTED_PEAK_GIB}GiB)"
+
+# Re-prepare: existing final retained until new verifies → base+R2+final+source+bundle.new
+REPREPARE_PROJECTED_PEAK=$((BASE_OS + REAL_R2 + REAL_BUNDLE + REAL_SOURCE + REAL_BUNDLE))
+REPREPARE_PROJECTED_PEAK_GIB=$((REPREPARE_PROJECTED_PEAK / GIB))
+printf 'REPREPARE_PROJECTED_PEAK_BYTES=%s\n' "$REPREPARE_PROJECTED_PEAK"
+printf 'REPREPARE_PROJECTED_PEAK_GIB=%s\n' "$REPREPARE_PROJECTED_PEAK_GIB"
+[[ "$REPREPARE_PROJECTED_PEAK_GIB" -ge 95 && "$REPREPARE_PROJECTED_PEAK_GIB" -le 105 ]] \
+  || fail "reprepare projected peak ${REPREPARE_PROJECTED_PEAK_GIB}GiB outside 95-105"
+
+REPREPARE_120_MARGIN="$(usable_margin "$FS_120_DEC" "$REPREPARE_PROJECTED_PEAK")"
+REPREPARE_150_MARGIN="$(usable_margin "$FS_150_DEC" "$REPREPARE_PROJECTED_PEAK")"
+printf 'REPREPARE_120GB_MARGIN_GIB=%s\n' "$REPREPARE_120_MARGIN"
+printf 'REPREPARE_150GB_MARGIN_GIB=%s\n' "$REPREPARE_150_MARGIN"
+# 120GB cannot keep 10GiB safety on re-prepare; 150GB can
+[[ "$REPREPARE_120_MARGIN" -lt 10 ]] \
+  || fail "reprepare 120GB unexpectedly has ≥10GiB margin (${REPREPARE_120_MARGIN})"
+[[ "$REPREPARE_150_MARGIN" -ge 10 ]] \
+  || fail "reprepare 150GB margin ${REPREPARE_150_MARGIN}GiB < 10"
+pass "reprepare 120GB tight / 150GB operational (peak=${REPREPARE_PROJECTED_PEAK_GIB}GiB)"
+
+# Preflight engine with real sizes: fresh available-based required uses sequential max
+MM_MOCK_AVAILABLE_BYTES=$((80 * GIB))
+MM_MOCK_FS_SIZE_BYTES=$FS_120_DEC
+MM_MOCK_SAFETY_RESERVE_BYTES=$((10 * GIB))
+OS_CORE_PACKAGE_BYTES=$REAL_R2
+OS_CORE_PAYLOAD_BYTES=$REAL_PAYLOAD
+ACPS_EXPECTED_BYTES=$REAL_SOURCE
+mm_calc_disk_requirements >/dev/null
+[[ "$DISK_PREFLIGHT_OS_STAGE_EXTRA_BYTES" -eq "$FRESH_OS_STAGE" ]] \
+  || fail "OS stage extra mismatch"
+[[ "$DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES" -eq "$FRESH_PHASE2_STAGE" ]] \
+  || fail "Phase2 stage extra mismatch"
+[[ "$DISK_PREFLIGHT_SEQUENTIAL_STAGE_PEAK_BYTES" -eq "$FRESH_STAGE_PEAK" ]] \
+  || fail "sequential stage peak mismatch"
+# Must NOT sum OS+Phase2
+summed=$((FRESH_OS_STAGE + FRESH_PHASE2_STAGE + (10 * GIB)))
+[[ "$CURRENT_AVAILABLE_BASED_REQUIRED_BYTES" -lt "$summed" ]] \
+  || fail "available-based required still sums sequential peaks"
+[[ "$DISK_PREFLIGHT_RESULT" == "PASS" ]] || fail "fresh-like preflight should PASS at 80GiB free"
+pass "preflight sequential peaks not summed; safety retained"
 
 # Large-file hardlink refusal (no silent cp): put cache on a bind that breaks hardlink
 # by using a copied file opened from a path we force-fail via threshold=0 + unlink trick:

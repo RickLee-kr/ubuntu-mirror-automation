@@ -320,46 +320,27 @@ gui_configuration() {
   while true; do
     local choice
     choice="$(mm_whiptail_menu "Configuration" \
-      "Current DP Version: ${CURRENT_DP_VERSION:-"(not set)"}
-Target DP Version: ${TARGET_DP_VERSION}
+      "DP Version: ${TARGET_DP_VERSION}
 ACPS Username: $(mm_configured_label "$ACPS_USERNAME")
 ACPS Password: $(mm_configured_label "$ACPS_PASSWORD")
 ACPS Server: fixed
 OS Core Source: Cloudflare R2 — fixed" \
-      "1" "Current DP Version" \
-      "2" "Target DP Version" \
-      "3" "ACPS Username" \
-      "4" "ACPS Password" \
-      "5" "Test ACPS Connection" \
-      "6" "Save Configuration" \
+      "1" "DP Version" \
+      "2" "ACPS Username" \
+      "3" "ACPS Password" \
+      "4" "Test ACPS Connection" \
+      "5" "Save Configuration" \
       "0" "Back")" || return 0
     case "$choice" in
       1)
-        local cv
-        cv="$(mm_whiptail_input "Current DP Version" \
-          "Enter the DP software version currently installed on the DP (X.Y.Z).
-
-This is the source version used by Stage (--source-dp-version).
-It must differ from the Target DP Version." \
-          "${CURRENT_DP_VERSION:-}")" || continue
-        if [[ -n "$cv" ]]; then
-          if mm_validate_source_dp_version "$cv"; then
-            if [[ "$cv" == "${TARGET_DP_VERSION}" ]]; then
-              mm_whiptail_msg "Invalid" \
-                "The current DP version and target DP version are the same.
-
-Verify the Current DP Version in Configuration."
-            else
-              CURRENT_DP_VERSION="$cv"
-            fi
-          else
-            mm_whiptail_msg "Invalid" "Version must be X.Y.Z at or above 6.2.0 (got: ${cv})"
-          fi
-        fi
-        ;;
-      2)
         local v
-        v="$(mm_whiptail_input "Target DP Version" "Enter target DP version (X.Y.Z)" "${TARGET_DP_VERSION}")" || continue
+        v="$(mm_whiptail_input "DP Version" \
+          "Enter DP software version (X.Y.Z).
+
+Ubuntu OS is upgraded from 16.04 to 24.04.
+DP software remains this version before and after the OS upgrade.
+Phase 2 bringup restores the same DP runtime after COMPLETED_NOBLE." \
+          "${TARGET_DP_VERSION}")" || continue
         if [[ -n "$v" ]]; then
           if [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             TARGET_DP_VERSION="$v"
@@ -368,17 +349,17 @@ Verify the Current DP Version in Configuration."
           fi
         fi
         ;;
-      3)
+      2)
         local u
         u="$(mm_whiptail_input "ACPS Username" "Enter ACPS username" "${ACPS_USERNAME}")" || continue
         ACPS_USERNAME="$u"
         ;;
-      4)
+      3)
         local p
         p="$(mm_whiptail_password "ACPS Password" "Enter ACPS password (not displayed later)")" || continue
         ACPS_PASSWORD="$p"
         ;;
-      5)
+      4)
         load_mirror_defaults
         engine_resolve_paths
         mm_load_gui_config
@@ -395,7 +376,7 @@ Verify the Current DP Version in Configuration."
           mm_whiptail_msg "ACPS" "ACPS_CONNECTION=FAIL"
         fi
         ;;
-      6)
+      5)
         mm_save_gui_config
         mm_record_config_validated
         mm_whiptail_msg "Configuration" \
@@ -419,7 +400,7 @@ gui_download_and_prepare() {
   load_mirror_defaults
   mm_load_gui_config
   if ! mm_config_ready; then
-    mm_whiptail_msg "Configuration required" "Set Target DP Version, ACPS Username, and ACPS Password first."
+    mm_whiptail_msg "Configuration required" "Set DP Version, ACPS Username, and ACPS Password first."
     return 0
   fi
   if ! mm_r2_url_configured; then
@@ -447,7 +428,7 @@ Long steps emit a heartbeat every 30 seconds."; then
   cat <<EOF
 ============================================================
 Download and Prepare — live progress
-Target DP Version: ${TARGET_DP_VERSION}
+DP Version: ${TARGET_DP_VERSION}
 
 Phases (names appear as each step starts):
   1. Downloading ACPS Artifacts
@@ -518,7 +499,7 @@ before enabling HTTP distribution."
   cat <<EOF
 ============================================================
 Enable HTTP Distribution — live progress
-Target DP Version: ${TARGET_DP_VERSION}
+DP Version: ${TARGET_DP_VERSION}
 Phase 2 bundle: ${stable}
 Size: $(mm_format_bytes "$bytes")
 
@@ -584,7 +565,7 @@ EOF
   fi
   dp2_set_version "${TARGET_DP_VERSION}"
   {
-    printf 'Target DP Version: %s\n' "${TARGET_DP_VERSION}"
+    printf 'DP Version: %s\n' "${TARGET_DP_VERSION}"
     printf 'HTTP Distribution: %s\n' "$(mm_status_get HTTP_DISTRIBUTION)"
   } >"$tmp"
 
@@ -592,7 +573,7 @@ EOF
   cat <<EOF
 ============================================================
 Verify Upgrade Readiness — live progress
-Target DP Version: ${TARGET_DP_VERSION}
+DP Version: ${TARGET_DP_VERSION}
 
 HTTP URL checks and status validation run next.
 If a Phase 2 SHA256 check is required, a heartbeat prints every 30 seconds.
@@ -679,8 +660,7 @@ gui_show_status() {
 DP Upgrade Mirror Status
 ========================
 
-Current DP Version: ${CURRENT_DP_VERSION:-"(not set)"}
-Target DP Version: ${ver}
+DP Version: ${ver}
 Configuration: ${config_state}
 OS Upgrade Files: ${os_state}
 DP ${ver} Bundle: ${bundle_state}
@@ -724,8 +704,8 @@ gui_client_hop_command() {
 }
 
 gui_build_client_commands() {
-  # Writes command text to stdout. Args: mirror source_ver topology worker_ips
-  local mirror="$1" source_ver="$2" topology="$3" worker_ips="${4:-}"
+  # Writes command text to stdout. Args: mirror topology worker_ips
+  local mirror="$1" topology="$2" worker_ips="${3:-}"
   local ver="${TARGET_DP_VERSION:-6.5.0}"
   local snap_line step6 step7
   if [[ "$topology" == "cluster" ]]; then
@@ -733,7 +713,7 @@ gui_build_client_commands() {
   else
     snap_line="Create a full hypervisor snapshot of the DP VM."
   fi
-  step6="cd /home/aella && rm -f stage-dp-phase2.sh stage-dp-phase2.sh.sha256 && curl -fsSLO ${mirror}/client/stage-dp-phase2.sh && curl -fsSLO ${mirror}/client/stage-dp-phase2.sh.sha256 && sha256sum -c stage-dp-phase2.sh.sha256 && sudo bash ./stage-dp-phase2.sh --source-dp-version ${source_ver} --target-version ${ver} --mirror-url ${mirror}"
+  step6="cd /home/aella && rm -f stage-dp-phase2.sh stage-dp-phase2.sh.sha256 && curl -fsSLO ${mirror}/client/stage-dp-phase2.sh && curl -fsSLO ${mirror}/client/stage-dp-phase2.sh.sha256 && sha256sum -c stage-dp-phase2.sh.sha256 && sudo bash ./stage-dp-phase2.sh --target-version ${ver} --same-version-recovery --mirror-url ${mirror}"
   if [[ "$topology" == "cluster" ]]; then
     step7="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download --worker-ips \"${worker_ips}\""
   else
@@ -744,8 +724,7 @@ DP Client Upgrade Commands
 ==========================
 
 Mirror Server: ${mirror}
-Current DP Version: ${source_ver}
-Target DP Version: ${ver}
+DP Version: ${ver}
 
 Run these steps on the DP, not on the Mirror Server.
 
@@ -780,7 +759,7 @@ $(gui_client_hop_command "$mirror" "dp-offline-upgrade-jammy-to-noble.sh")
 
 Do not resume the DP during Steps 2–5.
 
-Step 6 — Download and stage DP ${ver} files
+Step 6 — Stage DP ${ver} recovery files
 
 ${step6}
 
@@ -796,8 +775,8 @@ Complete the DL cluster first, then run the corresponding command on the DA mast
 Do not include the master IP.
 Do not mix DL and DA worker IPs in one command.
 
-Management IPs or cluster IPs can be used for \`--worker-ips\`.
-Cluster IPs are recommended when the master can reach them.
+Management IP addresses or cluster IP addresses can be used for \`--worker-ips\`.
+Cluster IP addresses are recommended when they are reachable from the master because the cluster network normally provides more reliable node-to-node communication.
 
 ${step7}
 
@@ -859,7 +838,7 @@ gui_client_instructions() {
   mm_load_gui_config
   engine_resolve_paths
   local ver="${TARGET_DP_VERSION:-6.5.0}"
-  local mirror source_ver topology worker_ips="" topo_choice out_file tmp source_default=""
+  local mirror topology worker_ips="" topo_choice out_file tmp
   mirror="$(mm_client_mirror_url)" || {
     mm_whiptail_msg "DP Client Upgrade Commands" \
       "Could not determine the Mirror Server HTTP address.
@@ -874,36 +853,14 @@ or ensure this host has a reachable IPv4 address."
     mm_save_gui_config >/dev/null 2>&1 || true
   fi
 
-  if mm_validate_source_dp_version "${CURRENT_DP_VERSION:-}" 2>/dev/null \
-    && [[ "${CURRENT_DP_VERSION}" != "$ver" ]]; then
-    source_default="${CURRENT_DP_VERSION}"
-  else
-    source_default=""
-  fi
-
-  source_ver="$(mm_whiptail_input \
-    "Current DP software version" \
-    "Enter the current DP software version on the DP (X.Y.Z).
-
-This value is used in Step 6 --source-dp-version.
-It must match Configuration Current DP Version and must differ from Target DP Version (${ver})." \
-    "${source_default}")" || return 0
-  if ! mm_validate_source_dp_version "$source_ver"; then
-    mm_whiptail_msg "Invalid version" \
-      "Version must be X.Y.Z at or above 6.2.0 (got: ${source_ver})"
-    return 0
-  fi
-  if [[ "$source_ver" == "$ver" ]]; then
-    mm_whiptail_msg "Invalid versions" \
-      "The current DP version and target DP version are the same.
-
-Verify the Current DP Version in Configuration."
-    return 0
-  fi
-
   topo_choice="$(mm_whiptail_menu \
     "DP topology" \
-    "Select the DP deployment type for Step 7 bringup." \
+    "Select the DP deployment type for Step 7 bringup.
+
+DP Version: ${ver}
+Ubuntu OS is upgraded from 16.04 to 24.04.
+DP software remains ${ver}.
+Phase 2 bringup restores the DP ${ver} runtime after the OS upgrade." \
     "1" "Single DP / AIO / master without workers" \
     "2" "Cluster master with workers")" || return 0
   case "$topo_choice" in
@@ -914,12 +871,13 @@ Verify the Current DP Version in Configuration."
         "Worker IP addresses" \
         "Enter the worker IP addresses for this cluster master.
 
-Recommended: use the worker cluster IP addresses.
-Use management IP addresses only when the cluster network is not reachable from the master.
+Management IP addresses or cluster IP addresses can be used.
 
-- Management IPs or cluster IPs can be used.
-- Cluster IPs are recommended when they are reachable because the cluster network usually provides more reliable node-to-node communication.
-- Enter worker IPs only. Do not enter the master IP.
+Cluster IP addresses are recommended when they are reachable from the master because the cluster network normally provides more reliable node-to-node communication.
+
+Enter worker IPs only.
+Do not enter the master IP.
+
 - Separate multiple IPs with commas.
 - Do not mix management and cluster IPs in the same cluster unless required by the network design.
 - Example: 192.168.124.23,192.168.124.24" \
@@ -936,7 +894,7 @@ Shell metacharacters are not allowed."
   esac
 
   tmp="$(mktemp)"
-  gui_build_client_commands "$mirror" "$source_ver" "$topology" "$worker_ips" >"$tmp"
+  gui_build_client_commands "$mirror" "$topology" "$worker_ips" >"$tmp"
   out_file="$(mm_client_commands_file)"
   if ! mkdir -p "$(dirname "$out_file")" || ! cp -f "$tmp" "$out_file" || ! chmod 0644 "$out_file"; then
     mm_whiptail_msg "DP Client Upgrade Commands" \

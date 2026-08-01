@@ -22,7 +22,6 @@ export MM_CLIENT_ROOT="$TMP/client"
 export SCRIPT_DIR="${ROOT}/scripts"
 mkdir -p "$MM_LOG_DIR" "$MM_CONFIG_DIR" "$MM_CLIENT_ROOT"
 : >"$MM_STATUS_FILE"
-CURRENT_DP_VERSION=6.3.0
 TARGET_DP_VERSION=6.5.0
 MIRROR_HTTP_URL="http://221.139.249.111"
 
@@ -63,27 +62,38 @@ mm_validate_source_dp_version "6.3" >/dev/null 2>&1 && fail "partial version acc
 mm_validate_source_dp_version "v6.3.0" >/dev/null 2>&1 && fail "v-prefix accepted" || true
 pass "source DP version validation"
 
+# --- Configuration: single DP Version, no Current/Target split ---
+grep -q '"1" "DP Version"' "$INSTALLER" || fail "DP Version config field missing"
+grep -q 'Current DP Version' "$INSTALLER" && fail "Current DP Version still present" || true
+# User-facing Target label must not appear (internal TARGET_DP_VERSION var is fine)
+if grep -E 'Target DP Version' "$INSTALLER"; then
+  fail "Target DP Version user-facing label still present"
+fi
+pass "Configuration uses DP Version only"
+
 # --- command text generation ---
 OUT="$TMP/cmds.txt"
-gui_build_client_commands "http://221.139.249.111" "6.3.0" "single" "" >"$OUT"
+gui_build_client_commands "http://221.139.249.111" "single" "" >"$OUT"
 
-grep -q 'Current DP Version: 6.3.0' "$OUT" || fail "missing current version header"
-grep -q 'Target DP Version: 6.5.0' "$OUT" || fail "missing target version header"
+grep -q 'DP Version: 6.5.0' "$OUT" || fail "missing DP Version header"
+grep -q 'Current DP Version' "$OUT" && fail "Current DP Version still in commands" || true
+grep -q 'Target DP Version' "$OUT" && fail "Target DP Version still in commands" || true
 grep -q 'Step 0 — Create a snapshot' "$OUT" || fail "missing step 0"
 grep -q 'Step 1 — Pause DP services' "$OUT" || fail "missing pause step"
 grep -q 'Step 2 — Ubuntu 16.04 to 18.04' "$OUT" || fail "missing step 2"
 grep -q 'Step 3 — Ubuntu 18.04 to 20.04' "$OUT" || fail "missing step 3"
 grep -q 'Step 4 — Ubuntu 20.04 to 22.04' "$OUT" || fail "missing step 4"
 grep -q 'Step 5 — Ubuntu 22.04 to 24.04' "$OUT" || fail "missing step 5"
-grep -q 'Step 6 — Download and stage DP 6.5.0 files' "$OUT" || fail "missing stage step"
+grep -q 'Step 6 — Stage DP 6.5.0 recovery files' "$OUT" || fail "missing stage step"
 grep -q 'Step 7 — Start DP 6.5.0 bringup' "$OUT" || fail "missing bringup step"
 grep -q 'Step 8 — Resume DP services' "$OUT" || fail "missing resume step"
 grep -q 'Step 9 — Verify DP health' "$OUT" || fail "missing health step"
 grep -q 'http://221.139.249.111' "$OUT" || fail "mirror URL missing"
 grep -q 'sha256sum -c' "$OUT" || fail "checksum verify missing"
 grep -q 'stage-dp-phase2.sh' "$OUT" || fail "stage script missing"
-grep -Fq -- '--source-dp-version 6.3.0' "$OUT" || fail "source version not resolved"
+grep -Fq -- '--source-dp-version' "$OUT" && fail "generated command must not include --source-dp-version" || true
 grep -Fq -- '--target-version 6.5.0' "$OUT" || fail "target version missing"
+grep -Fq -- '--same-version-recovery' "$OUT" || fail "same-version-recovery missing"
 grep -q 'bringup_py3_dp_after_os_upgrade.sh --version 6.5.0 --skip-download' "$OUT" \
   || fail "bringup command missing"
 grep -q 'Do not resume the DP during Steps 2–5' "$OUT" || fail "no-resume-during-hops missing"
@@ -124,9 +134,10 @@ for bad in \
   'example mirror' 'Bringup drift' 'Cloudflare R2' 'ACPS Server' \
   '<current-dp>' '<mirror-ip>' '<worker1' '<worker2' \
   'Worker management IPs' \
-  "echo 'pause'" "echo 'resume'" 'SKIPPED_NETWORK'
+  "echo 'pause'" "echo 'resume'" 'SKIPPED_NETWORK' \
+  '--source-dp-version' 'Current DP Version' 'Target DP Version'
 do
-  if grep -Fq "$bad" "$OUT"; then
+  if grep -Fq -- "$bad" "$OUT"; then
     fail "forbidden string present: $bad"
   fi
 done
@@ -158,19 +169,20 @@ pass "single topology omits --worker-ips"
 
 # Cluster bringup includes worker-ips + cluster IP guidance
 CLUSTER_OUT="$TMP/cluster.txt"
-gui_build_client_commands "http://221.139.249.111" "6.4.0" "cluster" "192.168.124.23,192.168.124.24" \
+gui_build_client_commands "http://221.139.249.111" "cluster" "192.168.124.23,192.168.124.24" \
   >"$CLUSTER_OUT"
 grep -q 'Start DP 6.5.0 bringup' "$CLUSTER_OUT" || fail "cluster step7 title"
 grep -q -- '--worker-ips "192.168.124.23,192.168.124.24"' "$CLUSTER_OUT" || fail "worker ips missing"
 grep -q 'Run this command on the cluster master only.' "$CLUSTER_OUT" || fail "cluster master note"
-grep -q 'Cluster IPs are recommended' "$CLUSTER_OUT" || fail "cluster IP recommendation missing"
-grep -q 'Management IPs or cluster IPs can be used' "$CLUSTER_OUT" || fail "mgmt/cluster IP support missing"
-grep -Fq -- '--source-dp-version 6.4.0' "$CLUSTER_OUT" || fail "cluster source 6.4.0 missing"
+grep -q 'Cluster IP addresses are recommended' "$CLUSTER_OUT" || fail "cluster IP recommendation missing"
+grep -q 'Management IP addresses or cluster IP addresses can be used' "$CLUSTER_OUT" || fail "mgmt/cluster IP support missing"
+grep -Fq -- '--source-dp-version' "$CLUSTER_OUT" && fail "cluster must not include --source-dp-version" || true
+grep -Fq -- '--same-version-recovery' "$CLUSTER_OUT" || fail "cluster same-version-recovery missing"
 pass "cluster bringup command"
 
 # Management worker IPs also accepted in generated argv text
 MGMT_OUT="$TMP/mgmt.txt"
-gui_build_client_commands "http://221.139.249.111" "6.3.0" "cluster" "10.10.10.23,10.10.10.24" \
+gui_build_client_commands "http://221.139.249.111" "cluster" "10.10.10.23,10.10.10.24" \
   >"$MGMT_OUT"
 grep -q -- '--worker-ips "10.10.10.23,10.10.10.24"' "$MGMT_OUT" || fail "mgmt worker ips missing"
 pass "management worker IPs in command"
@@ -234,7 +246,6 @@ grep -q 'Worker IP addresses' "$INSTALLER" || fail "Worker IP addresses title mi
 if grep -q 'Worker management IPs' "$INSTALLER"; then
   fail "old Worker management IPs title still present"
 fi
-grep -q 'Current DP Version' "$INSTALLER" || fail "Current DP Version config field missing"
 pass "menu titles updated"
 
 # Dependency message strings in product code
@@ -284,56 +295,73 @@ grep -q 'sudo ubuntu-offline-mirror mirror-manager' "$COMMON" || fail "official 
 grep -q 'mm_require_root' "$INSTALLER" || fail "installer must call mm_require_root"
 pass "root-only guidance present"
 
-# Config CURRENT_DP_VERSION save/load
-CURRENT_DP_VERSION=6.3.0
+# Config TARGET_DP_VERSION save/load; CURRENT_DP_VERSION ignored and not written
 TARGET_DP_VERSION=6.5.0
 ACPS_USERNAME=u
 ACPS_PASSWORD=p
 MIRROR_HTTP_URL="http://221.139.249.111"
 mm_save_gui_config >/dev/null
-grep -q '^CURRENT_DP_VERSION=6.3.0$' "$MM_CONFIG_FILE" || fail "CURRENT_DP_VERSION not saved"
-CURRENT_DP_VERSION=""
+grep -q '^TARGET_DP_VERSION=6.5.0$' "$MM_CONFIG_FILE" || fail "TARGET_DP_VERSION not saved"
+grep -q 'CURRENT_DP_VERSION' "$MM_CONFIG_FILE" && fail "CURRENT_DP_VERSION still written" || true
+# Legacy CURRENT_DP_VERSION in old config must be ignored (no error)
+cat >"$MM_CONFIG_FILE" <<EOF
+CURRENT_DP_VERSION=6.3.0
+TARGET_DP_VERSION=6.5.0
+ACPS_USERNAME=u
+ACPS_PASSWORD=p
+MIRROR_HTTP_URL=http://221.139.249.111
+EOF
+chmod 600 "$MM_CONFIG_FILE"
+TARGET_DP_VERSION=""
+CURRENT_DP_VERSION="should-be-cleared"
 mm_load_gui_config
-[[ "$CURRENT_DP_VERSION" == "6.3.0" ]] || fail "CURRENT_DP_VERSION not loaded"
-pass "CURRENT_DP_VERSION config round-trip"
+[[ "$TARGET_DP_VERSION" == "6.5.0" ]] || fail "TARGET_DP_VERSION not loaded"
+[[ -z "${CURRENT_DP_VERSION:-}" ]] || fail "CURRENT_DP_VERSION not ignored/unset after load"
+pass "DP Version config round-trip; legacy CURRENT ignored"
 
-# Menu 7 uses config current as default; blocks source==target
+# Menu 7: topology only (no version inputbox); generates same-version recovery command
 MM_LOG_DIR="$TMP/logs"
 mkdir -p "$MM_LOG_DIR"
 MENU7_TRACE="$TMP/menu7.trace"
 : >"$MENU7_TRACE"
-CURRENT_DP_VERSION=6.3.0
 TARGET_DP_VERSION=6.5.0
 MIRROR_HTTP_URL="http://221.139.249.111"
+INPUTBOX_COUNT=0
 mm_whiptail_input() {
-  printf 'INPUT_DEFAULT\t%s\n' "${3:-}" >>"$MENU7_TRACE"
-  printf '%s\n' "${3:-}"
+  INPUTBOX_COUNT=$((INPUTBOX_COUNT + 1))
+  printf 'INPUT\t%s\n' "$*" >>"$MENU7_TRACE"
+  # Should not be called for version on single topology path
+  fail "unexpected version/input prompt in menu7 single path: $*"
 }
 mm_whiptail_menu() { printf '1\n'; }  # single topology
 mm_whiptail_textbox() { printf 'TEXTBOX\n' >>"$MENU7_TRACE"; return 0; }
-mm_whiptail_msg() { printf 'MSG\t%s\n' "$*" >>"$MENU7_TRACE"; return 0; }
+mm_whiptail_msg() {
+  printf 'MSG\t%s\n' "$*" >>"$MENU7_TRACE"
+  if grep -Fq 'current DP version and target DP version are the same' <<<"$*"; then
+    fail "source==target error dialog still visible"
+  fi
+  return 0
+}
 load_mirror_defaults() { :; }
 engine_resolve_paths() { :; }
 mm_save_gui_config() { return 0; }
 rm -f "$(mm_client_commands_file)"
 gui_client_instructions
-grep -q $'INPUT_DEFAULT\t6.3.0' "$MENU7_TRACE" || fail "menu7 default not CURRENT_DP_VERSION"
+[[ "$INPUTBOX_COUNT" -eq 0 ]] || fail "menu7 version inputbox count=${INPUTBOX_COUNT} want 0"
 [[ -f "$(mm_client_commands_file)" ]] || fail "menu7 did not auto-create command file"
 [[ "$(stat -c '%a' "$(mm_client_commands_file)")" == "644" ]] || fail "menu7 file mode not 644"
-grep -Fq -- '--source-dp-version 6.3.0' "$(mm_client_commands_file)" || fail "menu7 file wrong source"
+grep -Fq -- '--source-dp-version' "$(mm_client_commands_file)" \
+  && fail "menu7 generated --source-dp-version" || true
 grep -Fq -- '--target-version 6.5.0' "$(mm_client_commands_file)" || fail "menu7 file wrong target"
-gui_build_client_commands "http://221.139.249.111" "6.3.0" "single" "" >"$TMP/expected-cmds.txt"
+grep -Fq -- '--same-version-recovery' "$(mm_client_commands_file)" \
+  || fail "menu7 missing --same-version-recovery"
+gui_build_client_commands "http://221.139.249.111" "single" "" >"$TMP/expected-cmds.txt"
 cmp -s "$(mm_client_commands_file)" "$TMP/expected-cmds.txt" \
   || fail "GUI file content mismatch"
-pass "menu7 GUI path uses CURRENT_DP_VERSION default"
-
-# source == target blocked
-: >"$MENU7_TRACE"
-mm_whiptail_input() { printf '6.5.0\n'; }
-gui_client_instructions
-grep -q 'current DP version and target DP version are the same' "$MENU7_TRACE" \
-  || fail "source==target not blocked"
-pass "source equals target blocked"
+# source==target error dialog count must be 0
+SOURCE_EQ_ERR_COUNT="$(grep -c 'current DP version and target DP version are the same' "$MENU7_TRACE" || true)"
+[[ "$SOURCE_EQ_ERR_COUNT" -eq 0 ]] || fail "source==target error dialog count=${SOURCE_EQ_ERR_COUNT}"
+pass "menu7 topology-only same-version recovery command"
 
 # Non-root official entry must print clear sudo guidance (not raw Permission denied first).
 NONROOT_OUT="$TMP/nonroot.out"

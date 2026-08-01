@@ -364,8 +364,10 @@ else
 fi
 grep -qE 'Mode 1|Mode 2|Mode 3|Fully Offline|Online Bootstrap|install-standard|Roll Back' "$INSTALLER" \
   && fail "A obsolete menu text" || pass "A no obsolete menus"
-grep -q 'passwordbox' "$INSTALLER" && grep -q 'Target DP Version' "$INSTALLER" \
+grep -q 'passwordbox' "$INSTALLER" && grep -q '"1" "DP Version"' "$INSTALLER" \
   && pass "B configuration fields" || fail "B config"
+grep -qE 'Current DP Version|Target DP Version' "$INSTALLER" \
+  && fail "B Current/Target DP Version labels present" || pass "B no Current/Target DP Version labels"
 grep -qE 'Enter R2 URL|Enter ACPS URL|R2 URL input|ACPS URL input|Set R2 URL|Set ACPS URL' "$INSTALLER" \
   && fail "B URL menus present" || pass "B no URL menus"
 # Snapshot guidance must remain; PROJECT_ROLLBACK_SUPPORTED must not appear in GUI screens.
@@ -978,7 +980,7 @@ LIFE_OUT="$(
     gui_show_status() {
       printf "ACTION_5\n" >>"$TRACE"
       local tmp; tmp="$(mktemp)"
-      printf "Target DP Version: 6.5.0\nHTTP Distribution: DISABLED\n" >"$tmp"
+      printf "DP Version: 6.5.0\nHTTP Distribution: DISABLED\n" >"$tmp"
       mm_whiptail_textbox "Current Status" "$tmp" || true
       rm -f "$tmp"
       return 0
