@@ -40,12 +40,59 @@ MM_LOG_FILE="${MM_LOG_FILE:-}"
 MM_STATE_DIR="${MM_STATE_DIR:-}"
 MM_DRY_RUN="${MM_DRY_RUN:-0}"
 MM_FILES_CHANGED="${MM_FILES_CHANGED:-NO}"
-# User-facing label is "DP Version". Internal TARGET_DP_VERSION remains for
-# artifact paths and API compatibility. Legacy CURRENT_DP_VERSION in old
-# config files is ignored (never required, never written back).
-TARGET_DP_VERSION="${TARGET_DP_VERSION:-6.5.0}"
+
+# Fixed Phase 2 target — not user-editable in production.
+# Tests may set MM_ALLOW_TARGET_OVERRIDE=1 to exercise non-6.5.0 paths.
+PHASE2_TARGET_VERSION="6.5.0"
+TARGET_DP_VERSION="${PHASE2_TARGET_VERSION}"
+
+# FULL = Ubuntu 16.04→24.04 OS hops + Phase 2
+# PHASE2_ONLY = DP already on Ubuntu 24.04; Phase 2 artifacts only
+PREPARATION_MODE="${PREPARATION_MODE:-FULL}"
+
 ACPS_USERNAME="${ACPS_USERNAME:-}"
 ACPS_PASSWORD="${ACPS_PASSWORD:-}"
+
+mm_force_phase2_target() {
+  if [[ "${MM_ALLOW_TARGET_OVERRIDE:-0}" == "1" ]]; then
+    TARGET_DP_VERSION="${TARGET_DP_VERSION:-${PHASE2_TARGET_VERSION}}"
+  else
+    TARGET_DP_VERSION="${PHASE2_TARGET_VERSION}"
+  fi
+  DP_PHASE2_VERSION="${TARGET_DP_VERSION}"
+}
+
+mm_normalize_preparation_mode() {
+  case "${PREPARATION_MODE:-}" in
+    FULL|PHASE2_ONLY) ;;
+    full) PREPARATION_MODE=FULL ;;
+    phase2_only|PHASE2|phase2) PREPARATION_MODE=PHASE2_ONLY ;;
+    *) PREPARATION_MODE=FULL ;;
+  esac
+}
+
+mm_preparation_mode_label() {
+  mm_normalize_preparation_mode
+  case "${PREPARATION_MODE}" in
+    PHASE2_ONLY) printf 'Phase 2 Only' ;;
+    *) printf 'Full OS Upgrade + Phase 2' ;;
+  esac
+}
+
+mm_is_phase2_only() {
+  mm_normalize_preparation_mode
+  [[ "${PREPARATION_MODE}" == "PHASE2_ONLY" ]]
+}
+
+mm_config_footer_text() {
+  cat <<'EOF'
+Starting DP Version: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0
+Phase 2 Target:      6.5.0 고정
+DP OS version: 16.04
+
+If the DP is already running Ubuntu 24.04, select Phase 2 Only.
+EOF
+}
 
 mm_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 mm_run_id() { date -u +%Y%m%dT%H%M%SZ; }
@@ -537,7 +584,7 @@ mm_assert_regular_file() {
 }
 
 mm_load_gui_config() {
-  TARGET_DP_VERSION="${TARGET_DP_VERSION:-6.5.0}"
+  PREPARATION_MODE="${PREPARATION_MODE:-FULL}"
   ACPS_USERNAME="${ACPS_USERNAME:-}"
   ACPS_PASSWORD="${ACPS_PASSWORD:-}"
   MIRROR_HTTP_URL="${MIRROR_HTTP_URL:-}"
@@ -548,9 +595,10 @@ mm_load_gui_config() {
     source "${MM_CONFIG_FILE}"
     set +a
   fi
-  # Legacy CURRENT_DP_VERSION may appear in older configs; ignore it.
-  unset CURRENT_DP_VERSION 2>/dev/null || true
-  TARGET_DP_VERSION="${TARGET_DP_VERSION:-6.5.0}"
+  # Legacy version fields from older configs are ignored (never required).
+  unset CURRENT_DP_VERSION SOURCE_DP_VERSION 2>/dev/null || true
+  mm_normalize_preparation_mode
+  mm_force_phase2_target
   ACPS_USERNAME="${ACPS_USERNAME:-${ACPS_USER:-}}"
   ACPS_PASSWORD="${ACPS_PASSWORD:-${ACPS_PASS:-}}"
   MIRROR_HTTP_URL="${MIRROR_HTTP_URL:-}"
@@ -558,6 +606,12 @@ mm_load_gui_config() {
 }
 
 mm_save_gui_config() {
+  local prev_mode="" cmd_file
+  if [[ -f "${MM_CONFIG_FILE}" ]]; then
+    prev_mode="$(awk -F= '/^PREPARATION_MODE=/{print $2; exit}' "${MM_CONFIG_FILE}" 2>/dev/null || true)"
+  fi
+  mm_normalize_preparation_mode
+  mm_force_phase2_target
   mkdir -p "$(dirname "$MM_CONFIG_FILE")"
   local tmp old_umask
   tmp="$(mktemp)"
@@ -566,8 +620,8 @@ mm_save_gui_config() {
   cat >"$tmp" <<EOF
 # DP Upgrade Mirror Manager configuration (managed by GUI)
 # Do not store secrets in world-readable locations.
-# DP Version (user-facing) is stored as TARGET_DP_VERSION for artifact paths.
-TARGET_DP_VERSION=${TARGET_DP_VERSION}
+# Phase 2 target is fixed at ${PHASE2_TARGET_VERSION} (not user-editable).
+PREPARATION_MODE=${PREPARATION_MODE}
 ACPS_USERNAME=${ACPS_USERNAME}
 ACPS_PASSWORD=${ACPS_PASSWORD}
 MIRROR_HTTP_URL=${MIRROR_HTTP_URL:-}
@@ -579,7 +633,16 @@ EOF
   if [[ "${EUID}" -eq 0 ]]; then
     chown root:root "$MM_CONFIG_FILE" 2>/dev/null || true
   fi
-  mm_ok "CONFIGURATION_SAVED=PASS path=${MM_CONFIG_FILE}"
+  # Mode change invalidates previously generated client commands.
+  if [[ -n "$prev_mode" && "$prev_mode" != "${PREPARATION_MODE}" ]]; then
+    cmd_file="$(mm_client_commands_file)"
+    if [[ -f "$cmd_file" ]]; then
+      rm -f "$cmd_file" 2>/dev/null || true
+      mm_info "CLIENT_COMMANDS_STALE=YES reason=preparation_mode_changed old=${prev_mode} new=${PREPARATION_MODE}"
+    fi
+    mm_status_set CLIENT_COMMANDS_MODE ""
+  fi
+  mm_ok "CONFIGURATION_SAVED=PASS path=${MM_CONFIG_FILE} mode=${PREPARATION_MODE}"
 }
 
 # Public HTTP base clients use (no trailing slash). Never logs credentials.
@@ -686,10 +749,14 @@ mm_upgrade_readiness_display() {
 
 mm_artifacts_ready_for_http() {
   local bundle_ck os_ready
-  os_ready="$(mm_status_get OS_MIRROR_READY)"
   bundle_ck="$(mm_status_get PHASE2_BUNDLE_CHECKSUM)"
-  [[ "$os_ready" == "PASS" ]] || return 1
   [[ "$bundle_ck" == "PASS" ]] || return 1
+  if mm_is_phase2_only; then
+    mm_client_files_ready_phase2 "${MM_CLIENT_ROOT}" || return 1
+    return 0
+  fi
+  os_ready="$(mm_status_get OS_MIRROR_READY)"
+  [[ "$os_ready" == "PASS" ]] || return 1
   mm_client_files_ready "${MM_CLIENT_ROOT}" || return 1
   return 0
 }
@@ -704,10 +771,31 @@ mm_client_commands_file() {
   printf '%s/dp-client-upgrade-commands.txt\n' "${MM_LOG_DIR:-/var/log/ubuntu-mirror-automation}"
 }
 
+mm_client_commands_stale() {
+  local f mode_saved
+  f="$(mm_client_commands_file)"
+  [[ -f "$f" ]] || return 0
+  mm_normalize_preparation_mode
+  mode_saved="$(mm_status_get CLIENT_COMMANDS_MODE)"
+  [[ "$mode_saved" == "${PREPARATION_MODE}" ]] || return 0
+  return 1
+}
+
+mm_mark_client_commands_fresh() {
+  mm_normalize_preparation_mode
+  mm_status_set CLIENT_COMMANDS_MODE "${PREPARATION_MODE}"
+  mm_status_set CLIENT_COMMANDS_GENERATED_AT "$(mm_ts)"
+}
+
 mm_config_ready() {
   mm_load_gui_config
-  [[ -n "${TARGET_DP_VERSION}" ]] || return 1
-  mm_validate_dp_version "$TARGET_DP_VERSION" 2>/dev/null || return 1
+  mm_normalize_preparation_mode
+  case "${PREPARATION_MODE}" in
+    FULL|PHASE2_ONLY) ;;
+    *) return 1 ;;
+  esac
+  mm_force_phase2_target
+  [[ "${TARGET_DP_VERSION}" == "${PHASE2_TARGET_VERSION}" ]] || return 1
   [[ -n "${ACPS_USERNAME}" ]] || return 1
   [[ -n "${ACPS_PASSWORD}" ]] || return 1
   return 0
@@ -772,7 +860,8 @@ mm_config_fingerprint() {
 }
 
 mm_phase2_paths() {
-  local ver="${TARGET_DP_VERSION:-6.5.0}"
+  mm_force_phase2_target
+  local ver="${TARGET_DP_VERSION}"
   local dp="${MM_DP_PHASE2_ROOT}/${ver}"
   local stable
   if command -v dp2_stable_bundle_name >/dev/null 2>&1; then
@@ -788,18 +877,18 @@ mm_phase2_paths() {
 }
 
 mm_artifact_fingerprint() {
-  # Combined OS-mirror + Phase 2 identity for readiness invalidation.
+  # Phase 2 identity always; OS-mirror identity only for FULL mode.
   local os_fp bundle_fp side_fp rel_fp
   mm_phase2_paths
   os_fp=""
-  if [[ -e "${MM_SELECTIVE_ROOT}/ubuntu" ]]; then
+  if ! mm_is_phase2_only && [[ -e "${MM_SELECTIVE_ROOT}/ubuntu" ]]; then
     os_fp="$(mm_file_fingerprint "${MM_SELECTIVE_ROOT}/ubuntu" 2>/dev/null || true)"
   fi
   bundle_fp="$(mm_file_fingerprint "${MM_WF_PHASE2_BUNDLE}" 2>/dev/null || true)"
   side_fp="$(mm_file_fingerprint "${MM_WF_PHASE2_SIDECAR}" 2>/dev/null || true)"
   rel_fp="$(mm_file_fingerprint "${MM_WF_PHASE2_RELEASE}" 2>/dev/null || true)"
-  printf 'os=%s;bundle=%s;sidecar=%s;release=%s\n' \
-    "${os_fp}" "${bundle_fp}" "${side_fp}" "${rel_fp}"
+  printf 'mode=%s;os=%s;bundle=%s;sidecar=%s;release=%s\n' \
+    "${PREPARATION_MODE:-FULL}" "${os_fp}" "${bundle_fp}" "${side_fp}" "${rel_fp}"
 }
 
 mm_temps_present() {
@@ -822,12 +911,13 @@ mm_configuration_completed() {
   [[ -f "${MM_CONFIG_FILE}" ]] || return 1
   mode="$(stat -c '%a' "${MM_CONFIG_FILE}" 2>/dev/null || true)"
   [[ "$mode" == "600" ]] || return 1
-  # Readable by current process (Mirror Manager is root-only).
   [[ -r "${MM_CONFIG_FILE}" ]] || return 1
   mm_load_gui_config
   mm_config_ready || return 1
-  mm_r2_url_configured || return 1
-  # Optional Mirror URL: if set, must be a valid http(s) base.
+  # FULL mode requires the R2 URL constant; PHASE2_ONLY does not use R2.
+  if ! mm_is_phase2_only; then
+    mm_r2_url_configured || return 1
+  fi
   if [[ -n "${MIRROR_HTTP_URL:-}" ]]; then
     [[ "${MIRROR_HTTP_URL}" =~ ^https?://[A-Za-z0-9._:-]+(/.*)?$ ]] || return 1
   fi
@@ -840,17 +930,22 @@ mm_download_completed() {
   mm_configuration_completed || return 1
   engine_resolve_paths 2>/dev/null || true
   mm_phase2_paths
-  [[ -d "${MM_SELECTIVE_ROOT}/ubuntu" || -L "${MM_SELECTIVE_ROOT}/ubuntu" ]] || return 1
   [[ -f "${MM_WF_PHASE2_RELEASE}" ]] || return 1
   [[ -f "${MM_WF_PHASE2_BUNDLE}" ]] || return 1
   [[ -f "${MM_WF_PHASE2_SIDECAR}" ]] || return 1
-  os_ready="$(mm_status_get OS_MIRROR_READY)"
   bundle_ck="$(mm_status_get PHASE2_BUNDLE_CHECKSUM)"
   entries="$(mm_status_get PHASE2_BUNDLE_ENTRY_COUNT)"
-  [[ "$os_ready" == "PASS" ]] || return 1
   [[ "$bundle_ck" == "PASS" ]] || return 1
   [[ "$entries" == "9" ]] || return 1
-  [[ "$(mm_status_get R2_OS_CORE_CHECKSUM)" == "PASS" ]] || return 1
+  if mm_is_phase2_only; then
+    mm_client_files_ready_phase2 "${MM_CLIENT_ROOT}" || return 1
+  else
+    [[ -d "${MM_SELECTIVE_ROOT}/ubuntu" || -L "${MM_SELECTIVE_ROOT}/ubuntu" ]] || return 1
+    os_ready="$(mm_status_get OS_MIRROR_READY)"
+    [[ "$os_ready" == "PASS" ]] || return 1
+    [[ "$(mm_status_get R2_OS_CORE_CHECKSUM)" == "PASS" ]] || return 1
+    mm_client_files_ready "${MM_CLIENT_ROOT}" || return 1
+  fi
   [[ "$(mm_status_get DOWNLOAD_PREPARE_RESULT)" == "PASS" \
     || "$(mm_status_get LAST_EXECUTION_RESULT)" == "PASS" \
     || "$(mm_status_get INSTALL_RESULT)" == "PASS" ]] || return 1
@@ -860,7 +955,6 @@ mm_download_completed() {
   current_fp="$(mm_artifact_fingerprint)"
   stored_fp="$(mm_status_get DOWNLOAD_ARTIFACT_FINGERPRINT)"
   if [[ -z "$stored_fp" ]]; then
-    # Self-heal older installs: persist fingerprint once artifacts look valid.
     mm_status_set DOWNLOAD_ARTIFACT_FINGERPRINT "$current_fp"
     mm_status_set DOWNLOAD_PREPARE_RESULT PASS
     mm_status_set DOWNLOAD_VALIDATED_AT "$(mm_ts)"
@@ -885,17 +979,19 @@ mm_http_probe_ok() {
 }
 
 mm_http_required_urls_ok() {
-  local ver="${TARGET_DP_VERSION:-6.5.0}"
+  local ver="${TARGET_DP_VERSION:-${PHASE2_TARGET_VERSION}}"
   local base="${MM_VERIFY_HTTP_BASE:-http://127.0.0.1}"
   local stable
   mm_phase2_paths
   stable="${MM_WF_PHASE2_STABLE}"
-  mm_http_probe_ok "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh" || return 1
   mm_http_probe_ok "${base}/dp-phase2/${ver}/release.env" || return 1
   mm_http_probe_ok "${base}/dp-phase2/${ver}/${stable}.sha256" || return 1
-  mm_http_probe_ok "${base}/offline/meta-release-lts" || return 1
   mm_http_probe_ok "${base}/client/stage-dp-phase2.sh" || return 1
   mm_http_probe_ok "${base}/client/stage-dp-phase2.sh.sha256" || return 1
+  if ! mm_is_phase2_only; then
+    mm_http_probe_ok "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh" || return 1
+    mm_http_probe_ok "${base}/offline/meta-release-lts" || return 1
+  fi
   return 0
 }
 
@@ -1175,13 +1271,20 @@ mm_calc_disk_requirements() {
     + DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES
     + metadata_oh
   ))
-  if [[ "$DISK_PREFLIGHT_OS_STAGE_EXTRA_BYTES" -gt "$DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES" ]]; then
+  mm_normalize_preparation_mode
+  if mm_is_phase2_only; then
+    # PHASE2_ONLY never materializes OS; OS stage peak is not required.
+    DISK_PREFLIGHT_OS_STAGE_EXTRA_BYTES=0
+    stage_peak_bytes=$DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES
+    DISK_PREFLIGHT_R2_REQUIRED_BYTES=0
+  elif [[ "$DISK_PREFLIGHT_OS_STAGE_EXTRA_BYTES" -gt "$DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES" ]]; then
     stage_peak_bytes=$DISK_PREFLIGHT_OS_STAGE_EXTRA_BYTES
   else
     stage_peak_bytes=$DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES
   fi
   DISK_PREFLIGHT_SEQUENTIAL_STAGE_PEAK_BYTES=$stage_peak_bytes
   DISK_PREFLIGHT_TEMP_OVERHEAD_BYTES=$metadata_oh
+  DISK_PREFLIGHT_PREPARATION_MODE="${PREPARATION_MODE}"
 
   reserve_floor_bytes=$((10 * 1024 * 1024 * 1024))
   fs_size_bytes="$(mm_fs_size_bytes "${MM_MIRROR_ROOT}")"
@@ -1285,6 +1388,22 @@ MM_CLIENT_REQUIRED_FILES=(
   stage-dp-phase2.sh.sha256
 )
 
+MM_CLIENT_PHASE2_REQUIRED_FILES=(
+  stage-dp-phase2.sh
+  stage-dp-phase2.sh.sha256
+)
+
+mm_client_files_ready_phase2() {
+  local root="${1:-${MM_CLIENT_ROOT}}"
+  local f
+  [[ -d "$root" ]] || return 1
+  for f in "${MM_CLIENT_PHASE2_REQUIRED_FILES[@]}"; do
+    [[ -f "${root}/${f}" ]] || return 1
+  done
+  (cd "$root" && sha256sum -c stage-dp-phase2.sh.sha256 >/dev/null 2>&1) || return 1
+  return 0
+}
+
 mm_client_files_ready() {
   local root="${1:-${MM_CLIENT_ROOT}}"
   local f
@@ -1305,7 +1424,13 @@ mm_client_files_ready() {
 }
 
 mm_check_client_files_ready() {
-  if mm_client_files_ready "${MM_CLIENT_ROOT}"; then
+  local ok=0
+  if mm_is_phase2_only; then
+    mm_client_files_ready_phase2 "${MM_CLIENT_ROOT}" && ok=1
+  else
+    mm_client_files_ready "${MM_CLIENT_ROOT}" && ok=1
+  fi
+  if [[ "$ok" -eq 1 ]]; then
     mm_state_set CLIENT_FILES_READY PASS
     mm_ok "CLIENT_FILES_READY=PASS"
     return 0

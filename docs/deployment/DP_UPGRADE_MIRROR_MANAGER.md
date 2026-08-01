@@ -5,13 +5,13 @@
 Build a DP Ubuntu upgrade HTTP mirror server in one fixed workflow:
 
 1. Bootstrap a clean Ubuntu 24.04 host with `sudo ./install.sh`
-2. Configure DP Version + ACPS credentials in the GUI
-3. Download Ubuntu OS Core from Cloudflare R2
-4. Verify OS Core checksums
-5. Download DP Phase 2 artifacts from ACPS
+2. Configure Preparation Mode + ACPS credentials in the GUI
+3. Download Ubuntu OS Core from Cloudflare R2 (FULL mode) or skip R2 (PHASE2_ONLY)
+4. Verify OS Core checksums (FULL mode)
+5. Download DP Phase 2 artifacts from ACPS (always 6.5.0)
 6. Verify ACPS checksums and upstream bringup baseline
 7. Apply the local patched bringup
-8. Materialize one Phase 1 OS mirror set and one Phase 2 bundle
+8. Materialize one Phase 1 OS mirror set (FULL) and one Phase 2 6.5.0 bundle
 9. Enable HTTP distribution (real nginx enable + smoke tests)
 10. Serve clients over HTTP only
 
@@ -84,39 +84,43 @@ There is no install-mode menu, no local OS Core path picker, no R2/ACPS URL edit
 
 GUI fields only:
 
-- DP Version (default `6.5.0`)
+- Preparation Mode (`FULL` or `PHASE2_ONLY`)
 - ACPS Username
 - ACPS Password
 - Test ACPS Connection
 - Save Configuration
 
+Exact Configuration footer:
+
+```
+Starting DP Version: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0
+Phase 2 Target:      6.5.0 고정
+DP OS version: 16.04
+
+If the DP is already running Ubuntu 24.04, select Phase 2 Only.
+```
+
+Phase 2 Target is the fixed constant `PHASE2_TARGET_VERSION=6.5.0`.
+It is not user-editable. Starting DP Version is auto-detected on the DP.
+Mirror Server stores one Phase 2 bundle under `/dp-phase2/6.5.0/` only.
+
 Read-only:
 
 - ACPS Server: fixed (`https://acps.stellarcyber.ai/provision/aelladeb_py3`)
-- OS Core Source: Cloudflare R2 — configured by installer
-
-R2 URL is a single code constant (`OS_CORE_R2_URL_CONSTANT` in
-`scripts/lib/mirror_manager_common.sh`). It is not user-editable. If unset,
-prepare stops with `CONFIGURATION_REQUIRED`.
-
-```
-OS_CORE_SOURCE=R2
-R2_PRODUCTION_URL_CONFIGURED=YES
-R2_PUBLIC_BASE_URL=https://xdrsolutions.uk
-OS_CORE_PACKAGE_URL=https://xdrsolutions.uk/ubuntu-os-core/ubuntu-os-core-xenial-to-noble.tar
-```
-
-The checksum sidecar URL is derived as `${OS_CORE_PACKAGE_URL}.sha256` (no separate
-constant). Clients never download from R2; only the Mirror Manager host does.
+- OS Core Source: Cloudflare R2 — configured by installer (FULL mode)
 
 Credentials are stored root-owned mode `600` at
 `/etc/ubuntu-mirror/dp-upgrade-mirror.conf` and redacted from logs.
 
-This workflow upgrades Ubuntu OS from 16.04 to 24.04. DP software remains 6.5.0
-before and after. Phase 2 bringup restores the DP 6.5.0 runtime after the OS
-upgrade (`COMPLETED_NOBLE`). There is no Current/Target DP Version split in the
-GUI. Menu 7 generates Stage with `--target-version 6.5.0 --same-version-recovery`
-and does not prompt for a source version.
+Decision matrix:
+
+| Starting DP | Starting OS | Action | Final State |
+| --- | --- | --- | --- |
+| 6.2 / 6.3 / 6.4 | 16.04 | Phase 1 + Phase 2 | DP 6.5.0 / Ubuntu 24.04 |
+| 6.2 / 6.3 / 6.4 | 24.04 | Phase 2 Only | DP 6.5.0 / Ubuntu 24.04 |
+| 6.5.0 | 16.04 | Phase 1 + recovery | DP 6.5.0 / Ubuntu 24.04 |
+| 6.5.0 | 24.04 healthy | No action | DP 6.5.0 / Ubuntu 24.04 |
+| 6.5.0 | 24.04 recovery state | Gated recovery | DP 6.5.0 / Ubuntu 24.04 |
 
 ## Download and Prepare
 
@@ -175,15 +179,30 @@ Pre-nginx layout checks may log `HTTP_VALIDATION=DEFERRED`; they must not warn
 
 ## Client upgrade command order (Menu 7)
 
+Menu 7 asks topology only (Single / Cluster). It never asks for Starting or Target DP Version.
+
+**Full OS Upgrade + Phase 2**
+
 1. Hypervisor snapshot
-2. `aella_cli` → `pause` on Ubuntu 16.04 (before first OS hop)
-3. OS hops 16.04 → 18.04 → 20.04 → 22.04 → 24.04 (do not resume during hops)
-4. Stage DP 6.5.0 recovery artifacts (`--target-version 6.5.0 --same-version-recovery`; source auto-detected on the DP)
-5. Bringup (`--worker-ips` optional; management or cluster IPs; cluster IPs recommended when reachable; no master IP)
-6. `aella_cli` → `resume` after bringup completes
-7. Wait for pods/host services, then `aella_cli` → `show status` (health after resume)
+2. Verify bash login shells
+3. `aella_cli` → `pause` on Ubuntu 16.04
+4. OS hops 16.04 → 18.04 → 20.04 → 22.04 → 24.04
+5. Stage DP 6.5.0 (`--target-version 6.5.0 --same-version-recovery`; source auto-detected)
+6. Bringup (`--worker-ips` optional)
+7. `aella_cli` → `resume`
+8. `aella_cli` → `show status`
+
+**Phase 2 Only** (DP already on Ubuntu 24.04)
+
+1. Hypervisor snapshot
+2. Verify Ubuntu 24.04 prerequisites
+3. Stage DP 6.5.0 (source auto-detected)
+4. Bringup
+5. Resume when required
+6. `show status`
 
 Upgrade Readiness status values are exactly: `PASS`, `NOT VERIFIED`, `NOT READY`, or `FAIL`.
+OS Upgrade Files may show `NOT REQUIRED` in Phase 2 Only mode.
 
 ## Storage
 

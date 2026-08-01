@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# scripts/lib/mirror_install_engine.sh — single R2 + ACPS install workflow
-# No mode selection. No current/previous/release lifecycle. No rollback.
+# scripts/lib/mirror_install_engine.sh — R2+ACPS (FULL) or ACPS-only (PHASE2_ONLY)
+# Preparation mode comes from GUI config. No current/previous/release lifecycle.
 # shellcheck shell=bash
 set +x
 
@@ -460,7 +460,8 @@ EOF
 
 engine_validate_http_layout() {
   # Validate on-disk layout matching client HTTP URL contract (no production nginx reload).
-  local ver="${TARGET_DP_VERSION:-$DP_PHASE2_VERSION}"
+  mm_force_phase2_target
+  local ver="${TARGET_DP_VERSION}"
   local sel="$MM_SELECTIVE_ROOT"
   local dp="${MM_DP_PHASE2_ROOT}/${ver}"
   local stable bundle sidecar fp op human
@@ -468,8 +469,10 @@ engine_validate_http_layout() {
   bundle="${dp}/${stable}"
   sidecar="${dp}/${stable}.sha256"
 
-  [[ -d "${sel}/ubuntu" || -L "${sel}/ubuntu" ]] || mm_die "HTTP_LAYOUT=FAIL missing /ubuntu tree"
-  [[ -d "${sel}/shared/offline" ]] || mm_die "HTTP_LAYOUT=FAIL missing /offline tree"
+  if ! mm_is_phase2_only; then
+    [[ -d "${sel}/ubuntu" || -L "${sel}/ubuntu" ]] || mm_die "HTTP_LAYOUT=FAIL missing /ubuntu tree"
+    [[ -d "${sel}/shared/offline" ]] || mm_die "HTTP_LAYOUT=FAIL missing /offline tree"
+  fi
   [[ -d "${MM_CLIENT_ROOT}" ]] || mkdir -p "${MM_CLIENT_ROOT}"
   [[ -f "${dp}/release.env" ]] || mm_die "HTTP_LAYOUT=FAIL missing release.env"
   [[ -f "$bundle" ]] || mm_die "HTTP_LAYOUT=FAIL missing ${stable}"
@@ -532,20 +535,23 @@ engine_validate_http_layout() {
   fi
 
   local base="${MM_VERIFY_HTTP_BASE}"
-  # Probe /offline/meta-release-lts (not /offline/): nginx keeps autoindex off for
-  # /offline/, so a bare directory GET returns 403 even when content is healthy.
-  # Include concrete client hop + stage helper scripts (not only /client/).
   local urls=(
-    "${base}/ubuntu/"
-    "${base}/ubuntu-security/"
-    "${base}/offline/meta-release-lts"
-    "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh"
-    "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh.sha256"
     "${base}/client/stage-dp-phase2.sh"
     "${base}/client/stage-dp-phase2.sh.sha256"
     "${base}/dp-phase2/${ver}/release.env"
     "${base}/dp-phase2/${ver}/${stable}.sha256"
   )
+  if ! mm_is_phase2_only; then
+    # Probe /offline/meta-release-lts (not /offline/): nginx keeps autoindex off for
+    # /offline/, so a bare directory GET returns 403 even when content is healthy.
+    urls+=(
+      "${base}/ubuntu/"
+      "${base}/ubuntu-security/"
+      "${base}/offline/meta-release-lts"
+      "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh"
+      "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh.sha256"
+    )
+  fi
   local u code body bytes
   mm_info "HTTP_VALIDATION_START"
   body="$(mktemp)"
@@ -590,9 +596,6 @@ engine_compute_readiness() {
   local f="${MM_STATUS_FILE}"
   local keys=(
     CONFIGURATION_READY
-    R2_OS_CORE_DOWNLOADED
-    R2_OS_CORE_CHECKSUM
-    OS_MIRROR_READY
     ACPS_CONNECTION
     ACPS_PHASE2_DOWNLOADED
     ACPS_CHECKSUM
@@ -604,6 +607,14 @@ engine_compute_readiness() {
     HTTP_CONFIGURATION_READY
   )
   local k v all=PASS
+  mm_normalize_preparation_mode
+  if ! mm_is_phase2_only; then
+    keys+=(
+      R2_OS_CORE_DOWNLOADED
+      R2_OS_CORE_CHECKSUM
+      OS_MIRROR_READY
+    )
+  fi
   # Readiness requires HTTP distribution enabled (menu order: enable before verify).
   if ! mm_http_distribution_enabled; then
     all=FAIL
@@ -625,7 +636,10 @@ engine_compute_readiness() {
         ;;
     esac
   done
+  mm_force_phase2_target
   mm_status_set TARGET_DP_VERSION "${TARGET_DP_VERSION}"
+  mm_status_set PHASE2_TARGET_VERSION "${PHASE2_TARGET_VERSION}"
+  mm_status_set PREPARATION_MODE "${PREPARATION_MODE}"
   mm_status_set UPGRADE_READINESS "$all"
   if [[ "$all" == "PASS" ]]; then
     mm_record_readiness_validated
@@ -654,10 +668,18 @@ engine_write_install_report() {
 
 engine_download_and_prepare() {
   mm_load_gui_config
+  mm_normalize_preparation_mode
+  mm_force_phase2_target
   engine_resolve_paths
   mm_state_init
-  mm_state_set OS_CORE_SOURCE R2
+  mm_state_set PREPARATION_MODE "${PREPARATION_MODE}"
+  mm_state_set PHASE2_TARGET_VERSION "${PHASE2_TARGET_VERSION}"
   mm_state_set DP_PHASE2_SOURCE ACPS
+  if mm_is_phase2_only; then
+    mm_state_set OS_CORE_SOURCE NOT_REQUIRED
+  else
+    mm_state_set OS_CORE_SOURCE R2
+  fi
 
   if ! mm_config_ready; then
     mm_state_set CONFIGURATION_READY FAIL
@@ -665,9 +687,10 @@ engine_download_and_prepare() {
   fi
   mm_state_set CONFIGURATION_READY PASS
   mm_validate_dp_version "$TARGET_DP_VERSION"
+  [[ "$TARGET_DP_VERSION" == "$PHASE2_TARGET_VERSION" ]] \
+    || mm_die "PHASE2_TARGET=FAIL expected=${PHASE2_TARGET_VERSION} got=${TARGET_DP_VERSION}"
   dp2_set_version "$TARGET_DP_VERSION"
 
-  r2_require_url
   engine_preflight_host
   mm_acquire_install_lock
   engine_assert_same_filesystem_layout
@@ -678,9 +701,19 @@ engine_download_and_prepare() {
     mm_die "CLIENT_FILES_READY=FAIL"
   fi
 
-  # R2 OS Core
-  r2_download_package
-  engine_verify_os_core_package "$OS_CORE_PACKAGE"
+  if mm_is_phase2_only; then
+    # PHASE2_ONLY must never download R2 OS Core.
+    mm_info "PHASE2_ONLY_R2_DOWNLOAD_COUNT=0"
+    mm_status_set R2_OS_CORE_DOWNLOADED NOT_REQUIRED
+    mm_status_set R2_OS_CORE_CHECKSUM NOT_REQUIRED
+    mm_status_set OS_MIRROR_READY NOT_REQUIRED
+    OS_CORE_PACKAGE_BYTES=0
+    OS_CORE_PAYLOAD_BYTES=0
+  else
+    r2_require_url
+    r2_download_package
+    engine_verify_os_core_package "$OS_CORE_PACKAGE"
+  fi
 
   # ACPS auth setup + disk estimate
   if [[ -z "${DP_PHASE2_SOURCE_BASE:-}" ]]; then
@@ -704,7 +737,9 @@ engine_download_and_prepare() {
     return 0
   fi
 
-  engine_materialize_os_mirror "$OS_CORE_PACKAGE"
+  if ! mm_is_phase2_only; then
+    engine_materialize_os_mirror "$OS_CORE_PACKAGE"
+  fi
 
   local cache work
   acps_acquire_all "$TARGET_DP_VERSION"
@@ -728,7 +763,7 @@ engine_download_and_prepare() {
   mm_status_set HTTP_DISTRIBUTION DISABLED
   mm_record_download_validated
   engine_write_install_report PASS
-  mm_ok "DOWNLOAD_AND_PREPARE=PASS"
+  mm_ok "DOWNLOAD_AND_PREPARE=PASS mode=${PREPARATION_MODE}"
 }
 
 engine_render_nginx_site() {

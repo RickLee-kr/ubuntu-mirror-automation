@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALLER="${ROOT}/scripts/install-dp-upgrade-mirror.sh"
+COMMON="${ROOT}/scripts/lib/mirror_manager_common.sh"
 OS_CORE_PY="${ROOT}/scripts/lib/os_core_package.py"
 UPSTREAM_BASELINE="${ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1"
 PATCHED_BRINGUP="${ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh"
@@ -237,7 +238,7 @@ write_gui_config() {
   local path="$1"
   umask 077
   cat >"$path" <<EOF
-TARGET_DP_VERSION=6.5.0
+PREPARATION_MODE=FULL
 ACPS_USERNAME=testuser
 ACPS_PASSWORD=testpass
 EOF
@@ -341,7 +342,7 @@ awk '
   in_fn && /^}/ { exit((d3 && d4 && !bad) ? 0 : 1) }
 ' "$INSTALLER" && pass "A menu dispatch 3=enable 4=verify" || fail "A menu dispatch"
 grep -q 'mm_whiptail_yesno' "$INSTALLER" \
-  && grep -q 'Download and prepare upgrade files' "$INSTALLER" \
+  && grep -qE 'Download and prepare (Full OS Upgrade \+ Phase 2|Phase 2 Only) files' "$INSTALLER" \
   && pass "A download confirm is yesno" || fail "A download confirm still menu"
 grep -q 'MM_LIVE_PROGRESS=1' "$INSTALLER" \
   && grep -q 'engine_download_and_prepare >"$tmp" 2>&1' "$INSTALLER" \
@@ -364,10 +365,12 @@ else
 fi
 grep -qE 'Mode 1|Mode 2|Mode 3|Fully Offline|Online Bootstrap|install-standard|Roll Back' "$INSTALLER" \
   && fail "A obsolete menu text" || pass "A no obsolete menus"
-grep -q 'passwordbox' "$INSTALLER" && grep -q '"1" "DP Version"' "$INSTALLER" \
+grep -q 'passwordbox' "$INSTALLER" && grep -q '"1" "Preparation Mode"' "$INSTALLER" \
   && pass "B configuration fields" || fail "B config"
-grep -qE 'Current DP Version|Target DP Version' "$INSTALLER" \
-  && fail "B Current/Target DP Version labels present" || pass "B no Current/Target DP Version labels"
+grep -qE 'Current DP Version|Target DP Version|"DP Version"' "$INSTALLER" \
+  && fail "B DP version config labels present" || pass "B no DP version config labels"
+grep -Fq 'Phase 2 Target:      6.5.0 고정' "$COMMON" \
+  && pass "B exact Phase 2 footer present" || fail "B exact Phase 2 footer missing"
 grep -qE 'Enter R2 URL|Enter ACPS URL|R2 URL input|ACPS URL input|Set R2 URL|Set ACPS URL' "$INSTALLER" \
   && fail "B URL menus present" || pass "B no URL menus"
 # Snapshot guidance must remain; PROJECT_ROLLBACK_SUPPORTED must not appear in GUI screens.
@@ -980,7 +983,7 @@ LIFE_OUT="$(
     gui_show_status() {
       printf "ACTION_5\n" >>"$TRACE"
       local tmp; tmp="$(mktemp)"
-      printf "DP Version: 6.5.0\nHTTP Distribution: DISABLED\n" >"$tmp"
+      printf "Preparation Mode: Full OS Upgrade + Phase 2\nPhase 2 Target: 6.5.0\nHTTP Distribution: DISABLED\n" >"$tmp"
       mm_whiptail_textbox "Current Status" "$tmp" || true
       rm -f "$tmp"
       return 0
@@ -1184,7 +1187,7 @@ else
 fi
 
 # Credential config remains 600
-grep -A20 '^mm_save_gui_config' "${ROOT}/scripts/lib/mirror_manager_common.sh" | grep -q 'chmod 600' \
+grep -A80 '^mm_save_gui_config' "${ROOT}/scripts/lib/mirror_manager_common.sh" | grep -q 'chmod 600' \
   && pass "T CREDENTIAL_CONFIG_MODE=600" || fail "T credential chmod 600 missing"
 
 # Public dirs 755 in bootstrap

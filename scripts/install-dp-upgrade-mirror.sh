@@ -318,14 +318,20 @@ mm_whiptail_yesno() {
 gui_configuration() {
   mm_load_gui_config
   while true; do
-    local choice
+    local choice mode_label footer
+    mm_normalize_preparation_mode
+    mm_force_phase2_target
+    mode_label="$(mm_preparation_mode_label)"
+    footer="$(mm_config_footer_text)"
     choice="$(mm_whiptail_menu "Configuration" \
-      "DP Version: ${TARGET_DP_VERSION}
+      "Preparation Mode: ${mode_label}
 ACPS Username: $(mm_configured_label "$ACPS_USERNAME")
 ACPS Password: $(mm_configured_label "$ACPS_PASSWORD")
-ACPS Server: fixed
-OS Core Source: Cloudflare R2 — fixed" \
-      "1" "DP Version" \
+ACPS Server: Fixed
+OS Core Source: Cloudflare R2
+
+${footer}" \
+      "1" "Preparation Mode" \
       "2" "ACPS Username" \
       "3" "ACPS Password" \
       "4" "Test ACPS Connection" \
@@ -333,21 +339,22 @@ OS Core Source: Cloudflare R2 — fixed" \
       "0" "Back")" || return 0
     case "$choice" in
       1)
-        local v
-        v="$(mm_whiptail_input "DP Version" \
-          "Enter DP software version (X.Y.Z).
+        local mode_choice
+        mode_choice="$(mm_whiptail_menu "Preparation Mode" \
+          "Select how this Mirror Server prepares artifacts.
 
-Ubuntu OS is upgraded from 16.04 to 24.04.
-DP software remains this version before and after the OS upgrade.
-Phase 2 bringup restores the same DP runtime after COMPLETED_NOBLE." \
-          "${TARGET_DP_VERSION}")" || continue
-        if [[ -n "$v" ]]; then
-          if [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            TARGET_DP_VERSION="$v"
-          else
-            mm_whiptail_msg "Invalid" "Version must be X.Y.Z (got: ${v})"
-          fi
-        fi
+Full OS Upgrade + Phase 2:
+  DP starts on Ubuntu 16.04 and upgrades to Ubuntu 24.04, then Phase 2.
+
+Phase 2 Only:
+  DP is already running Ubuntu 24.04. Skip OS Core / OS hops." \
+          "1" "Full OS Upgrade + Phase 2" \
+          "2" "Phase 2 Only — DP is already running Ubuntu 24.04")" || continue
+        case "$mode_choice" in
+          1) PREPARATION_MODE=FULL ;;
+          2) PREPARATION_MODE=PHASE2_ONLY ;;
+          *) continue ;;
+        esac
         ;;
       2)
         local u
@@ -377,10 +384,31 @@ Phase 2 bringup restores the same DP runtime after COMPLETED_NOBLE." \
         fi
         ;;
       5)
+        mm_force_phase2_target
         mm_save_gui_config
         mm_record_config_validated
-        mm_whiptail_msg "Configuration" \
-          "Configuration saved.
+        mm_status_set PREPARATION_MODE "${PREPARATION_MODE}"
+        mm_status_set PHASE2_TARGET_VERSION "${PHASE2_TARGET_VERSION}"
+        if mm_client_commands_stale; then
+          mm_whiptail_msg "Configuration" \
+            "Configuration saved.
+
+Preparation Mode: $(mm_preparation_mode_label)
+Phase 2 Target: ${PHASE2_TARGET_VERSION} (fixed)
+
+Previously generated Client Commands are stale.
+Re-run menu 7 after Download / HTTP / Readiness.
+
+Next step:
+  Back → main menu → 2) Download and Prepare Upgrade Files
+
+Saving configuration does NOT start the download."
+        else
+          mm_whiptail_msg "Configuration" \
+            "Configuration saved.
+
+Preparation Mode: $(mm_preparation_mode_label)
+Phase 2 Target: ${PHASE2_TARGET_VERSION} (fixed)
 
 Next step:
   Back → main menu → 2) Download and Prepare Upgrade Files
@@ -390,6 +418,7 @@ Then:
   4) Verify Upgrade Readiness
 
 Saving configuration does NOT start the download."
+        fi
         ;;
       0|"") return 0 ;;
     esac
@@ -399,11 +428,14 @@ Saving configuration does NOT start the download."
 gui_download_and_prepare() {
   load_mirror_defaults
   mm_load_gui_config
+  mm_normalize_preparation_mode
+  mm_force_phase2_target
   if ! mm_config_ready; then
-    mm_whiptail_msg "Configuration required" "Set DP Version, ACPS Username, and ACPS Password first."
+    mm_whiptail_msg "Configuration required" \
+      "Set Preparation Mode, ACPS Username, and ACPS Password first."
     return 0
   fi
-  if ! mm_r2_url_configured; then
+  if ! mm_is_phase2_only && ! mm_r2_url_configured; then
     mm_whiptail_msg "CONFIGURATION_REQUIRED" \
       "OS Core R2 URL is not configured.
 
@@ -413,12 +445,22 @@ scripts/lib/mirror_manager_common.sh
 Then re-run Download and Prepare."
     return 0
   fi
-  if ! mm_whiptail_yesno "Confirm" \
-      "Download and prepare upgrade files for DP ${TARGET_DP_VERSION}?
+  local confirm_body
+  if mm_is_phase2_only; then
+    confirm_body="Download and prepare Phase 2 Only files for DP ${PHASE2_TARGET_VERSION}?
+
+This mode skips R2 OS Core and OS hop repositories.
+OK / Enter starts the download.
+Live progress prints in the terminal (no empty waits).
+Long steps emit a heartbeat every 30 seconds."
+  else
+    confirm_body="Download and prepare Full OS Upgrade + Phase 2 files for DP ${PHASE2_TARGET_VERSION}?
 
 OK / Enter starts the download.
 Live progress prints in the terminal (no empty waits).
-Long steps emit a heartbeat every 30 seconds."; then
+Long steps emit a heartbeat every 30 seconds."
+  fi
+  if ! mm_whiptail_yesno "Confirm" "${confirm_body}"; then
     return 0
   fi
 
@@ -428,7 +470,11 @@ Long steps emit a heartbeat every 30 seconds."; then
   cat <<EOF
 ============================================================
 Download and Prepare — live progress
-DP Version: ${TARGET_DP_VERSION}
+Preparation Mode: $(mm_preparation_mode_label)
+Phase 2 Target: ${PHASE2_TARGET_VERSION}
+EOF
+  if mm_is_phase2_only; then
+    cat <<EOF
 
 Phases (names appear as each step starts):
   1. Downloading ACPS Artifacts
@@ -439,6 +485,24 @@ Phases (names appear as each step starts):
   6. Verifying Published Bundle
   7. Cleaning Temporary Files
   8. Publishing Phase 2 Artifacts
+
+R2 OS Core download is NOT run in Phase 2 Only mode.
+EOF
+  else
+    cat <<EOF
+
+Phases (names appear as each step starts):
+  1. Downloading ACPS Artifacts
+  2. Verifying ACPS Checksums
+  3. Preparing Patched Bringup Script
+  4. Creating Phase 2 Bundle
+  5. Calculating Bundle SHA256
+  6. Verifying Published Bundle
+  7. Cleaning Temporary Files
+  8. Publishing Phase 2 Artifacts
+EOF
+  fi
+  cat <<EOF
 
 Long checksum / bundle steps print a heartbeat every 30 seconds.
 Do not interrupt or close this terminal.
@@ -499,7 +563,8 @@ before enabling HTTP distribution."
   cat <<EOF
 ============================================================
 Enable HTTP Distribution — live progress
-DP Version: ${TARGET_DP_VERSION}
+Preparation Mode: $(mm_preparation_mode_label)
+Phase 2 Target: ${PHASE2_TARGET_VERSION}
 Phase 2 bundle: ${stable}
 Size: $(mm_format_bytes "$bytes")
 
@@ -565,7 +630,8 @@ EOF
   fi
   dp2_set_version "${TARGET_DP_VERSION}"
   {
-    printf 'DP Version: %s\n' "${TARGET_DP_VERSION}"
+    printf 'Preparation Mode: %s\n' "$(mm_preparation_mode_label)"
+    printf 'Phase 2 Target: %s\n' "${PHASE2_TARGET_VERSION}"
     printf 'HTTP Distribution: %s\n' "$(mm_status_get HTTP_DISTRIBUTION)"
   } >"$tmp"
 
@@ -573,7 +639,8 @@ EOF
   cat <<EOF
 ============================================================
 Verify Upgrade Readiness — live progress
-DP Version: ${TARGET_DP_VERSION}
+Preparation Mode: $(mm_preparation_mode_label)
+Phase 2 Target: ${PHASE2_TARGET_VERSION}
 
 HTTP URL checks and status validation run next.
 If a Phase 2 SHA256 check is required, a heartbeat prints every 30 seconds.
@@ -630,20 +697,33 @@ EOF
 gui_show_status() {
   load_mirror_defaults
   mm_load_gui_config
+  mm_normalize_preparation_mode
+  mm_force_phase2_target
   engine_resolve_paths
-  local tmp ver config_state os_state bundle_state http_state ready_state
-  ver="${TARGET_DP_VERSION:-6.5.0}"
+  local tmp ver config_state os_state bundle_state http_state ready_state start_os final_os
+  ver="${PHASE2_TARGET_VERSION}"
   mm_collect_workflow_status
   if [[ "${MM_WF_CONFIG_COMPLETED}" == "1" ]]; then
     config_state="PASS"
   else
     config_state="FAIL"
   fi
+  if mm_is_phase2_only; then
+    start_os="Ubuntu 24.04"
+    final_os="Ubuntu 24.04"
+    os_state="NOT REQUIRED"
+  else
+    start_os="Ubuntu 16.04"
+    final_os="Ubuntu 24.04"
+    if [[ "${MM_WF_DOWNLOAD_COMPLETED}" == "1" ]]; then
+      os_state="READY"
+    else
+      os_state="NOT READY"
+    fi
+  fi
   if [[ "${MM_WF_DOWNLOAD_COMPLETED}" == "1" ]]; then
-    os_state="READY"
     bundle_state="READY (9 files)"
   else
-    os_state="NOT READY"
     bundle_state="NOT READY"
   fi
   if [[ "${MM_WF_HTTP_COMPLETED}" == "1" ]]; then
@@ -660,7 +740,11 @@ gui_show_status() {
 DP Upgrade Mirror Status
 ========================
 
-DP Version: ${ver}
+Supported Starting DP Versions: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0
+Phase 2 Target: ${ver}
+Preparation Mode: $(mm_preparation_mode_label)
+Starting OS: ${start_os}
+Final OS: ${final_os}
 Configuration: ${config_state}
 OS Upgrade Files: ${os_state}
 DP ${ver} Bundle: ${bundle_state}
@@ -705,68 +789,59 @@ gui_client_hop_command() {
 
 gui_build_client_commands() {
   # Writes command text to stdout. Args: mirror topology worker_ips
+  # Uses PREPARATION_MODE from config (FULL or PHASE2_ONLY).
   local mirror="$1" topology="$2" worker_ips="${3:-}"
-  local ver="${TARGET_DP_VERSION:-6.5.0}"
-  local snap_line step6 step7
+  mm_normalize_preparation_mode
+  mm_force_phase2_target
+  local ver="${PHASE2_TARGET_VERSION}"
+  local snap_line stage_cmd bringup_cmd shell_cmd prereq_cmd
   if [[ "$topology" == "cluster" ]]; then
     snap_line="Create a full hypervisor snapshot of every DP VM."
   else
     snap_line="Create a full hypervisor snapshot of the DP VM."
   fi
-  step6="cd /home/aella && rm -f stage-dp-phase2.sh stage-dp-phase2.sh.sha256 && curl -fsSLO ${mirror}/client/stage-dp-phase2.sh && curl -fsSLO ${mirror}/client/stage-dp-phase2.sh.sha256 && sha256sum -c stage-dp-phase2.sh.sha256 && sudo bash ./stage-dp-phase2.sh --target-version ${ver} --same-version-recovery --mirror-url ${mirror}"
+  stage_cmd="cd /home/aella && rm -f stage-dp-phase2.sh stage-dp-phase2.sh.sha256 && curl -fsSLO ${mirror}/client/stage-dp-phase2.sh && curl -fsSLO ${mirror}/client/stage-dp-phase2.sh.sha256 && sha256sum -c stage-dp-phase2.sh.sha256 && sudo bash ./stage-dp-phase2.sh --target-version ${ver} --same-version-recovery --mirror-url ${mirror}"
   if [[ "$topology" == "cluster" ]]; then
-    step7="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download --worker-ips \"${worker_ips}\""
+    bringup_cmd="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download --worker-ips \"${worker_ips}\""
   else
-    step7="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download"
+    bringup_cmd="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download"
   fi
-  cat <<EOF
-DP Client Upgrade Commands
-==========================
+  shell_cmd="getent passwd aella root | awk -F: '{printf \"%s shell=%s\\n\", \$1, \$7}' | tee /dev/stderr | awk -F= '/shell=/{s=\$2; if (s!=\"/bin/bash\") bad=1} END{exit bad+0}'"
+  prereq_cmd="set -euo pipefail; . /etc/os-release; test \"\$ID\" = ubuntu; test \"\$VERSION_ID\" = 24.04; test \"\$VERSION_CODENAME\" = noble; getent passwd aella root | awk -F: '\$7!=\"/bin/bash\"{exit 1}'; avail_root=\$(df -BG --output=avail / | awk 'NR==2{gsub(/G/,\"\"); print}'); avail_data=\$(df -BG --output=avail /opt/aelladata 2>/dev/null | awk 'NR==2{gsub(/G/,\"\"); print}'); test \"\${avail_root:-0}\" -ge 20; test \"\${avail_data:-0}\" -ge 70; ! pgrep -fa 'apt-get|dpkg|do-release-upgrade|dp-offline-upgrade' >/dev/null"
 
+  if mm_is_phase2_only; then
+    cat <<EOF
+DP Phase 2 Upgrade Commands
+===========================
+
+Supported Starting DP Versions: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0
+Phase 2 Target: ${ver}
+Required OS: Ubuntu 24.04
 Mirror Server: ${mirror}
-DP Version: ${ver}
 
-Run these steps on the DP, not on the Mirror Server.
+This procedure is only for a DP that is already running Ubuntu 24.04.
 
-Step 0 — Create a snapshot
+Starting DP Version is detected automatically on the DP.
+Do not edit the stage command to add a source version.
+
+If DP ${ver} is already healthy on Ubuntu 24.04, do not run these commands.
+
+Step 0 — Create snapshot or backup
 
 ${snap_line}
 
-Step 1 — Pause DP services
+Step 1 — Verify Ubuntu 24.04 and prerequisites
 
-Run \`aella_cli\` on the Ubuntu 16.04 DP.
-Select or enter \`pause\`.
-Wait until the pause completes.
+${prereq_cmd}
 
-Do not run \`pause\` directly in the Linux bash shell.
-Do not resume the DP during the intermediate Ubuntu upgrades.
+Step 2 — Stage DP ${ver} files
 
-Step 2 — Ubuntu 16.04 to 18.04
-
-$(gui_client_hop_command "$mirror" "dp-offline-upgrade-xenial-to-bionic.sh")
-
-Step 3 — Ubuntu 18.04 to 20.04
-
-$(gui_client_hop_command "$mirror" "dp-offline-upgrade-bionic-to-focal.sh")
-
-Step 4 — Ubuntu 20.04 to 22.04
-
-$(gui_client_hop_command "$mirror" "dp-offline-upgrade-focal-to-jammy.sh")
-
-Step 5 — Ubuntu 22.04 to 24.04
-
-$(gui_client_hop_command "$mirror" "dp-offline-upgrade-jammy-to-noble.sh")
-
-Do not resume the DP during Steps 2–5.
-
-Step 6 — Stage DP ${ver} recovery files
-
-${step6}
+${stage_cmd}
 
 EOF
-  if [[ "$topology" == "cluster" ]]; then
-    cat <<EOF
-Step 7 — Start DP ${ver} bringup
+    if [[ "$topology" == "cluster" ]]; then
+      cat <<EOF
+Step 3 — Run DP ${ver} bringup
 
 Run this command on the cluster master only.
 
@@ -778,19 +853,126 @@ Do not mix DL and DA worker IPs in one command.
 Management IP addresses or cluster IP addresses can be used for \`--worker-ips\`.
 Cluster IP addresses are recommended when they are reachable from the master because the cluster network normally provides more reliable node-to-node communication.
 
-${step7}
+${bringup_cmd}
+
+EOF
+    else
+      cat <<EOF
+Step 3 — Run DP ${ver} bringup
+
+${bringup_cmd}
+
+EOF
+    fi
+    cat <<EOF
+Step 4 — Resume DP services when required
+
+If the DP was paused, run \`aella_cli\` after bringup completes.
+Select or enter \`resume\`.
+Wait for resume to complete and allow several minutes for pods and host services to start.
+
+Resume is an aella_cli menu command.
+Do not run \`resume\` directly in the Linux bash shell.
+
+Step 5 — Verify DP health
+
+After resume (when required), wait for the DP services to start.
+Then run \`aella_cli\` and select or enter \`show status\`.
+
+Confirm that:
+- All pods are running
+- All cluster nodes are ready
+- All host services are ready
+- License is valid
+- System Ready (or the normal ready state for this role)
 
 EOF
   else
     cat <<EOF
-Step 7 — Start DP ${ver} bringup
+DP Client Upgrade Commands
+==========================
 
-${step7}
+Supported Starting DP Versions: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0
+Phase 2 Target: ${ver}
+OS Upgrade: Ubuntu 16.04 → Ubuntu 24.04
+Mirror Server: ${mirror}
+
+Run these steps on the DP, not on the Mirror Server.
+
+Starting DP Version is detected automatically on the DP.
+Do not edit the stage command to add a source version.
+
+Step 0 — Create snapshot or backup
+
+${snap_line}
+
+Step 1 — Verify bash login shells
+
+${shell_cmd}
+
+Step 2 — Pause DP services
+
+Run \`aella_cli\` on the Ubuntu 16.04 DP.
+
+Select or enter:
+
+pause
+
+Wait until the pause operation completes.
+
+Do not run \`pause\` directly in the Linux bash shell.
+Do not resume the DP during the intermediate OS upgrades.
+
+Step 3 — Ubuntu 16.04 to 18.04
+
+$(gui_client_hop_command "$mirror" "dp-offline-upgrade-xenial-to-bionic.sh")
+
+Step 4 — Ubuntu 18.04 to 20.04
+
+$(gui_client_hop_command "$mirror" "dp-offline-upgrade-bionic-to-focal.sh")
+
+Step 5 — Ubuntu 20.04 to 22.04
+
+$(gui_client_hop_command "$mirror" "dp-offline-upgrade-focal-to-jammy.sh")
+
+Step 6 — Ubuntu 22.04 to 24.04
+
+$(gui_client_hop_command "$mirror" "dp-offline-upgrade-jammy-to-noble.sh")
+
+Do not resume the DP during the intermediate OS upgrades.
+
+Step 7 — Stage DP ${ver} files
+
+${stage_cmd}
 
 EOF
-  fi
-  cat <<EOF
-Step 8 — Resume DP services
+    if [[ "$topology" == "cluster" ]]; then
+      cat <<EOF
+Step 8 — Run DP ${ver} bringup
+
+Run this command on the cluster master only.
+
+Complete the DL cluster first, then run the corresponding command on the DA master using the DA worker IPs.
+
+Do not include the master IP.
+Do not mix DL and DA worker IPs in one command.
+
+Management IP addresses or cluster IP addresses can be used for \`--worker-ips\`.
+Cluster IP addresses are recommended when they are reachable from the master because the cluster network normally provides more reliable node-to-node communication.
+
+${bringup_cmd}
+
+EOF
+    else
+      cat <<EOF
+Step 8 — Run DP ${ver} bringup
+
+${bringup_cmd}
+
+EOF
+    fi
+    cat <<EOF
+Step 9 — Resume DP services
 
 After the bringup script completes, run \`aella_cli\`.
 Select or enter \`resume\`.
@@ -802,7 +984,7 @@ Do not run \`resume\` directly in the Linux bash shell.
 The DP health checks must be performed after resume.
 Pods and host services may not become ready until the DP services are resumed.
 
-Step 9 — Verify DP health
+Step 10 — Verify DP health
 
 After resume, wait for the DP services to start.
 Then run \`aella_cli\` and select or enter \`show status\`.
@@ -811,14 +993,14 @@ Confirm that:
 - All pods are running
 - All cluster nodes are ready
 - All host services are ready
+- License is valid
 - System Ready (or the normal ready state for this role)
-- License status is normal
-- Provision status is normal when required for this role
 
 The status may take several minutes to become ready after resume.
 Do not treat the DP as healthy immediately after running resume.
 
 EOF
+  fi
   if [[ "$topology" == "cluster" ]]; then
     cat <<EOF
 Run the status check on the cluster master.
@@ -836,9 +1018,11 @@ EOF
 gui_client_instructions() {
   load_mirror_defaults
   mm_load_gui_config
+  mm_normalize_preparation_mode
+  mm_force_phase2_target
   engine_resolve_paths
-  local ver="${TARGET_DP_VERSION:-6.5.0}"
-  local mirror topology worker_ips="" topo_choice out_file tmp
+  local ver="${PHASE2_TARGET_VERSION}"
+  local mirror topology worker_ips="" topo_choice out_file tmp title
   mirror="$(mm_client_mirror_url)" || {
     mm_whiptail_msg "DP Client Upgrade Commands" \
       "Could not determine the Mirror Server HTTP address.
@@ -853,14 +1037,21 @@ or ensure this host has a reachable IPv4 address."
     mm_save_gui_config >/dev/null 2>&1 || true
   fi
 
-  topo_choice="$(mm_whiptail_menu \
-    "DP topology" \
-    "Select the DP deployment type for Step 7 bringup.
+  if mm_client_commands_stale; then
+    mm_whiptail_msg "Client Commands" \
+      "Previously generated commands are stale because Preparation Mode changed.
 
-DP Version: ${ver}
-Ubuntu OS is upgraded from 16.04 to 24.04.
-DP software remains ${ver}.
-Phase 2 bringup restores the DP ${ver} runtime after the OS upgrade." \
+New commands will be generated for: $(mm_preparation_mode_label)"
+  fi
+
+  topo_choice="$(mm_whiptail_menu \
+    "DP deployment type" \
+    "Select the DP deployment type for bringup.
+
+Preparation Mode: $(mm_preparation_mode_label)
+Supported Starting DP Versions: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0
+Phase 2 Target: ${ver} (fixed)
+Starting DP Version is detected automatically on the DP." \
     "1" "Single DP / AIO / master without workers" \
     "2" "Cluster master with workers")" || return 0
   case "$topo_choice" in
@@ -873,14 +1064,16 @@ Phase 2 bringup restores the DP ${ver} runtime after the OS upgrade." \
 
 Management IP addresses or cluster IP addresses can be used.
 
-Cluster IP addresses are recommended when they are reachable from the master because the cluster network normally provides more reliable node-to-node communication.
+Recommended:
+Use cluster IP addresses when they are reachable from the master because the cluster network usually provides more reliable node-to-node communication.
 
 Enter worker IPs only.
 Do not enter the master IP.
 
-- Separate multiple IPs with commas.
-- Do not mix management and cluster IPs in the same cluster unless required by the network design.
-- Example: 192.168.124.23,192.168.124.24" \
+Separate multiple IP addresses with commas.
+
+Example:
+192.168.124.23,192.168.124.24" \
         "")" || return 0
       worker_ips="$(mm_validate_worker_ips "$worker_ips")" || {
         mm_whiptail_msg "Invalid worker IPs" \
@@ -906,7 +1099,13 @@ Mirror Manager must run as root:
     rm -f "$tmp"
     return 0
   fi
-  mm_whiptail_textbox "DP Client Upgrade Commands" "$tmp" || true
+  mm_mark_client_commands_fresh
+  if mm_is_phase2_only; then
+    title="DP Phase 2 Upgrade Commands"
+  else
+    title="DP Client Upgrade Commands"
+  fi
+  mm_whiptail_textbox "$title" "$tmp" || true
   # Optional tty reprint for mouse-copy after textbox (interactive sessions only).
   if [[ -t 0 ]]; then
     {

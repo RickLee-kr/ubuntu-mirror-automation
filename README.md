@@ -84,25 +84,43 @@ Enable HTTP (3) before Verify Readiness (4). Menu 7 prints one-line DP commands 
 
 Enter only:
 
-- DP Version (default `6.5.0`)
+- Preparation Mode
+  - Full OS Upgrade + Phase 2
+  - Phase 2 Only — DP is already running Ubuntu 24.04
 - ACPS Username
 - ACPS Password (password box; not echoed)
 - Test ACPS Connection
 - Save Configuration
 
-Read-only:
+Configuration footer (always shown):
 
-- ACPS Server: fixed
-- OS Core Source: Cloudflare R2 — fixed
+```
+Starting DP Version: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0
+Phase 2 Target:      6.5.0 고정
+DP OS version: 16.04
 
-There is no install-mode menu, no local/USB OS Core picker, no R2/ACPS URL editor, and no rollback menu.
-There is no Current/Target DP Version split. Ubuntu OS is upgraded from 16.04 to 24.04; DP software remains 6.5.0.
+If the DP is already running Ubuntu 24.04, select Phase 2 Only.
+```
+
+Phase 2 Target is fixed at 6.5.0 and is not editable. Starting DP Version is detected on the DP (not configured on the Mirror Server).
+
+Decision matrix:
+
+| Starting DP | Starting OS | Action | Final State |
+| --- | --- | --- | --- |
+| 6.2 / 6.3 / 6.4 | 16.04 | Phase 1 + Phase 2 | DP 6.5.0 / Ubuntu 24.04 |
+| 6.2 / 6.3 / 6.4 | 24.04 | Phase 2 Only | DP 6.5.0 / Ubuntu 24.04 |
+| 6.5.0 | 16.04 | Phase 1 + recovery | DP 6.5.0 / Ubuntu 24.04 |
+| 6.5.0 | 24.04 healthy | No action | DP 6.5.0 / Ubuntu 24.04 |
+| 6.5.0 | 24.04 recovery state | Gated recovery | DP 6.5.0 / Ubuntu 24.04 |
 
 Credentials are stored as root-owned mode `600` under `/etc/ubuntu-mirror/dp-upgrade-mirror.conf` and are redacted from logs.
 
 ### 2. Download and Prepare Upgrade Files
 
-Downloads OS Core from R2 (safe resume), verifies checksums, materializes one selective tree, downloads ACPS Phase 2, applies the patched bringup, and publishes one final Phase 2 bundle. Staging is never served over HTTP.
+**Full mode** downloads OS Core from R2, materializes the selective OS tree, downloads ACPS Phase 2 6.5.0 files, applies the patched bringup, and publishes one final Phase 2 bundle.
+
+**Phase 2 Only** skips R2 and OS hops; it prepares the same single 6.5.0 Phase 2 bundle only.
 
 ### 3. Enable HTTP Distribution
 
@@ -110,13 +128,13 @@ Requires Download and Prepare artifacts. Validates the prepared layout (HTTP pro
 
 ### 4. Verify Upgrade Readiness
 
-Requires HTTP distribution ENABLED. Probes live HTTP URLs (200-only) for client scripts, stage helper, OS metadata, and Phase 2 release/checksum paths. Sets `UPGRADE_READINESS=PASS` only when status keys and HTTP checks succeed. Status shows exactly one of: `PASS`, `NOT VERIFIED`, `NOT READY`, or `FAIL`.
+Requires HTTP distribution ENABLED. Probes live HTTP URLs (200-only) for stage helper and Phase 2 paths; Full mode also checks OS hop scripts and offline metadata. Sets `UPGRADE_READINESS=PASS` only when status keys and HTTP checks succeed. Status shows exactly one of: `PASS`, `NOT VERIFIED`, `NOT READY`, or `FAIL`.
 
 ### 5–7. Status, logs, client commands
 
-Status shows a short operator summary including DP Version and Upgrade Readiness. Redacted logs live under `/var/log/ubuntu-mirror-automation/`. Menu 7 prints copy-paste DP commands using the configured mirror HTTP address and DP Version. Stage uses `--target-version 6.5.0 --same-version-recovery` after COMPLETED_NOBLE (source auto-detected on the DP).
+Status shows Supported Starting DP Versions, fixed Phase 2 Target 6.5.0, Preparation Mode, Starting/Final OS, and Upgrade Readiness. Menu 7 asks topology only (no version prompts). Full mode prints OS hops 16.04→24.04 then stage/bringup; Phase 2 Only prints Ubuntu 24.04 prerequisites then stage/bringup. Stage uses `--target-version 6.5.0 --same-version-recovery` with source auto-detection on the DP.
 
-Worker `--worker-ips` may use management IPs or cluster IPs; cluster IPs are recommended when reachable. Do not include the master IP. Pause DP services in `aella_cli` before the first OS hop; resume only after DP 6.5.0 bringup completes; verify pods/nodes/host services after resume.
+Worker `--worker-ips` may use management IPs or cluster IPs; cluster IPs are recommended when reachable. Do not include the master IP.
 
 ## HTTP layout
 

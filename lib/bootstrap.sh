@@ -530,11 +530,15 @@ Logs:
   /var/log/ubuntu-mirror-automation/
 
 Next steps (Mirror Manager GUI):
-  1. Configuration — DP Version, ACPS username/password
-  2. Download and Prepare Upgrade Files — R2 OS Core + ACPS Phase 2
+  1. Configuration — Preparation Mode, ACPS username/password
+  2. Download and Prepare Upgrade Files — R2 OS Core (FULL) + ACPS Phase 2
   3. Enable HTTP Distribution
   4. Verify Upgrade Readiness
   7. Show DP Client Upgrade Commands
+
+Phase 2 Target is fixed at 6.5.0.
+Supported Starting DP Versions: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0
+If the DP is already on Ubuntu 24.04, choose Phase 2 Only.
 
 Large downloads are NOT started by bootstrap. Start them from the GUI.
 

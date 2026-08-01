@@ -547,7 +547,10 @@ resolve_source_dp_version() {
   SOURCE_DP_VERSION_RAW=""
   SOURCE_DP_VERSION_ORIGIN="none"
   SOURCE_DP_VERSION_CHECK="FAIL_UNKNOWN"
-  die "SOURCE_DP_VERSION_CHECK=FAIL_UNKNOWN (provide --source-dp-version or persist ${SOURCE_PRODUCT_ENV})"
+  die "SOURCE_DP_VERSION_CHECK=FAIL_UNKNOWN
+The starting DP version could not be detected.
+
+Check source-product.env or release-image.yml before continuing."
 }
 
 evaluate_version_compatibility() {
@@ -591,9 +594,17 @@ evaluate_version_compatibility() {
             [[ "$SAME_VERSION_RECOVERY" -eq 0 ]]; then
         TARGET_VERSION_COMPATIBILITY="SAME_VERSION_RECOVERY_REQUIRED"
         die "TARGET_VERSION_COMPATIBILITY=SAME_VERSION_RECOVERY_REQUIRED (pass --same-version-recovery after snapshot)"
+      elif [[ "$state" == "COMPLETED_NOBLE" ]]; then
+        TARGET_VERSION_COMPATIBILITY="SAME_VERSION_RECOVERY_BLOCKED"
+        die "TARGET_VERSION_COMPATIBILITY=SAME_VERSION_RECOVERY_BLOCKED
+Safe same-version recovery could not be confirmed.
+
+Do not run destructive bringup until the DP recovery state is verified."
       else
         TARGET_VERSION_COMPATIBILITY="ALREADY_AT_TARGET"
-        die "TARGET_VERSION_COMPATIBILITY=ALREADY_AT_TARGET (no staging)"
+        die "TARGET_VERSION_COMPATIBILITY=ALREADY_AT_TARGET
+DP ${TARGET_DP_VERSION} is already healthy on Ubuntu 24.04.
+No Phase 2 recovery is required."
       fi
       ;;
     *)

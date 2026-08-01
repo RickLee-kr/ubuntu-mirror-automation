@@ -47,13 +47,28 @@ adjacent_dup_count() {
 seed_config() {
   umask 077
   cat >"$MM_CONFIG_FILE" <<EOF
-TARGET_DP_VERSION=6.5.0
+PREPARATION_MODE=FULL
 ACPS_USERNAME=demo
 ACPS_PASSWORD=secret
 MIRROR_HTTP_URL=http://127.0.0.1
 EOF
   chmod 600 "$MM_CONFIG_FILE"
   mm_status_set CONFIGURATION_READY PASS
+}
+
+seed_client_files() {
+  local f
+  mkdir -p "$MM_CLIENT_ROOT"
+  for f in \
+    dp-offline-upgrade-xenial-to-bionic.sh \
+    dp-offline-upgrade-bionic-to-focal.sh \
+    dp-offline-upgrade-focal-to-jammy.sh \
+    dp-offline-upgrade-jammy-to-noble.sh \
+    stage-dp-phase2.sh
+  do
+    printf '#!/bin/bash\necho %s\n' "$f" >"${MM_CLIENT_ROOT}/${f}"
+    (cd "$MM_CLIENT_ROOT" && sha256sum "$f" >"${f}.sha256")
+  done
 }
 
 seed_artifacts() {
@@ -66,11 +81,13 @@ seed_artifacts() {
   # Small fake bundle + matching sidecar
   printf 'BUNDLE_DATA_FOR_TEST\n' >"$bundle"
   (cd "$dp" && sha256sum "dp_bundle_${ver}-current.tar" >"dp_bundle_${ver}-current.tar.sha256")
+  seed_client_files
   mm_status_set OS_MIRROR_READY PASS
   mm_status_set R2_OS_CORE_DOWNLOADED PASS
   mm_status_set R2_OS_CORE_CHECKSUM PASS
   mm_status_set PHASE2_BUNDLE_CHECKSUM PASS
   mm_status_set PHASE2_BUNDLE_ENTRY_COUNT 9
+  mm_status_set CLIENT_FILES_READY PASS
   mm_status_set DOWNLOAD_PREPARE_RESULT PASS
   mm_status_set LAST_EXECUTION_RESULT PASS
   mm_status_set INSTALL_RESULT PASS

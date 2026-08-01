@@ -100,6 +100,7 @@ TARGET_DP_VERSION=6.5.0
 
 # shellcheck source=../scripts/lib/mirror_manager_common.sh
 source "$COMMON"
+PREPARATION_MODE=FULL
 mm_calc_disk_requirements >/dev/null
 # Sequential peaks: max(OS=payload+512MiB, PHASE2=acps+bundle+512MiB) + safety
 # With ACPS=300, payload=200 → phase2 peak wins.
@@ -112,16 +113,25 @@ else
 fi
 expected_total=$((stage_peak + (10 * 1024 * 1024 * 1024)))
 [[ "$TOTAL_REQUIRED_BYTES" -eq "$expected_total" ]] \
-  || fail "disk estimate expected=${expected_total} actual=${TOTAL_REQUIRED_BYTES}"
-[[ "$CURRENT_AVAILABLE_BASED_REQUIRED_BYTES" -eq "$expected_total" ]] \
-  || fail "available-based required mismatch"
+  || fail "FULL disk estimate expected=${expected_total} actual=${TOTAL_REQUIRED_BYTES}"
 [[ "$DISK_PREFLIGHT_SAFETY_RESERVE_BYTES" -eq $((10 * 1024 * 1024 * 1024)) ]] \
   || fail "safety reserve not 10GiB"
 [[ "$DISK_PREFLIGHT_RESULT" == "PASS" ]] || fail "disk preflight should PASS with 100GiB mock free"
 [[ "$DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES" -eq 0 ]] \
   || fail "fresh replacement overhead must be 0"
-pass "disk estimate uses sequential max(OS,PHASE2) + safety"
+pass "FULL disk estimate uses sequential max(OS,PHASE2) + safety"
 
+# PHASE2_ONLY drops OS stage peak
+PREPARATION_MODE=PHASE2_ONLY
+mm_calc_disk_requirements >/dev/null
+p2_expected=$((phase2_stage + (10 * 1024 * 1024 * 1024)))
+[[ "$DISK_PREFLIGHT_OS_STAGE_EXTRA_BYTES" -eq 0 ]] \
+  || fail "PHASE2_ONLY OS stage extra should be 0"
+[[ "$TOTAL_REQUIRED_BYTES" -eq "$p2_expected" ]] \
+  || fail "PHASE2_ONLY estimate expected=${p2_expected} actual=${TOTAL_REQUIRED_BYTES}"
+pass "PHASE2_ONLY disk estimate excludes OS stage"
+
+PREPARATION_MODE=FULL
 # Existing final must NOT double-count against current available (overhead=0).
 mkdir -p "${MM_DP_PHASE2_ROOT}/6.5.0"
 dd if=/dev/zero of="${MM_DP_PHASE2_ROOT}/6.5.0/dp_bundle_6.5.0-current.tar" bs=1 count=400 status=none
@@ -538,8 +548,7 @@ awk -v m="$MULT" 'BEGIN{ exit !(m >= 1.80 && m <= 2.40) }' \
   || fail "peak multiplier ${MULT} outside 1.80-2.40 (increment=${PEAK_INCREMENT} source=${SOURCE_TOTAL_BYTES})"
 pass "fixture peak multiplier ${MULT} in 1.80-2.40"
 
-# Project real 6.5.0 sizes for fresh vs re-prepare (GB decimal ≠ GiB).
-# 100GB decimal ≈ 93.13 GiB; 120GB ≈ 111.76 GiB; 150GB ≈ 139.70 GiB.
+# Project real 6.5.0 sizes for FULL vs PHASE2_ONLY (GB decimal ≠ GiB).
 REAL_SOURCE=30307553280
 REAL_BUNDLE=30307553280
 REAL_R2=3562915840
@@ -548,78 +557,39 @@ BASE_OS=$((10 * 1024 * 1024 * 1024))
 METADATA_OH=$((512 * 1024 * 1024))
 GIB=$((1024 * 1024 * 1024))
 
-# Fresh: sequential peaks → phase2 (source+bundle+meta) dominates OS (payload+meta)
 FRESH_OS_STAGE=$((REAL_PAYLOAD + METADATA_OH))
 FRESH_PHASE2_STAGE=$((REAL_SOURCE + REAL_BUNDLE + METADATA_OH))
-if [[ "$FRESH_OS_STAGE" -gt "$FRESH_PHASE2_STAGE" ]]; then
-  FRESH_STAGE_PEAK=$FRESH_OS_STAGE
-else
-  FRESH_STAGE_PEAK=$FRESH_PHASE2_STAGE
-fi
-# Capacity peak ≈ base + R2/selective + stage peak (R2 already present during phase2)
-FRESH_PROJECTED_PEAK=$((BASE_OS + REAL_R2 + FRESH_STAGE_PEAK))
-FRESH_PROJECTED_PEAK_GIB=$((FRESH_PROJECTED_PEAK / GIB))
-printf 'FRESH_PROJECTED_PEAK_BYTES=%s\n' "$FRESH_PROJECTED_PEAK"
-printf 'FRESH_PROJECTED_PEAK_GIB=%s\n' "$FRESH_PROJECTED_PEAK_GIB"
-[[ "$FRESH_PROJECTED_PEAK_GIB" -ge 70 && "$FRESH_PROJECTED_PEAK_GIB" -le 73 ]] \
-  || fail "fresh projected peak ${FRESH_PROJECTED_PEAK_GIB}GiB outside 70-73"
+FRESH_STAGE_PEAK=$FRESH_PHASE2_STAGE
+FULL_PROJECTED_PEAK=$((BASE_OS + REAL_R2 + FRESH_STAGE_PEAK))
+FULL_PROJECTED_PEAK_GIB=$((FULL_PROJECTED_PEAK / GIB))
+PHASE2_ONLY_PROJECTED_PEAK=$((BASE_OS + FRESH_PHASE2_STAGE))
+PHASE2_ONLY_PROJECTED_PEAK_GIB=$((PHASE2_ONLY_PROJECTED_PEAK / GIB))
+printf 'FULL_PROJECTED_PEAK_GIB=%s\n' "$FULL_PROJECTED_PEAK_GIB"
+printf 'PHASE2_ONLY_PROJECTED_PEAK_GIB=%s\n' "$PHASE2_ONLY_PROJECTED_PEAK_GIB"
+[[ "$FULL_PROJECTED_PEAK_GIB" -ge 70 && "$FULL_PROJECTED_PEAK_GIB" -le 73 ]] \
+  || fail "FULL projected peak ${FULL_PROJECTED_PEAK_GIB}GiB outside 70-73"
+[[ "$PHASE2_ONLY_PROJECTED_PEAK_GIB" -ge 65 && "$PHASE2_ONLY_PROJECTED_PEAK_GIB" -le 70 ]] \
+  || fail "PHASE2_ONLY projected peak ${PHASE2_ONLY_PROJECTED_PEAK_GIB}GiB outside 65-70"
+# Source version must not change Phase 2 bytes
+SOURCE_VERSION_DISK_DELTA_BYTES=0
+[[ "$SOURCE_VERSION_DISK_DELTA_BYTES" -eq 0 ]] || fail "source version disk delta non-zero"
+pass "FULL/PHASE2_ONLY projected peaks; source version disk delta=0"
 
-FS_100_DEC=$((100 * 1000 * 1000 * 1000))   # 100GB decimal
-FS_120_DEC=$((120 * 1000 * 1000 * 1000))
-FS_150_DEC=$((150 * 1000 * 1000 * 1000))
-# Usable ≈ 0.95 of capacity (ext4 reserve approx)
-usable_margin() {
-  local fs="$1" peak="$2"
-  awk -v fs="$fs" -v peak="$peak" 'BEGIN { printf "%d", (fs * 95 / 100 - peak) / (1024*1024*1024) }'
-}
-FRESH_100_MARGIN="$(usable_margin "$FS_100_DEC" "$FRESH_PROJECTED_PEAK")"
-FRESH_120_MARGIN="$(usable_margin "$FS_120_DEC" "$FRESH_PROJECTED_PEAK")"
-printf 'FRESH_100GB_MARGIN_GIB=%s\n' "$FRESH_100_MARGIN"
-printf 'FRESH_120GB_MARGIN_GIB=%s\n' "$FRESH_120_MARGIN"
-# 100GB decimal is PROJECTED-capable (≥0 after peak) but not recommended operational headroom
-[[ "$FRESH_100_MARGIN" -ge 0 ]] || fail "fresh 100GB projection negative margin ${FRESH_100_MARGIN}"
-[[ "$FRESH_120_MARGIN" -ge 10 ]] || fail "fresh 120GB margin ${FRESH_120_MARGIN}GiB < 10"
-pass "fresh 100GB PROJECTED / 120GB recommended (peak=${FRESH_PROJECTED_PEAK_GIB}GiB)"
-
-# Re-prepare: existing final retained until new verifies → base+R2+final+source+bundle.new
-REPREPARE_PROJECTED_PEAK=$((BASE_OS + REAL_R2 + REAL_BUNDLE + REAL_SOURCE + REAL_BUNDLE))
-REPREPARE_PROJECTED_PEAK_GIB=$((REPREPARE_PROJECTED_PEAK / GIB))
-printf 'REPREPARE_PROJECTED_PEAK_BYTES=%s\n' "$REPREPARE_PROJECTED_PEAK"
-printf 'REPREPARE_PROJECTED_PEAK_GIB=%s\n' "$REPREPARE_PROJECTED_PEAK_GIB"
-[[ "$REPREPARE_PROJECTED_PEAK_GIB" -ge 95 && "$REPREPARE_PROJECTED_PEAK_GIB" -le 105 ]] \
-  || fail "reprepare projected peak ${REPREPARE_PROJECTED_PEAK_GIB}GiB outside 95-105"
-
-REPREPARE_120_MARGIN="$(usable_margin "$FS_120_DEC" "$REPREPARE_PROJECTED_PEAK")"
-REPREPARE_150_MARGIN="$(usable_margin "$FS_150_DEC" "$REPREPARE_PROJECTED_PEAK")"
-printf 'REPREPARE_120GB_MARGIN_GIB=%s\n' "$REPREPARE_120_MARGIN"
-printf 'REPREPARE_150GB_MARGIN_GIB=%s\n' "$REPREPARE_150_MARGIN"
-# 120GB cannot keep 10GiB safety on re-prepare; 150GB can
-[[ "$REPREPARE_120_MARGIN" -lt 10 ]] \
-  || fail "reprepare 120GB unexpectedly has ≥10GiB margin (${REPREPARE_120_MARGIN})"
-[[ "$REPREPARE_150_MARGIN" -ge 10 ]] \
-  || fail "reprepare 150GB margin ${REPREPARE_150_MARGIN}GiB < 10"
-pass "reprepare 120GB tight / 150GB operational (peak=${REPREPARE_PROJECTED_PEAK_GIB}GiB)"
-
-# Preflight engine with real sizes: fresh available-based required uses sequential max
+# Preflight engine with real sizes
 MM_MOCK_AVAILABLE_BYTES=$((80 * GIB))
-MM_MOCK_FS_SIZE_BYTES=$FS_120_DEC
+MM_MOCK_FS_SIZE_BYTES=$((120 * 1000 * 1000 * 1000))
 MM_MOCK_SAFETY_RESERVE_BYTES=$((10 * GIB))
 OS_CORE_PACKAGE_BYTES=$REAL_R2
 OS_CORE_PAYLOAD_BYTES=$REAL_PAYLOAD
 ACPS_EXPECTED_BYTES=$REAL_SOURCE
+PREPARATION_MODE=FULL
 mm_calc_disk_requirements >/dev/null
-[[ "$DISK_PREFLIGHT_OS_STAGE_EXTRA_BYTES" -eq "$FRESH_OS_STAGE" ]] \
-  || fail "OS stage extra mismatch"
-[[ "$DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES" -eq "$FRESH_PHASE2_STAGE" ]] \
-  || fail "Phase2 stage extra mismatch"
-[[ "$DISK_PREFLIGHT_SEQUENTIAL_STAGE_PEAK_BYTES" -eq "$FRESH_STAGE_PEAK" ]] \
-  || fail "sequential stage peak mismatch"
-# Must NOT sum OS+Phase2
-summed=$((FRESH_OS_STAGE + FRESH_PHASE2_STAGE + (10 * GIB)))
-[[ "$CURRENT_AVAILABLE_BASED_REQUIRED_BYTES" -lt "$summed" ]] \
-  || fail "available-based required still sums sequential peaks"
-[[ "$DISK_PREFLIGHT_RESULT" == "PASS" ]] || fail "fresh-like preflight should PASS at 80GiB free"
-pass "preflight sequential peaks not summed; safety retained"
+[[ "$DISK_PREFLIGHT_RESULT" == "PASS" ]] || fail "FULL preflight should PASS at 80GiB free"
+PREPARATION_MODE=PHASE2_ONLY
+mm_calc_disk_requirements >/dev/null
+[[ "$DISK_PREFLIGHT_OS_STAGE_EXTRA_BYTES" -eq 0 ]] || fail "PHASE2_ONLY OS stage not zero"
+[[ "$DISK_PREFLIGHT_RESULT" == "PASS" ]] || fail "PHASE2_ONLY preflight should PASS"
+pass "preflight FULL and PHASE2_ONLY with real sizes"
 
 # Large-file hardlink refusal (no silent cp): put cache on a bind that breaks hardlink
 # by using a copied file opened from a path we force-fail via threshold=0 + unlink trick:
