@@ -476,6 +476,23 @@ compgen -G "${WORKDIR}/mirror/.install-cache/acps/6.5.0/*" >/dev/null 2>&1 \
 compgen -G "${WORKDIR}/mirror/.install-cache/r2/*.tar" >/dev/null 2>&1 \
   && fail "L r2 archive remains" || pass "L r2 archive cleaned"
 find "${WORKDIR}/mirror" -name '*.part' | grep -q . && fail "L .part remains" || pass "L no .part"
+find "${WORKDIR}/mirror/dp-phase2" -maxdepth 1 -name '6.5.0.old.*' | grep -q . \
+  && fail "L .old generation remains" || pass "L no .old generation"
+
+echo "======== REUSE. valid final skips ACPS re-download ========"
+ACPS_GETS_BEFORE="$(cat "${WORKDIR}/http-counts/gets" 2>/dev/null || echo 0)"
+BUNDLE_FP_BEFORE="$(sha256sum "${DP_DIR}/dp_bundle_6.5.0-current.tar" | awk '{print $1}')"
+if run_prepare; then pass "REUSE download-and-prepare"; else fail "REUSE prepare"; fi
+ACPS_GETS_AFTER="$(cat "${WORKDIR}/http-counts/gets" 2>/dev/null || echo 0)"
+BUNDLE_FP_AFTER="$(sha256sum "${DP_DIR}/dp_bundle_6.5.0-current.tar" | awk '{print $1}')"
+[[ "$ACPS_GETS_AFTER" == "$ACPS_GETS_BEFORE" ]] \
+  && pass "REUSE ACPS HTTP gets unchanged (${ACPS_GETS_AFTER})" \
+  || fail "REUSE ACPS re-downloaded gets ${ACPS_GETS_BEFORE}->${ACPS_GETS_AFTER}"
+[[ "$BUNDLE_FP_AFTER" == "$BUNDLE_FP_BEFORE" ]] \
+  && pass "REUSE bundle fingerprint unchanged" \
+  || fail "REUSE bundle was rebuilt/replaced"
+find "${WORKDIR}/mirror/dp-phase2" -maxdepth 1 -name '6.5.0.old.*' | grep -q . \
+  && fail "REUSE created .old" || pass "REUSE no .old generation"
 
 echo "======== N. readiness ========"
 MM_PROJECT_ROOT="$SHADOW_ROOT" bash "${SHADOW_ROOT}/scripts/install-dp-upgrade-mirror.sh" enable-http >/dev/null

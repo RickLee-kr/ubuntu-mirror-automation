@@ -118,9 +118,11 @@ Credentials are stored as root-owned mode `600` under `/etc/ubuntu-mirror/dp-upg
 
 ### 2. Download and Prepare Upgrade Files
 
-**Full mode** downloads OS Core from R2, materializes the selective OS tree, downloads ACPS Phase 2 6.5.0 files, applies the patched bringup, and publishes one final Phase 2 bundle.
+**Full mode** downloads OS Core from R2, materializes the selective OS tree, then prepares the single DP 6.5.0 Phase 2 bundle. The R2 package is removed immediately after OS materialize. A valid existing 6.5.0 final bundle is reused (no ACPS re-download or rebuild).
 
-**Phase 2 Only** skips R2 and OS hops; it prepares the same single 6.5.0 Phase 2 bundle only.
+**Phase 2 Only** skips R2 and OS hops; it prepares or reuses the same single 6.5.0 Phase 2 bundle only.
+
+Mirror server disk requirement: **100GB** (one selective OS set + one Phase 2 bundle; projected peak ≈ 70 GiB).
 
 ### 3. Enable HTTP Distribution
 

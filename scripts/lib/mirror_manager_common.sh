@@ -1231,16 +1231,16 @@ mm_calc_disk_requirements() {
   # OS materialization and Phase 2 build run sequentially. Future free-space
   # need is therefore max(OS_STAGE_EXTRA, PHASE2_STAGE_EXTRA) + SAFETY_RESERVE.
   #
-  # Existing final bundle / selective tree already reduce df available, so they
-  # are NOT added again to CURRENT_AVAILABLE_BASED_REQUIRED_BYTES. Renaming an
-  # existing final to .old is the same inode (no extra blocks). The new bundle
-  # is already counted as BUNDLE_OUTPUT_BYTES.
+  # Valid existing finals are REUSED (no ACPS/bundle bytes). Invalid finals are
+  # deleted before rebuild, so their size is not part of future required.
+  # Peak Phase 2 large data is at most ACPS source + new bundle (2 copies).
   #
   # TOTAL_CAPACITY_BASED_PROJECTED_PEAK_BYTES reports peak used capacity
   # (current used + sequential stage peak) for operator sizing guidance.
   local os_pkg_bytes payload_bytes acps_bytes ver existing_bundle
   local reserve_floor_bytes reserve_pct_bytes fs_size_bytes metadata_oh
   local stage_peak_bytes current_used_bytes existing_final_bytes
+  local reuse_phase2=0
   os_pkg_bytes="${OS_CORE_PACKAGE_BYTES:-0}"
   payload_bytes="${OS_CORE_PAYLOAD_BYTES:-0}"
   acps_bytes="${ACPS_EXPECTED_BYTES:-0}"
@@ -1249,12 +1249,25 @@ mm_calc_disk_requirements() {
   [[ "$acps_bytes" =~ ^[0-9]+$ ]] || acps_bytes=0
   metadata_oh=$((512 * 1024 * 1024))
 
+  if [[ "${PHASE2_BUNDLE_ACTION:-}" == "REUSE" || "${PHASE2_REBUILD_REQUIRED:-}" == "NO" ]]; then
+    reuse_phase2=1
+    acps_bytes=0
+  fi
+
   DISK_PREFLIGHT_R2_REQUIRED_BYTES=0
   DISK_PREFLIGHT_ACPS_SOURCE_BYTES=$acps_bytes
   # Bundle output is approximately the ACPS source tree size (9-file tar).
   DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES=$acps_bytes
+  PHASE2_ACPS_SOURCE_REQUIRED_BYTES=$DISK_PREFLIGHT_ACPS_SOURCE_BYTES
+  PHASE2_BUNDLE_OUTPUT_REQUIRED_BYTES=$DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES
+  VALID_FINAL_REBUILD_REQUIRED_BYTES=0
+  if [[ "$reuse_phase2" -eq 1 ]]; then
+    PHASE2_REBUILD_REQUIRED=NO
+  else
+    PHASE2_REBUILD_REQUIRED="${PHASE2_REBUILD_REQUIRED:-YES}"
+  fi
 
-  # Existing final is already on disk (df available). Rename is not a copy.
+  # Existing final (if still present) already reduces df available.
   DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES=0
   existing_final_bytes=0
   ver="${TARGET_DP_VERSION:-${DP_PHASE2_VERSION:-6.5.0}}"
@@ -1266,11 +1279,17 @@ mm_calc_disk_requirements() {
   DISK_PREFLIGHT_EXISTING_FINAL_BYTES=$existing_final_bytes
 
   DISK_PREFLIGHT_OS_STAGE_EXTRA_BYTES=$((payload_bytes + metadata_oh))
-  DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES=$((
-    DISK_PREFLIGHT_ACPS_SOURCE_BYTES
-    + DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES
-    + metadata_oh
-  ))
+  if [[ "$reuse_phase2" -eq 1 ]]; then
+    # Valid final reuse: Phase 2 adds only metadata-level free-space need.
+    DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES=$metadata_oh
+  else
+    DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES=$((
+      DISK_PREFLIGHT_ACPS_SOURCE_BYTES
+      + DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES
+      + metadata_oh
+    ))
+  fi
+  PHASE2_STAGE_REQUIRED_BYTES=$DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES
   mm_normalize_preparation_mode
   if mm_is_phase2_only; then
     # PHASE2_ONLY never materializes OS; OS stage peak is not required.
@@ -1334,9 +1353,16 @@ mm_calc_disk_requirements() {
     DISK_PREFLIGHT=PASS
   fi
 
+  mm_info "MIRROR_SERVER_DISK=100GB"
   mm_info "OS_CORE_PACKAGE_BYTES=${os_pkg_bytes}"
   mm_info "OS_CORE_PAYLOAD_BYTES=${payload_bytes}"
   mm_info "ACPS_EXPECTED_BYTES=${acps_bytes}"
+  mm_info "PHASE2_BUNDLE_ACTION=${PHASE2_BUNDLE_ACTION:-}"
+  mm_info "PHASE2_REBUILD_REQUIRED=${PHASE2_REBUILD_REQUIRED}"
+  mm_info "PHASE2_ACPS_SOURCE_REQUIRED_BYTES=${PHASE2_ACPS_SOURCE_REQUIRED_BYTES}"
+  mm_info "PHASE2_BUNDLE_OUTPUT_REQUIRED_BYTES=${PHASE2_BUNDLE_OUTPUT_REQUIRED_BYTES}"
+  mm_info "PHASE2_STAGE_REQUIRED_BYTES=${PHASE2_STAGE_REQUIRED_BYTES}"
+  mm_info "VALID_FINAL_REBUILD_REQUIRED_BYTES=${VALID_FINAL_REBUILD_REQUIRED_BYTES}"
   mm_info "OS_MATERIALIZE_TEMP_BYTES=${OS_MATERIALIZE_TEMP_BYTES}"
   mm_info "DP_BUILD_TEMP_BYTES=${DP_BUILD_TEMP_BYTES}"
   mm_info "DISK_PREFLIGHT_CURRENT_AVAILABLE_BYTES=${DISK_PREFLIGHT_CURRENT_AVAILABLE_BYTES}"

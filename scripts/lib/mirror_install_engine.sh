@@ -289,9 +289,145 @@ engine_assert_work_ready_for_bundle() {
   return 0
 }
 
+engine_phase2_final_dir() {
+  local ver="${1:-${TARGET_DP_VERSION:-${PHASE2_TARGET_VERSION}}}"
+  printf '%s/%s\n' "${MM_DP_PHASE2_ROOT}" "$ver"
+}
+
+engine_assess_phase2_final() {
+  # Sets PHASE2_EXISTING_BUNDLE=VALID|INVALID|ABSENT for the fixed 6.5.0 final.
+  local ver="${1:-${TARGET_DP_VERSION:-${PHASE2_TARGET_VERSION}}}"
+  local dest envf bundle sidecar stable
+  local target_field artifact_field stable_field
+  PHASE2_EXISTING_BUNDLE=ABSENT
+  dp2_set_version "$ver"
+  dest="$(engine_phase2_final_dir "$ver")"
+  stable="$(dp2_stable_bundle_name)"
+  envf="${dest}/release.env"
+  bundle="${dest}/${stable}"
+  sidecar="${dest}/${stable}.sha256"
+
+  if [[ ! -e "$dest" ]]; then
+    PHASE2_EXISTING_BUNDLE=ABSENT
+    mm_info "PHASE2_EXISTING_BUNDLE=ABSENT"
+    return 0
+  fi
+  if [[ ! -d "$dest" ]]; then
+    PHASE2_EXISTING_BUNDLE=INVALID
+    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=not_directory"
+    return 0
+  fi
+  # Obsolete generation layouts are never treated as a valid single-final bundle.
+  if [[ -e "${dest}/releases" || -e "${dest}/current" || -e "${dest}/previous" \
+    || -e "${dest}/files" || -e "${dest}/.staging" ]]; then
+    PHASE2_EXISTING_BUNDLE=INVALID
+    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=obsolete_generation_layout"
+    return 0
+  fi
+  if [[ ! -f "$envf" || -L "$envf" ]]; then
+    PHASE2_EXISTING_BUNDLE=INVALID
+    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=release_env"
+    return 0
+  fi
+  if [[ ! -f "$bundle" || -L "$bundle" ]]; then
+    PHASE2_EXISTING_BUNDLE=INVALID
+    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=bundle_missing_or_symlink"
+    return 0
+  fi
+  if [[ ! -f "$sidecar" || -L "$sidecar" ]]; then
+    PHASE2_EXISTING_BUNDLE=INVALID
+    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=sidecar_missing_or_symlink"
+    return 0
+  fi
+  target_field="$(grep -E '^TARGET_DP_VERSION=' "$envf" | head -1 | cut -d= -f2- || true)"
+  artifact_field="$(grep -E '^PHASE2_ARTIFACT_VERSION=' "$envf" | head -1 | cut -d= -f2- || true)"
+  stable_field="$(grep -E '^STABLE_BUNDLE_NAME=' "$envf" | head -1 | cut -d= -f2- || true)"
+  if [[ "$target_field" != "$ver" || "$artifact_field" != "$ver" ]]; then
+    PHASE2_EXISTING_BUNDLE=INVALID
+    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=version_mismatch"
+    return 0
+  fi
+  if [[ "$stable_field" != "$stable" ]]; then
+    PHASE2_EXISTING_BUNDLE=INVALID
+    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=stable_name_mismatch"
+    return 0
+  fi
+  if dp2_release_has_secret "$envf"; then
+    PHASE2_EXISTING_BUNDLE=INVALID
+    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=release_env_secret"
+    return 0
+  fi
+  # dp2_* helpers call exit on failure — isolate in subshells so INVALID can rebuild.
+  if ! ( dp2_verify_sha256_pair "$bundle" "$sidecar" >/dev/null 2>&1 ); then
+    PHASE2_EXISTING_BUNDLE=INVALID
+    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=sha256"
+    return 0
+  fi
+  if ! ( dp2_assert_safe_tar_list "$bundle" >/dev/null 2>&1 ); then
+    PHASE2_EXISTING_BUNDLE=INVALID
+    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=tar_entries"
+    return 0
+  fi
+  PHASE2_EXISTING_BUNDLE=VALID
+  mm_info "PHASE2_EXISTING_BUNDLE=VALID"
+  return 0
+}
+
+engine_disable_http_and_readiness() {
+  mm_status_set HTTP_DISTRIBUTION DISABLED
+  mm_state_set HTTP_DISTRIBUTION_READY NO
+  mm_status_set HTTP_CONFIGURATION_READY FAIL
+  mm_status_set UPGRADE_READINESS FAIL
+  mm_status_set READINESS_RESULT ""
+  mm_status_set READINESS_ARTIFACT_FINGERPRINT ""
+}
+
+engine_remove_invalid_phase2_final() {
+  local ver="${1:-${TARGET_DP_VERSION:-${PHASE2_TARGET_VERSION}}}"
+  local dest
+  dest="$(engine_phase2_final_dir "$ver")"
+  engine_disable_http_and_readiness
+  mm_info "INVALID_EXISTING_BUNDLE_ACTION=DELETE_BEFORE_REBUILD"
+  mm_info "INVALID_FINAL_REMOVED=YES path=${dest}"
+  rm -rf "$dest"
+  # Stale publish debris only. Keep ACPS/R2 .part files for resume.
+  find "${MM_DP_PHASE2_ROOT}" -maxdepth 1 \( -name "${ver}.new.*" -o -name "${ver}.old.*" \) \
+    -exec rm -rf {} + 2>/dev/null || true
+  find "${MM_CACHE_ROOT}" -type f \( -name '*.download' -o -name '*.new.*' \) \
+    -delete 2>/dev/null || true
+  mm_ok "INVALID_FINAL_REMOVED=YES"
+}
+
+engine_mark_phase2_reused() {
+  local ver="${1:-${TARGET_DP_VERSION:-${PHASE2_TARGET_VERSION}}}"
+  mm_info "PHASE2_EXISTING_BUNDLE=VALID"
+  mm_info "PHASE2_BUNDLE_ACTION=REUSE"
+  mm_info "ACPS_DOWNLOAD_REQUIRED=NO"
+  mm_info "PHASE2_BUNDLE_REBUILD_REQUIRED=NO"
+  mm_info "FINAL_PHASE2_BUNDLE_COUNT=1"
+  mm_info "VALID_EXISTING_BUNDLE_ACTION=REUSE"
+  mm_info "NORMAL_ACPS_REDOWNLOAD=NO"
+  mm_info "NORMAL_BUNDLE_REBUILD=NO"
+  mm_status_set ACPS_CONNECTION REUSED
+  mm_status_set ACPS_PHASE2_DOWNLOADED REUSED
+  mm_status_set ACPS_CHECKSUM REUSED
+  mm_status_set UPSTREAM_BRINGUP_DRIFT NO
+  mm_status_set PATCHED_BRINGUP_APPLIED YES
+  mm_status_set PHASE2_BUNDLE_ENTRY_COUNT 9
+  mm_status_set PHASE2_BUNDLE_CHECKSUM PASS
+  mm_state_set ACPS_CONNECTION REUSED
+  mm_state_set ACPS_PHASE2_DOWNLOADED REUSED
+  mm_state_set ACPS_CHECKSUM REUSED
+  mm_state_set PHASE2_BUNDLE_ENTRY_COUNT 9
+  mm_state_set PHASE2_BUNDLE_CHECKSUM PASS
+  mm_state_set PHASE2_BUNDLE_ACTION REUSE
+  mm_status_set PHASE2_TARGET_VERSION "${ver}"
+}
+
 engine_place_dp_phase2_final() {
   # Build the ~30GiB bundle directly in the atomic publish directory.
   # Avoids an intermediate dp-build copy of files + a second full bundle copy.
+  # Valid finals are never replaced here — caller must REUSE or delete INVALID first.
   local files_src="$1"
   local ver="$2"
   dp2_set_version "$ver"
@@ -304,10 +440,11 @@ engine_place_dp_phase2_final() {
 
   local dest="${MM_DP_PHASE2_ROOT}/${ver}"
   local dest_tmp="${dest}.new.$$"
-  local dest_old="${dest}.old.$$"
   local list_count stable actual want
   local expected_input_bytes=0 f sz publish_start publish_elapsed
-  rm -rf "$dest_tmp" "$dest_old"
+  rm -rf "$dest_tmp"
+  # Stray .old from older builds — never used as rollback in this workflow.
+  find "${MM_DP_PHASE2_ROOT}" -maxdepth 1 -name "${ver}.old.*" -exec rm -rf {} + 2>/dev/null || true
   mkdir -p "$dest_tmp" || mm_die "DP_PHASE2_STAGE_CREATE=FAIL"
 
   # File-set + patched bringup only. Large ACPS payloads were verified once at
@@ -401,8 +538,8 @@ EOF
     mm_die "VALIDATE_DP=FAIL patched_bringup_sha1"
   fi
 
-  # .new is fully built — free ACPS source/work before rename so peak never
-  # holds source + new + previous final at once. Keep MM_KEEP_PHASE2_SOURCES=1
+  # .new is fully built — free ACPS source/work before rename so peak is only
+  # source(+bundle in .new) then final alone. Keep MM_KEEP_PHASE2_SOURCES=1
   # only for debugging (not for production 100GB-class hosts).
   if [[ "${MM_KEEP_PHASE2_SOURCES:-0}" != "1" ]]; then
     engine_cleanup_phase2_sources "$ver"
@@ -410,22 +547,24 @@ EOF
 
   sync -f "${dest_tmp}/${stable}" 2>/dev/null || sync
 
-  # Replace final version directory with the single artifact set (no releases/, no current/previous).
+  # Atomic publish: .new.<pid> → final. Valid finals are never replaced here.
+  # Invalid leftovers (if any) are removed — no .old rollback generation.
   mm_set_phase "Publishing Phase 2 Artifacts"
   publish_start="$(date +%s)"
   mm_info "DP_PHASE2_ATOMIC_PUBLISH_START dest=${dest} bundle=${stable}"
+  mm_info "MAX_LARGE_ARTIFACT_COPIES=2"
   mkdir -p "$(dirname "$dest")" || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_DEST_PARENT=FAIL"; }
   if [[ -e "$dest" ]]; then
-    mv -f "$dest" "$dest_old" || { rm -rf "$dest_tmp"; mm_die "DP_PHASE2_OLD_MOVE=FAIL"; }
+    mm_warn "PHASE2_FINAL_PREEXISTING=REMOVE path=${dest}"
+    rm -rf "$dest"
   fi
   if ! mv -f "$dest_tmp" "$dest"; then
-    [[ -e "$dest_old" && ! -e "$dest" ]] && mv -f "$dest_old" "$dest" 2>/dev/null || true
+    rm -rf "$dest_tmp"
     mm_die "DP_PHASE2_PUBLISH_MOVE=FAIL"
   fi
   publish_elapsed=$(( $(date +%s) - publish_start ))
   mm_ok "DP_PHASE2_ATOMIC_PUBLISH=PASS dest=${dest} bundle=${stable} elapsed=${publish_elapsed}s"
 
-  # Verify the exact published bytes before deleting the previous artifact set.
   mm_set_phase "Verifying Published Bundle"
   mm_human_lines \
     "Verifying the published Phase 2 bundle before marking it ready." \
@@ -437,25 +576,25 @@ EOF
     "Still verifying the published Phase 2 bundle SHA256..."
   then
     rm -rf "$dest"
-    [[ -e "$dest_old" ]] && mv -f "$dest_old" "$dest" 2>/dev/null || true
     mm_die "DP_PHASE2_PUBLISHED_SHA256=FAIL"
   fi
   if ! dp2_assert_safe_tar_list "${dest}/${stable}"; then
     rm -rf "$dest"
-    [[ -e "$dest_old" ]] && mv -f "$dest_old" "$dest" 2>/dev/null || true
     mm_die "DP_PHASE2_PUBLISHED_TAR=FAIL"
   fi
-  rm -rf "$dest_old"
 
   # Ensure obsolete generation paths are absent under this version root
   rm -rf "${dest}/releases" "${dest}/current" "${dest}/previous" \
     "${dest}/.staging" "${dest}/files" 2>/dev/null || true
+  find "${MM_DP_PHASE2_ROOT}" -maxdepth 1 -name "${ver}.old.*" -exec rm -rf {} + 2>/dev/null || true
 
   PHASE2_BUNDLE_ENTRY_COUNT="${DP_PHASE2_FILE_COUNT}"
   mm_state_set PHASE2_BUNDLE_ENTRY_COUNT "$PHASE2_BUNDLE_ENTRY_COUNT"
   mm_state_set PHASE2_BUNDLE_CHECKSUM PASS
+  mm_state_set PHASE2_BUNDLE_ACTION "${PHASE2_BUNDLE_ACTION:-CREATE}"
   mm_mark_changed
   mm_ok "DP_PHASE2_FINAL=PASS path=${dest} bundle=${stable}"
+  mm_info "FINAL_PHASE2_BUNDLE_COUNT=1"
 }
 
 engine_validate_http_layout() {
@@ -667,6 +806,7 @@ engine_write_install_report() {
 }
 
 engine_download_and_prepare() {
+  local cache work
   mm_load_gui_config
   mm_normalize_preparation_mode
   mm_force_phase2_target
@@ -701,6 +841,34 @@ engine_download_and_prepare() {
     mm_die "CLIENT_FILES_READY=FAIL"
   fi
 
+  # Decide Phase 2 action before any large Phase 2 download/build.
+  engine_assess_phase2_final "$TARGET_DP_VERSION"
+  case "${PHASE2_EXISTING_BUNDLE}" in
+    VALID)
+      PHASE2_BUNDLE_ACTION=REUSE
+      PHASE2_REBUILD_REQUIRED=NO
+      ACPS_DOWNLOAD_REQUIRED=NO
+      ;;
+    INVALID)
+      PHASE2_BUNDLE_ACTION=REBUILD
+      PHASE2_REBUILD_REQUIRED=YES
+      ACPS_DOWNLOAD_REQUIRED=YES
+      engine_remove_invalid_phase2_final "$TARGET_DP_VERSION"
+      mm_info "MAX_LARGE_ARTIFACT_COPIES=2"
+      ;;
+    *)
+      PHASE2_BUNDLE_ACTION=CREATE
+      PHASE2_REBUILD_REQUIRED=YES
+      ACPS_DOWNLOAD_REQUIRED=YES
+      PHASE2_EXISTING_BUNDLE=ABSENT
+      mm_info "PHASE2_EXISTING_BUNDLE=ABSENT"
+      mm_info "PHASE2_BUNDLE_ACTION=CREATE"
+      mm_info "MAX_LARGE_ARTIFACT_COPIES=2"
+      ;;
+  esac
+  mm_info "PHASE2_BUNDLE_ACTION=${PHASE2_BUNDLE_ACTION}"
+  export PHASE2_BUNDLE_ACTION PHASE2_REBUILD_REQUIRED ACPS_DOWNLOAD_REQUIRED
+
   if mm_is_phase2_only; then
     # PHASE2_ONLY must never download R2 OS Core.
     mm_info "PHASE2_ONLY_R2_DOWNLOAD_COUNT=0"
@@ -715,19 +883,22 @@ engine_download_and_prepare() {
     engine_verify_os_core_package "$OS_CORE_PACKAGE"
   fi
 
-  # ACPS auth setup + disk estimate
-  if [[ -z "${DP_PHASE2_SOURCE_BASE:-}" ]]; then
-    ACPS_BASE_URL="$ACPS_BASE_URL_FIXED"
-  fi
-  acps_setup_curl_auth
-  if acps_test_connection; then
-    mm_state_set ACPS_CONNECTION PASS
+  if [[ "${PHASE2_BUNDLE_ACTION}" == "REUSE" ]]; then
+    ACPS_EXPECTED_BYTES=0
   else
-    mm_state_set ACPS_CONNECTION FAIL
-    mm_die "ACPS_CONNECTION=FAIL"
+    if [[ -z "${DP_PHASE2_SOURCE_BASE:-}" ]]; then
+      ACPS_BASE_URL="$ACPS_BASE_URL_FIXED"
+    fi
+    acps_setup_curl_auth
+    if acps_test_connection; then
+      mm_state_set ACPS_CONNECTION PASS
+    else
+      mm_state_set ACPS_CONNECTION FAIL
+      mm_die "ACPS_CONNECTION=FAIL"
+    fi
+    ACPS_EXPECTED_BYTES="$(acps_expected_bytes_hint "${ACPS_EFFECTIVE_BASE}")"
+    ACPS_EXPECTED_BYTES="${ACPS_EXPECTED_BYTES:-0}"
   fi
-  ACPS_EXPECTED_BYTES="$(acps_expected_bytes_hint "${ACPS_EFFECTIVE_BASE}")"
-  ACPS_EXPECTED_BYTES="${ACPS_EXPECTED_BYTES:-0}"
   engine_verify_disk_space
 
   if [[ "${MM_DRY_RUN}" == "1" ]]; then
@@ -739,9 +910,26 @@ engine_download_and_prepare() {
 
   if ! mm_is_phase2_only; then
     engine_materialize_os_mirror "$OS_CORE_PACKAGE"
+    # Free R2 package immediately after OS materialize — before Phase 2 peak.
+    r2_cleanup_package || true
+    mm_info "R2_PACKAGE_REMOVED_AFTER_MATERIALIZE=YES"
+    mm_info "R2_PACKAGE_PRESENT_DURING_PHASE2_BUILD=NO"
   fi
 
-  local cache work
+  if [[ "${PHASE2_BUNDLE_ACTION}" == "REUSE" ]]; then
+    engine_mark_phase2_reused "$TARGET_DP_VERSION"
+    engine_cleanup_temps
+    mm_state_set HTTP_DISTRIBUTION_READY NO
+    mm_status_set HTTP_DISTRIBUTION DISABLED
+    mm_record_download_validated
+    engine_write_install_report PASS
+    mm_ok "DOWNLOAD_AND_PREPARE=PASS mode=${PREPARATION_MODE} phase2=REUSE"
+    return 0
+  fi
+
+  # CREATE/REBUILD: remeasure free space after R2 cleanup + invalid final removal.
+  engine_verify_disk_space
+
   acps_acquire_all "$TARGET_DP_VERSION"
   cache="$(acps_cache_dir "$TARGET_DP_VERSION")"
   [[ -d "$cache" ]] || mm_die "ACPS_CACHE_MISSING"
@@ -763,7 +951,7 @@ engine_download_and_prepare() {
   mm_status_set HTTP_DISTRIBUTION DISABLED
   mm_record_download_validated
   engine_write_install_report PASS
-  mm_ok "DOWNLOAD_AND_PREPARE=PASS mode=${PREPARATION_MODE}"
+  mm_ok "DOWNLOAD_AND_PREPARE=PASS mode=${PREPARATION_MODE} phase2=${PHASE2_BUNDLE_ACTION}"
 }
 
 engine_render_nginx_site() {

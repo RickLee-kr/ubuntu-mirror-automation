@@ -226,10 +226,41 @@ OS selective tree is materialized directly under `selective/` for nginx paths
 under `/client/` and must include hop scripts plus `stage-dp-phase2.sh` and
 checksum sidecars (`CLIENT_FILES_READY` rejects an empty directory).
 
-### Disk sizing (selective R2 + ACPS workflow)
+### Disk sizing
 
-This workflow is **not** a 1TB/2TB full apt-mirror. Current DP 6.5.0 finals are
-approximately:
+The mirror server stores:
+
+- one Ubuntu selective OS data set
+- one DP 6.5.0 Phase 2 bundle
+- no source-version-specific bundles
+- no historical releases
+- no current/previous generations
+
+A valid existing DP 6.5.0 bundle is reused.
+
+It is not downloaded, rebuilt, replaced, or retained as an old generation
+during normal operation.
+
+If the final bundle is invalid, HTTP distribution is disabled and the invalid
+bundle is removed before rebuilding.
+
+The maximum large Phase 2 data present during a build is:
+
+- one ACPS source set
+- one new bundle
+
+The projected peak including Ubuntu OS data is approximately 70 GiB.
+
+Required mirror server disk:
+
+100GB
+
+The disk preflight must use actual free space and actual ACPS Content-Length,
+and it must preserve at least 10 GiB of safety space.
+
+120GB, 150GB, and 200GB are not required by this workflow.
+
+Approximate artifact sizes (DP 6.5.0):
 
 | Artifact | Size (approx.) |
 | --- | --- |
@@ -237,30 +268,18 @@ approximately:
 | Phase 2 final bundle | ~28.2 GiB (30307553280 bytes) |
 | Host after successful prepare | ~40 GiB used on a clean Ubuntu Server |
 
-Distinguish two workflows:
-
-**Fresh prepare** (no existing final bundle):
-
-- Peak ≈ base OS + R2/selective + ACPS source + bundle `.new` ≈ **70–73 GiB**
-- OS materialization and Phase 2 build are sequential (do not sum both peaks)
-
-**Re-prepare** (existing final retained until the new bundle verifies):
-
-- Peak ≈ base + R2/selective + existing final + new ACPS source + new bundle ≈ **~100 GiB**
-- Rename of existing final to `.old` is the same inode (no extra blocks)
-
 Preflight free-space model (`CURRENT_AVAILABLE_BASED_REQUIRED_BYTES`):
 
 ```
 OS_STAGE_EXTRA = OS payload temp + metadata
-PHASE2_STAGE_EXTRA = ACPS source + new bundle + metadata
+PHASE2_STAGE_EXTRA = ACPS source + new bundle + metadata   # 0 when REUSE
 REQUIRED = max(OS_STAGE_EXTRA, PHASE2_STAGE_EXTRA) + SAFETY_RESERVE
 ```
 
-Existing final and selective already reduce `df` available, so they are **not**
-added again to future required (`DISK_PREFLIGHT_REPLACEMENT_OVERHEAD_BYTES=0`).
-`TOTAL_CAPACITY_BASED_PROJECTED_PEAK_BYTES` reports capacity peak including
-already-used artifacts.
+Valid finals set `PHASE2_BUNDLE_ACTION=REUSE` so Phase 2 ACPS/bundle required
+bytes are 0. Invalid finals are deleted before rebuild and are not counted as
+future required. Selective OS data already on disk reduces `df` available and
+is not double-counted.
 
 Hard requirements:
 
@@ -268,29 +287,16 @@ Hard requirements:
   filesystem (hard links + atomic rename). Split mounts are blocked in preflight.
 - Large ACPS payloads are hard-linked into the work staging dir; automatic full
   copy of large files is refused.
+- R2 OS Core package is removed immediately after selective OS materialize
+  (before Phase 2 build).
 - ACPS cache/work is deleted as soon as the verified `.new` bundle exists, before
   the atomic publish rename.
-- Checksums and entry-count checks are never skipped. Failed publishes restore the
-  previous final artifact when present.
-
-Sizing policy for current 6.5.0 data (GB = decimal; one version; same filesystem):
-
-```
-MINIMUM_FRESH_INSTALL_DISK=100GB   # PROJECTED; clean Ubuntu, no existing final
-RECOMMENDED_FRESH_INSTALL_DISK=120GB
-RECOMMENDED_OPERATIONAL_DISK=150GB # covers re-prepare with safety headroom
-FUTURE_GROWTH_DISK=200GB
-```
-
-100GB decimal (~93.1 GiB) is supported only as PROJECTED for a clean fresh
-prepare of current 6.5.0 sizes with no stale partials. Re-prepare on 120GB
-decimal cannot reliably keep a 10 GiB safety margin; use 150GB for operations.
+- Checksums and entry-count checks are never skipped.
 
 Preflight logs structured fields (`DISK_PREFLIGHT_*`,
 `CURRENT_AVAILABLE_BASED_REQUIRED_BYTES`,
-`TOTAL_CAPACITY_BASED_PROJECTED_PEAK_BYTES`). If a future ACPS bundle grows
-beyond the available budget, prepare fails closed with `DISK_PREFLIGHT=FAIL`
-rather than attempting multi-copy staging.
+`TOTAL_CAPACITY_BASED_PROJECTED_PEAK_BYTES`). Insufficient free space fails closed
+with `DISK_PREFLIGHT=FAIL`.
 
 ## Bringup drift gate
 

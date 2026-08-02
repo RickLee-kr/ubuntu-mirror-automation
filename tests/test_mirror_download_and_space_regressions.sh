@@ -59,6 +59,13 @@ grep -q 'hardlink_required' "$ENGINE" || fail "large-file hardlink refusal missi
 grep -q 'engine_assert_same_filesystem_layout' "$ENGINE" || fail "same-filesystem preflight missing"
 grep -q 'engine_cleanup_phase2_sources' "$ENGINE" || fail "early phase2 source cleanup missing"
 grep -q 'mv -f "$payload" "$final_tmp"' "$ENGINE" || fail "OS payload rename missing"
+grep -q 'engine_assess_phase2_final' "$ENGINE" || fail "phase2 final assess missing"
+grep -q 'PHASE2_BUNDLE_ACTION=REUSE' "$ENGINE" || fail "valid bundle REUSE path missing"
+grep -q 'INVALID_EXISTING_BUNDLE_ACTION=DELETE_BEFORE_REBUILD' "$ENGINE" || fail "invalid delete-before-rebuild missing"
+grep -q 'R2_PACKAGE_REMOVED_AFTER_MATERIALIZE=YES' "$ENGINE" || fail "early R2 cleanup marker missing"
+if grep -q 'dest_old' "$ENGINE"; then
+  fail "phase2 .old rollback path still present"
+fi
 pass "bounded disk pipeline structure"
 
 # Unreadable mode-600 config must not abort non-root callers.
@@ -141,9 +148,22 @@ mm_calc_disk_requirements >/dev/null
 [[ "$DISK_PREFLIGHT_EXISTING_FINAL_BYTES" -eq 400 ]] \
   || fail "existing final bytes expected=400 actual=${DISK_PREFLIGHT_EXISTING_FINAL_BYTES}"
 [[ "$TOTAL_REQUIRED_BYTES" -eq "$expected_total" ]] \
-  || fail "reprepare available-based required changed incorrectly: ${TOTAL_REQUIRED_BYTES}"
+  || fail "create-path available-based required changed incorrectly: ${TOTAL_REQUIRED_BYTES}"
+# Valid REUSE zeros Phase 2 ACPS/bundle requirements.
+PHASE2_BUNDLE_ACTION=REUSE
+PHASE2_REBUILD_REQUIRED=NO
+ACPS_EXPECTED_BYTES=300
+mm_calc_disk_requirements >/dev/null
+[[ "$PHASE2_ACPS_SOURCE_REQUIRED_BYTES" -eq 0 ]] || fail "REUSE ACPS required should be 0"
+[[ "$PHASE2_BUNDLE_OUTPUT_REQUIRED_BYTES" -eq 0 ]] || fail "REUSE bundle required should be 0"
+[[ "$PHASE2_REBUILD_REQUIRED" == "NO" ]] || fail "REUSE rebuild flag should be NO"
+reuse_os_stage=$((200 + (512 * 1024 * 1024)))
+reuse_expected=$((reuse_os_stage + (10 * 1024 * 1024 * 1024)))
+[[ "$TOTAL_REQUIRED_BYTES" -eq "$reuse_expected" ]] \
+  || fail "REUSE FULL estimate expected=${reuse_expected} actual=${TOTAL_REQUIRED_BYTES}"
+unset PHASE2_BUNDLE_ACTION PHASE2_REBUILD_REQUIRED
 rm -f "${MM_DP_PHASE2_ROOT}/6.5.0/dp_bundle_6.5.0-current.tar"
-pass "existing final is reported but not double-counted in future required"
+pass "existing final reported; REUSE zeros Phase 2 stage bytes"
 
 HTTP_ROOT="${TMP}/http"
 mkdir -p "$HTTP_ROOT"
@@ -520,7 +540,9 @@ FINAL_ENTRY_COUNT="$(tar -tf "$FINAL_BUNDLE" | wc -l | tr -d ' ')"
 dp2_verify_sha256_pair "$FINAL_BUNDLE" "${FINAL_BUNDLE}.sha256"
 NEW_FP2="$(sha256sum "$FINAL_BUNDLE" | awk '{print $1}')"
 [[ "$NEW_FP2" != "$OLD_FP" ]] || fail "final bundle was not replaced on success"
-pass "direct final-directory bundle publish (entries=9)"
+find "$MM_DP_PHASE2_ROOT" -maxdepth 1 -name '6.5.0.old.*' | grep -q . \
+  && fail ".old generation created on publish" || true
+pass "direct final-directory bundle publish (entries=9, no .old)"
 
 # Confirm no dp-build staging tree and no second bundle copy path residue.
 [[ ! -d "${MM_CACHE_ROOT}/dp-build" ]] || fail "dp-build staging still present"
@@ -575,21 +597,54 @@ SOURCE_VERSION_DISK_DELTA_BYTES=0
 [[ "$SOURCE_VERSION_DISK_DELTA_BYTES" -eq 0 ]] || fail "source version disk delta non-zero"
 pass "FULL/PHASE2_ONLY projected peaks; source version disk delta=0"
 
-# Preflight engine with real sizes
+# Preflight engine with real sizes on a 100GB decimal disk model
 MM_MOCK_AVAILABLE_BYTES=$((80 * GIB))
-MM_MOCK_FS_SIZE_BYTES=$((120 * 1000 * 1000 * 1000))
+MM_MOCK_FS_SIZE_BYTES=$((100 * 1000 * 1000 * 1000))
 MM_MOCK_SAFETY_RESERVE_BYTES=$((10 * GIB))
 OS_CORE_PACKAGE_BYTES=$REAL_R2
 OS_CORE_PAYLOAD_BYTES=$REAL_PAYLOAD
 ACPS_EXPECTED_BYTES=$REAL_SOURCE
 PREPARATION_MODE=FULL
+unset PHASE2_BUNDLE_ACTION PHASE2_REBUILD_REQUIRED
 mm_calc_disk_requirements >/dev/null
-[[ "$DISK_PREFLIGHT_RESULT" == "PASS" ]] || fail "FULL preflight should PASS at 80GiB free"
+[[ "$DISK_PREFLIGHT_RESULT" == "PASS" ]] || fail "FULL preflight should PASS at 80GiB free on 100GB disk"
+[[ "$DISK_PREFLIGHT_SAFETY_RESERVE_BYTES" -ge $((10 * GIB)) ]] \
+  || fail "safety reserve below 10GiB"
+[[ "$FULL_PROJECTED_PEAK_GIB" -ge 70 && "$FULL_PROJECTED_PEAK_GIB" -le 73 ]] \
+  || fail "100GB model peak not ~70GiB"
 PREPARATION_MODE=PHASE2_ONLY
 mm_calc_disk_requirements >/dev/null
 [[ "$DISK_PREFLIGHT_OS_STAGE_EXTRA_BYTES" -eq 0 ]] || fail "PHASE2_ONLY OS stage not zero"
 [[ "$DISK_PREFLIGHT_RESULT" == "PASS" ]] || fail "PHASE2_ONLY preflight should PASS"
-pass "preflight FULL and PHASE2_ONLY with real sizes"
+pass "DISK_100GB_TEST=PASS preflight FULL/PHASE2_ONLY"
+
+# Insufficient free space must FAIL before ACPS download/build.
+MM_MOCK_AVAILABLE_BYTES=$((5 * GIB))
+PREPARATION_MODE=FULL
+ACPS_EXPECTED_BYTES=$REAL_SOURCE
+set +e
+( mm_calc_disk_requirements >/dev/null 2>&1 )
+INSUFF_RC=$?
+set -e
+[[ "$INSUFF_RC" -ne 0 ]] || fail "insufficient disk should FAIL"
+pass "INSUFFICIENT_DISK_TEST=PASS"
+
+# Docs must not advertise 120/150/200GB or future-growth sizing.
+DOC="${ROOT}/docs/deployment/DP_UPGRADE_MIRROR_MANAGER.md"
+README="${ROOT}/README.md"
+for bad in \
+  'RECOMMENDED_FRESH_INSTALL_DISK=120GB' \
+  'RECOMMENDED_OPERATIONAL_DISK=150GB' \
+  'FUTURE_GROWTH_DISK=200GB' \
+  'future bundle growth'
+do
+  if grep -Fq "$bad" "$DOC" "$README" 2>/dev/null; then
+    fail "production docs still contain: ${bad}"
+  fi
+done
+pass "documentation 100GB-only sizing (no 120/150/200/future-growth)"
+
+MM_MOCK_AVAILABLE_BYTES=$((80 * GIB))
 
 # Large-file hardlink refusal (no silent cp): put cache on a bind that breaks hardlink
 # by using a copied file opened from a path we force-fail via threshold=0 + unlink trick:
