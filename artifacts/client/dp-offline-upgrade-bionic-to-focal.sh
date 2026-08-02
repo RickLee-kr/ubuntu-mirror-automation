@@ -30,10 +30,10 @@ PIN_UPGRADER_TAR_SHA256='67a4e95eaa32296ad8623741e437d4a51b7c5ea4958f1de654243ba
 PIN_UPGRADER_GPG_SHA256='cbad93ff76d0c4f1d811120b63da4fd89d9fb6d25433eb298ce69f20ad75075f'
 PIN_PLAN_CHECKSUM='8eb3d478e2d40e7a19510239fcbf6e2e6824b2587e6e7172d60ef01e8920b157'
 PIN_DISCOVERY_CHECKSUM='d08f76a4e87bbaabc82b2aea3f552d26b9ece53be83735a74dffdfd70a816b56'
-PIN_MANIFEST_SHA256='cbfede5d4e9b4de8115ba65e3d13112ab7e3e49290f3939b2cdfc4abde8fefb6'
+PIN_MANIFEST_SHA256='26ecec08598f21ed01746fc2e5ba26ed6a50d6034376157ad8c8a5137757c77f'
 PIN_SAMPLE_DEB_URL='http://221.139.249.111/hops/bionic-to-focal/ubuntu/pool/main/a/acl/acl_2.2.53-6_amd64.deb'
 PIN_CONFIRM_PHRASE='UPGRADE-BIONIC-TO-FOCAL'
-PIN_GENERATED_AT='2026-07-26T16:31:29Z'
+PIN_GENERATED_AT='2026-07-26T17:30:32Z'
 PIN_PROFILE_NAME='offline-upgrade-selective'
 
 PIN_KEY_B64='mQENBGpePjYBCAC4/mSayiOdnynQyEygHF0MQZazmNTgWm6REY3nOTTGeZz9KrVrGuncglQk56wg
@@ -116,20 +116,20 @@ YjNkNDc4ZTJkNDBlN2ExOTUxMDIzOWZjYmY2ZTJlNjgyNGIyNTg3ZTZlNzE3MmQ2MGVmMDFlODky
 MGIxNTciLAogICJkaXNjb3ZlcnlfY2hlY2tzdW0iOiAiZDA4Zjc2YTRlODdiYmFhYmM4MmIyYWVh
 M2Y1NTJkMjZiOWVjZTUzYmU4MzczNWE3NGRmZmRmZDcwYTgxNmI1NiIsCiAgImNvbmZpcm1fcGhy
 YXNlIjogIlVQR1JBREUtQklPTklDLVRPLUZPQ0FMIiwKICAiZ2VuZXJhdGVkX2F0IjogIjIwMjYt
-MDctMjZUMTY6MzE6MjlaIiwKICAiYW5ub3VuY2VtZW50cyI6IHsKICAgICJSZWxlYXNlQW5ub3Vu
+MDctMjZUMTc6MzA6MzJaIiwKICAiYW5ub3VuY2VtZW50cyI6IHsKICAgICJSZWxlYXNlQW5ub3Vu
 Y2VtZW50IjogIjgyZGU0MTM2NDhlMzYzMzY1NzBlMjBjMjk4NjJlNjhlYTVkNjZiMDJiYTllMDgz
 ZjI0ZjgwNzBkNWI2NDQzMTgiLAogICAgIlJlbGVhc2VBbm5vdW5jZW1lbnQuaHRtbCI6ICI3Mjlh
 ZWJiNjYyNjM3NzExOTdjZWY1MDc4MzdiYjIyY2YxYzljNTg2MTVmNjk4YjYwNTQxZDQ2NzRlZDcz
 N2FiIgogIH0KfQo='
 PIN_MANIFEST_SIG_B64='LS0tLS1CRUdJTiBQR1AgU0lHTkFUVVJFLS0tLS0KCmlRRXpCQUFCQ2dBZEZpRUV4NGIrbUljcERp
-ejNXU2NkL2RPTDZWanF2VW9GQW1wbU5tRUFDZ2tRL2RPTDZWanEKdlVwMFhBZi9SY0xnUllYaDVa
-K3JSNVlKRWJxSVBIZXVaZFVicDdvVHg0d01xWHliT0FFaW9HeFBUeVdWcUlJSQpHMTk4RUM1NElh
-c1dlUHZ5VEdYcThYMHI5MnRqdjEzQlhBL25pU2xMWFJxQndtRSs4VEEwWUQ2cXVpd2RheUJYCjlx
-UGNFbEJhdzIzdjVpeFJKMGp1ZTJkRENPTlJDbEw2ZitHcUtjbmIranl6dWt4eTRxTHROU0dEQ1pn
-ZE85QWoKcUJ1akFNZkZDRFBxd2hSWllMaVkrZlRFWHRhM3FVZjZBOEZWVDZUc1JwNjFDOXJ4cHho
-d2ZhbjZjNUxKYmY3QwpmM3Z6Zmdudkh4YU9LNVhablA0eUFSNDBTSE5jdUdsUEEzSG1JbCthWVNv
-QjJQU3pYY2E2eG81OVh1dHNsRXRhClQ4STRnNXBwQmp1R1E2VE9vdC9Pc3lWbWl3a3NMQT09Cj1r
-aGdCCi0tLS0tRU5EIFBHUCBTSUdOQVRVUkUtLS0tLQo='
+ejNXU2NkL2RPTDZWanF2VW9GQW1wbVJEZ0FDZ2tRL2RPTDZWanEKdlVxMmpBZjlHanFDcGFsV3Js
+WXpqTVdheVp5ZWZPeDFVSDNMemxVbjVZbkFoS1RibnlMcVpXMjJkVE5GUTZjMwozbzZYWTltMHZt
+R1p6YWhNMnFrN1NuSmRBdDhKaEMrMitRWVZ5Vi9qRkNDNlQwUmFKMVllcTUvZzRxdlFLbnpzCmY1
+SFJET1ZyTWRUb1JXVHNPNXorNUtBMjZReFB1RDNXSlRrOFZDdDg4MExxcFl0aW9jTGs1a0JUUUh2
+M0I3V0IKWnN6ZXAxWk0wVDBPR2pQUk0wdVFUYWo3ei8yZFJpSXBud2w4QzF5Sm95VVEwR3VWMWt2
+eFRGaDExQ0JWcnBkSAovb1Fla0o2VnAyLzJpNkEyOVdJVEtlYS9PSmwrTk9MdWtJckdIakFLWm9Z
+Nkx4OGNkeFNlSTRLc2VvRGI4OTBJCjZONFNrSGZMYUVRYnhEditXdktWQzVjekJOazVDZz09Cj1a
+eG9ZCi0tLS0tRU5EIFBHUCBTSUdOQVRVUkUtLS0tLQo='
 PIN_ANNOUNCEMENT_B64='PSBXZWxjb21lIHRvIFVidW50dSAyMC4wNCAnRm9jYWwgRm9zc2EnID0KClRoZSBVYnVudHUgdGVh
 bSBpcyBwcm91ZCB0byBhbm5vdW5jZSBVYnVudHUgMjAuMDQgJ0ZvY2FsIEZvc3NhJy4KClRvIHNl
 ZSB3aGF0J3MgbmV3IGluIHRoaXMgcmVsZWFzZSwgdmlzaXQ6CiAgaHR0cHM6Ly93aWtpLnVidW50
@@ -2306,8 +2306,10 @@ verify_mirror_trust_chain() {
     log INFO "META_RELEASE_SOURCE=HTTP"
     log INFO "META_RELEASE_HTTP_FALLBACK=NOT_NEEDED"
   else
-    log WARN "HTTP /client/${PIN_HOP}/meta-release-lts not published (HTTP ${code}); using embedded meta-release"
-    log INFO "META_RELEASE_SOURCE=EMBEDDED"
+    log INFO "Optional HTTP meta-release unavailable (HTTP ${code}); using verified embedded meta-release"
+    log INFO "HTTP_META_RELEASE=NOT_PUBLISHED"
+    log INFO "HTTP_META_RELEASE_STATUS=${code}"
+    log INFO "META_RELEASE_SOURCE=EMBEDDED_SIGNED_COPY"
     log INFO "META_RELEASE_HTTP_FALLBACK=PASS"
     log INFO "META_RELEASE_HTTP_FALLBACK=EMBEDDED"
     local emb_sha pin_sha
@@ -6014,6 +6016,23 @@ restore_noninteractive_conffile_policy() {
 }
 
 
+
+# Runner helpers for current-hop.env persistence.
+# STATE_ROOT is already prefixed via _hp above; do not re-apply _hp/hostpath.
+read_kv_file_field() {
+  local file="$1" field="$2"
+  [[ -f "$file" ]] || return 1
+  sed -n "s/^${field}=//p" "$file" 2>/dev/null | head -1 | tr -d "'\"" | tr -d '\r'
+}
+
+current_hop_env_path() {
+  printf '%s' "${CURRENT_HOP_ENV_FILE:-${STATE_ROOT}/current-hop.env}"
+}
+
+read_current_hop_field() {
+  read_kv_file_field "$(current_hop_env_path)" "$1" || true
+}
+
 persist_current_hop_package_transition_started() {
   # Atomically set PACKAGE_TRANSITION_STARTED=true in current-hop.env when a real
   # package transition was detected. Never regresses true -> false. Never invents
@@ -7008,7 +7027,7 @@ runner_pre_dro_semantic_gate() {
     if [[ "$main_ok" -ne 1 ]]; then
       case "$suite" in
         *-backports)
-          log WARN "TARGET_POCKET=${suite} main index empty (allowed when discovery has no backports)"
+          log INFO "TARGET_POCKET=${suite} main index empty (allowed when discovery has no backports)"
           ;;
         *-updates|*-security|"$PIN_TARGET_CODENAME")
           log ERROR "FAIL_TARGET_POCKET_COMPONENT_EMPTY suite=${suite} component=main"
@@ -7023,7 +7042,7 @@ runner_pre_dro_semantic_gate() {
     if [[ "$uni_ok" -ne 1 ]]; then
       case "$suite" in
         *-backports)
-          log WARN "TARGET_POCKET=${suite} universe index empty/missing (allowed for backports)"
+          log INFO "TARGET_POCKET=${suite} universe index empty/missing (allowed for backports)"
           ;;
         *)
           log ERROR "FAIL_TARGET_POCKET_COMPONENT_EMPTY suite=${suite} component=universe"

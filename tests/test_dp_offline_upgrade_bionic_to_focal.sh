@@ -7246,7 +7246,11 @@ for name in (
     "verify_persisted_current_hop_contract",
     "initialize_current_hop_identity",
 ):
-    start = text.index(f"{name}() {{")
+    # Prefer client-body definitions after RUNNER heredoc (runner may embed
+    # a path helper that must not use hostpath / TEST_ROOT).
+    runner_end = text.find("\nRUNNER\n")
+    search_from = runner_end + len("\nRUNNER\n") if runner_end >= 0 else 0
+    start = text.index(f"{name}() {{", search_from)
     depth = 0
     i = start
     while i < len(text):
@@ -7381,6 +7385,258 @@ PY
 else
   fail "19.C B2F event ordering (${ORDER_OUT:-})"
 fi
+
+# =============================================================================
+# 20) Runner current-hop.env helpers + package-transition persistence
+# =============================================================================
+
+# 20.A generated runner includes required helpers (no double _hp prefix)
+if [[ "$(python3 - "$SCRIPT_IN" <<'PY'
+import re, sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+m = re.search(r"<<'RUNNER'\n(.*)\nRUNNER\n", text, re.S)
+assert m, "RUNNER heredoc missing"
+runner = m.group(1)
+for name in (
+    "read_kv_file_field",
+    "current_hop_env_path",
+    "read_current_hop_field",
+    "persist_current_hop_package_transition_started",
+    "mark_package_transition_detected",
+):
+    assert re.search(rf"^{re.escape(name)}\(\)\s*\{{", runner, re.M), name
+body = re.search(r"^current_hop_env_path\(\)\s*\{(.*?)^\}", runner, re.M | re.S).group(1)
+assert "_hp" not in body and "hostpath" not in body
+assert "${STATE_ROOT}/current-hop.env" in body
+assert runner.index("current_hop_env_path() {") < runner.index(
+    "persist_current_hop_package_transition_started() {"
+)
+print("OK")
+PY
+)" == "OK" ]]; then
+  pass "20.A runner includes hop-env helpers without double prefix"
+else
+  fail "20.A runner hop-env helpers missing/misordered"
+fi
+
+# 20.B bash -n on extracted runner
+rf_bn="$(mktemp -d "${OUT_DIR}/runner-bn.XXXX")"
+extract_runner "$rf_bn/runner.sh"
+if bash -n "$rf_bn/runner.sh"; then
+  pass "20.B extracted runner bash -n"
+else
+  fail "20.B extracted runner bash -n"
+fi
+rm -rf "$rf_bn"
+
+# 20.C package transition persists PACKAGE_TRANSITION_STARTED + idempotent true
+rf_pts="$(mktemp -d "${OUT_DIR}/pts-persist.XXXX")"
+make_runner_fixture "$rf_pts"
+install_runner_stubs "$rf_pts"
+cat >"$rf_pts/opt/aelladata/os-upgrade/offline/current-hop.env" <<'EOF'
+CURRENT_HOP=bionic-to-focal
+CURRENT_SOURCE_VERSION=18.04
+CURRENT_SOURCE_CODENAME=bionic
+CURRENT_TARGET_VERSION=20.04
+CURRENT_TARGET_CODENAME=focal
+HANDOFF_SOURCE_STATE=COMPLETED_BIONIC
+PACKAGE_TRANSITION_STARTED=false
+CLIENT_ARTIFACT_SHA256=abc123
+EOF
+python3 - "$SCRIPT_IN" "$rf_pts/drive-pts.sh" <<'PYPTS'
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r"<<'RUNNER'\n(.*)\nRUNNER\n", text, re.S)
+runner = re.sub(r'\nmain "\$@"\s*$', "\n", m.group(1))
+open(sys.argv[2], "w", encoding="utf-8").write(runner + r'''
+load_runner_config
+STAGE="PACKAGE_TRANSACTION_WAIT"
+RELEASE_UPGRADE_INVOCATION_STARTED="true"
+RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED="false"
+persist_flags
+mkdir -p "$HOLDS_DIR" "$(_hp /var/log)"
+printf '0\n' >"${HOLDS_DIR}/dpkg_log_offset_before"
+printf '0\n' >"${HOLDS_DIR}/dpkg_log_inode_before"
+printf '0\n' >"${HOLDS_DIR}/dpkg_log_size_before"
+printf '%s\n' "$(date -u '+%s')" >"${HOLDS_DIR}/package_transition_run_epoch"
+printf '2026-07-23 07:01:41 startup archives unpack\n' >"$(_hp /var/log/dpkg.log)"
+# Prove helpers resolve under STELLAR_OFFLINE_TEST_ROOT without double prefix.
+envf="$(current_hop_env_path)"
+case "$envf" in
+  "${_TEST_PREFIX}/opt/aelladata/os-upgrade/offline/current-hop.env") ;;
+  *) echo "BAD_PATH=${envf}"; exit 2 ;;
+esac
+detect_package_transition_evidence
+mark_package_transition_detected "$PACKAGE_TRANSITION_DETECTION_SOURCE" "$PACKAGE_TRANSITION_DETECTION_EVIDENCE"
+# Second call must remain true (no regression).
+mark_package_transition_detected "$PACKAGE_TRANSITION_DETECTION_SOURCE" "$PACKAGE_TRANSITION_DETECTION_EVIDENCE"
+grep -qx 'PACKAGE_TRANSITION_STARTED=true' "$(current_hop_env_path)"
+# Final reconciliation path also safe.
+reconcile_package_transition_before_classify 2>/dev/null || true
+grep -qx 'PACKAGE_TRANSITION_STARTED=true' "$(current_hop_env_path)"
+# Must never surface command-not-found for helpers.
+''')
+PYPTS
+chmod 0755 "$rf_pts/drive-pts.sh"
+set +e
+env -i PATH="$rf_pts/bin:/usr/bin:/bin" HOME=/tmp \
+  STELLAR_OFFLINE_TEST_ROOT="$rf_pts" \
+  /bin/bash "$rf_pts/drive-pts.sh" >"$rf_pts/pts.out" 2>&1
+pts_rc=$?
+set -e
+logf="$rf_pts/var/log/aella/offline_os_upgrade.log"
+envf="$rf_pts/opt/aelladata/os-upgrade/offline/current-hop.env"
+if [[ "$pts_rc" -eq 0 ]] \
+  && grep -qx 'PACKAGE_TRANSITION_STARTED=true' "$envf" \
+  && grep -q 'PERSISTED_PACKAGE_TRANSITION_STARTED=true' "$logf" \
+  && ! grep -q 'current_hop_env_path: command not found' "$logf" \
+  && ! grep -q 'current_hop_env_path: command not found' "$rf_pts/pts.out" \
+  && ! grep -q 'read_current_hop_field: command not found' "$logf" \
+  && ! grep -q 'read_kv_file_field: command not found' "$logf" \
+  && [[ "$(grep -c 'PACKAGE_TRANSITION_STARTED=true' "$envf" || true)" -eq 1 ]]; then
+  pass "20.C package transition persists current-hop.env (idempotent)"
+else
+  fail "20.C package transition persistence (rc=${pts_rc})"
+  cat "$rf_pts/pts.out" || true
+  cat "$envf" || true
+  tail -40 "$logf" || true
+fi
+
+# 20.D watcher path also persists current-hop.env
+rf_wpts="$(mktemp -d "${OUT_DIR}/pts-watch.XXXX")"
+make_runner_fixture "$rf_wpts"
+install_runner_stubs "$rf_wpts"
+cat >"$rf_wpts/opt/aelladata/os-upgrade/offline/current-hop.env" <<'EOF'
+CURRENT_HOP=bionic-to-focal
+CURRENT_SOURCE_VERSION=18.04
+CURRENT_SOURCE_CODENAME=bionic
+CURRENT_TARGET_VERSION=20.04
+CURRENT_TARGET_CODENAME=focal
+HANDOFF_SOURCE_STATE=COMPLETED_BIONIC
+PACKAGE_TRANSITION_STARTED=false
+CLIENT_ARTIFACT_SHA256=abc123
+EOF
+python3 - "$SCRIPT_IN" "$rf_wpts/drive-wpts.sh" <<'PYWPTS'
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r"<<'RUNNER'\n(.*)\nRUNNER\n", text, re.S)
+runner = re.sub(r'\nmain "\$@"\s*$', "\n", m.group(1))
+open(sys.argv[2], "w", encoding="utf-8").write(runner + r'''
+load_runner_config
+STAGE="PACKAGE_TRANSACTION_WAIT"
+RELEASE_UPGRADE_INVOCATION_STARTED="true"
+RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED="false"
+persist_flags
+mkdir -p "$HOLDS_DIR" "$(_hp /var/log)" "$(_hp /var/lib/dpkg)"
+: >"$(_hp /var/log/dpkg.log)"
+: >"$(_hp /var/lib/dpkg/status)"
+PACKAGE_TRANSITION_WATCHER_POLL_SECS=1
+snapshot_pre_dro_package_state
+start_package_transition_watcher
+printf '2026-07-23 07:01:41 startup archives unpack\n2026-07-23 07:01:41 upgrade libc6:amd64 2.23-0ubuntu11 2.27-3ubuntu1\n' \
+  >>"$(_hp /var/log/dpkg.log)"
+deadline=$((SECONDS + 5))
+while [[ "$SECONDS" -lt "$deadline" ]]; do
+  if grep -qx 'PACKAGE_TRANSITION_STARTED=true' "$(current_hop_env_path)" 2>/dev/null; then
+    break
+  fi
+  sleep 0.2
+done
+stop_package_transition_watcher 2>/dev/null || true
+grep -qx 'PACKAGE_TRANSITION_STARTED=true' "$(current_hop_env_path)"
+''')
+PYWPTS
+chmod 0755 "$rf_wpts/drive-wpts.sh"
+set +e
+env -i PATH="$rf_wpts/bin:/usr/bin:/bin" HOME=/tmp \
+  STELLAR_OFFLINE_TEST_ROOT="$rf_wpts" \
+  PACKAGE_TRANSITION_WATCHER_POLL_SECS=1 \
+  /bin/bash "$rf_wpts/drive-wpts.sh" >"$rf_wpts/wpts.out" 2>&1
+wpts_rc=$?
+set -e
+logf="$rf_wpts/var/log/aella/offline_os_upgrade.log"
+envf="$rf_wpts/opt/aelladata/os-upgrade/offline/current-hop.env"
+if [[ "$wpts_rc" -eq 0 ]] \
+  && grep -qx 'PACKAGE_TRANSITION_STARTED=true' "$envf" \
+  && grep -q 'PERSISTED_PACKAGE_TRANSITION_STARTED=true' "$logf" \
+  && ! grep -q 'current_hop_env_path: command not found' "$logf"; then
+  pass "20.D watcher path persists PACKAGE_TRANSITION_STARTED"
+else
+  fail "20.D watcher persistence (rc=${wpts_rc})"
+  cat "$rf_wpts/wpts.out" || true
+  cat "$envf" || true
+  tail -60 "$logf" || true
+fi
+rm -rf "$rf_pts" "$rf_wpts"
+
+# 20.E meta-release 404 fallback is INFO (not WARN); SHA mismatch stays hard-fail
+if grep -q 'log INFO "Optional HTTP meta-release unavailable' "$SCRIPT_IN" \
+  && ! grep -q 'meta-release-lts not published' "$SCRIPT_IN" \
+  && grep -q 'META_RELEASE_HTTP_FALLBACK=PASS' "$SCRIPT_IN" \
+  && grep -q 'META_RELEASE_EMBEDDED_VALIDATION=PASS' "$SCRIPT_IN" \
+  && grep -q 'HTTP meta-release SHA256 mismatch vs pin' "$SCRIPT_IN"; then
+  pass "20.E meta-release 404 INFO + SHA mismatch still hard-fail"
+else
+  fail "20.E meta-release log-level / fail-closed markers"
+fi
+# Generated client must match template for obsolete WARN string
+GEN_SH="${ROOT}/client/dp-offline-upgrade-bionic-to-focal.sh"
+if [[ -f "$GEN_SH" ]]; then
+  if ! grep -q 'meta-release-lts not published' "$GEN_SH" \
+    && grep -q 'log INFO "Optional HTTP meta-release unavailable' "$GEN_SH"; then
+    pass "20.E2 generated client meta-release INFO synced"
+  else
+    fail "20.E2 generated client still has obsolete meta-release WARN"
+  fi
+else
+  pass "20.E2 generated client absent"
+fi
+
+# 20.F allowed empty backports use INFO; required pockets still ERROR
+if grep -q 'log INFO "TARGET_POCKET=${suite} main index empty (allowed when discovery has no backports)"' "$SCRIPT_IN" \
+  && grep -q 'log INFO "TARGET_POCKET=${suite} universe index empty/missing (allowed for backports)"' "$SCRIPT_IN" \
+  && ! grep -q 'log WARN "TARGET_POCKET=${suite} main index empty (allowed when discovery has no backports)"' "$SCRIPT_IN" \
+  && grep -q 'FAIL_TARGET_POCKET_COMPONENT_EMPTY' "$SCRIPT_IN"; then
+  pass "20.F empty backports INFO; required pocket ERROR retained"
+else
+  fail "20.F backports / required pocket log levels"
+fi
+
+# 20.G unit: HTTP 404 embedded fallback logs INFO (not WARN)
+mr_unit="$(mktemp -d "${OUT_DIR}/meta-unit.XXXX")"
+cat >"$mr_unit/run.sh" <<'EOS'
+#!/usr/bin/env bash
+set -euo pipefail
+PIN_HOP=bionic-to-focal
+code=404
+log() { printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" "$2"; }
+# Mirrors verify_mirror_trust fallback branch (INFO, not WARN).
+log INFO "Optional HTTP meta-release unavailable (HTTP ${code}); using verified embedded meta-release"
+log INFO "HTTP_META_RELEASE=NOT_PUBLISHED"
+log INFO "HTTP_META_RELEASE_STATUS=${code}"
+log INFO "META_RELEASE_SOURCE=EMBEDDED_SIGNED_COPY"
+log INFO "META_RELEASE_HTTP_FALLBACK=PASS"
+log INFO "META_RELEASE_EMBEDDED_VALIDATION=PASS"
+EOS
+chmod +x "$mr_unit/run.sh"
+set +e
+bash "$mr_unit/run.sh" >"$mr_unit/out.txt" 2>&1
+mr_rc=$?
+set -e
+# Also assert template branch itself is INFO and reachable from SCRIPT_IN
+if [[ "$mr_rc" -eq 0 ]] \
+  && grep -qE '\[INFO\].*Optional HTTP meta-release unavailable \(HTTP 404\)' "$mr_unit/out.txt" \
+  && ! grep -qE '\[WARN\]' "$mr_unit/out.txt" \
+  && awk '/Optional HTTP meta-release on \/client/,/^check_os_baseline/' "$SCRIPT_IN" \
+       | grep -q 'log INFO "Optional HTTP meta-release unavailable' \
+  && ! grep -q 'meta-release-lts not published' "$SCRIPT_IN"; then
+  pass "20.G meta-release 404 fallback branch is INFO"
+else
+  fail "20.G meta-release INFO unit (rc=${mr_rc})"
+  cat "$mr_unit/out.txt" || true
+fi
+rm -rf "$mr_unit"
 
 if [[ "$FAIL" -eq 0 ]]; then
   echo "ALL dp-offline-upgrade-bionic-to-focal CHECKS PASSED"

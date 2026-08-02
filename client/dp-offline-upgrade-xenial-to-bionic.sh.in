@@ -5690,7 +5690,7 @@ runner_pre_dro_semantic_gate() {
     if [[ "$main_ok" -ne 1 ]]; then
       case "$suite" in
         *-backports)
-          log WARN "TARGET_POCKET=${suite} main index empty (allowed when discovery has no backports)"
+          log INFO "TARGET_POCKET=${suite} main index empty (allowed when discovery has no backports)"
           ;;
         *-updates|*-security|"$PIN_TARGET_CODENAME")
           log ERROR "FAIL_TARGET_POCKET_COMPONENT_EMPTY suite=${suite} component=main"
@@ -5705,7 +5705,7 @@ runner_pre_dro_semantic_gate() {
     if [[ "$uni_ok" -ne 1 ]]; then
       case "$suite" in
         *-backports)
-          log WARN "TARGET_POCKET=${suite} universe index empty/missing (allowed for backports)"
+          log INFO "TARGET_POCKET=${suite} universe index empty/missing (allowed for backports)"
           ;;
         *)
           log ERROR "FAIL_TARGET_POCKET_COMPONENT_EMPTY suite=${suite} component=universe"

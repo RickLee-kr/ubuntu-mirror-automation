@@ -7486,7 +7486,11 @@ for name in (
     "verify_persisted_current_hop_contract",
     "initialize_current_hop_identity",
 ):
-    start = text.index(f"{name}() {{")
+    # Prefer client-body definitions after RUNNER heredoc (runner may embed
+    # a path helper that must not use hostpath / TEST_ROOT).
+    runner_end = text.find("\nRUNNER\n")
+    search_from = runner_end + len("\nRUNNER\n") if runner_end >= 0 else 0
+    start = text.index(f"{name}() {{", search_from)
     depth = 0
     i = start
     while i < len(text):
@@ -7640,7 +7644,11 @@ names = (
     "classify_effective_source_gate_bundle",
 )
 for name in names:
-    start = text.index(f"{name}() {{")
+    # Prefer client-body definitions after RUNNER heredoc (runner may embed
+    # a path helper that must not use hostpath / TEST_ROOT).
+    runner_end = text.find("\nRUNNER\n")
+    search_from = runner_end + len("\nRUNNER\n") if runner_end >= 0 else 0
+    start = text.index(f"{name}() {{", search_from)
     depth = 0
     i = start
     while i < len(text):

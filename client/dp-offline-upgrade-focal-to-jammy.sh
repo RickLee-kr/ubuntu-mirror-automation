@@ -2310,8 +2310,10 @@ verify_mirror_trust_chain() {
     log INFO "META_RELEASE_SOURCE=HTTP"
     log INFO "META_RELEASE_HTTP_FALLBACK=NOT_NEEDED"
   else
-    log WARN "HTTP /client/${PIN_HOP}/meta-release-lts not published (HTTP ${code}); using embedded meta-release"
-    log INFO "META_RELEASE_SOURCE=EMBEDDED"
+    log INFO "Optional HTTP meta-release unavailable (HTTP ${code}); using verified embedded meta-release"
+    log INFO "HTTP_META_RELEASE=NOT_PUBLISHED"
+    log INFO "HTTP_META_RELEASE_STATUS=${code}"
+    log INFO "META_RELEASE_SOURCE=EMBEDDED_SIGNED_COPY"
     log INFO "META_RELEASE_HTTP_FALLBACK=PASS"
     log INFO "META_RELEASE_HTTP_FALLBACK=EMBEDDED"
     local emb_sha pin_sha
@@ -6301,6 +6303,23 @@ restore_noninteractive_conffile_policy() {
 }
 
 
+
+# Runner helpers for current-hop.env persistence.
+# STATE_ROOT is already prefixed via _hp above; do not re-apply _hp/hostpath.
+read_kv_file_field() {
+  local file="$1" field="$2"
+  [[ -f "$file" ]] || return 1
+  sed -n "s/^${field}=//p" "$file" 2>/dev/null | head -1 | tr -d "'\"" | tr -d '\r'
+}
+
+current_hop_env_path() {
+  printf '%s' "${CURRENT_HOP_ENV_FILE:-${STATE_ROOT}/current-hop.env}"
+}
+
+read_current_hop_field() {
+  read_kv_file_field "$(current_hop_env_path)" "$1" || true
+}
+
 persist_current_hop_package_transition_started() {
   # Atomically set PACKAGE_TRANSITION_STARTED=true in current-hop.env when a real
   # package transition was detected. Never regresses true -> false. Never invents
@@ -7298,7 +7317,7 @@ runner_pre_dro_semantic_gate() {
     if [[ "$main_ok" -ne 1 ]]; then
       case "$suite" in
         *-backports)
-          log WARN "TARGET_POCKET=${suite} main index empty (allowed when discovery has no backports)"
+          log INFO "TARGET_POCKET=${suite} main index empty (allowed when discovery has no backports)"
           ;;
         *-updates|*-security|"$PIN_TARGET_CODENAME")
           log ERROR "FAIL_TARGET_POCKET_COMPONENT_EMPTY suite=${suite} component=main"
@@ -7313,7 +7332,7 @@ runner_pre_dro_semantic_gate() {
     if [[ "$uni_ok" -ne 1 ]]; then
       case "$suite" in
         *-backports)
-          log WARN "TARGET_POCKET=${suite} universe index empty/missing (allowed for backports)"
+          log INFO "TARGET_POCKET=${suite} universe index empty/missing (allowed for backports)"
           ;;
         *)
           log ERROR "FAIL_TARGET_POCKET_COMPONENT_EMPTY suite=${suite} component=universe"

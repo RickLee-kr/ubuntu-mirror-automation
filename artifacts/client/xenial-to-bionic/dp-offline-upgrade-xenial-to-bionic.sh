@@ -2080,7 +2080,10 @@ verify_mirror_trust_chain() {
     [[ "$(sha256_file "${tmp}/meta-http")" == "$PIN_META_SHA256" ]] \
       || die "$EC_META" "HTTP meta-release SHA256 mismatch vs pin"
   else
-    log WARN "HTTP /client/${PIN_HOP}/meta-release-lts not published (HTTP ${code}); using embedded meta-release"
+    log INFO "Optional HTTP meta-release unavailable (HTTP ${code}); using verified embedded meta-release"
+    log INFO "HTTP_META_RELEASE=NOT_PUBLISHED"
+    log INFO "HTTP_META_RELEASE_STATUS=${code}"
+    log INFO "META_RELEASE_SOURCE=EMBEDDED_SIGNED_COPY"
   fi
 
   rm -rf "$tmp"
@@ -5749,7 +5752,7 @@ runner_pre_dro_semantic_gate() {
     if [[ "$main_ok" -ne 1 ]]; then
       case "$suite" in
         *-backports)
-          log WARN "TARGET_POCKET=${suite} main index empty (allowed when discovery has no backports)"
+          log INFO "TARGET_POCKET=${suite} main index empty (allowed when discovery has no backports)"
           ;;
         *-updates|*-security|"$PIN_TARGET_CODENAME")
           log ERROR "FAIL_TARGET_POCKET_COMPONENT_EMPTY suite=${suite} component=main"
@@ -5764,7 +5767,7 @@ runner_pre_dro_semantic_gate() {
     if [[ "$uni_ok" -ne 1 ]]; then
       case "$suite" in
         *-backports)
-          log WARN "TARGET_POCKET=${suite} universe index empty/missing (allowed for backports)"
+          log INFO "TARGET_POCKET=${suite} universe index empty/missing (allowed for backports)"
           ;;
         *)
           log ERROR "FAIL_TARGET_POCKET_COMPONENT_EMPTY suite=${suite} component=universe"
