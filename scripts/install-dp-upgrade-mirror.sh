@@ -67,22 +67,39 @@ mm_term_size() {
 }
 
 mm_calc_menu_size() {
+  # Args: item_count [min_width] [min_list] [text_lines]
+  # text_lines sizes the instruction/footer block so Configuration's exact
+  # footer is not clipped by a fixed +12 chrome allowance.
   local item_count="$1"
   local min_width="${2:-74}"
   local min_list="${3:-8}"
+  local text_lines="${4:-4}"
   mm_term_size
+  [[ "${text_lines}" =~ ^[0-9]+$ ]] || text_lines=4
+  [[ "${text_lines}" -lt 1 ]] && text_lines=1
   local menu_list_height=$((item_count + 1))
   [[ "${menu_list_height}" -lt "${min_list}" ]] && menu_list_height="${min_list}"
-  # +12 leaves room for a multi-line instruction block (workflow + progress).
-  local dialog_height=$((menu_list_height + 12))
-  local max_list=$((HEIGHT - 14))
-  [[ "${max_list}" -lt 6 ]] && max_list=6
-  if [[ "${menu_list_height}" -gt "${max_list}" ]]; then
-    menu_list_height="${max_list}"
-    dialog_height=$((HEIGHT - 2))
+  # chrome ≈ title/borders/button row; text_lines is the --menu instruction block.
+  # Whiptail often hides the final instruction line unless one spare row remains.
+  local chrome=10
+  local dialog_height=$((menu_list_height + text_lines + chrome))
+  local max_height=$((HEIGHT - 2))
+  [[ "${max_height}" -lt 16 ]] && max_height=16
+  # Prefer keeping instruction/footer text visible: shrink list before clipping text.
+  if [[ "${dialog_height}" -gt "${max_height}" ]]; then
+    local overflow=$((dialog_height - max_height))
+    local min_visible=2
+    [[ "${item_count}" -gt 0 && "${item_count}" -lt "${min_visible}" ]] && min_visible="${item_count}"
+    if [[ "${menu_list_height}" -gt "${min_visible}" ]]; then
+      local can=$((menu_list_height - min_visible))
+      [[ "${can}" -gt "${overflow}" ]] && can="${overflow}"
+      menu_list_height=$((menu_list_height - can))
+      dialog_height=$((menu_list_height + text_lines + chrome))
+    fi
+    [[ "${dialog_height}" -gt "${max_height}" ]] && dialog_height="${max_height}"
   fi
-  [[ "${dialog_height}" -gt $((HEIGHT - 2)) ]] && dialog_height=$((HEIGHT - 2))
   [[ "${dialog_height}" -lt 16 ]] && dialog_height=16
+  [[ "${dialog_height}" -gt "${max_height}" ]] && dialog_height="${max_height}"
   local dialog_width=$((WIDTH - 6))
   [[ "${dialog_width}" -lt "${min_width}" ]] && dialog_width="${min_width}"
   [[ "${dialog_width}" -gt 100 ]] && dialog_width=100
@@ -113,8 +130,11 @@ mm_whiptail_menu() {
   local title="$1" text="$2"
   shift 2
   local item_count=$(( $# / 2 ))
-  local menu_dims menu_height menu_width menu_list_height
-  menu_dims="$(mm_calc_menu_size "${item_count}" 74 8)"
+  local text_lines menu_dims menu_height menu_width menu_list_height
+  text_lines="$(printf '%b' "$text" | wc -l)"
+  text_lines="${text_lines#"${text_lines%%[![:space:]]*}"}"
+  text_lines="${text_lines%"${text_lines##*[![:space:]]}"}"
+  menu_dims="$(mm_calc_menu_size "${item_count}" 74 8 "${text_lines}")"
   read -r menu_height menu_width menu_list_height <<< "${menu_dims}"
   if ! mm_has_whiptail; then
     printf '%s\n%s\n' "$title" "$text"
@@ -323,6 +343,7 @@ gui_configuration() {
     mm_force_phase2_target
     mode_label="$(mm_preparation_mode_label)"
     footer="$(mm_config_footer_text)"
+    # Trailing blank line: newt/whiptail can clip the final instruction line otherwise.
     choice="$(mm_whiptail_menu "Configuration" \
       "Preparation Mode: ${mode_label}
 ACPS Username: $(mm_configured_label "$ACPS_USERNAME")
@@ -330,7 +351,8 @@ ACPS Password: $(mm_configured_label "$ACPS_PASSWORD")
 ACPS Server: Fixed
 OS Core Source: Cloudflare R2
 
-${footer}" \
+${footer}
+" \
       "1" "Preparation Mode" \
       "2" "ACPS Username" \
       "3" "ACPS Password" \

@@ -61,6 +61,33 @@ grep -Fq 'If the DP is already running Ubuntu 24.04, select Phase 2 Only.' <<<"$
   || fail "Phase 2 Only notice missing"
 pass "Configuration uses Preparation Mode + exact footer"
 
+# Menu height must fit Configuration instruction+footer (not a fixed +12 chrome).
+# Match production: trailing blank line avoids newt clipping the last footer line.
+config_text="Preparation Mode: Full OS Upgrade + Phase 2
+ACPS Username: configured
+ACPS Password: configured
+ACPS Server: Fixed
+OS Core Source: Cloudflare R2
+
+${footer}
+"
+config_text_lines="$(printf '%b' "$config_text" | wc -l)"
+# mm_term_size normally overwrites HEIGHT/WIDTH via tput; pin sizes for this check.
+mm_term_size() { :; }
+HEIGHT=50 WIDTH=140
+read -r cfg_h cfg_w cfg_list <<<"$(mm_calc_menu_size 6 74 8 "${config_text_lines}")"
+# Whiptail text rows ≈ dialog_height - list_height - chrome(10).
+cfg_text_rows=$((cfg_h - cfg_list - 10))
+[[ "$cfg_text_rows" -ge "$config_text_lines" ]] \
+  || fail "config menu text rows ${cfg_text_rows} < footer block ${config_text_lines} (h=${cfg_h} list=${cfg_list})"
+HEIGHT=40 WIDTH=100
+read -r cfg_h cfg_w cfg_list <<<"$(mm_calc_menu_size 6 74 8 "${config_text_lines}")"
+cfg_text_rows=$((cfg_h - cfg_list - 10))
+[[ "$cfg_text_rows" -ge "$config_text_lines" ]] \
+  || fail "mid-term config menu clips footer (rows=${cfg_text_rows} need=${config_text_lines} h=${cfg_h} list=${cfg_list})"
+grep -q 'text_lines' "$INSTALLER" || fail "mm_calc_menu_size missing text_lines sizing"
+pass "Configuration menu height fits exact footer"
+
 # Fixed target constant
 mm_force_phase2_target
 [[ "$TARGET_DP_VERSION" == "6.5.0" ]] || fail "forced target not 6.5.0"
