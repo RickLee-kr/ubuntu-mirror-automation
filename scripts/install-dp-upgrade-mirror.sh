@@ -816,7 +816,7 @@ gui_build_client_commands() {
   mm_normalize_preparation_mode
   mm_force_phase2_target
   local ver="${PHASE2_TARGET_VERSION}"
-  local snap_line stage_cmd bringup_cmd shell_cmd prereq_cmd
+  local snap_line stage_cmd bringup_cmd prereq_cmd
   if [[ "$topology" == "cluster" ]]; then
     snap_line="Create a full hypervisor snapshot of every DP VM."
   else
@@ -828,7 +828,6 @@ gui_build_client_commands() {
   else
     bringup_cmd="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download"
   fi
-  shell_cmd="getent passwd aella root | awk -F: '{printf \"%s shell=%s\\n\", \$1, \$7}' | tee /dev/stderr | awk -F= '/shell=/{s=\$2; if (s!=\"/bin/bash\") bad=1} END{exit bad+0}'"
   prereq_cmd="set -euo pipefail; . /etc/os-release; test \"\$ID\" = ubuntu; test \"\$VERSION_ID\" = 24.04; test \"\$VERSION_CODENAME\" = noble; getent passwd aella root | awk -F: '\$7!=\"/bin/bash\"{exit 1}'; avail_root=\$(df -BG --output=avail / | awk 'NR==2{gsub(/G/,\"\"); print}'); avail_data=\$(df -BG --output=avail /opt/aelladata 2>/dev/null | awk 'NR==2{gsub(/G/,\"\"); print}'); test \"\${avail_root:-0}\" -ge 20; test \"\${avail_data:-0}\" -ge 70; ! pgrep -fa 'apt-get|dpkg|do-release-upgrade|dp-offline-upgrade' >/dev/null"
 
   if mm_is_phase2_only; then
@@ -928,11 +927,7 @@ Step 0 — Create snapshot or backup
 
 ${snap_line}
 
-Step 1 — Verify bash login shells
-
-${shell_cmd}
-
-Step 2 — Pause DP services
+Step 1 — Pause DP services
 
 Run \`aella_cli\` on the Ubuntu 16.04 DP.
 
@@ -945,32 +940,35 @@ Wait until the pause operation completes.
 Do not run \`pause\` directly in the Linux bash shell.
 Do not resume the DP during the intermediate OS upgrades.
 
-Step 3 — Ubuntu 16.04 to 18.04
+Step 2 — Ubuntu 16.04 to 18.04
+
+The Xenial-to-Bionic client automatically sets the aella and root login
+shells to /bin/bash after upgrade confirmation.
 
 $(gui_client_hop_command "$mirror" "dp-offline-upgrade-xenial-to-bionic.sh")
 
-Step 4 — Ubuntu 18.04 to 20.04
+Step 3 — Ubuntu 18.04 to 20.04
 
 $(gui_client_hop_command "$mirror" "dp-offline-upgrade-bionic-to-focal.sh")
 
-Step 5 — Ubuntu 20.04 to 22.04
+Step 4 — Ubuntu 20.04 to 22.04
 
 $(gui_client_hop_command "$mirror" "dp-offline-upgrade-focal-to-jammy.sh")
 
-Step 6 — Ubuntu 22.04 to 24.04
+Step 5 — Ubuntu 22.04 to 24.04
 
 $(gui_client_hop_command "$mirror" "dp-offline-upgrade-jammy-to-noble.sh")
 
 Do not resume the DP during the intermediate OS upgrades.
 
-Step 7 — Stage DP ${ver} files
+Step 6 — Stage DP ${ver} files
 
 ${stage_cmd}
 
 EOF
     if [[ "$topology" == "cluster" ]]; then
       cat <<EOF
-Step 8 — Run DP ${ver} bringup
+Step 7 — Run DP ${ver} bringup
 
 Run this command on the cluster master only.
 
@@ -987,17 +985,17 @@ ${bringup_cmd}
 EOF
     else
       cat <<EOF
-Step 8 — Run DP ${ver} bringup
+Step 7 — Run DP ${ver} bringup
 
 ${bringup_cmd}
 
 EOF
     fi
     cat <<EOF
-Step 9 — Resume DP services
+Step 8 — Resume DP services
 
-After the bringup script completes, run \`aella_cli\`.
-Select or enter \`resume\`.
+After the bringup script completes, if \`aella_cli\` can be executed, run
+\`aella_cli\` and select or enter \`resume\` so that DP services start again.
 Wait for resume to complete and allow several minutes for pods and host services to start.
 
 Resume is an aella_cli menu command.
@@ -1006,7 +1004,7 @@ Do not run \`resume\` directly in the Linux bash shell.
 The DP health checks must be performed after resume.
 Pods and host services may not become ready until the DP services are resumed.
 
-Step 10 — Verify DP health
+Step 9 — Verify DP health
 
 After resume, wait for the DP services to start.
 Then run \`aella_cli\` and select or enter \`show status\`.

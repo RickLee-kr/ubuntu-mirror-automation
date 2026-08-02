@@ -184,13 +184,14 @@ Menu 7 asks topology only (Single / Cluster). It never asks for Starting or Targ
 **Full OS Upgrade + Phase 2**
 
 1. Hypervisor snapshot
-2. Verify bash login shells
-3. `aella_cli` → `pause` on Ubuntu 16.04
-4. OS hops 16.04 → 18.04 → 20.04 → 22.04 → 24.04
-5. Stage DP 6.5.0 (`--target-version 6.5.0 --same-version-recovery`; source auto-detected)
-6. Bringup (`--worker-ips` optional)
-7. `aella_cli` → `resume`
-8. `aella_cli` → `show status`
+2. `aella_cli` → `pause` on Ubuntu 16.04
+3. OS hops 16.04 → 18.04 → 20.04 → 22.04 → 24.04
+   (Xenial→Bionic client sets aella/root login shells to `/bin/bash` after
+   confirmation and re-verifies with `getent`; no manual `chsh`/`usermod`)
+4. Stage DP 6.5.0 (`--target-version 6.5.0 --same-version-recovery`; source auto-detected)
+5. Bringup (`--worker-ips` optional)
+6. `aella_cli` → `resume`
+7. `aella_cli` → `show status`
 
 **Phase 2 Only** (DP already on Ubuntu 24.04)
 
@@ -308,6 +309,24 @@ Drift fails the install (`UPSTREAM_BRINGUP_DRIFT=YES`); patches are never
 auto-ported onto new upstream.
 
 ## Client HTTP only
+
+## Test vs development Mirror addresses
+
+- Development Mirror Server: `http://221.139.249.111`
+- Test Mirror Server used by DP clients: `http://221.139.249.112`
+
+Clients published from the test Mirror must embed the same base URL for
+`PIN_MIRROR_BASE`, APT sources, meta-release UpgradeTool URIs, and sample DEB
+URLs. Do not point test-server client runtime at the development Mirror.
+
+Optional HTTP `/client/<hop>/meta-release-lts` may be absent (HTTP 404). In that
+case the signed embedded meta-release copy is authoritative
+(`META_RELEASE_SOURCE=EMBEDDED_SIGNED_COPY`) and does not increment preflight
+warnings.
+
+Critical OS holds (for example systemd/udev) are unheld for the release upgrade.
+They are restored only on pre-transition failure. Successful OS upgrades do not
+automatically re-hold them, and Phase 2 does not re-hold them.
 
 DP clients must use the mirror HTTP address only. They must not reach R2 or ACPS.
 

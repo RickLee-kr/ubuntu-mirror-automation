@@ -100,6 +100,14 @@ Phase 2 Target:      6.5.0 고정
 DP OS version: 16.04
 
 If the DP is already running Ubuntu 24.04, select Phase 2 Only.
+
+Login shells: operators do not manually run `getent`/`chsh`/`usermod` for
+aella/root in Full mode. The Xenial-to-Bionic client sets both shells to
+`/bin/bash` after upgrade confirmation and re-verifies with `getent`.
+
+Test Mirror clients must use `http://221.139.249.112` for download URLs and
+embedded Mirror pins. `http://221.139.249.111` is the development Mirror only.
+
 ```
 
 Phase 2 Target is fixed at 6.5.0 and is not editable. Starting DP Version is detected on the DP (not configured on the Mirror Server).

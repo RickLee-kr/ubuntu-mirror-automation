@@ -107,16 +107,22 @@ grep -q 'Supported Starting DP Versions: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0' "$OUT" \
 grep -q 'Phase 2 Target: 6.5.0' "$OUT" || fail "missing phase2 target header"
 grep -q 'OS Upgrade: Ubuntu 16.04 → Ubuntu 24.04' "$OUT" || fail "missing OS upgrade header"
 grep -q 'Step 0 — Create snapshot or backup' "$OUT" || fail "missing step 0"
-grep -q 'Step 1 — Verify bash login shells' "$OUT" || fail "missing shell verify"
-grep -q 'Step 2 — Pause DP services' "$OUT" || fail "missing pause"
-grep -q 'Step 3 — Ubuntu 16.04 to 18.04' "$OUT" || fail "missing hop 16→18"
-grep -q 'Step 4 — Ubuntu 18.04 to 20.04' "$OUT" || fail "missing hop 18→20"
-grep -q 'Step 5 — Ubuntu 20.04 to 22.04' "$OUT" || fail "missing hop 20→22"
-grep -q 'Step 6 — Ubuntu 22.04 to 24.04' "$OUT" || fail "missing hop 22→24"
-grep -q 'Step 7 — Stage DP 6.5.0 files' "$OUT" || fail "missing stage"
-grep -q 'Step 8 — Run DP 6.5.0 bringup' "$OUT" || fail "missing bringup"
-grep -q 'Step 9 — Resume DP services' "$OUT" || fail "missing resume"
-grep -q 'Step 10 — Verify DP health' "$OUT" || fail "missing health"
+grep -q 'Step 1 — Pause DP services' "$OUT" || fail "missing pause"
+grep -q 'Step 2 — Ubuntu 16.04 to 18.04' "$OUT" || fail "missing hop 16→18"
+grep -q 'The Xenial-to-Bionic client automatically sets the aella and root login' "$OUT" \
+  || fail "missing automatic login shell guidance"
+grep -q 'Step 3 — Ubuntu 18.04 to 20.04' "$OUT" || fail "missing hop 18→20"
+grep -q 'Step 4 — Ubuntu 20.04 to 22.04' "$OUT" || fail "missing hop 20→22"
+grep -q 'Step 5 — Ubuntu 22.04 to 24.04' "$OUT" || fail "missing hop 22→24"
+grep -q 'Step 6 — Stage DP 6.5.0 files' "$OUT" || fail "missing stage"
+grep -q 'Step 7 — Run DP 6.5.0 bringup' "$OUT" || fail "missing bringup"
+grep -q 'Step 8 — Resume DP services' "$OUT" || fail "missing resume"
+grep -q 'Step 9 — Verify DP health' "$OUT" || fail "missing health"
+grep -q 'Verify bash login shells' "$OUT" && fail "manual shell verify step still present" || true
+grep -q 'getent passwd aella root' "$OUT" && fail "manual getent shell command still present" || true
+# Full mode steps must be exactly 0..9 with no duplicates
+step_nums="$(grep -oE 'Step [0-9]+ —' "$OUT" | grep -oE '[0-9]+' | tr '\n' ' ')"
+[[ "$step_nums" == "0 1 2 3 4 5 6 7 8 9 " ]] || fail "unexpected Full step numbering: ${step_nums}"
 grep -Fq -- '--source-dp-version' "$OUT" && fail "FULL command has --source-dp-version" || true
 grep -Fq -- '--target-version 6.5.0' "$OUT" || fail "target version missing"
 grep -Fq -- '--same-version-recovery' "$OUT" || fail "same-version-recovery missing"

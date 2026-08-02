@@ -1227,7 +1227,7 @@ reconcile_critical_hold_state() {
       log WARN "CRITICAL_OS_HOLD_RECONCILE: previously removed holds are held again: ${still_held}"
       log WARN "CRITICAL_OS_HOLD_RECONCILE_ACTION=REPLAN_UNHOLD_AFTER_CONFIRMATION"
     elif [[ "$release_started" -eq 0 && -z "$still_held" && "$unhold_completed" -eq 1 ]]; then
-      log INFO "CRITICAL_OS_HOLD_RECONCILE: prior critical OS holds remain unheld (expected until Phase 2 policy)"
+      log INFO "CRITICAL_OS_HOLD_RECONCILE: prior critical OS holds remain unheld (no automatic re-hold after successful OS upgrade)"
     fi
   fi
   return 0
@@ -1259,7 +1259,7 @@ unhold_critical_os_packages() {
     utc_now >"$dir/unhold_started_at"
     utc_now >"$dir/unhold_completed_at"
     : >"$dir/critical-holds-removed.txt"
-    write_critical_holds_state_json "accepted" "false" "" "DEFERRED_UNTIL_PHASE2_POLICY"
+    write_critical_holds_state_json "accepted" "false" "" "REMAIN_UNHELD_THROUGH_OS_UPGRADE"
     return 0
   }
 
@@ -1314,9 +1314,11 @@ unhold_critical_os_packages() {
 
   list_held_packages | tr -s '[:space:]' '\n' | sed '/^$/d' | atomic_write_file "$dir/critical-holds-after.txt"
   utc_now >"$dir/unhold_completed_at"
-  write_critical_holds_state_json "accepted" "false" "" "DEFERRED_UNTIL_PHASE2_POLICY"
+  write_critical_holds_state_json "accepted" "false" "" "REMAIN_UNHELD_THROUGH_OS_UPGRADE"
   log INFO "CRITICAL_OS_UNHOLD_RESULT=PASS"
-  log INFO "CRITICAL_OS_HOLD_RESTORE=DEFERRED_UNTIL_PHASE2_POLICY"
+  log INFO "CRITICAL_OS_HOLDS_REMAIN_UNHELD_THROUGH_OS_UPGRADE=YES"
+  log INFO "CRITICAL_OS_HOLDS_RESTORED_ON_PRE_TRANSITION_FAILURE=YES"
+  log INFO "CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO"
   log INFO "ORIGINAL_CRITICAL_OS_HOLDS=${PLANNED_CRITICAL_OS_HOLDS}"
 }
 
@@ -1419,7 +1421,7 @@ persist_release_upgrade_flags() {
   if [[ "$LEGACY_STATE_RECONCILED" == "true" ]]; then
     printf 'true\n' >"$dir/legacy_state_reconciled"
   fi
-  write_critical_holds_state_json "accepted" "false" "" "DEFERRED_UNTIL_PHASE2_POLICY"
+  write_critical_holds_state_json "accepted" "false" "" "REMAIN_UNHELD_THROUGH_OS_UPGRADE"
 }
 
 mark_release_upgrade_invocation_started() {
@@ -1798,7 +1800,9 @@ verify_prior_critical_hold_resume_consistency() {
   log INFO "CRITICAL_OS_HOLD_STATE=ALREADY_UNHELD_BY_PRIOR_PHASE1_ATTEMPT"
   log INFO "ORIGINAL_CRITICAL_OS_HOLDS=${removed}"
   log INFO "CURRENT_CRITICAL_OS_HOLDS="
-  log INFO "CRITICAL_OS_HOLD_RESTORE=DEFERRED_UNTIL_PHASE2_POLICY"
+  log INFO "CRITICAL_OS_HOLDS_REMAIN_UNHELD_THROUGH_OS_UPGRADE=YES"
+  log INFO "CRITICAL_OS_HOLDS_RESTORED_ON_PRE_TRANSITION_FAILURE=YES"
+  log INFO "CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO"
   log INFO "PREVIOUS_UNHOLD_REUSED=YES"
   # Do not re-plan unhold for packages already removed.
   PLANNED_CRITICAL_OS_HOLDS=""
@@ -2189,6 +2193,7 @@ verify_mirror_trust_chain() {
   http_fetch "${repo}/dists/${PIN_SOURCE_CODENAME}/InRelease" "${tmp}/InRelease"
   gpgv --keyring "$work/stellar-offline-upgrade.gpg" "${tmp}/InRelease" \
     || die "$EC_TRUST" "repository InRelease signature verification failed"
+  log INFO "APT_INRELEASE_SIGNATURE=PASS"
 
   # Temporary apt update using only local hop (no persistent changes).
   # Use trusted.gpg.d + DistUpgrade-compatible lines (no signed-by=).
@@ -2217,13 +2222,36 @@ verify_mirror_trust_chain() {
     if [[ "$apt_rc" -ne 0 ]]; then
       # `_apt` unsandboxed warnings alone are not failure; require non-zero exit / E: lines.
       persist_temp_apt_failure_evidence "$tmp" "$apt_rc" "temporary_local_apt_update" || true
+      log ERROR "APT_REPOSITORY_AUTHENTICATION=FAIL"
+      log INFO "APT_PREFLIGHT_EXIT_CODE=${apt_rc}"
       die "$EC_MIRROR" "temporary local apt-get update failed (exit=${apt_rc}; evidence under ${STATE_ROOT}/evidence/preflight-apt/)"
     fi
     if grep -qiE '(archive|security|old-releases|changelogs)\.ubuntu\.com' "${tmp}/apt-update.err" \
          "${aptroot}/var/lib/apt/lists/"* 2>/dev/null; then
       persist_temp_apt_failure_evidence "$tmp" "external-host" "temporary_local_apt_external" || true
+      log ERROR "APT_REPOSITORY_AUTHENTICATION=FAIL"
+      log INFO "APT_EXTERNAL_SOURCE_REFERENCE_COUNT=1"
       die "$EC_MIRROR" "temporary apt update referenced external Ubuntu hosts"
     fi
+    # Structured repository authentication summary (Ign: alone is not failure).
+    apt_sig_warn=0
+    if grep -qiE "NO_PUBKEY|BADSIG|signatures couldn't be verified|is not signed|does not have a Release file|The repository is not signed"          "${tmp}/apt-update.err" "${tmp}/apt-update.out" 2>/dev/null; then
+      apt_sig_warn=1
+    fi
+    external_count=0
+    if grep -qiE '(archive|security|old-releases|changelogs)\.ubuntu\.com' "${tmp}/apt-update.err"          "${aptroot}/var/lib/apt/lists/"* 2>/dev/null; then
+      external_count=1
+    fi
+    log INFO "APT_PREFLIGHT_EXIT_CODE=${apt_rc:-0}"
+    if [[ "${apt_sig_warn}" -ne 0 || "${external_count}" -ne 0 ]]; then
+      log ERROR "APT_REPOSITORY_AUTHENTICATION=FAIL"
+      log INFO "APT_SIGNATURE_WARNING_COUNT=${apt_sig_warn}"
+      log INFO "APT_EXTERNAL_SOURCE_REFERENCE_COUNT=${external_count}"
+      die "$EC_MIRROR" "APT repository authentication failed during temporary local apt-get update"
+    fi
+    log INFO "APT_REPOSITORY_AUTHENTICATION=PASS"
+    log INFO "APT_EXTERNAL_SOURCE_REFERENCE_COUNT=0"
+    log INFO "APT_SIGNATURE_WARNING_COUNT=0"
     log INFO "TEMPORARY_LOCAL_APT_UPDATE=PASS"
   fi
 
@@ -2238,8 +2266,10 @@ verify_mirror_trust_chain() {
     log INFO "META_RELEASE_SOURCE=HTTP"
     log INFO "META_RELEASE_HTTP_FALLBACK=NOT_NEEDED"
   else
-    log WARN "HTTP /client/${PIN_HOP}/meta-release-lts not published (HTTP ${code}); using embedded meta-release"
-    log INFO "META_RELEASE_SOURCE=EMBEDDED"
+    log INFO "Optional HTTP meta-release unavailable (HTTP ${code}); using verified embedded meta-release"
+    log INFO "HTTP_META_RELEASE=NOT_PUBLISHED"
+    log INFO "HTTP_META_RELEASE_STATUS=${code}"
+    log INFO "META_RELEASE_SOURCE=EMBEDDED_SIGNED_COPY"
     log INFO "META_RELEASE_HTTP_FALLBACK=PASS"
     log INFO "META_RELEASE_HTTP_FALLBACK=EMBEDDED"
     local emb_sha pin_sha
@@ -2465,7 +2495,9 @@ check_critical_package_holds() {
   log INFO "CRITICAL_OS_HOLDS_DETECTED=${PLANNED_CRITICAL_OS_HOLDS}"
   log INFO "CRITICAL_OS_HOLD_ACTION=UNHOLD_AFTER_CONFIRMATION"
   log INFO "CRITICAL_OS_HOLD_PREFLIGHT=PASS_WITH_PLANNED_ACTION"
-  log INFO "CRITICAL_OS_HOLD_RESTORE=DEFERRED_UNTIL_PHASE2_POLICY"
+  log INFO "CRITICAL_OS_HOLDS_REMAIN_UNHELD_THROUGH_OS_UPGRADE=YES"
+  log INFO "CRITICAL_OS_HOLDS_RESTORED_ON_PRE_TRANSITION_FAILURE=YES"
+  log INFO "CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO"
   return 0
 }
 
@@ -2492,8 +2524,9 @@ EOF
     cat <<EOF
 
 NOTE: Removing these holds is a persistent package selection change.
-Phase 1 will NOT automatically restore systemd/udev (or other critical OS)
-holds after a successful release upgrade. Restore policy is deferred to Phase 2.
+Critical OS holds are removed for the release upgrade. If failure occurs
+before package transition starts, the original holds are restored. After a
+successful OS upgrade they are not automatically re-held.
 EOF
   else
     cat <<EOF
@@ -6554,7 +6587,9 @@ mark_package_transition_detected() {
   log INFO "STAGE=PACKAGE_TRANSACTION"
   log INFO "RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED=true"
   log INFO "ROLLBACK_ELIGIBLE=NO"
-  log INFO "CRITICAL_OS_HOLD_RESTORE=DEFERRED_UNTIL_PHASE2_POLICY"
+  log INFO "CRITICAL_OS_HOLDS_REMAIN_UNHELD_THROUGH_OS_UPGRADE=YES"
+  log INFO "CRITICAL_OS_HOLDS_RESTORED_ON_PRE_TRANSITION_FAILURE=YES"
+  log INFO "CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO"
   persist_current_hop_package_transition_started || true
   return 0
 }
@@ -7875,7 +7910,9 @@ runner_collect_pre_dro_evidence() {
 reboot_if_success() {
   write_state REBOOT_PENDING
   sync
-  log INFO "CRITICAL_OS_HOLD_RESTORE=DEFERRED_UNTIL_PHASE2_POLICY"
+  log INFO "CRITICAL_OS_HOLDS_REMAIN_UNHELD_THROUGH_OS_UPGRADE=YES"
+  log INFO "CRITICAL_OS_HOLDS_RESTORED_ON_PRE_TRANSITION_FAILURE=YES"
+  log INFO "CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO"
   if [[ -f "${HOLDS_DIR}/critical-holds-removed.txt" ]]; then
     log INFO "ORIGINAL_CRITICAL_OS_HOLDS=$(tr '\n' ' ' <"${HOLDS_DIR}/critical-holds-removed.txt" | sed 's/[[:space:]]*$//')"
   fi

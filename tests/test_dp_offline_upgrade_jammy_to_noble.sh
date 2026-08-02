@@ -797,7 +797,7 @@ if [[ "$rc" -eq 0 ]] \
    && grep -q 'CRITICAL_OS_UNHOLD_PACKAGE=systemd' "$fx2/out-commit.txt" \
    && grep -q 'CRITICAL_OS_UNHOLD_PACKAGE=udev' "$fx2/out-commit.txt" \
    && grep -q 'CRITICAL_OS_UNHOLD_RESULT=PASS' "$fx2/out-commit.txt" \
-   && grep -q 'CRITICAL_OS_HOLD_RESTORE=DEFERRED_UNTIL_PHASE2_POLICY' "$fx2/out-commit.txt" \
+   && grep -q 'CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO' "$fx2/out-commit.txt" \
    && [[ ! -s "$fx2/tmp/held-packages.txt" || -z "$(tr -d '[:space:]' <"$fx2/tmp/held-packages.txt")" ]] \
    && [[ -f "$fx2/opt/aelladata/os-upgrade/offline/critical-holds/critical-holds-state.json" ]]; then
   pass "confirmation accept → systemd/udev unheld"
@@ -1508,8 +1508,8 @@ unset TEST_ROOT
 LOG_FILE="/dev/null"
 
 # Reboot handoff marker: restore deferred (static + harness reason)
-if grep -q 'CRITICAL_OS_HOLD_RESTORE=DEFERRED_UNTIL_PHASE2_POLICY' "$SCRIPT_IN" \
-   && grep -A5 'reboot_if_success' "$SCRIPT_IN" | grep -q 'DEFERRED_UNTIL_PHASE2_POLICY'; then
+if grep -q 'CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO' "$SCRIPT_IN" \
+   && grep -A8 'reboot_if_success' "$SCRIPT_IN" | grep -q 'CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO'; then
   pass "reboot handoff does not restore holds"
 else
   fail "reboot handoff restore policy missing"
@@ -1953,8 +1953,8 @@ grep -q 'CRITICAL_OS_HOLD_ACTION=UNHOLD_AFTER_CONFIRMATION' "$SCRIPT_IN" \
   && pass "critical hold planned-unhold policy present" || fail "critical hold planned-unhold missing"
 grep -q 'FAIL_CRITICAL_OS_UNHOLD' "$SCRIPT_IN" \
   && pass "critical OS unhold failure path present" || fail "FAIL_CRITICAL_OS_UNHOLD missing"
-grep -q 'CRITICAL_OS_HOLD_RESTORE=DEFERRED_UNTIL_PHASE2_POLICY' "$SCRIPT_IN" \
-  && pass "Phase 1 hold restore deferred marker" || fail "deferred restore marker missing"
+grep -q 'CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO' "$SCRIPT_IN" \
+  && pass "Phase 1 no auto re-hold marker" || fail "no auto re-hold marker missing"
 if grep -nE 'die .*FAIL_CRITICAL_PACKAGE_HOLD' "$SCRIPT_IN"; then
   fail "legacy FAIL_CRITICAL_PACKAGE_HOLD hard-die still present"
 else

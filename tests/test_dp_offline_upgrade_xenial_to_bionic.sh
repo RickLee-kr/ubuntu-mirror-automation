@@ -573,7 +573,7 @@ make_dp_fixture "$fx2"
 mkdir -p "$fx2/etc/apt/sources.list.d" "$fx2/etc/apt/keyrings" "$fx2/etc/systemd/system" \
   "$fx2/usr/local/sbin" "$fx2/boot" "$fx2/opt/aelladata/work" "$fx2/tmp"
 printf 'deb http://archive.ubuntu.com/ubuntu xenial main\n' >"$fx2/etc/apt/sources.list"
-printf 'root:x:0:0:root:/root:/usr/bin/aella_cli\n' >"$fx2/etc/passwd"
+printf 'root:x:0:0:root:/root:/usr/bin/aella_cli\naella:x:1000:1000:aella:/home/aella:/usr/bin/aella_cli\n' >"$fx2/etc/passwd"
 printf '%s\n' "$REAL_META" >"$fx2/opt/aelladata/release-metadata.yml"
 # Uninstalled DP image: no aella.role / da_conf / containers; runtime installed=false
 cat >"$fx2/opt/aelladata/work/runtime_config.json" <<'EOF'
@@ -793,7 +793,7 @@ if [[ "$rc" -eq 0 ]] \
    && grep -q 'CRITICAL_OS_UNHOLD_PACKAGE=systemd' "$fx2/out-commit.txt" \
    && grep -q 'CRITICAL_OS_UNHOLD_PACKAGE=udev' "$fx2/out-commit.txt" \
    && grep -q 'CRITICAL_OS_UNHOLD_RESULT=PASS' "$fx2/out-commit.txt" \
-   && grep -q 'CRITICAL_OS_HOLD_RESTORE=DEFERRED_UNTIL_PHASE2_POLICY' "$fx2/out-commit.txt" \
+   && grep -q 'CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO' "$fx2/out-commit.txt" \
    && [[ ! -s "$fx2/tmp/held-packages.txt" || -z "$(tr -d '[:space:]' <"$fx2/tmp/held-packages.txt")" ]] \
    && [[ -f "$fx2/opt/aelladata/os-upgrade/offline/critical-holds/critical-holds-state.json" ]]; then
   pass "confirmation accept → systemd/udev unheld"
@@ -861,6 +861,145 @@ else
   fail "restore after pre-upgrade failure (rc=${rc})"
   tail -40 "$fx2/out-commit.txt" || true
   echo "held: $(cat "$fx2/tmp/held-packages.txt" 2>/dev/null || true)"
+fi
+
+# --- Login shell automation (after confirmation, before holds/APT) ---
+# Both already bash → UNCHANGED + PASS
+printf 'root:x:0:0:root:/root:/bin/bash\naella:x:1000:1000:aella:/home/aella:/bin/bash\n' >"$fx2/etc/passwd"
+printf 'systemd\nudev\n' >"$fx2/tmp/held-packages.txt"
+rc="$(run_commit_fixture "$fx2")"
+if [[ "$rc" -eq 0 ]] \
+   && grep -q 'LOGIN_SHELL_ROOT_ACTION=UNCHANGED' "$fx2/out-commit.txt" \
+   && grep -q 'LOGIN_SHELL_AELLA_ACTION=UNCHANGED' "$fx2/out-commit.txt" \
+   && grep -q 'LOGIN_SHELL_AUTOMATION=PASS' "$fx2/out-commit.txt" \
+   && grep -q '^root:.*:/bin/bash$' "$fx2/etc/passwd" \
+   && grep -q '^aella:.*:/bin/bash$' "$fx2/etc/passwd"; then
+  pass "login shells already bash → UNCHANGED PASS"
+else
+  fail "idempotent login shell automation (rc=${rc})"
+  tail -40 "$fx2/out-commit.txt" || true
+fi
+
+# root bash, aella aella_cli → aella CHANGED
+printf 'root:x:0:0:root:/root:/bin/bash\naella:x:1000:1000:aella:/home/aella:/usr/bin/aella_cli\n' >"$fx2/etc/passwd"
+printf 'systemd\nudev\n' >"$fx2/tmp/held-packages.txt"
+rc="$(run_commit_fixture "$fx2")"
+if [[ "$rc" -eq 0 ]] \
+   && grep -q 'LOGIN_SHELL_ROOT_ACTION=UNCHANGED' "$fx2/out-commit.txt" \
+   && grep -q 'LOGIN_SHELL_AELLA_ACTION=CHANGED' "$fx2/out-commit.txt" \
+   && grep -q 'LOGIN_SHELL_AELLA_AFTER=/bin/bash' "$fx2/out-commit.txt" \
+   && grep -q 'LOGIN_SHELL_AUTOMATION=PASS' "$fx2/out-commit.txt" \
+   && grep -q '^aella:.*:/bin/bash$' "$fx2/etc/passwd"; then
+  pass "aella_cli shell auto-changed to bash"
+else
+  fail "aella shell change (rc=${rc})"
+  tail -40 "$fx2/out-commit.txt" || true
+fi
+
+# unexpected root shell + aella_cli → both CHANGED with warning
+printf 'root:x:0:0:root:/root:/bin/sh\naella:x:1000:1000:aella:/home/aella:/usr/bin/aella_cli\n' >"$fx2/etc/passwd"
+printf 'systemd\nudev\n' >"$fx2/tmp/held-packages.txt"
+rc="$(run_commit_fixture "$fx2")"
+if [[ "$rc" -eq 0 ]] \
+   && grep -q 'unexpected root shell' "$fx2/out-commit.txt" \
+   && grep -q 'LOGIN_SHELL_ROOT_ACTION=CHANGED' "$fx2/out-commit.txt" \
+   && grep -q 'LOGIN_SHELL_AELLA_ACTION=CHANGED' "$fx2/out-commit.txt" \
+   && grep -q 'LOGIN_SHELL_AUTOMATION=PASS' "$fx2/out-commit.txt"; then
+  pass "unexpected shells changed to bash with warning"
+else
+  fail "unexpected shell change (rc=${rc})"
+  tail -40 "$fx2/out-commit.txt" || true
+fi
+
+# aella missing → FAIL before hold/APT mutation
+printf 'root:x:0:0:root:/root:/bin/bash\n' >"$fx2/etc/passwd"
+printf 'systemd\nudev\n' >"$fx2/tmp/held-packages.txt"
+cp -a "$fx2/tmp/held-packages.txt" "$fx2/tmp/held-packages.before-shell"
+rc="$(run_commit_fixture "$fx2")"
+if [[ "$rc" -ne 0 ]] \
+   && grep -q 'LOGIN_SHELL_AELLA_ACCOUNT=FAIL' "$fx2/out-commit.txt" \
+   && grep -q 'LOGIN_SHELL_AUTOMATION=FAIL' "$fx2/out-commit.txt" \
+   && ! grep -q 'CRITICAL_OS_UNHOLD_BEGIN' "$fx2/out-commit.txt" \
+   && ! grep -q 'apply_local_sources\|TARGET_POCKET_REGISTRATION_PREFLIGHT=PASS' "$fx2/out-commit.txt" \
+   && cmp -s "$fx2/tmp/held-packages.before-shell" "$fx2/tmp/held-packages.txt"; then
+  pass "missing aella account fails before hold/APT mutation"
+else
+  fail "missing aella should fail closed before mutation (rc=${rc})"
+  tail -40 "$fx2/out-commit.txt" || true
+fi
+
+# root missing → FAIL before hold/APT mutation
+printf 'aella:x:1000:1000:aella:/home/aella:/bin/bash\n' >"$fx2/etc/passwd"
+printf 'systemd\nudev\n' >"$fx2/tmp/held-packages.txt"
+cp -a "$fx2/tmp/held-packages.txt" "$fx2/tmp/held-packages.before-shell"
+rc="$(run_commit_fixture "$fx2")"
+if [[ "$rc" -ne 0 ]] \
+   && grep -q 'LOGIN_SHELL_ROOT_ACCOUNT=FAIL' "$fx2/out-commit.txt" \
+   && grep -q 'LOGIN_SHELL_AUTOMATION=FAIL' "$fx2/out-commit.txt" \
+   && ! grep -q 'CRITICAL_OS_UNHOLD_BEGIN' "$fx2/out-commit.txt" \
+   && cmp -s "$fx2/tmp/held-packages.before-shell" "$fx2/tmp/held-packages.txt"; then
+  pass "missing root account fails before hold/APT mutation"
+else
+  fail "missing root should fail closed before mutation (rc=${rc})"
+  tail -40 "$fx2/out-commit.txt" || true
+fi
+
+# change command succeeds but shell unchanged → post-change verify FAIL
+printf 'root:x:0:0:root:/root:/usr/bin/aella_cli\naella:x:1000:1000:aella:/home/aella:/usr/bin/aella_cli\n' >"$fx2/etc/passwd"
+printf 'systemd\nudev\n' >"$fx2/tmp/held-packages.txt"
+cp -a "$fx2/tmp/held-packages.txt" "$fx2/tmp/held-packages.before-shell"
+rc="$(run_commit_fixture "$fx2" DP_OFFLINE_FAKE_SHELL_NOOP_SUCCESS=1)"
+if [[ "$rc" -ne 0 ]] \
+   && grep -q 'LOGIN_SHELL_AUTOMATION=FAIL' "$fx2/out-commit.txt" \
+   && ! grep -q 'CRITICAL_OS_UNHOLD_BEGIN' "$fx2/out-commit.txt" \
+   && cmp -s "$fx2/tmp/held-packages.before-shell" "$fx2/tmp/held-packages.txt"; then
+  pass "post-change shell verify detects noop success"
+else
+  fail "noop shell change should fail before mutation (rc=${rc})"
+  tail -40 "$fx2/out-commit.txt" || true
+fi
+
+# Ordering: backup → login shell → shell verify → unhold → APT
+printf 'root:x:0:0:root:/root:/usr/bin/aella_cli\naella:x:1000:1000:aella:/home/aella:/usr/bin/aella_cli\n' >"$fx2/etc/passwd"
+printf 'systemd\nudev\n' >"$fx2/tmp/held-packages.txt"
+rc="$(run_commit_fixture "$fx2")"
+order_ok=0
+if [[ "$rc" -eq 0 ]]; then
+  python3 - "$fx2/out-commit.txt" <<'PY' && order_ok=1
+import sys
+text = open(sys.argv[1], encoding='utf-8', errors='replace').read().splitlines()
+need = [
+    'backup written to',
+    'LOGIN_SHELL_AUTOMATION=PASS',
+    'CRITICAL_OS_UNHOLD_BEGIN',
+    'TARGET_POCKET_REGISTRATION_PREFLIGHT=PASS',
+]
+idxs = []
+for n in need:
+    for i, line in enumerate(text):
+        if n in line:
+            idxs.append(i)
+            break
+    else:
+        sys.exit(1)
+sys.exit(0 if idxs == sorted(idxs) else 1)
+PY
+fi
+if [[ "$order_ok" -eq 1 ]]; then
+  pass "login shell ordering before hold/APT"
+else
+  fail "login shell ordering incorrect (rc=${rc})"
+  grep -E 'backup written|LOGIN_SHELL_AUTOMATION|CRITICAL_OS_UNHOLD_BEGIN|TARGET_POCKET' "$fx2/out-commit.txt" || true
+fi
+
+# Restore dual-account passwd for subsequent commit fixtures
+printf 'root:x:0:0:root:/root:/usr/bin/aella_cli\naella:x:1000:1000:aella:/home/aella:/usr/bin/aella_cli\n' >"$fx2/etc/passwd"
+
+# Obsolete Phase 2 hold-restore claim must be gone
+if ! grep -q 'DEFERRED_UNTIL_PHASE2_POLICY' "$SCRIPT_IN"; then
+  pass "obsolete DEFERRED_UNTIL_PHASE2_POLICY absent"
+else
+  fail "DEFERRED_UNTIL_PHASE2_POLICY still present"
 fi
 
 # --- DistUpgrade source UTF-8 / LC_ALL=C + pre-upgrade APT rollback ---
@@ -1504,8 +1643,8 @@ unset TEST_ROOT
 LOG_FILE="/dev/null"
 
 # Reboot handoff marker: restore deferred (static + harness reason)
-if grep -q 'CRITICAL_OS_HOLD_RESTORE=DEFERRED_UNTIL_PHASE2_POLICY' "$SCRIPT_IN" \
-   && grep -A5 'reboot_if_success' "$SCRIPT_IN" | grep -q 'DEFERRED_UNTIL_PHASE2_POLICY'; then
+if grep -q 'CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO' "$SCRIPT_IN" \
+   && grep -A8 'reboot_if_success' "$SCRIPT_IN" | grep -q 'CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO'; then
   pass "reboot handoff does not restore holds"
 else
   fail "reboot handoff restore policy missing"
@@ -1949,8 +2088,22 @@ grep -q 'CRITICAL_OS_HOLD_ACTION=UNHOLD_AFTER_CONFIRMATION' "$SCRIPT_IN" \
   && pass "critical hold planned-unhold policy present" || fail "critical hold planned-unhold missing"
 grep -q 'FAIL_CRITICAL_OS_UNHOLD' "$SCRIPT_IN" \
   && pass "critical OS unhold failure path present" || fail "FAIL_CRITICAL_OS_UNHOLD missing"
-grep -q 'CRITICAL_OS_HOLD_RESTORE=DEFERRED_UNTIL_PHASE2_POLICY' "$SCRIPT_IN" \
-  && pass "Phase 1 hold restore deferred marker" || fail "deferred restore marker missing"
+grep -q 'CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO' "$SCRIPT_IN" \
+  && pass "Phase 1 no auto re-hold marker" || fail "no auto re-hold marker missing"
+
+grep -q 'HTTP_META_RELEASE=NOT_PUBLISHED' "$SCRIPT_IN" \
+  && pass "optional meta-release 404 INFO marker" || fail "meta-release INFO marker missing"
+grep -q 'META_RELEASE_SOURCE=EMBEDDED_SIGNED_COPY' "$SCRIPT_IN" \
+  && pass "embedded signed meta-release source marker" || fail "embedded meta source missing"
+grep -q 'APT_REPOSITORY_AUTHENTICATION=PASS' "$SCRIPT_IN" \
+  && pass "APT repository authentication log marker" || fail "APT auth log marker missing"
+grep -q 'LOGIN_SHELL_AUTOMATION=PASS' "$SCRIPT_IN" \
+  && pass "login shell automation marker" || fail "login shell automation marker missing"
+if grep -q 'meta-release-lts not published' "$SCRIPT_IN"; then
+  fail "obsolete meta-release WARN string still present"
+else
+  pass "obsolete meta-release WARN string absent"
+fi
 if grep -nE 'die .*FAIL_CRITICAL_PACKAGE_HOLD' "$SCRIPT_IN"; then
   fail "legacy FAIL_CRITICAL_PACKAGE_HOLD hard-die still present"
 else
