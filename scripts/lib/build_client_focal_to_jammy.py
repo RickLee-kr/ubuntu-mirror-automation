@@ -19,7 +19,10 @@ import tarfile
 import tempfile
 import time
 from collections import OrderedDict
-from urllib.request import Request, urlopen
+_LIB_DIR = os.path.dirname(os.path.abspath(__file__))
+if _LIB_DIR not in sys.path:
+    sys.path.insert(0, _LIB_DIR)
+import client_build_repository as cbr
 
 
 HOP = "focal-to-jammy"
@@ -71,19 +74,6 @@ def sha256_file(path):
     return h.hexdigest()
 
 
-def http_get(url, timeout=30):
-    req = Request(url, headers={"User-Agent": "ubuntu-mirror-build-client/1.0"})
-    with urlopen(req, timeout=timeout) as resp:
-        code = getattr(resp, "status", None) or resp.getcode()
-        if int(code) != 200:
-            raise BuildError("HTTP {} for {}".format(code, url))
-        return resp.read()
-
-
-def http_get_text(url, timeout=30):
-    return http_get(url, timeout=timeout).decode("utf-8", "replace")
-
-
 def parse_release_components(release_text):
     for line in release_text.splitlines():
         if line.startswith("Components:"):
@@ -92,35 +82,6 @@ def parse_release_components(release_text):
                 raise BuildError("empty Components in Release")
             return comps
     raise BuildError("Components field missing from Release")
-
-
-def list_suites_from_mirror(mirror_base, hop):
-    """Discover suites that have a Release file under the hop ubuntu tree."""
-    base = "{}/hops/{}/ubuntu/dists".format(mirror_base.rstrip("/"), hop)
-    # Prefer local FS when available; otherwise probe known pocket names.
-    candidates = [
-        SOURCE_CODENAME,
-        SOURCE_CODENAME + "-updates",
-        SOURCE_CODENAME + "-security",
-        SOURCE_CODENAME + "-backports",
-        TARGET_CODENAME,
-        TARGET_CODENAME + "-updates",
-        TARGET_CODENAME + "-security",
-        TARGET_CODENAME + "-backports",
-    ]
-    found = []
-    for suite in candidates:
-        url = "{}/{}/Release".format(base, suite)
-        try:
-            http_get(url, timeout=15)
-            found.append(suite)
-        except Exception:
-            continue
-    if SOURCE_CODENAME not in found or TARGET_CODENAME not in found:
-        raise BuildError(
-            "required suites missing under hop (have: {})".format(",".join(found))
-        )
-    return found
 
 
 def dearmor_key(key_bytes):
@@ -641,6 +602,12 @@ def main(argv=None):
         action="store_true",
         help="emit UNSIGNED_TEST placeholder (test paths only; never artifacts/client)",
     )
+    ap.add_argument(
+        "--content-source",
+        choices=("local-fs", "http"),
+        default="local-fs",
+        help="local-fs (production default) or http (diagnostic only)",
+    )
     args = ap.parse_args(argv)
 
     project_root = os.path.abspath(args.project_root)
@@ -691,23 +658,27 @@ def main(argv=None):
     key_sha = sha256_bytes(key_bin)
     fingerprint = key_fingerprint(key_raw)
 
-    source_release = http_get_text(
-        "{}/hops/{}/ubuntu/dists/{}/Release".format(mirror_base, HOP, SOURCE_CODENAME)
-    )
-    target_release = http_get_text(
-        "{}/hops/{}/ubuntu/dists/{}/Release".format(mirror_base, HOP, TARGET_CODENAME)
-    )
-    components = parse_release_components(source_release)
-    target_components = parse_release_components(target_release)
-    if components != target_components:
-        # Prefer intersection to avoid 404s; fail if empty.
-        components = [c for c in components if c in target_components]
-        if not components:
-            raise BuildError("no shared Components between jammy and jammy Release")
-
-    suites = list_suites_from_mirror(mirror_base, HOP)
-    source_suites = [s for s in suites if s == SOURCE_CODENAME or s.startswith(SOURCE_CODENAME + "-")]
-    target_suites = [s for s in suites if s == TARGET_CODENAME or s.startswith(TARGET_CODENAME + "-")]
+    print("CLIENT_BUILD_CONTENT_SOURCE={}".format(args.content_source.upper().replace("-", "_") if args.content_source != "local-fs" else "LOCAL_FILESYSTEM"))
+    print("CLIENT_BUILD_NETWORK_REQUIRED={}".format("YES" if args.content_source == "http" else "NO"))
+    print("CLIENT_BUILD_MIRROR_URL_PURPOSE=RUNTIME_PIN_ONLY")
+    try:
+        hop_repo = cbr.LocalHopRepository(
+            selective_root,
+            HOP,
+            SOURCE_CODENAME,
+            TARGET_CODENAME,
+            mirror_base=mirror_base,
+            content_source=args.content_source,
+        )
+        build_inputs = hop_repo.load_build_inputs(key_bin)
+    except cbr.RepositoryError as exc:
+        raise BuildError(str(exc))
+    components = build_inputs["components"]
+    suites = build_inputs["suites"]
+    source_suites = build_inputs["source_suites"]
+    target_suites = build_inputs["target_suites"]
+    sample_deb_rel = build_inputs["sample_deb_rel"]
+    sample_deb_url = build_inputs["sample_deb_url"]
 
     announcements = extract_announcements(upgrader_tar, hop_out)
     meta_text = build_meta_release_lts(mirror_base, HOP)
@@ -719,56 +690,13 @@ def main(argv=None):
     up_tar_sha = sha256_file(upgrader_tar)
     up_gpg_sha = sha256_file(upgrader_gpg)
 
-    # Sample connectivity probe from *target* suite Packages (source suites are
-    # intentionally empty of discovery payloads after suite-semantics fix).
-    sample_suite = TARGET_CODENAME
-    packages_gz = http_get(
-        "{}/hops/{}/ubuntu/dists/{}/main/binary-amd64/Packages.gz".format(
-            mirror_base, HOP, sample_suite
-        )
-    )
-    sample_deb_rel = first_pool_filename_from_packages_gz(packages_gz)
-    if not sample_deb_rel:
-        raise BuildError(
-            "no pool Filename in {} Packages.gz (target suite empty?)".format(sample_suite)
-        )
-    sample_deb_url = "{}/hops/{}/ubuntu/{}".format(mirror_base, HOP, sample_deb_rel)
-
-    ready = read_ready_fields(ready_path)
+    ready = cbr.validate_ready_provenance(ready_path)
     plan_checksum = (
         ready.get("selective_plan_checksum")
         or ready.get("plan_checksum")
         or ""
     )
     discovery_checksum = ready.get("discovery_artifact_checksum") or ""
-    if not plan_checksum or not discovery_checksum:
-        raise BuildError(
-            "READY missing plan/discovery checksums (refusing to invent values)"
-        )
-
-    # Verify InRelease with dearmored key
-    inrelease = http_get(
-        "{}/hops/{}/ubuntu/dists/{}/InRelease".format(mirror_base, HOP, SOURCE_CODENAME)
-    )
-    with tempfile.TemporaryDirectory(prefix="inrel-") as td:
-        key_f = os.path.join(td, "key.gpg")
-        ir_f = os.path.join(td, "InRelease")
-        with open(key_f, "wb") as fh:
-            fh.write(key_bin)
-        with open(ir_f, "wb") as fh:
-            fh.write(inrelease)
-        proc = subprocess.run(
-            ["gpgv", "--keyring", key_f, ir_f],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        if proc.returncode != 0:
-            raise BuildError(
-                "InRelease signature verification failed: {}".format(
-                    proc.stderr.decode()
-                )
-            )
 
     generated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     repo_base = "{}/hops/{}/ubuntu".format(mirror_base, HOP)
@@ -940,12 +868,23 @@ def main(argv=None):
     script_body = render_script(template, replacements)
     assert_no_b2f_residuals("rendered script", script_body)
     assert_no_b2f_residuals("meta-release", meta_text)
-    if fingerprint.upper() != REPOSITORY_SIGNER_FINGERPRINT:
+    # Local-fs trust root is selective key + InRelease gpgv (already done).
+    # Optional pin via REPOSITORY_SIGNER_FINGERPRINT env for production hardening.
+    expected_repo_fpr = (
+        os.environ.get("REPOSITORY_SIGNER_FINGERPRINT", "").strip().upper()
+        or (
+            REPOSITORY_SIGNER_FINGERPRINT
+            if os.environ.get("REQUIRE_PRODUCTION_REPO_FINGERPRINT", "") == "1"
+            else ""
+        )
+    )
+    if expected_repo_fpr and fingerprint.upper() != expected_repo_fpr:
         raise BuildError(
             "repository signer fingerprint mismatch: got {} want {}".format(
-                fingerprint, REPOSITORY_SIGNER_FINGERPRINT
+                fingerprint, expected_repo_fpr
             )
         )
+    print("REPOSITORY_SIGNER_FINGERPRINT={}".format(fingerprint))
     script_name = "dp-offline-upgrade-focal-to-jammy.sh"
     script_path = os.path.join(out_dir, script_name)
     # also place under hop dir; production signed builds also refresh client/

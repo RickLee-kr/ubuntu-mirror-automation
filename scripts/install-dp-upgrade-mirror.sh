@@ -539,7 +539,7 @@ Phases (names appear as each step starts):
  11. Building Local OS Upgrade Clients
  12. Signing Local OS Upgrade Clients
  13. Publishing Local Client Set
- 14. Verifying Local HTTP Clients
+ 14. Verifying Local Client Files
 EOF
   fi
   cat <<EOF
@@ -566,6 +566,17 @@ EOF
     printf 'Download and Prepare finished: PASS\n'
   else
     printf 'Download and Prepare finished: FAIL (see log above)\n'
+    # Persist evidence path into the result transcript (GUI tmp is deleted after).
+    {
+      echo
+      echo "---- client finalization evidence (persistent) ----"
+      grep -E 'CLIENT_FINALIZER_EVIDENCE_PATH=|CLIENT_FINALIZER_ERROR_SUMMARY=|CLIENT_BUILD_FAILED_|CLIENT_FINALIZER_FAILED_' "$tmp" 2>/dev/null || true
+      evid="$(grep -E 'CLIENT_FINALIZER_EVIDENCE_PATH=' "$tmp" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+      if [[ -n "$evid" && -f "$evid" ]]; then
+        echo "EVIDENCE_TAIL:"
+        tail -n 40 "$evid" 2>/dev/null || true
+      fi
+    } >>"$tmp"
   fi
   printf 'Press Enter to return to the menu...\n'
   read -r _ || true

@@ -2,6 +2,7 @@
 # P0 regression: OS Core packages without state/READY must still materialize a
 # verified selective READY provenance so client finalization can proceed.
 # Proves the 35d4cc2 contract contradiction (OS_MIRROR_READY=PASS but READY missing).
+# UNIT_ONLY=YES — mocks engine_rebuild_publish_local_client_set; REAL_CLIENT_BUILD_COVERED=NO
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -12,6 +13,10 @@ OS_CORE_PY="${ROOT}/scripts/lib/os_core_package.py"
 FAIL=0
 pass() { echo "  PASS: $*"; }
 fail() { echo "  FAIL: $*"; FAIL=1; }
+
+echo "=== test_os_core_selective_ready_provenance ==="
+echo "UNIT_ONLY=YES"
+echo "REAL_CLIENT_BUILD_COVERED=NO"
 
 TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }

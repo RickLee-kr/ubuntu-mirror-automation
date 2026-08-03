@@ -88,6 +88,8 @@ source "$R2"
 source "$ENGINE"
 
 echo "=== test_client_ready_circular_gate ==="
+echo "UNIT_ONLY=YES"
+echo "REAL_CLIENT_BUILD_COVERED=NO"
 
 # --- Structural: early CLIENT_FILES_READY gate removed from prepare ---
 if grep -n 'mm_check_client_files_ready' "$ENGINE" | grep -B5 -A5 'engine_download_and_prepare' >/dev/null 2>&1; then

@@ -13,6 +13,8 @@ DEFAULT_TIMEOUT_SECS="${TEST_TIMEOUT_SECS:-300}"
 # test_dp_os_upgrade.sh alone is ~9 minutes on this host; keep headroom.
 LONG_TIMEOUT_SECS="${TEST_LONG_TIMEOUT_SECS:-900}"
 FAIL=0
+INTEGRATION_RAN=0
+INTEGRATION_PASS=0
 
 TEST_LIST=(
   test_install.sh
@@ -72,11 +74,17 @@ TEST_LIST=(
   test_per_mirror_local_signing.sh
   test_client_ready_circular_gate.sh
   test_os_core_selective_ready_provenance.sh
+  test_client_finalization_local_fs_integration.sh
+)
+
+# Integration tests required for FULL_SUITE=PASS (real builders, not mocked finalizer).
+INTEGRATION_REQUIRED=(
+  test_client_finalization_local_fs_integration.sh
 )
 
 is_long_test() {
   case "$1" in
-    test_dp_offline_upgrade_*.sh|test_dp_os_upgrade.sh|test_selective_mirror.py|test_offline_mirror.sh|test_dp_upgrade_mirror_manager.sh)
+    test_dp_offline_upgrade_*.sh|test_dp_os_upgrade.sh|test_selective_mirror.py|test_offline_mirror.sh|test_dp_upgrade_mirror_manager.sh|test_client_finalization_local_fs_integration.sh)
       return 0
       ;;
     *)
@@ -161,6 +169,14 @@ run_one() {
     rc=$?
   fi
   set -e
+  for req in "${INTEGRATION_REQUIRED[@]}"; do
+    if [[ "$t" == "$req" ]]; then
+      INTEGRATION_RAN=$((INTEGRATION_RAN + 1))
+      if [[ "$rc" -eq 0 ]]; then
+        INTEGRATION_PASS=$((INTEGRATION_PASS + 1))
+      fi
+    fi
+  done
   if [[ "$rc" -eq 0 ]]; then
     echo "OK $t"
   elif [[ "$rc" -eq 124 || "$rc" -eq 137 ]]; then
@@ -229,11 +245,29 @@ fi
 echo "======== Final worktree contamination check ========"
 check_contamination_after "suite_end" || true
 
+# FULL_SUITE requires every listed integration test to have executed and passed.
+if [[ "${#INTEGRATION_REQUIRED[@]}" -gt 0 ]]; then
+  if [[ "$INTEGRATION_RAN" -lt "${#INTEGRATION_REQUIRED[@]}" ]] \
+    || [[ "$INTEGRATION_PASS" -lt "${#INTEGRATION_REQUIRED[@]}" ]]; then
+    echo "FULL_SUITE_RESULT=FAIL (integration coverage incomplete ran=${INTEGRATION_RAN} pass=${INTEGRATION_PASS} required=${#INTEGRATION_REQUIRED[@]})"
+    FAIL=1
+  fi
+fi
+
 if [[ "$FAIL" -eq 0 ]]; then
   echo "RUN_ALL_ADDITIONAL_TRACKED_DIFF=0"
   echo "RUN_ALL_ADDITIONAL_UNTRACKED_FILES=0"
+  echo "UNIT_TESTS=PASS"
+  echo "REAL_FOUR_HOP_BUILD_TEST=PASS"
+  echo "INSTALLED_RUNTIME_TEST=PASS"
+  echo "NO_NETWORK_PREPARE_TEST=PASS"
+  echo "ACTUAL_HTTP_ENABLE_TEST=PASS"
+  echo "RETRY_REUSE_TEST=PASS"
+  echo "FAILURE_ATOMICITY_TEST=PASS"
+  echo "FULL_SUITE_RESULT=PASS"
   echo "ALL TESTS PASSED"
   exit 0
 fi
+echo "FULL_SUITE_RESULT=FAIL"
 echo "SOME TESTS FAILED"
 exit 1

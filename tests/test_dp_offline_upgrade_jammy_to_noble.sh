@@ -1581,12 +1581,14 @@ BUILT=""
 if [[ -f "${SEL_ROOT}/keys/ubuntu-mirror-selective.gpg" \
    && -f "${SEL_ROOT}/current/shared/offline/release-upgraders/noble/noble.tar.gz" \
    && -f "${SEL_ROOT}/state/READY" ]]; then
-  if curl -fsS --connect-timeout 3 --max-time 5 -o /dev/null "${MIRROR_BASE}/hops/jammy-to-noble/ubuntu/dists/jammy/Release"; then
+  if [[ -f "${SEL_ROOT}/hops/jammy-to-noble/ubuntu/dists/jammy/Release" ]] \
+    || [[ -f "${SEL_ROOT}/current/hops/jammy-to-noble/ubuntu/dists/jammy/Release" ]]; then
     set +e
     python3 "$BUILD_PY" \
       --project-root "$ROOT" \
       --mirror-base "$MIRROR_BASE" \
       --selective-root "$SEL_ROOT" \
+      --content-source local-fs \
       --output-dir "$OUT_DIR" \
       --deploy-nginx-root "${OUT_DIR}/nginx-client" \
       >"${OUT_DIR}/build.log" 2>&1

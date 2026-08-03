@@ -1579,12 +1579,14 @@ BUILT=""
 if [[ -f "${SEL_ROOT}/keys/ubuntu-mirror-selective.gpg" \
    && -f "${SEL_ROOT}/current/shared/offline/release-upgraders/bionic/bionic.tar.gz" \
    && -f "${SEL_ROOT}/state/READY" ]]; then
-  if curl -fsS --connect-timeout 3 --max-time 5 -o /dev/null "${MIRROR_BASE}/hops/bionic-to-focal/ubuntu/dists/bionic/Release"; then
+  if [[ -f "${SEL_ROOT}/hops/bionic-to-focal/ubuntu/dists/bionic/Release" ]] \
+    || [[ -f "${SEL_ROOT}/current/hops/bionic-to-focal/ubuntu/dists/bionic/Release" ]]; then
     set +e
     python3 "$BUILD_PY" \
       --project-root "$ROOT" \
       --mirror-base "$MIRROR_BASE" \
       --selective-root "$SEL_ROOT" \
+      --content-source local-fs \
       --output-dir "$OUT_DIR" \
       --deploy-nginx-root "${OUT_DIR}/nginx-client" \
       >"${OUT_DIR}/build.log" 2>&1

@@ -39,6 +39,7 @@ mkdir -p \
   "${HTTP_ROOT}/hops/xenial-to-bionic/ubuntu/pool/main/a/hello"
 
 cp "$BUILD_PY" "${PROJ}/scripts/lib/"
+cp "${ROOT}/scripts/lib/client_build_repository.py" "${PROJ}/scripts/lib/"
 cp "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh.in" "${PROJ}/client/"
 cp "${ROOT}/client/lib/dp-offline-destructive-confirmation.sh" "${PROJ}/client/lib/"
 # Tracked client script fingerprint (must stay unchanged by builds)
@@ -106,7 +107,7 @@ UP_TAR="${SEL_ROOT}/current/shared/offline/release-upgraders/bionic/bionic.tar.g
 ( cd "$UPG" && tar -czf "$UP_TAR" ./ReleaseAnnouncement ./ReleaseAnnouncement.html )
 gpg --homedir "$GPG_SEL" --batch --yes --detach-sign -o "${UP_TAR}.gpg" "$UP_TAR"
 
-# Local hop mirror Release/InRelease/Packages.gz
+# Local hop mirror Release/InRelease/Packages.gz under SELECTIVE (local-fs content source)
 write_release() {
   local suite="$1" dest="$2"
   cat >"$dest" <<EOF
@@ -119,15 +120,16 @@ Components: main restricted universe multiverse
 Description: Ubuntu ${suite} test fixture
 EOF
 }
+HOP_UBUNTU="${SEL_ROOT}/hops/xenial-to-bionic/ubuntu"
 for suite in xenial bionic; do
-  d="${HTTP_ROOT}/hops/xenial-to-bionic/ubuntu/dists/${suite}"
+  d="${HOP_UBUNTU}/dists/${suite}"
   mkdir -p "${d}/main/binary-amd64"
   write_release "$suite" "${d}/Release"
   gpg --homedir "$GPG_SEL" --batch --yes --clearsign \
     -o "${d}/InRelease" "${d}/Release"
 done
 
-python3 - "$HTTP_ROOT" <<'PY'
+python3 - "$HOP_UBUNTU" <<'PY'
 import gzip, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 body = (
@@ -140,13 +142,22 @@ body = (
     + b"\n"
 )
 for suite in ("xenial", "bionic"):
-    p = root / f"hops/xenial-to-bionic/ubuntu/dists/{suite}/main/binary-amd64/Packages.gz"
+    p = root / f"dists/{suite}/main/binary-amd64/Packages.gz"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(gzip.compress(body))
-deb = root / "hops/xenial-to-bionic/ubuntu/pool/main/a/hello/hello_2.10_amd64.deb"
+deb = root / "pool/main/a/hello/hello_2.10_amd64.deb"
 deb.parent.mkdir(parents=True, exist_ok=True)
 deb.write_bytes(b"x")
 PY
+
+# Also mirror under HTTP_ROOT for optional diagnostic --content-source http tests
+mkdir -p "${HTTP_ROOT}/hops/xenial-to-bionic"
+cp -a "${HOP_UBUNTU}" "${HTTP_ROOT}/hops/xenial-to-bionic/ubuntu"
+
+# Upgrader under shared/ (preferred) in addition to legacy current/
+mkdir -p "${SEL_ROOT}/shared/offline/release-upgraders/bionic"
+cp -a "${SEL_ROOT}/current/shared/offline/release-upgraders/bionic/." \
+  "${SEL_ROOT}/shared/offline/release-upgraders/bionic/" 2>/dev/null || true
 
 PORT_FILE="${WORKDIR}/http.port"
 python3 - "$HTTP_ROOT" "$PORT_FILE" <<'PY' &
@@ -208,6 +219,7 @@ fi
 NOKEY_ROOT="${WORKDIR}/nokey-project"
 mkdir -p "${NOKEY_ROOT}/client/lib" "${NOKEY_ROOT}/scripts/lib" "${NOKEY_ROOT}/config"
 cp "$BUILD_PY" "${NOKEY_ROOT}/scripts/lib/"
+cp "${ROOT}/scripts/lib/client_build_repository.py" "${NOKEY_ROOT}/scripts/lib/"
 cp "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh.in" "${NOKEY_ROOT}/client/"
 cp "${ROOT}/client/lib/dp-offline-destructive-confirmation.sh" "${NOKEY_ROOT}/client/lib/"
 set +e

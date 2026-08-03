@@ -2,9 +2,11 @@
 # scripts/rebuild-publish-clients.sh — build/sign/publish host-pinned clients
 # for THIS Mirror Server using its local signing keypair.
 #
+# Content for client builds is read from the local selective filesystem only.
+# MIRROR_HTTP_URL is a runtime URL pin embedded into clients — not used to
+# fetch Release/Packages during prepare/build.
+#
 # Invoked by install/bootstrap (and Mirror Manager after OS Core is READY).
-# Builds all four OS-hop clients against MIRROR_HTTP_URL, signs with the local
-# private key, verifies, then atomically replaces /client/.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,13 +17,15 @@ source "${ROOT}/scripts/lib/client_mirror_gates.sh"
 # shellcheck source=lib/local_client_signing.sh
 source "${ROOT}/scripts/lib/local_client_signing.sh"
 
-ARTIFACT_DIR="${ARTIFACT_DIR:-${ROOT}/artifacts/client}"
-CLIENT_HTTP_ROOT="${CLIENT_HTTP_ROOT:-${BASE_PATH:-/var/spool/apt-mirror}/client}"
-SELECTIVE_ROOT="${SELECTIVE_ROOT:-${SELECTIVE_MIRROR_ROOT:-${BASE_PATH:-/var/spool/apt-mirror}/selective}}"
+BASE_PATH="${BASE_PATH:-/var/spool/apt-mirror}"
+CLIENT_HTTP_ROOT="${CLIENT_HTTP_ROOT:-${BASE_PATH}/client}"
+SELECTIVE_ROOT="${SELECTIVE_ROOT:-${SELECTIVE_MIRROR_ROOT:-${BASE_PATH}/selective}}"
+CACHE_ROOT="${CACHE_ROOT:-${BASE_PATH}/.install-cache}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 SKIP_DEPLOY="${SKIP_DEPLOY:-0}"
 SKIP_HTTP_VERIFY="${SKIP_HTTP_VERIFY:-0}"
 REQUIRE_SELECTIVE_READY="${REQUIRE_SELECTIVE_READY:-1}"
+CONTENT_SOURCE="${CONTENT_SOURCE:-local-fs}"
 
 HOPS=(
   xenial-to-bionic
@@ -44,10 +48,12 @@ Hops: ${HOPS[*]}
 
 Environment:
   RESOLVED_MIRROR_HOST_IPV4   override host IPv4
-  MIRROR_HTTP_URL             persisted mirror base
+  MIRROR_HTTP_URL             runtime URL pin only (not content acquisition)
   LOCAL_CLIENT_SIGNING_DIR    key directory (default /etc/ubuntu-mirror/client-signing)
   CLIENT_HTTP_ROOT            nginx /client/ destination
-  ARTIFACT_DIR                staging build output
+  ARTIFACT_DIR                override staging (default: cache/client-build/<run-id>)
+  CONTENT_SOURCE              local-fs (default) or http (diagnostic only)
+  CLIENT_FINALIZATION_EVIDENCE_LOG  optional persistent evidence path
 EOF
 }
 
@@ -59,67 +65,167 @@ while [[ $# -gt 0 ]]; do
     --skip-build) SKIP_BUILD=1; shift ;;
     --skip-deploy) SKIP_DEPLOY=1; shift ;;
     --skip-http-verify) SKIP_HTTP_VERIFY=1; shift ;;
+    --content-source)
+      CONTENT_SOURCE="${2:?}"
+      shift 2
+      ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 [[ "${#selected[@]}" -gt 0 ]] && HOPS=("${selected[@]}")
 
-echo "CENTRAL_PRODUCTION_PRIVATE_KEY_REQUIRED=NO"
-echo "LOCAL_MIRROR_KEYPAIR_REQUIRED=YES"
-echo "OUT_OF_BAND_FINGERPRINT_REQUIRED=NO"
-echo "TARGET_INSTALL_GENERATES_OR_REUSES_LOCAL_PRIVATE_KEY=YES"
-echo "TARGET_INSTALL_REBUILDS_CLIENTS=YES"
-echo "TARGET_INSTALL_SIGNS_CLIENTS=YES"
-echo "PARTIAL_CLIENT_DEPLOY_ALLOWED=NO"
+if [[ "$CONTENT_SOURCE" != "local-fs" && "$CONTENT_SOURCE" != "http" ]]; then
+  echo "CONTENT_SOURCE=INVALID value=${CONTENT_SOURCE}" >&2
+  exit 2
+fi
+# Authoritative production path always forces local-fs unless explicitly overridden
+# for diagnostics (CONTENT_SOURCE_FORCE=http).
+if [[ "${CONTENT_SOURCE_FORCE:-}" != "http" ]]; then
+  CONTENT_SOURCE=local-fs
+fi
 
-mirror_host_resolve_and_log || {
-  echo "REBUILD_PUBLISH_CLIENTS=FAIL mirror host IPv4 could not be resolved" >&2
-  exit 1
+CLIENT_BUILD_GENERATION_ID="${CLIENT_BUILD_GENERATION_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+if [[ -z "${ARTIFACT_DIR:-}" ]]; then
+  ARTIFACT_DIR="${CACHE_ROOT}/client-build/${CLIENT_BUILD_GENERATION_ID}"
+fi
+
+EVIDENCE_LOG="${CLIENT_FINALIZATION_EVIDENCE_LOG:-}"
+if [[ -z "$EVIDENCE_LOG" ]]; then
+  if [[ -n "${MM_STATE_DIR:-}" ]]; then
+    EVIDENCE_LOG="${MM_STATE_DIR}/client-finalization-${CLIENT_BUILD_GENERATION_ID}.log"
+  else
+    mkdir -p /var/log/ubuntu-mirror-automation 2>/dev/null || true
+    if [[ -d /var/log/ubuntu-mirror-automation ]] && [[ -w /var/log/ubuntu-mirror-automation ]]; then
+      EVIDENCE_LOG="/var/log/ubuntu-mirror-automation/client-finalization-${CLIENT_BUILD_GENERATION_ID}.log"
+    else
+      EVIDENCE_LOG="${CACHE_ROOT}/client-build/evidence-${CLIENT_BUILD_GENERATION_ID}.log"
+      mkdir -p "$(dirname "$EVIDENCE_LOG")"
+    fi
+  fi
+fi
+mkdir -p "$(dirname "$EVIDENCE_LOG")"
+: >"$EVIDENCE_LOG"
+chmod 0600 "$EVIDENCE_LOG" 2>/dev/null || true
+
+evidence() {
+  # shellcheck disable=SC2034
+  local line
+  line="$(printf '%s\n' "$*")"
+  # Prefer mm_redact when available from caller environment.
+  if declare -F mm_redact >/dev/null 2>&1; then
+    printf '%s\n' "$line" | mm_redact >>"$EVIDENCE_LOG" 2>/dev/null || printf '%s\n' "$line" >>"$EVIDENCE_LOG"
+  else
+    printf '%s\n' "$line" >>"$EVIDENCE_LOG"
+  fi
 }
-MIRROR_BASE="${RESOLVED_MIRROR_BASE_URL%/}"
-echo "RESOLVED_MIRROR_BASE_URL=${MIRROR_BASE}"
+
+evidence_echo() {
+  evidence "$@"
+  printf '%s\n' "$@"
+}
+
+FAILED_HOP=""
+FAILED_STAGE=""
+LIVE_BACKUP=""
+STAGE_DIR=""
+cleanup() {
+  if [[ -n "${STAGE_DIR:-}" && -d "${STAGE_DIR:-}" ]]; then
+    rm -rf "$STAGE_DIR"
+  fi
+  return 0
+}
+trap cleanup EXIT
+
+fail_build() {
+  local hop="${1:-}"
+  local stage="${2:-}"
+  local msg="${3:-}"
+  local rc="${4:-1}"
+  FAILED_HOP="$hop"
+  FAILED_STAGE="$stage"
+  evidence "CLIENT_BUILD_FAILED_HOP=${hop}"
+  evidence "CLIENT_BUILD_FAILED_STAGE=${stage}"
+  evidence "CLIENT_BUILD_EXIT_CODE=${rc}"
+  evidence "CLIENT_BUILD_ERROR=${msg}"
+  evidence "CLIENT_FINALIZER_EVIDENCE_PATH=${EVIDENCE_LOG}"
+  echo "CLIENT_BUILD_FAILED_HOP=${hop}" >&2
+  echo "CLIENT_BUILD_FAILED_STAGE=${stage}" >&2
+  echo "CLIENT_BUILD_EXIT_CODE=${rc}" >&2
+  echo "CLIENT_BUILD_ERROR=${msg}" >&2
+  echo "CLIENT_FINALIZER_EVIDENCE_PATH=${EVIDENCE_LOG}" >&2
+  if [[ -s "$EVIDENCE_LOG" ]]; then
+    echo "CLIENT_FINALIZER_ERROR_SUMMARY=$(tail -n 5 "$EVIDENCE_LOG" | tr '\n' '|' | sed 's/|$//')" >&2
+  fi
+  exit "$rc"
+}
+
+evidence_echo "CENTRAL_PRODUCTION_PRIVATE_KEY_REQUIRED=NO"
+evidence_echo "LOCAL_MIRROR_KEYPAIR_REQUIRED=YES"
+evidence_echo "OUT_OF_BAND_FINGERPRINT_REQUIRED=NO"
+evidence_echo "TARGET_INSTALL_GENERATES_OR_REUSES_LOCAL_PRIVATE_KEY=YES"
+evidence_echo "TARGET_INSTALL_REBUILDS_CLIENTS=YES"
+evidence_echo "TARGET_INSTALL_SIGNS_CLIENTS=YES"
+evidence_echo "PARTIAL_CLIENT_DEPLOY_ALLOWED=NO"
+evidence_echo "CLIENT_BUILD_GENERATION_ID=${CLIENT_BUILD_GENERATION_ID}"
+evidence_echo "CLIENT_BUILD_STAGING_PATH=${ARTIFACT_DIR}"
+evidence_echo "CLIENT_BUILD_CONTENT_SOURCE=LOCAL_FILESYSTEM"
+evidence_echo "CLIENT_BUILD_NETWORK_REQUIRED=NO"
+evidence_echo "CLIENT_FINALIZER_EVIDENCE_PATH=${EVIDENCE_LOG}"
+
+# Hermetic/local-fs builds may pin an unreachable documentation IP (RFC 5737)
+# without requiring that address on a local interface. Production leaves this unset.
+if [[ "${CLIENT_BUILD_PIN_URL_ONLY:-0}" == "1" ]]; then
+  pin_url="${RESOLVED_MIRROR_BASE_URL:-${MIRROR_HTTP_URL:-}}"
+  pin_url="${pin_url%/}"
+  if [[ -z "$pin_url" ]]; then
+    fail_build "" "mirror_resolve" "CLIENT_BUILD_PIN_URL_ONLY requires MIRROR_HTTP_URL" 1
+  fi
+  RESOLVED_MIRROR_BASE_URL="$pin_url"
+  MIRROR_BASE="$pin_url"
+  evidence_echo "MIRROR_IP_RESOLUTION_SOURCE=PIN_URL_ONLY"
+  evidence_echo "RESOLVED_MIRROR_BASE_URL=${MIRROR_BASE}"
+else
+  mirror_host_resolve_and_log || {
+    fail_build "" "mirror_resolve" "mirror host IPv4 could not be resolved" 1
+  }
+  MIRROR_BASE="${RESOLVED_MIRROR_BASE_URL%/}"
+  evidence_echo "RESOLVED_MIRROR_BASE_URL=${MIRROR_BASE}"
+fi
+evidence_echo "CLIENT_BUILD_MIRROR_URL_PURPOSE=RUNTIME_PIN_ONLY"
 
 local_signing_ensure_keypair || {
-  echo "REBUILD_PUBLISH_CLIENTS=FAIL local signing keypair unavailable" >&2
-  exit 1
+  fail_build "" "signing_keypair" "local signing keypair unavailable" 1
 }
 local_signing_export_build_env
-echo "LOCAL_SIGNING_KEY_PATH=${LOCAL_SIGNING_PRIVATE_KEY}"
-echo "LOCAL_PUBLIC_KEY_PATH=${LOCAL_SIGNING_PUBLIC_KEY}"
-echo "LOCAL_KEY_FINGERPRINT=${LOCAL_KEY_FINGERPRINT}"
+evidence_echo "LOCAL_SIGNING_KEY_PATH=${LOCAL_SIGNING_PRIVATE_KEY}"
+evidence_echo "LOCAL_PUBLIC_KEY_PATH=${LOCAL_SIGNING_PUBLIC_KEY}"
+evidence_echo "LOCAL_KEY_FINGERPRINT=${LOCAL_KEY_FINGERPRINT}"
 
 if [[ "$REQUIRE_SELECTIVE_READY" == "1" ]]; then
   if [[ ! -f "${SELECTIVE_ROOT}/state/READY" ]]; then
-    echo "SELECTIVE_READY=MISSING path=${SELECTIVE_ROOT}/state/READY" >&2
-    echo "REBUILD_PUBLISH_CLIENTS=FAIL OS Core/selective mirror not ready" >&2
-    exit 1
+    fail_build "" "selective_ready" "OS Core/selective mirror not ready path=${SELECTIVE_ROOT}/state/READY" 1
   fi
   if [[ ! -f "${SELECTIVE_ROOT}/keys/ubuntu-mirror-selective.gpg" ]]; then
-    echo "SELECTIVE_KEY=MISSING" >&2
-    echo "REBUILD_PUBLISH_CLIENTS=FAIL" >&2
-    exit 1
+    fail_build "" "selective_key" "SELECTIVE_KEY=MISSING" 1
   fi
 fi
 
 hop_script_name() { printf 'dp-offline-upgrade-%s.sh\n' "$1"; }
 
-# Preserve existing HTTP set until the full new set verifies.
-LIVE_BACKUP=""
-STAGE_DIR=""
-cleanup() {
-  [[ -n "${STAGE_DIR:-}" && -d "${STAGE_DIR:-}" ]] && rm -rf "$STAGE_DIR"
-}
-trap cleanup EXIT
+# Fresh empty generation directory for this run.
+rm -rf "$ARTIFACT_DIR"
+mkdir -p "$ARTIFACT_DIR"
 
 if [[ "$SKIP_BUILD" == "1" ]]; then
-  echo "CLIENT_REBUILD=SKIPPED"
+  evidence_echo "CLIENT_REBUILD=SKIPPED"
 else
-  mkdir -p "$ARTIFACT_DIR"
   for hop in "${HOPS[@]}"; do
     builder="$(hop_builder_py "$hop")"
-    [[ -f "$builder" ]] || { echo "missing builder ${builder}" >&2; exit 1; }
-    echo "CLIENT_REBUILD_START=${hop} mirror_base=${MIRROR_BASE}"
+    [[ -f "$builder" ]] || fail_build "$hop" "builder_missing" "missing builder ${builder}" 1
+    evidence_echo "CLIENT_BUILD_START hop=${hop}"
+    echo "CLIENT_REBUILD_START=${hop} mirror_base=${MIRROR_BASE} content_source=local-fs"
+    set +e
     env \
       CLIENT_SIGNING_PRIVATE_KEY="$LOCAL_SIGNING_PRIVATE_KEY" \
       CLIENT_SIGNING_PUBLIC_KEY="$LOCAL_SIGNING_PUBLIC_KEY" \
@@ -129,32 +235,36 @@ else
         --mirror-base "$MIRROR_BASE" \
         --selective-root "$SELECTIVE_ROOT" \
         --output-dir "$ARTIFACT_DIR" \
+        --content-source local-fs \
         --signing-private-key "$LOCAL_SIGNING_PRIVATE_KEY" \
         --signing-public-key "$LOCAL_SIGNING_PUBLIC_KEY" \
-      || {
-        echo "CLIENT_REBUILD=FAIL hop=${hop}" >&2
-        echo "CLIENT_SET_BUILD_COMPLETE=NO" >&2
-        exit 1
-      }
+      2>&1 | tee -a "$EVIDENCE_LOG"
+    rc=${PIPESTATUS[0]}
+    set -e
+    if [[ "$rc" -ne 0 ]]; then
+      fail_build "$hop" "build" "python builder failed hop=${hop}" "$rc"
+    fi
+    evidence_echo "CLIENT_BUILD_COMPLETE hop=${hop}"
     echo "CLIENT_REBUILD=PASS hop=${hop}"
   done
+  evidence_echo "CLIENT_SET_BUILD_COMPLETE=YES"
+  evidence_echo "INSTALL_BUILDS_LOCAL_CLIENT_SET=YES"
   echo "CLIENT_SET_BUILD_COMPLETE=YES"
   echo "INSTALL_BUILDS_LOCAL_CLIENT_SET=YES"
 fi
 
 for hop in "${HOPS[@]}"; do
   artifact="${ARTIFACT_DIR}/$(hop_script_name "$hop")"
-  [[ -f "$artifact" ]] || { echo "missing artifact ${artifact}" >&2; exit 1; }
+  [[ -f "$artifact" ]] || fail_build "$hop" "artifact_missing" "missing artifact ${artifact}" 1
   client_assert_mirror_base_match "$artifact" "$MIRROR_BASE" || {
-    echo "HOST_PIN_GATE=FAIL hop=${hop}" >&2
-    exit 1
+    fail_build "$hop" "host_pin_gate" "HOST_PIN_GATE=FAIL hop=${hop}" 1
   }
 done
 
 # Signature verification against the local public key for every hop.
 for hop in "${HOPS[@]}"; do
   artifact="${ARTIFACT_DIR}/$(hop_script_name "$hop")"
-  if ! python3 - "$ROOT" "$artifact" "$LOCAL_KEY_FINGERPRINT" <<'PY'
+  if ! python3 - "$ROOT" "$artifact" "$LOCAL_KEY_FINGERPRINT" <<'PY' 2>>"$EVIDENCE_LOG"
 import importlib.util, sys
 root, artifact, want = sys.argv[1:4]
 mod_path = root + "/scripts/lib/build_client_xenial_to_bionic.py"
@@ -165,11 +275,17 @@ info = mod.verify_client_artifact_signature(artifact, allowed_fingerprint=want)
 print("LOCAL_SIGNATURE_VERIFY=PASS fingerprint=%s" % info["fingerprint"])
 PY
   then
-    echo "LOCAL_SIGNATURE_VERIFY=FAIL hop=${hop}" >&2
-    echo "CLIENT_SET_SIGN_COMPLETE=NO" >&2
-    exit 1
+    fail_build "$hop" "signing_verify" "LOCAL_SIGNATURE_VERIFY=FAIL hop=${hop}" 1
   fi
 done
+evidence_echo "CLIENT_SET_SIGN_COMPLETE=YES"
+evidence_echo "INSTALL_SIGNS_LOCAL_CLIENT_SET=YES"
+evidence_echo "LOCAL_MANIFEST_SIGNING=PASS"
+evidence_echo "LOCAL_PUBLIC_KEY_EXPORT=PASS"
+evidence_echo "LOCAL_SIGNATURE_VERIFY=PASS"
+evidence_echo "ALL_FOUR_CLIENTS_BUILT=YES"
+evidence_echo "ALL_FOUR_CLIENTS_SIGNED=YES"
+evidence_echo "ALL_FOUR_CLIENTS_SIGNATURE_VALID=YES"
 echo "CLIENT_SET_SIGN_COMPLETE=YES"
 echo "INSTALL_SIGNS_LOCAL_CLIENT_SET=YES"
 echo "LOCAL_MANIFEST_SIGNING=PASS"
@@ -180,6 +296,8 @@ echo "ALL_FOUR_CLIENTS_SIGNED=YES"
 echo "ALL_FOUR_CLIENTS_SIGNATURE_VALID=YES"
 
 if [[ "$SKIP_DEPLOY" == "1" ]]; then
+  evidence_echo "CLIENT_DEPLOY=SKIPPED"
+  evidence_echo "REBUILD_PUBLISH_CLIENTS=PASS"
   echo "CLIENT_DEPLOY=SKIPPED"
   echo "REBUILD_PUBLISH_CLIENTS=PASS"
   exit 0
@@ -225,69 +343,97 @@ if [[ -d "${ROOT}/client/lib" ]]; then
 fi
 
 local_signing_assert_private_not_published "$STAGE_DIR" || {
-  echo "CLIENT_SET_DEPLOY_ATOMIC=NO private key staged for HTTP" >&2
-  exit 1
+  fail_build "" "private_key_staged" "CLIENT_SET_DEPLOY_ATOMIC=NO private key staged for HTTP" 1
 }
 
 # Final verify on staged tree before cutover.
 for hop in "${HOPS[@]}"; do
   name="$(hop_script_name "$hop")"
   ( cd "$STAGE_DIR" && sha256sum -c "${name}.sha256" >/dev/null ) || {
-    echo "CLIENT_SET_VERIFY_COMPLETE=NO checksum ${name}" >&2
-    exit 1
+    fail_build "$hop" "prepublish_checksum" "CLIENT_SET_VERIFY_COMPLETE=NO checksum ${name}" 1
   }
-  client_assert_mirror_base_match "${STAGE_DIR}/${name}" "$MIRROR_BASE" || exit 1
+  client_assert_mirror_base_match "${STAGE_DIR}/${name}" "$MIRROR_BASE" || {
+    fail_build "$hop" "prepublish_pin" "prepublish pin gate failed" 1
+  }
 done
+evidence_echo "CLIENT_SET_PREPUBLISH_VERIFY=PASS"
+evidence_echo "CLIENT_SET_VERIFY_COMPLETE=YES"
+evidence_echo "ALL_FOUR_CLIENTS_PREPUBLISH_VERIFIED=YES"
+echo "CLIENT_SET_PREPUBLISH_VERIFY=PASS"
 echo "CLIENT_SET_VERIFY_COMPLETE=YES"
+echo "ALL_FOUR_CLIENTS_PREPUBLISH_VERIFIED=YES"
 
-# Atomic directory swap — leave previous set untouched on any prior failure.
-if [[ -d "$CLIENT_HTTP_ROOT" ]] && compgen -G "${CLIENT_HTTP_ROOT}/dp-offline-upgrade-*.sh" >/dev/null 2>&1; then
-  LIVE_BACKUP="${CLIENT_HTTP_ROOT}.prev.$$"
-  mv "$CLIENT_HTTP_ROOT" "$LIVE_BACKUP"
-else
-  rm -rf "$CLIENT_HTTP_ROOT"
+# Atomic directory swap with rollback-safe helper.
+set +e
+swap_out="$(python3 "${ROOT}/scripts/lib/atomic_dir_swap.py" \
+  --stage-dir "$STAGE_DIR" \
+  --live-dir "$CLIENT_HTTP_ROOT" 2>&1)"
+swap_rc=$?
+set -e
+printf '%s\n' "$swap_out" | tee -a "$EVIDENCE_LOG"
+if [[ "$swap_rc" -ne 0 ]]; then
+  STAGE_DIR=""  # may already be moved/cleaned by helper
+  fail_build "" "atomic_swap" "CLIENT_SET_ATOMIC_SWAP=FAIL" "$swap_rc"
 fi
-mv "$STAGE_DIR" "$CLIENT_HTTP_ROOT"
 STAGE_DIR=""
-rm -rf "$LIVE_BACKUP"
-LIVE_BACKUP=""
 
-local_signing_assert_private_not_published "$CLIENT_HTTP_ROOT" || exit 1
+local_signing_assert_private_not_published "$CLIENT_HTTP_ROOT" || {
+  fail_build "" "private_key_published" "private key present under client HTTP root" 1
+}
 
+evidence_echo "CLIENT_SET_ATOMIC_SWAP=PASS"
+evidence_echo "CLIENT_SET_ROLLBACK=NOT_REQUIRED"
+evidence_echo "CLIENT_SET_DEPLOY_ATOMIC=YES"
+evidence_echo "INSTALL_ATOMICALLY_PUBLISHES_FULL_SET=YES"
+evidence_echo "INSTALL_PUBLISHES_LOCAL_PUBLIC_KEY=YES"
+evidence_echo "PRIVATE_KEY_HTTP_PUBLISHED=NO"
+evidence_echo "ALL_FOUR_CLIENTS_ATOMICALLY_PUBLISHED=YES"
+evidence_echo "CLIENT_SET_ON_DISK_READY=PASS"
+echo "CLIENT_SET_ATOMIC_SWAP=PASS"
+echo "CLIENT_SET_ROLLBACK=NOT_REQUIRED"
 echo "CLIENT_SET_DEPLOY_ATOMIC=YES"
 echo "INSTALL_ATOMICALLY_PUBLISHES_FULL_SET=YES"
 echo "INSTALL_PUBLISHES_LOCAL_PUBLIC_KEY=YES"
 echo "PRIVATE_KEY_HTTP_PUBLISHED=NO"
+echo "ALL_FOUR_CLIENTS_ATOMICALLY_PUBLISHED=YES"
+echo "CLIENT_SET_ON_DISK_READY=PASS"
 
 if [[ "$SKIP_HTTP_VERIFY" == "1" ]]; then
+  evidence_echo "CLIENT_PUBLISH_HTTP_VERIFY=SKIPPED"
+  evidence_echo "CLIENT_HTTP_READY=DEFERRED"
   echo "CLIENT_PUBLISH_HTTP_VERIFY=SKIPPED"
+  echo "CLIENT_HTTP_READY=DEFERRED"
 else
   tmp="$(mktemp -d)"
   for hop in "${HOPS[@]}"; do
     name="$(hop_script_name "$hop")"
     curl -fsS -o "${tmp}/${name}" "${MIRROR_BASE}/client/${name}" || {
-      echo "CLIENT_PUBLISH_HTTP_VERIFY=FAIL hop=${hop} fetch" >&2
       rm -rf "$tmp"
-      exit 1
+      fail_build "$hop" "http_verify_fetch" "CLIENT_PUBLISH_HTTP_VERIFY=FAIL hop=${hop} fetch" 1
     }
     local_sha="$(sha256sum "${ARTIFACT_DIR}/${name}" | awk '{print $1}')"
     http_sha="$(sha256sum "${tmp}/${name}" | awk '{print $1}')"
     [[ "$local_sha" == "$http_sha" ]] || {
-      echo "CLIENT_PUBLISH_HTTP_VERIFY=FAIL hop=${hop} sha mismatch" >&2
       rm -rf "$tmp"
-      exit 1
+      fail_build "$hop" "http_verify_sha" "CLIENT_PUBLISH_HTTP_VERIFY=FAIL hop=${hop} sha mismatch" 1
     }
     client_assert_mirror_base_match "${tmp}/${name}" "$MIRROR_BASE" >/dev/null || {
-      echo "CLIENT_PUBLISH_HTTP_VERIFY=FAIL hop=${hop} pin mismatch" >&2
       rm -rf "$tmp"
-      exit 1
+      fail_build "$hop" "http_verify_pin" "CLIENT_PUBLISH_HTTP_VERIFY=FAIL hop=${hop} pin mismatch" 1
     }
+    evidence_echo "CLIENT_PUBLISH_HTTP_VERIFY=PASS hop=${hop} sha256=${http_sha}"
     echo "CLIENT_PUBLISH_HTTP_VERIFY=PASS hop=${hop} sha256=${http_sha}"
   done
   curl -fsS -o "${tmp}/public.gpg" "${MIRROR_BASE}/client/public.gpg" \
     || curl -fsS -o "${tmp}/public.gpg" "${MIRROR_BASE}/client/offline-client-manifest.gpg" \
-    || { echo "CLIENT_PUBLISH_HTTP_VERIFY=FAIL public key" >&2; rm -rf "$tmp"; exit 1; }
+    || { rm -rf "$tmp"; fail_build "" "http_verify_pubkey" "CLIENT_PUBLISH_HTTP_VERIFY=FAIL public key" 1; }
   rm -rf "$tmp"
+  evidence_echo "CLIENT_HTTP_READY=PASS"
+  echo "CLIENT_HTTP_READY=PASS"
 fi
 
+# Successful generation staging cleanup (keep evidence log).
+rm -rf "$ARTIFACT_DIR"
+evidence_echo "CLIENT_BUILD_STAGING_CLEANED=YES"
+evidence_echo "REBUILD_PUBLISH_CLIENTS=PASS"
 echo "REBUILD_PUBLISH_CLIENTS=PASS"

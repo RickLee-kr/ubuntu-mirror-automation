@@ -541,8 +541,10 @@ um_bootstrap_deploy_client_http_artifacts() {
   [[ -x "$rebuild" || -f "$rebuild" ]] \
     || um_die "CLIENT_ARTIFACT=FAIL missing ${rebuild}"
 
-  local artifact_dir="${src_root}/artifacts/client"
-  mkdir -p "$artifact_dir"
+  local artifact_dir
+  artifact_dir="${BASE_PATH:-/var/spool/apt-mirror}/.install-cache/client-build/bootstrap-$$"
+  mkdir -p "$(dirname "$artifact_dir")"
+  # Bootstrap builds from local FS; HTTP verification is Enable HTTP's job.
   if ! env \
     MIRROR_HTTP_URL="$mirror_base" \
     RESOLVED_MIRROR_HOST_IPV4="${RESOLVED_MIRROR_HOST_IPV4}" \
@@ -552,7 +554,9 @@ um_bootstrap_deploy_client_http_artifacts() {
     ARTIFACT_DIR="$artifact_dir" \
     SELECTIVE_ROOT="${SELECTIVE_MIRROR_ROOT:-${BASE_PATH:-/var/spool/apt-mirror}/selective}" \
     BASE_PATH="${BASE_PATH:-/var/spool/apt-mirror}" \
-    SKIP_HTTP_VERIFY="${UM_BOOTSTRAP_SKIP_HTTP_VERIFY:-0}" \
+    CACHE_ROOT="${BASE_PATH:-/var/spool/apt-mirror}/.install-cache" \
+    CONTENT_SOURCE=local-fs \
+    SKIP_HTTP_VERIFY="${UM_BOOTSTRAP_SKIP_HTTP_VERIFY:-1}" \
     bash "$rebuild"
   then
     um_die "CLIENT_SET_BUILD_OR_PUBLISH=FAIL existing HTTP set left unchanged"
@@ -664,16 +668,14 @@ um_bootstrap_install_nginx_base() {
   fi
   um_ok "NGINX_TEST=PASS"
 
+  # Install/bootstrap: package + site config only. Do not start nginx or expose
+  # incomplete artifacts. Enable HTTP Distribution performs start/reload + HTTP verify.
   systemctl enable nginx >/dev/null 2>&1 || true
-  if systemctl is-active --quiet nginx; then
-    systemctl reload nginx || systemctl restart nginx
-  else
-    systemctl start nginx
-  fi
-  if systemctl is-active --quiet nginx; then
-    um_ok "NGINX_ENABLE=PASS"
-  else
-    um_warn "NGINX_ENABLE=WARN nginx not active yet (Enable HTTP Distribution will retry)"
+  um_info "HTTP_DISTRIBUTION=DISABLED"
+  um_info "BOOTSTRAP_NGINX_START=SKIPPED"
+  um_ok "NGINX_CONFIG_READY=YES"
+  if systemctl is-active --quiet nginx 2>/dev/null; then
+    um_warn "NGINX_ALREADY_ACTIVE=YES (Enable HTTP will re-verify; bootstrap did not start it)"
   fi
 }
 

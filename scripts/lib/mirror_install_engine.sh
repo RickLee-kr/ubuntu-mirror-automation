@@ -20,11 +20,15 @@ engine_preflight_host() {
 # Authoritative local client-set rebuild/sign/atomic-publish entrypoint.
 # Used by Download and Prepare finalization, Enable HTTP, and repair paths.
 # Arg1: SKIP_HTTP_VERIFY (default 1 — nginx may still be disabled during prepare).
+# Builds from local selective filesystem only; MIRROR_HTTP_URL is a runtime pin.
 engine_rebuild_publish_local_client_set() {
   local skip_http="${1:-1}"
   local rebuild="${MM_PROJECT_ROOT}/scripts/rebuild-publish-clients.sh"
   local mirror_url libdir
-  local artifact_dir signing_dir
+  local staging_root signing_dir generation_id evidence_log
+  local rc=0
+  local child_out=""
+  local failed_hop="" failed_stage="" error_summary=""
 
   [[ -f "$rebuild" ]] || {
     mm_error "CLIENT_FINALIZER_MISSING=${rebuild}"
@@ -50,35 +54,92 @@ engine_rebuild_publish_local_client_set() {
     return 1
   }
 
-  artifact_dir="${MM_PROJECT_ROOT}/artifacts/client"
-  mkdir -p "$artifact_dir" "$MM_CLIENT_ROOT"
+  generation_id="$(mm_run_id)-$$"
+  staging_root="${MM_CACHE_ROOT:-${MM_MIRROR_ROOT}/.install-cache}/client-build/${generation_id}"
+  mkdir -p "$(dirname "$staging_root")" "$MM_CLIENT_ROOT"
+  if [[ -n "${MM_STATE_DIR:-}" ]]; then
+    evidence_log="${MM_STATE_DIR}/client-finalization-${generation_id}.log"
+  else
+    mkdir -p /var/log/ubuntu-mirror-automation 2>/dev/null || true
+    evidence_log="/var/log/ubuntu-mirror-automation/client-finalization-${generation_id}.log"
+    if [[ ! -d "$(dirname "$evidence_log")" ]] || [[ ! -w "$(dirname "$evidence_log")" ]]; then
+      evidence_log="${MM_CACHE_ROOT:-${MM_MIRROR_ROOT}/.install-cache}/client-finalization-${generation_id}.log"
+      mkdir -p "$(dirname "$evidence_log")"
+    fi
+  fi
 
   mm_set_phase "Signing Local OS Upgrade Clients"
   mm_info "CLIENT_FINALIZATION_ENTRYPOINT=rebuild-publish-clients.sh"
   mm_info "PARTIAL_CLIENT_DEPLOY_ALLOWED=NO"
   mm_info "STALE_CLIENT_COPY_ALLOWED=NO"
+  mm_info "CLIENT_BUILD_CONTENT_SOURCE=LOCAL_FILESYSTEM"
+  mm_info "CLIENT_BUILD_NETWORK_REQUIRED=NO"
+  mm_info "CLIENT_BUILD_GENERATION_ID=${generation_id}"
+  mm_info "CLIENT_BUILD_STAGING_PATH=${staging_root}"
+  mm_info "CLIENT_FINALIZER_COMMAND_START"
 
   mm_set_phase "Publishing Local Client Set"
-  if ! env \
-    MIRROR_HTTP_URL="$MIRROR_HTTP_URL" \
-    RESOLVED_MIRROR_BASE_URL="${RESOLVED_MIRROR_BASE_URL:-$MIRROR_HTTP_URL}" \
-    LOCAL_CLIENT_SIGNING_DIR="$LOCAL_CLIENT_SIGNING_DIR" \
-    CLIENT_HTTP_ROOT="${MM_CLIENT_ROOT}" \
-    SELECTIVE_ROOT="${MM_SELECTIVE_ROOT}" \
-    BASE_PATH="${MM_MIRROR_ROOT}" \
-    ARTIFACT_DIR="$artifact_dir" \
-    SKIP_HTTP_VERIFY="$skip_http" \
-    bash "$rebuild"
-  then
-    mm_error "CLIENT_SET_REBUILD_PUBLISH=FAIL staging under ${artifact_dir}"
-    mm_info "CLIENT_SET_STAGING_EVIDENCE=${artifact_dir}"
+  set +e
+  child_out="$(
+    env \
+      MIRROR_HTTP_URL="$MIRROR_HTTP_URL" \
+      RESOLVED_MIRROR_BASE_URL="${RESOLVED_MIRROR_BASE_URL:-$MIRROR_HTTP_URL}" \
+      LOCAL_CLIENT_SIGNING_DIR="$LOCAL_CLIENT_SIGNING_DIR" \
+      CLIENT_HTTP_ROOT="${MM_CLIENT_ROOT}" \
+      SELECTIVE_ROOT="${MM_SELECTIVE_ROOT}" \
+      BASE_PATH="${MM_MIRROR_ROOT}" \
+      CACHE_ROOT="${MM_CACHE_ROOT:-${MM_MIRROR_ROOT}/.install-cache}" \
+      ARTIFACT_DIR="$staging_root" \
+      CLIENT_BUILD_GENERATION_ID="$generation_id" \
+      CLIENT_FINALIZATION_EVIDENCE_LOG="$evidence_log" \
+      CONTENT_SOURCE=local-fs \
+      SKIP_HTTP_VERIFY="$skip_http" \
+      bash "$rebuild" 2>&1
+  )"
+  rc=$?
+  set -e
+
+  # Persist child output (redacted) and surface key lines.
+  {
+    printf '%s\n' "$child_out"
+  } | mm_redact >>"$evidence_log" 2>/dev/null || printf '%s\n' "$child_out" >>"$evidence_log"
+  chmod 0600 "$evidence_log" 2>/dev/null || true
+
+  failed_hop="$(printf '%s\n' "$child_out" | sed -n 's/^CLIENT_BUILD_FAILED_HOP=//p' | tail -1)"
+  failed_stage="$(printf '%s\n' "$child_out" | sed -n 's/^CLIENT_BUILD_FAILED_STAGE=//p' | tail -1)"
+  error_summary="$(printf '%s\n' "$child_out" | grep -E '^(CLIENT_BUILD_ERROR=|BuildError|Traceback|Error:|CLIENT_SET_ERROR=)' | tail -3 | tr '\n' '|' | sed 's/|$//')"
+  [[ -n "$error_summary" ]] || error_summary="$(printf '%s\n' "$child_out" | tail -5 | tr '\n' '|' | sed 's/|$//')"
+
+  mm_info "CLIENT_FINALIZER_COMMAND_EXIT_CODE=${rc}"
+  mm_info "CLIENT_FINALIZER_EVIDENCE_PATH=${evidence_log}"
+  if [[ -n "$failed_hop" ]]; then
+    mm_info "CLIENT_FINALIZER_FAILED_HOP=${failed_hop}"
+  fi
+  if [[ -n "$failed_stage" ]]; then
+    mm_info "CLIENT_FINALIZER_FAILED_STAGE=${failed_stage}"
+  fi
+
+  if [[ "$rc" -ne 0 ]]; then
+    mm_error "CLIENT_SET_REBUILD_PUBLISH=FAIL"
+    mm_error "CLIENT_FINALIZER_ERROR_SUMMARY=${error_summary}"
+    # Show last relevant evidence lines on the live terminal.
+    printf '%s\n' "$child_out" | grep -E 'ERROR|FAIL|Traceback|BuildError|CLIENT_BUILD_' | tail -20 \
+      | while IFS= read -r line; do mm_error "$line"; done || true
     return 1
   fi
 
+  # Propagate important success markers from child.
+  printf '%s\n' "$child_out" | grep -E '^(CLIENT_SET_|ALL_FOUR_|CLIENT_BUILD_|CLIENT_HTTP_|REBUILD_PUBLISH)' \
+    | while IFS= read -r line; do mm_info "$line"; done || true
+
   if [[ "$skip_http" != "1" ]]; then
     mm_set_phase "Verifying Local HTTP Clients"
+    mm_info "CLIENT_HTTP_READY=PASS"
   else
+    mm_set_phase "Verifying Local Client Files"
+    mm_info "CLIENT_HTTP_READY=DEFERRED"
     mm_info "CLIENT_HTTP_VERIFY=DEFERRED_UNTIL_ENABLE_HTTP"
+    mm_info "CLIENT_SET_ON_DISK_READY=PASS"
   fi
   return 0
 }
@@ -182,7 +243,7 @@ engine_finalize_local_client_set() {
   mm_normalize_preparation_mode
   if [[ "${MM_CLIENT_FINALIZATION_MODE:-full}" == "verify-only" ]]; then
     mm_info "CLIENT_FINALIZATION_MODE=verify-only"
-    mm_set_phase "Verifying Local HTTP Clients"
+    mm_set_phase "Verifying Local Client Files"
     if ! mm_check_client_files_ready; then
       mm_error "CLIENT_SET_FINALIZATION=FAIL"
       mm_info "PREPARATION_ARTIFACTS_READY=YES"
@@ -243,8 +304,10 @@ engine_finalize_local_client_set() {
 
   if [[ "${CLIENT_SET_ACTION}" == "REUSE_VERIFIED" ]]; then
     mm_info "CLIENT_SET_ACTION=REUSE_VERIFIED"
-    mm_set_phase "Verifying Local HTTP Clients"
+    mm_set_phase "Verifying Local Client Files"
     if mm_check_client_files_ready; then
+      mm_info "CLIENT_SET_ON_DISK_READY=PASS"
+      mm_info "CLIENT_HTTP_READY=DEFERRED"
       mm_ok "CLIENT_SET_FINALIZATION=PASS"
       return 0
     fi
@@ -267,7 +330,7 @@ engine_finalize_local_client_set() {
     return 1
   fi
 
-  mm_set_phase "Verifying Local HTTP Clients"
+  mm_set_phase "Verifying Local Client Files"
   if ! mm_check_client_files_ready; then
     mm_error "CLIENT_SET_FINALIZATION=FAIL"
     mm_info "PREPARATION_ARTIFACTS_READY=YES"
@@ -276,6 +339,8 @@ engine_finalize_local_client_set() {
     mm_status_set DOWNLOAD_PREPARE_RESULT FAIL_CLIENT_SET_FINALIZATION
     return 1
   fi
+  mm_info "CLIENT_SET_ON_DISK_READY=PASS"
+  mm_info "CLIENT_HTTP_READY=DEFERRED"
   mm_state_set CLIENT_SET_FINALIZATION PASS
   mm_ok "CLIENT_SET_FINALIZATION=PASS"
   mm_ok "ALL_FOUR_CLIENTS_BUILT_AFTER_OS_CORE_READY=YES"
@@ -421,6 +486,39 @@ engine_verify_selective_ready_provenance() {
     esac
   done
   mm_ok "SELECTIVE_READY_VERIFY=PASS"
+  return 0
+}
+
+# On-disk OS Core reuse gate: READY + four hops + InRelease + Packages + sample deb
+# + upgraders + selective key. Status files alone are insufficient.
+engine_assess_os_core_for_prepare() {
+  OS_CORE_ACTION=DOWNLOAD_VERIFY_MATERIALIZE
+  R2_DOWNLOAD_REQUIRED=YES
+  OS_MATERIALIZE_REQUIRED=YES
+  OS_CORE_READY_AT_START=NO
+
+  if [[ ! -f "${MM_SELECTIVE_ROOT}/state/READY" ]]; then
+    return 0
+  fi
+  if ! engine_verify_selective_ready_provenance >/dev/null 2>&1; then
+    return 0
+  fi
+  local out
+  out="$(python3 "${MM_PROJECT_ROOT}/scripts/lib/client_build_repository.py" \
+    --verify-os-core-reuse --selective-root "${MM_SELECTIVE_ROOT}" 2>&1)" || {
+    mm_info "OS_CORE_ON_DISK_VERIFY=FAIL"
+    printf '%s\n' "$out" | while IFS= read -r line; do mm_info "$line"; done || true
+    return 0
+  }
+  printf '%s\n' "$out" | while IFS= read -r line; do
+    case "$line" in
+      OS_CORE_*) mm_info "$line" ;;
+    esac
+  done || true
+  OS_CORE_READY_AT_START=YES
+  OS_CORE_ACTION=REUSE_VERIFIED
+  R2_DOWNLOAD_REQUIRED=NO
+  OS_MATERIALIZE_REQUIRED=NO
   return 0
 }
 
@@ -1194,8 +1292,12 @@ engine_download_and_prepare() {
     mm_info "OS_HOP_CLIENT_FILES_REQUIRED=NO"
     mm_info "CLIENT_FILES_READY_AT_START=NOT_REQUIRED"
   else
-    if [[ -f "${MM_SELECTIVE_ROOT}/state/READY" ]]; then
-      mm_info "OS_CORE_READY_AT_START=YES"
+    engine_assess_os_core_for_prepare
+    mm_info "OS_CORE_READY_AT_START=${OS_CORE_READY_AT_START}"
+    mm_info "OS_CORE_ACTION=${OS_CORE_ACTION}"
+    mm_info "R2_DOWNLOAD_REQUIRED=${R2_DOWNLOAD_REQUIRED}"
+    mm_info "OS_MATERIALIZE_REQUIRED=${OS_MATERIALIZE_REQUIRED}"
+    if [[ "${OS_CORE_READY_AT_START}" == "YES" ]]; then
       if mm_client_files_ready "${MM_CLIENT_ROOT}"; then
         mm_info "CLIENT_SET_PRESENT_AT_START=YES"
       else
@@ -1203,7 +1305,6 @@ engine_download_and_prepare() {
         mm_info "CLIENT_FILES_READY_AT_START=NOT_REQUIRED"
       fi
     else
-      mm_info "OS_CORE_READY_AT_START=NO"
       mm_info "CLIENT_FILES_READY_AT_START=NOT_REQUIRED"
       mm_info "CLIENT_BUILD_DEFERRED_UNTIL_OS_CORE_READY=YES"
     fi
@@ -1245,6 +1346,15 @@ engine_download_and_prepare() {
     mm_status_set OS_MIRROR_READY NOT_REQUIRED
     OS_CORE_PACKAGE_BYTES=0
     OS_CORE_PAYLOAD_BYTES=0
+  elif [[ "${OS_CORE_ACTION:-DOWNLOAD_VERIFY_MATERIALIZE}" == "REUSE_VERIFIED" ]]; then
+    mm_info "OS_CORE_ACTION=REUSE_VERIFIED"
+    mm_info "R2_DOWNLOAD_REQUIRED=NO"
+    mm_info "OS_MATERIALIZE_REQUIRED=NO"
+    mm_status_set R2_OS_CORE_DOWNLOADED REUSED
+    mm_status_set R2_OS_CORE_CHECKSUM REUSED
+    mm_status_set OS_MIRROR_READY PASS
+    OS_CORE_PACKAGE_BYTES=0
+    OS_CORE_PAYLOAD_BYTES=0
   else
     mm_set_phase "Downloading OS Core Artifacts"
     r2_require_url
@@ -1279,11 +1389,16 @@ engine_download_and_prepare() {
   fi
 
   if ! mm_is_phase2_only; then
-    engine_materialize_os_mirror "$OS_CORE_PACKAGE"
-    # Free R2 package immediately after OS materialize — before Phase 2 peak.
-    r2_cleanup_package || true
-    mm_info "R2_PACKAGE_REMOVED_AFTER_MATERIALIZE=YES"
-    mm_info "R2_PACKAGE_PRESENT_DURING_PHASE2_BUILD=NO"
+    if [[ "${OS_CORE_ACTION:-}" == "REUSE_VERIFIED" ]]; then
+      mm_info "OS_MATERIALIZE_REQUIRED=NO"
+      mm_ok "OS_MIRROR_MATERIALIZE=REUSED"
+    else
+      engine_materialize_os_mirror "$OS_CORE_PACKAGE"
+      # Free R2 package immediately after OS materialize — before Phase 2 peak.
+      r2_cleanup_package || true
+      mm_info "R2_PACKAGE_REMOVED_AFTER_MATERIALIZE=YES"
+      mm_info "R2_PACKAGE_PRESENT_DURING_PHASE2_BUILD=NO"
+    fi
   fi
 
   if [[ "${PHASE2_BUNDLE_ACTION}" == "REUSE" ]]; then
@@ -1515,5 +1630,6 @@ engine_enable_http_distribution() {
   mm_state_set HTTP_DISTRIBUTION_READY YES
   mm_status_set HTTP_CONFIGURATION_READY PASS
   mm_record_http_validated
+  mm_info "CLIENT_HTTP_READY=PASS"
   mm_ok "HTTP_DISTRIBUTION=ENABLED"
 }
