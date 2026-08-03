@@ -165,14 +165,16 @@ rm -f "${HTTP}/private.gpg"
 
 # --- GUI command uses local mirror URL ---
 eval "$(awk '
+  /^gui_client_hop_command_line\(\)/ { in_fn=1 }
   /^gui_client_hop_command_block\(\)/ { in_fn=1 }
   /^gui_client_hop_command\(\)/ { in_fn=1 }
-  /^gui_client_hop_step_meta\(\)/ { in_fn=1 }
   in_fn { print }
   in_fn && /^}/ { if (++done >= 3) exit }
 ' "${ROOT}/scripts/install-dp-upgrade-mirror.sh")"
-# Prefer the multi-line block generator when present.
-if declare -F gui_client_hop_command_block >/dev/null 2>&1; then
+# Prefer the one-line generator when present.
+if declare -F gui_client_hop_command_line >/dev/null 2>&1; then
+  cmd_a="$(gui_client_hop_command_line "$HOST_A" "dp-offline-upgrade-xenial-to-bionic.sh")"
+elif declare -F gui_client_hop_command_block >/dev/null 2>&1; then
   cmd_a="$(gui_client_hop_command_block "$HOST_A" "dp-offline-upgrade-xenial-to-bionic.sh")"
 else
   cmd_a="$(gui_client_hop_command "$HOST_A" "dp-offline-upgrade-xenial-to-bionic.sh")"

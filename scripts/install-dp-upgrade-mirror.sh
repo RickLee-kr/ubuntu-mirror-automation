@@ -901,139 +901,57 @@ gui_view_logs() {
   return 0
 }
 
-# Multi-line shell block: download client + sha + binary keyring + detached
-# manifest sig, verify checksum and signature, then run. Each physical line
-# stays short so whiptail visual wrapping cannot split a command fragment.
+# One physical-line hop command: download client + sha + binary keyring +
+# detached manifest sig, verify checksum and signature, then run.
+# Fail-closed && chain: any download/verify failure skips sudo bash.
 # --mirror-base matches the persisted local Mirror URL (no operator typing).
-gui_client_hop_step_meta() {
-  # Sets HOP_STEP_NUM HOP_STEP_TITLE HOP_STEP_TAG from script basename.
-  local script="$1"
-  local hop="${script#dp-offline-upgrade-}"
-  hop="${hop%.sh}"
-  case "$hop" in
-    xenial-to-bionic)
-      HOP_STEP_NUM=2
-      HOP_STEP_TITLE="UBUNTU 16.04 TO 18.04"
-      HOP_STEP_TAG="XENIAL TO BIONIC"
-      ;;
-    bionic-to-focal)
-      HOP_STEP_NUM=3
-      HOP_STEP_TITLE="UBUNTU 18.04 TO 20.04"
-      HOP_STEP_TAG="BIONIC TO FOCAL"
-      ;;
-    focal-to-jammy)
-      HOP_STEP_NUM=4
-      HOP_STEP_TITLE="UBUNTU 20.04 TO 22.04"
-      HOP_STEP_TAG="FOCAL TO JAMMY"
-      ;;
-    jammy-to-noble)
-      HOP_STEP_NUM=5
-      HOP_STEP_TITLE="UBUNTU 22.04 TO 24.04"
-      HOP_STEP_TAG="JAMMY TO NOBLE"
-      ;;
-    *)
-      HOP_STEP_NUM=0
-      HOP_STEP_TITLE="UNKNOWN HOP"
-      HOP_STEP_TAG="${hop^^}"
-      ;;
-  esac
-}
 
-gui_client_hop_command_block() {
+# Exactly one physical line — safe to copy from whiptail or the saved file.
+gui_client_hop_command_line() {
   local mirror="$1" script="$2"
   local hop="${script#dp-offline-upgrade-}"
   hop="${hop%.sh}"
-  gui_client_hop_step_meta "$script"
-  cat <<EOF
-# ===== BEGIN STEP ${HOP_STEP_NUM}: ${HOP_STEP_TAG} =====
-(
-  set -euo pipefail
-
-  cd /home/aella
-
-  MIRROR='${mirror}'
-  HOP='${hop}'
-  SCRIPT="dp-offline-upgrade-\${HOP}.sh"
-
-  rm -f "\$SCRIPT" "\$SCRIPT.sha256" \\
-    public-keyring.gpg \\
-    client-manifest.json client-manifest.json.asc
-
-  curl -fsSLo "\$SCRIPT" \\
-    "\$MIRROR/client/\$SCRIPT"
-  curl -fsSLo "\$SCRIPT.sha256" \\
-    "\$MIRROR/client/\$SCRIPT.sha256"
-  curl -fsSLo public-keyring.gpg \\
-    "\$MIRROR/client/public-keyring.gpg"
-  curl -fsSLo client-manifest.json \\
-    "\$MIRROR/client/\$HOP/client-manifest.json"
-  curl -fsSLo client-manifest.json.asc \\
-    "\$MIRROR/client/\$HOP/client-manifest.json.asc"
-
-  sha256sum -c "\$SCRIPT.sha256"
-
-  gpgv \\
-    --keyring ./public-keyring.gpg \\
-    client-manifest.json.asc \\
-    client-manifest.json
-
-  sudo bash "./\$SCRIPT" \\
-    --mirror-base "\$MIRROR"
-)
-# ===== END STEP ${HOP_STEP_NUM}: ${HOP_STEP_TAG} =====
-EOF
+  printf '%s\n' "cd /home/aella && MIRROR='${mirror}' && HOP='${hop}' && SCRIPT='${script}' && rm -f \"\$SCRIPT\" \"\$SCRIPT.sha256\" public-keyring.gpg client-manifest.json client-manifest.json.asc && curl -fsSLo \"\$SCRIPT\" \"\$MIRROR/client/\$SCRIPT\" && curl -fsSLo \"\$SCRIPT.sha256\" \"\$MIRROR/client/\$SCRIPT.sha256\" && curl -fsSLo public-keyring.gpg \"\$MIRROR/client/public-keyring.gpg\" && curl -fsSLo client-manifest.json \"\$MIRROR/client/\$HOP/client-manifest.json\" && curl -fsSLo client-manifest.json.asc \"\$MIRROR/client/\$HOP/client-manifest.json.asc\" && sha256sum -c \"\$SCRIPT.sha256\" && gpgv --keyring ./public-keyring.gpg client-manifest.json.asc client-manifest.json && sudo bash \"./\$SCRIPT\" --mirror-base \"\$MIRROR\""
 }
 
-# Backward-compatible name used by older tests/callers.
+# Backward-compatible names used by older tests/callers.
+gui_client_hop_command_block() {
+  gui_client_hop_command_line "$@"
+}
+
 gui_client_hop_command() {
-  gui_client_hop_command_block "$@"
+  gui_client_hop_command_line "$@"
+}
+
+gui_phase2_stage_command_line() {
+  local mirror="$1" ver="$2"
+  printf '%s\n' "cd /home/aella && MIRROR='${mirror}' && VER='${ver}' && SCRIPT='stage-dp-phase2.sh' && rm -f \"\$SCRIPT\" \"\$SCRIPT.sha256\" && curl -fsSLo \"\$SCRIPT\" \"\$MIRROR/client/\$SCRIPT\" && curl -fsSLo \"\$SCRIPT.sha256\" \"\$MIRROR/client/\$SCRIPT.sha256\" && sha256sum -c \"\$SCRIPT.sha256\" && sudo bash \"./\$SCRIPT\" --target-version \"\$VER\" --same-version-recovery --mirror-url \"\$MIRROR\""
 }
 
 gui_phase2_stage_command_block() {
-  local mirror="$1" ver="$2"
-  cat <<EOF
-# ===== BEGIN PHASE 2 STAGE =====
-(
-  set -euo pipefail
-
-  cd /home/aella
-
-  MIRROR='${mirror}'
-  VER='${ver}'
-  SCRIPT='stage-dp-phase2.sh'
-
-  rm -f "\$SCRIPT" "\$SCRIPT.sha256"
-
-  curl -fsSLo "\$SCRIPT" \\
-    "\$MIRROR/client/\$SCRIPT"
-  curl -fsSLo "\$SCRIPT.sha256" \\
-    "\$MIRROR/client/\$SCRIPT.sha256"
-
-  sha256sum -c "\$SCRIPT.sha256"
-
-  sudo bash "./\$SCRIPT" \\
-    --target-version "\$VER" \\
-    --same-version-recovery \\
-    --mirror-url "\$MIRROR"
-)
-# ===== END PHASE 2 STAGE =====
-EOF
+  gui_phase2_stage_command_line "$@"
 }
 
 gui_build_client_commands() {
   # Writes command text to stdout. Args: mirror topology worker_ips
   # Uses PREPARATION_MODE from config (FULL or PHASE2_ONLY).
+  # Every executable command is exactly one physical line (no backslash
+  # continuations, no BEGIN/END multi-line blocks).
   local mirror="$1" topology="$2" worker_ips="${3:-}"
   mm_normalize_preparation_mode
   mm_force_phase2_target
   local ver="${PHASE2_TARGET_VERSION}"
-  local snap_line stage_block bringup_cmd prereq_cmd
+  local snap_line stage_cmd bringup_cmd prereq_cmd hop2 hop3 hop4 hop5
   if [[ "$topology" == "cluster" ]]; then
     snap_line="Create a full hypervisor snapshot of every DP VM."
   else
     snap_line="Create a full hypervisor snapshot of the DP VM."
   fi
-  stage_block="$(gui_phase2_stage_command_block "$mirror" "$ver")"
+  stage_cmd="$(gui_phase2_stage_command_line "$mirror" "$ver")"
+  hop2="$(gui_client_hop_command_line "$mirror" "dp-offline-upgrade-xenial-to-bionic.sh")"
+  hop3="$(gui_client_hop_command_line "$mirror" "dp-offline-upgrade-bionic-to-focal.sh")"
+  hop4="$(gui_client_hop_command_line "$mirror" "dp-offline-upgrade-focal-to-jammy.sh")"
+  hop5="$(gui_client_hop_command_line "$mirror" "dp-offline-upgrade-jammy-to-noble.sh")"
   if [[ "$topology" == "cluster" ]]; then
     bringup_cmd="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download --worker-ips \"${worker_ips}\""
   else
@@ -1061,11 +979,19 @@ If DP ${ver} is already healthy on Ubuntu 24.04, do not run these commands.
 Commands saved to:
 $(mm_client_commands_file)
 
-Step 0 — Create snapshot or backup
+Every executable command below is exactly one physical line.
+Copy the complete line beginning with "cd" or "sudo".
+Do not copy only part of a visually wrapped line.
+
+STEP 0 — SNAPSHOT
+-----------------
 
 ${snap_line}
 
-Step 1 — Verify Ubuntu 24.04 and prerequisites
+STEP 1 — VERIFY UBUNTU 24.04 AND PREREQUISITES
+----------------------------------------------
+
+Copy and paste the following entire line into the DP terminal:
 
 ${prereq_cmd}
 
@@ -1073,12 +999,16 @@ ${prereq_cmd}
 STEP 2 — STAGE DP ${ver} FILES
 ------------------------------------------------------------------------
 
-${stage_block}
+Copy and paste the following entire line into the DP terminal:
+
+${stage_cmd}
 
 EOF
     if [[ "$topology" == "cluster" ]]; then
       cat <<EOF
-Step 3 — Run DP ${ver} bringup
+------------------------------------------------------------------------
+STEP 3 — RUN DP ${ver} BRINGUP
+------------------------------------------------------------------------
 
 Run this command on the cluster master only.
 
@@ -1090,19 +1020,26 @@ Do not mix DL and DA worker IPs in one command.
 Management IP addresses or cluster IP addresses can be used for \`--worker-ips\`.
 Cluster IP addresses are recommended when they are reachable from the master because the cluster network normally provides more reliable node-to-node communication.
 
+Copy and paste the following entire line into the DP terminal:
+
 ${bringup_cmd}
 
 EOF
     else
       cat <<EOF
-Step 3 — Run DP ${ver} bringup
+------------------------------------------------------------------------
+STEP 3 — RUN DP ${ver} BRINGUP
+------------------------------------------------------------------------
+
+Copy and paste the following entire line into the DP terminal:
 
 ${bringup_cmd}
 
 EOF
     fi
     cat <<EOF
-Step 4 — Resume DP services when required
+STEP 4 — RESUME DP SERVICES WHEN REQUIRED
+-----------------------------------------
 
 If the DP was paused, run \`aella_cli\` after bringup completes.
 Select or enter \`resume\`.
@@ -1111,7 +1048,8 @@ Wait for resume to complete and allow several minutes for pods and host services
 Resume is an aella_cli menu command.
 Do not run \`resume\` directly in the Linux bash shell.
 
-Step 5 — Verify DP health
+STEP 5 — VERIFY DP HEALTH
+-------------------------
 
 After resume (when required), wait for the DP services to start.
 Then run \`aella_cli\` and select or enter \`show status\`.
@@ -1142,19 +1080,17 @@ Do not edit the stage command to add a source version.
 Commands saved to:
 $(mm_client_commands_file)
 
-COMMAND FORMAT
-==============
+Every executable command below is exactly one physical line.
+Copy the complete line beginning with "cd" or "sudo".
+Do not copy only part of a visually wrapped line.
 
-Each numbered upgrade step is one complete multi-line shell block.
-Copy from the BEGIN marker through the matching END marker.
-Paste the complete block into the DP terminal once.
-Do not copy an individual visually wrapped fragment.
-
-Step 0 — Create snapshot or backup
+STEP 0 — SNAPSHOT
+-----------------
 
 ${snap_line}
 
-Step 1 — Pause DP services
+STEP 1 — PAUSE DP SERVICES
+--------------------------
 
 Run \`aella_cli\` on the Ubuntu 16.04 DP.
 
@@ -1174,25 +1110,33 @@ STEP 2 — UBUNTU 16.04 TO 18.04
 The Xenial-to-Bionic client automatically sets the aella and root login
 shells to /bin/bash after upgrade confirmation.
 
-$(gui_client_hop_command_block "$mirror" "dp-offline-upgrade-xenial-to-bionic.sh")
+Copy and paste the following entire line into the DP terminal:
+
+${hop2}
 
 ------------------------------------------------------------------------
 STEP 3 — UBUNTU 18.04 TO 20.04
 ------------------------------------------------------------------------
 
-$(gui_client_hop_command_block "$mirror" "dp-offline-upgrade-bionic-to-focal.sh")
+Copy and paste the following entire line into the DP terminal:
+
+${hop3}
 
 ------------------------------------------------------------------------
 STEP 4 — UBUNTU 20.04 TO 22.04
 ------------------------------------------------------------------------
 
-$(gui_client_hop_command_block "$mirror" "dp-offline-upgrade-focal-to-jammy.sh")
+Copy and paste the following entire line into the DP terminal:
+
+${hop4}
 
 ------------------------------------------------------------------------
 STEP 5 — UBUNTU 22.04 TO 24.04
 ------------------------------------------------------------------------
 
-$(gui_client_hop_command_block "$mirror" "dp-offline-upgrade-jammy-to-noble.sh")
+Copy and paste the following entire line into the DP terminal:
+
+${hop5}
 
 Do not resume the DP during the intermediate OS upgrades.
 
@@ -1200,12 +1144,16 @@ Do not resume the DP during the intermediate OS upgrades.
 STEP 6 — STAGE DP ${ver} FILES
 ------------------------------------------------------------------------
 
-${stage_block}
+Copy and paste the following entire line into the DP terminal:
+
+${stage_cmd}
 
 EOF
     if [[ "$topology" == "cluster" ]]; then
       cat <<EOF
-Step 7 — Run DP ${ver} bringup
+------------------------------------------------------------------------
+STEP 7 — RUN DP ${ver} BRINGUP
+------------------------------------------------------------------------
 
 Run this command on the cluster master only.
 
@@ -1217,19 +1165,26 @@ Do not mix DL and DA worker IPs in one command.
 Management IP addresses or cluster IP addresses can be used for \`--worker-ips\`.
 Cluster IP addresses are recommended when they are reachable from the master because the cluster network normally provides more reliable node-to-node communication.
 
+Copy and paste the following entire line into the DP terminal:
+
 ${bringup_cmd}
 
 EOF
     else
       cat <<EOF
-Step 7 — Run DP ${ver} bringup
+------------------------------------------------------------------------
+STEP 7 — RUN DP ${ver} BRINGUP
+------------------------------------------------------------------------
+
+Copy and paste the following entire line into the DP terminal:
 
 ${bringup_cmd}
 
 EOF
     fi
     cat <<EOF
-Step 8 — Resume DP services
+STEP 8 — RESUME DP SERVICES
+---------------------------
 
 After the bringup script completes, if \`aella_cli\` can be executed, run
 \`aella_cli\` and select or enter \`resume\` so that DP services start again.
@@ -1241,7 +1196,8 @@ Do not run \`resume\` directly in the Linux bash shell.
 The DP health checks must be performed after resume.
 Pods and host services may not become ready until the DP services are resumed.
 
-Step 9 — Verify DP health
+STEP 9 — VERIFY DP HEALTH
+-------------------------
 
 After resume, wait for the DP services to start.
 Then run \`aella_cli\` and select or enter \`show status\`.
@@ -1269,85 +1225,10 @@ EOF
   cat <<EOF
 A copy of these commands was saved to:
 $(mm_client_commands_file)
+
+For horizontal scrolling without wrapping:
+  less -S $(mm_client_commands_file)
 EOF
-}
-
-# Extract one BEGIN/END command block from a saved commands file.
-gui_extract_command_block() {
-  local file="$1" marker="$2"
-  [[ -f "$file" ]] || return 1
-  awk -v m="$marker" '
-    index($0, "# ===== BEGIN " m) == 1 { show=1 }
-    show { print }
-    index($0, "# ===== END " m) == 1 { exit }
-  ' "$file"
-}
-
-gui_client_commands_viewer() {
-  local out_file="$1" title="$2"
-  local choice="" view_tmp=""
-  while true; do
-    choice="$(mm_whiptail_menu \
-      "${title} — view" \
-      "Commands saved to:
-${out_file}
-
-Select a view. Each upgrade step is one multi-line shell block." \
-      "1" "Show complete instructions" \
-      "2" "Show Step 2 command block" \
-      "3" "Show Step 3 command block" \
-      "4" "Show Step 4 command block" \
-      "5" "Show Step 5 command block" \
-      "6" "Show Phase 2 stage/bringup block" \
-      "0" "Back")" || return 0
-    case "$choice" in
-      1)
-        mm_whiptail_textbox "$title" "$out_file" || true
-        ;;
-      2|3|4|5)
-        view_tmp="$(mktemp)"
-        case "$choice" in
-          2) gui_extract_command_block "$out_file" "STEP 2:" >"$view_tmp" || true ;;
-          3) gui_extract_command_block "$out_file" "STEP 3:" >"$view_tmp" || true ;;
-          4) gui_extract_command_block "$out_file" "STEP 4:" >"$view_tmp" || true ;;
-          5) gui_extract_command_block "$out_file" "STEP 5:" >"$view_tmp" || true ;;
-        esac
-        if [[ ! -s "$view_tmp" ]]; then
-          # Phase2-only: step 2 is the stage block.
-          if [[ "$choice" == "2" ]]; then
-            gui_extract_command_block "$out_file" "PHASE 2 STAGE" >"$view_tmp" || true
-          fi
-        fi
-        if [[ -s "$view_tmp" ]]; then
-          mm_whiptail_textbox "Command block" "$view_tmp" || true
-        else
-          mm_whiptail_msg "Command block" "That step is not present in the current command set." || true
-        fi
-        rm -f "$view_tmp"
-        ;;
-      6)
-        view_tmp="$(mktemp)"
-        {
-          gui_extract_command_block "$out_file" "PHASE 2 STAGE" || true
-          printf '\n'
-          # Bringup remains a short single line after the stage block heading.
-          awk '
-            /^Step [37] — Run DP / { show=1 }
-            show { print }
-            /^Step [48] — Resume/ { exit }
-          ' "$out_file"
-        } >"$view_tmp"
-        if [[ -s "$view_tmp" ]]; then
-          mm_whiptail_textbox "Phase 2 stage / bringup" "$view_tmp" || true
-        else
-          mm_whiptail_msg "Phase 2" "Phase 2 stage block not found." || true
-        fi
-        rm -f "$view_tmp"
-        ;;
-      0|"") return 0 ;;
-      *) ;;
-    esac
-  done
 }
 
 gui_client_instructions() {
@@ -1441,7 +1322,14 @@ Mirror Manager must run as root:
     title="DP Client Upgrade Commands"
   fi
   rm -f "$tmp"
-  gui_client_commands_viewer "$out_file" "$title"
+  # Show the complete instructions in one textbox — no secondary viewer menu.
+  mm_whiptail_textbox "$title" "$out_file" || true
+  # Reprint on an interactive TTY so operators can copy long one-liners easily.
+  if [[ -t 1 ]]; then
+    clear 2>/dev/null || true
+    cat "$out_file"
+    printf '\nFor horizontal scrolling without wrapping:\n  less -S %s\n' "$out_file"
+  fi
   return 0
 }
 
