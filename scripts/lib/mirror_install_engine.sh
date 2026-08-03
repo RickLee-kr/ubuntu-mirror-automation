@@ -1158,6 +1158,7 @@ engine_http_smoke_urls() {
   local urls=(
     "${base}/client/stage-dp-phase2.sh"
     "${base}/client/stage-dp-phase2.sh.sha256"
+    "${base}/client/public-keyring.gpg"
     "${base}/dp-phase2/${ver}/release.env"
     "${base}/dp-phase2/${ver}/${stable}.sha256"
   )
@@ -1168,6 +1169,7 @@ engine_http_smoke_urls() {
       "${base}/offline/meta-release-lts"
       "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh"
       "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh.sha256"
+      "${base}/client/public.gpg"
     )
   fi
   local u

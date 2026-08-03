@@ -91,6 +91,13 @@ check_log 'CLIENT_SET_PREPUBLISH_VERIFY=PASS'
 check_log 'CLIENT_SET_ATOMIC_SWAP=PASS'
 check_log 'CLIENT_SET_ON_DISK_READY=PASS'
 check_log 'REBUILD_PUBLISH_CLIENTS=PASS'
+check_log 'CLIENT_PUBLIC_BINARY_KEYRING_BUILD=PASS'
+check_log 'CLIENT_PUBLIC_BINARY_KEYRING_FORMAT=OPENPGP_BINARY'
+check_log 'CLIENT_PUBLIC_BINARY_KEYRING_FINGERPRINT=PASS'
+check_log 'CLIENT_MANIFEST_GPGV_VERIFY=PASS hop=xenial-to-bionic'
+check_log 'CLIENT_MANIFEST_GPGV_VERIFY=PASS hop=bionic-to-focal'
+check_log 'CLIENT_MANIFEST_GPGV_VERIFY=PASS hop=focal-to-jammy'
+check_log 'CLIENT_MANIFEST_GPGV_VERIFY=PASS hop=jammy-to-noble'
 
 for hop in xenial-to-bionic bionic-to-focal focal-to-jammy jammy-to-noble; do
   check_log "CLIENT_BUILD_COMPLETE hop=${hop}"
@@ -98,6 +105,21 @@ for hop in xenial-to-bionic bionic-to-focal focal-to-jammy jammy-to-noble; do
     && pass "published ${hop}" \
     || fail "missing published ${hop}"
 done
+
+[[ -f "${CLIENT_ROOT}/public-keyring.gpg" ]] \
+  && pass "published public-keyring.gpg" \
+  || fail "missing public-keyring.gpg"
+[[ -f "${CLIENT_ROOT}/public.gpg" ]] \
+  && pass "published public.gpg (armor compat)" \
+  || fail "missing public.gpg"
+head -n1 "${CLIENT_ROOT}/public.gpg" | grep -qx -- '-----BEGIN PGP PUBLIC KEY BLOCK-----' \
+  && pass "ARMORED_KEY_FORMAT=ASCII_ARMOR" \
+  || fail "public.gpg not armored"
+if head -n1 "${CLIENT_ROOT}/public-keyring.gpg" | grep -q 'BEGIN PGP'; then
+  fail "public-keyring.gpg is armored"
+else
+  pass "BINARY_KEYRING_FORMAT=OPENPGP_BINARY"
+fi
 
 # Private key must not appear under HTTP client root
 if [[ -f "${CLIENT_ROOT}/private.gpg" ]]; then

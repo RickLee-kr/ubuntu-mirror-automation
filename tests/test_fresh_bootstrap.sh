@@ -268,6 +268,8 @@ do
   cp -f "${ROOT}/client/${f}" "${GOOD}/${f}"
   (cd "$GOOD" && sha256sum "$f" >"${f}.sha256")
 done
+# Binary gpgv keyring required for CLIENT_FILES_READY after publication contract update.
+printf 'x' >"${GOOD}/public-keyring.gpg"
 if mm_client_files_ready "$GOOD"; then pass "client files READY"; else fail "client files READY"; fi
 rm -f "${GOOD}/stage-dp-phase2.sh.sha256"
 if mm_client_files_ready "$GOOD"; then fail "missing checksum still READY"; else pass "missing checksum rejected"; fi

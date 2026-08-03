@@ -398,8 +398,13 @@ um_bootstrap_publish_phase2_helpers_only() {
     cp -a "${src_root}/client/lib/." "${stage}/lib/"
   fi
   if [[ -n "${LOCAL_SIGNING_PUBLIC_KEY:-}" && -f "${LOCAL_SIGNING_PUBLIC_KEY}" ]]; then
-    install -m 0644 "$LOCAL_SIGNING_PUBLIC_KEY" "${stage}/public.gpg"
-    install -m 0644 "$LOCAL_SIGNING_PUBLIC_KEY" "${stage}/offline-client-manifest.gpg"
+    if ! local_signing_stage_http_public_artifacts "$stage" \
+      "$LOCAL_SIGNING_PUBLIC_KEY" "${LOCAL_KEY_FINGERPRINT:-}"
+    then
+      um_error "CLIENT_PUBLIC_BINARY_KEYRING_BUILD=FAIL"
+      rm -rf "$stage"
+      return 1
+    fi
     if [[ -n "${LOCAL_KEY_FINGERPRINT:-}" ]]; then
       printf '%s\n' "$LOCAL_KEY_FINGERPRINT" >"${stage}/fingerprint"
       chmod 0644 "${stage}/fingerprint"
@@ -585,9 +590,13 @@ um_bootstrap_verify_client_files() {
       return 1
     fi
   done
-  # Public key must be published; private key must not.
+  # Public key (armor) + binary gpgv keyring must be published; private key must not.
   if [[ ! -f "${root}/public.gpg" && ! -f "${root}/offline-client-manifest.gpg" ]]; then
     um_error "CLIENT_PUBLIC_KEY=MISSING"
+    return 1
+  fi
+  if [[ ! -f "${root}/public-keyring.gpg" ]]; then
+    um_error "CLIENT_PUBLIC_KEYRING=MISSING"
     return 1
   fi
   if [[ -f "${root}/private.gpg" ]]; then

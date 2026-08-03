@@ -239,6 +239,8 @@ EOF
     (cd "$MM_CLIENT_ROOT" && sha256sum "$f" >"${f}.sha256")
   done
   printf 'PUB\n' >"${MM_CLIENT_ROOT}/public.gpg"
+  # Minimal non-empty binary-looking keyring placeholder for readiness gate.
+  printf '\x99\x02\x00' >"${MM_CLIENT_ROOT}/public-keyring.gpg"
   return 0
 }
 

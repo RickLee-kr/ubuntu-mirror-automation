@@ -328,9 +328,21 @@ for hop in "${HOPS[@]}"; do
   fi
 done
 
-# Publish local public key + fingerprint metadata (never the private key).
-install -m 0644 "$LOCAL_SIGNING_PUBLIC_KEY" "${STAGE_DIR}/offline-client-manifest.gpg"
-install -m 0644 "$LOCAL_SIGNING_PUBLIC_KEY" "${STAGE_DIR}/public.gpg"
+# Publish armored public key + binary gpgv keyring + fingerprint metadata
+# (never the private key). Local on-disk public.gpg format is unchanged.
+if ! local_signing_stage_http_public_artifacts "$STAGE_DIR" \
+  "$LOCAL_SIGNING_PUBLIC_KEY" "$LOCAL_KEY_FINGERPRINT"
+then
+  evidence "CLIENT_PUBLIC_BINARY_KEYRING_BUILD=FAIL"
+  evidence "CLIENT_SET_ATOMIC_SWAP=NOT_STARTED"
+  echo "CLIENT_PUBLIC_BINARY_KEYRING_BUILD=FAIL" >&2
+  echo "CLIENT_SET_ATOMIC_SWAP=NOT_STARTED" >&2
+  fail_build "" "public_keyring_build" "CLIENT_PUBLIC_BINARY_KEYRING_BUILD=FAIL" 1
+fi
+evidence_echo "CLIENT_PUBLIC_ARMORED_KEY_PUBLISH=PASS"
+evidence_echo "CLIENT_PUBLIC_BINARY_KEYRING_BUILD=PASS"
+evidence_echo "CLIENT_PUBLIC_BINARY_KEYRING_FORMAT=OPENPGP_BINARY"
+evidence_echo "CLIENT_PUBLIC_BINARY_KEYRING_FINGERPRINT=PASS"
 printf '%s\n' "$LOCAL_KEY_FINGERPRINT" >"${STAGE_DIR}/signing-key-fingerprint"
 chmod 0644 "${STAGE_DIR}/signing-key-fingerprint"
 if [[ -f "$LOCAL_SIGNING_FINGERPRINT_FILE" ]]; then
@@ -351,8 +363,12 @@ if [[ -d "${ROOT}/client/lib" ]]; then
 fi
 
 local_signing_assert_private_not_published "$STAGE_DIR" || {
+  evidence "PRIVATE_KEY_HTTP_PUBLISHED=YES"
+  evidence "CLIENT_SET_ATOMIC_SWAP=NOT_STARTED"
+  echo "CLIENT_SET_ATOMIC_SWAP=NOT_STARTED" >&2
   fail_build "" "private_key_staged" "CLIENT_SET_DEPLOY_ATOMIC=NO private key staged for HTTP" 1
 }
+evidence_echo "PRIVATE_KEY_HTTP_PUBLISHED=NO"
 
 # Final verify on staged tree before cutover.
 for hop in "${HOPS[@]}"; do
@@ -364,6 +380,17 @@ for hop in "${HOPS[@]}"; do
     fail_build "$hop" "prepublish_pin" "prepublish pin gate failed" 1
   }
 done
+
+# Binary keyring + gpgv against every hop manifest — fail closed, no swap.
+if ! local_signing_prepublish_keyring_gate "$STAGE_DIR" "$LOCAL_KEY_FINGERPRINT" "${HOPS[@]}"; then
+  evidence "CLIENT_SET_ATOMIC_SWAP=NOT_STARTED"
+  echo "CLIENT_SET_ATOMIC_SWAP=NOT_STARTED" >&2
+  fail_build "" "public_keyring_verify" "CLIENT_PUBLIC_BINARY_KEYRING / gpgv prepublish FAIL" 1
+fi
+for hop in "${HOPS[@]}"; do
+  evidence_echo "CLIENT_MANIFEST_GPGV_VERIFY=PASS hop=${hop}"
+done
+
 evidence_echo "CLIENT_SET_PREPUBLISH_VERIFY=PASS"
 evidence_echo "CLIENT_SET_VERIFY_COMPLETE=YES"
 evidence_echo "ALL_FOUR_CLIENTS_PREPUBLISH_VERIFIED=YES"
@@ -457,6 +484,12 @@ else
   curl -fsS -o "${tmp}/public.gpg" "${MIRROR_BASE}/client/public.gpg" \
     || curl -fsS -o "${tmp}/public.gpg" "${MIRROR_BASE}/client/offline-client-manifest.gpg" \
     || { rm -rf "$tmp"; fail_build "" "http_verify_pubkey" "CLIENT_PUBLISH_HTTP_VERIFY=FAIL public key" 1; }
+  curl -fsS -o "${tmp}/public-keyring.gpg" "${MIRROR_BASE}/client/public-keyring.gpg" \
+    || { rm -rf "$tmp"; fail_build "" "http_verify_keyring" "CLIENT_PUBLISH_HTTP_VERIFY=FAIL public-keyring.gpg" 1; }
+  if ! local_signing_verify_binary_keyring "${tmp}/public-keyring.gpg" "$LOCAL_KEY_FINGERPRINT"; then
+    rm -rf "$tmp"
+    fail_build "" "http_verify_keyring_format" "CLIENT_PUBLISH_HTTP_VERIFY=FAIL binary keyring" 1
+  fi
   rm -rf "$tmp"
   evidence_echo "CLIENT_HTTP_READY=PASS"
   echo "CLIENT_HTTP_READY=PASS"

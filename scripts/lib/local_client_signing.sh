@@ -181,3 +181,155 @@ local_signing_assert_private_not_published() {
   local_signing_log "PRIVATE_KEY_HTTP_PUBLISHED=NO"
   return 0
 }
+
+# True when path starts with the ASCII-armored public key header.
+local_signing_is_ascii_armored_public() {
+  local path="${1:-}"
+  [[ -f "$path" && -s "$path" ]] || return 1
+  head -n 1 "$path" 2>/dev/null | grep -qx -- '-----BEGIN PGP PUBLIC KEY BLOCK-----'
+}
+
+# Build a binary OpenPGP keyring suitable for classic gpgv --keyring.
+# Source remains ASCII-armored public.gpg on disk; only the HTTP artifact is binary.
+local_signing_build_binary_keyring() {
+  local armored="${1:-}"
+  local dest="${2:-}"
+  [[ -n "$armored" && -f "$armored" && -s "$armored" ]] || return 1
+  [[ -n "$dest" ]] || return 1
+  gpg --batch --dearmor <"$armored" >"$dest" 2>/dev/null || return 1
+  [[ -s "$dest" ]] || return 1
+  chmod 0644 "$dest"
+  return 0
+}
+
+# Fingerprint of a binary (or armored) public key file; uppercase 40-hex.
+local_signing_fingerprint_of_keyring() {
+  local key_file="${1:-}" fpr
+  [[ -f "$key_file" && -s "$key_file" ]] || return 1
+  if local_signing_is_ascii_armored_public "$key_file"; then
+    local_signing_fingerprint_of "$key_file"
+    return $?
+  fi
+  fpr="$(gpg --batch --no-default-keyring --keyring "$key_file" \
+    --with-colons --fingerprint 2>/dev/null \
+    | awk -F: '/^fpr:/{print $10; exit}')"
+  [[ -n "$fpr" ]] || return 1
+  printf '%s\n' "${fpr^^}"
+}
+
+# Verify binary keyring: non-empty, not ASCII armor, readable, fingerprint match.
+local_signing_verify_binary_keyring() {
+  local keyring="${1:-}"
+  local expected_fpr="${2:-${LOCAL_KEY_FINGERPRINT:-}}"
+  local got
+
+  [[ -f "$keyring" && -s "$keyring" ]] || {
+    local_signing_err "CLIENT_PUBLIC_BINARY_KEYRING_FORMAT=FAIL reason=empty_or_missing"
+    return 1
+  }
+  if local_signing_is_ascii_armored_public "$keyring"; then
+    local_signing_err "CLIENT_PUBLIC_BINARY_KEYRING_FORMAT=FAIL reason=ascii_armor"
+    return 1
+  fi
+  # First bytes must not be the armor header (also catch UTF-8 BOM + header).
+  if head -c 64 "$keyring" 2>/dev/null | grep -q 'BEGIN PGP PUBLIC KEY BLOCK'; then
+    local_signing_err "CLIENT_PUBLIC_BINARY_KEYRING_FORMAT=FAIL reason=armor_payload"
+    return 1
+  fi
+  got="$(local_signing_fingerprint_of_keyring "$keyring" || true)"
+  [[ -n "$got" && ${#got} -eq 40 ]] || {
+    local_signing_err "CLIENT_PUBLIC_BINARY_KEYRING_FORMAT=FAIL reason=unreadable"
+    return 1
+  }
+  local_signing_log "CLIENT_PUBLIC_BINARY_KEYRING_FORMAT=OPENPGP_BINARY"
+  if [[ -n "$expected_fpr" ]]; then
+    expected_fpr="${expected_fpr^^}"
+    if [[ "$got" != "$expected_fpr" ]]; then
+      local_signing_err "CLIENT_PUBLIC_BINARY_KEYRING_FINGERPRINT=FAIL got=${got} expected=${expected_fpr}"
+      return 1
+    fi
+  fi
+  local_signing_log "CLIENT_PUBLIC_BINARY_KEYRING_FINGERPRINT=PASS"
+  return 0
+}
+
+# Stage HTTP-facing public key artifacts into a client staging directory.
+# Keeps local on-disk public.gpg format unchanged; publishes both armor + binary.
+local_signing_stage_http_public_artifacts() {
+  local stage_dir="${1:-}"
+  local armored="${2:-${LOCAL_SIGNING_PUBLIC_KEY}}"
+  local expected_fpr="${3:-${LOCAL_KEY_FINGERPRINT:-}}"
+
+  [[ -n "$stage_dir" && -d "$stage_dir" ]] || return 1
+  [[ -f "$armored" && -s "$armored" ]] || return 1
+
+  install -m 0644 "$armored" "${stage_dir}/public.gpg"
+  install -m 0644 "$armored" "${stage_dir}/public.asc"
+  install -m 0644 "$armored" "${stage_dir}/offline-client-manifest.gpg"
+  local_signing_log "CLIENT_PUBLIC_ARMORED_KEY_PUBLISH=PASS"
+
+  if ! local_signing_build_binary_keyring "$armored" "${stage_dir}/public-keyring.gpg"; then
+    local_signing_err "CLIENT_PUBLIC_BINARY_KEYRING_BUILD=FAIL"
+    return 1
+  fi
+  local_signing_log "CLIENT_PUBLIC_BINARY_KEYRING_BUILD=PASS"
+
+  if ! local_signing_verify_binary_keyring "${stage_dir}/public-keyring.gpg" "$expected_fpr"; then
+    return 1
+  fi
+  return 0
+}
+
+# gpgv-verify each hop's detached client-manifest against the binary keyring.
+# hops: remaining args (default four production hops).
+local_signing_verify_staged_manifest_gpgv() {
+  local stage_dir="${1:-}"
+  shift || true
+  local hops=("$@")
+  local hop json asc keyring
+
+  [[ -n "$stage_dir" && -d "$stage_dir" ]] || return 1
+  keyring="${stage_dir}/public-keyring.gpg"
+  [[ -f "$keyring" && -s "$keyring" ]] || {
+    local_signing_err "CLIENT_MANIFEST_GPGV_VERIFY=FAIL reason=missing_public_keyring"
+    return 1
+  }
+  if [[ "${#hops[@]}" -eq 0 ]]; then
+    hops=(xenial-to-bionic bionic-to-focal focal-to-jammy jammy-to-noble)
+  fi
+  for hop in "${hops[@]}"; do
+    json="${stage_dir}/${hop}/client-manifest.json"
+    asc="${stage_dir}/${hop}/client-manifest.json.asc"
+    if [[ ! -f "$json" || ! -f "$asc" ]]; then
+      local_signing_err "CLIENT_MANIFEST_GPGV_VERIFY=FAIL hop=${hop} reason=missing_manifest"
+      return 1
+    fi
+    if ! gpgv --keyring "$keyring" "$asc" "$json" >/dev/null 2>&1; then
+      local_signing_err "CLIENT_MANIFEST_GPGV_VERIFY=FAIL hop=${hop}"
+      return 1
+    fi
+    local_signing_log "CLIENT_MANIFEST_GPGV_VERIFY=PASS hop=${hop}"
+  done
+  return 0
+}
+
+# Full pre-publish gate: binary keyring + four-hop gpgv + no private key.
+# On failure prints CLIENT_SET_ATOMIC_SWAP=NOT_STARTED via caller responsibility.
+local_signing_prepublish_keyring_gate() {
+  local stage_dir="${1:-}"
+  local expected_fpr="${2:-${LOCAL_KEY_FINGERPRINT:-}}"
+  shift 2 2>/dev/null || true
+  local hops=("$@")
+
+  [[ -n "$stage_dir" && -d "$stage_dir" ]] || return 1
+  if ! local_signing_verify_binary_keyring "${stage_dir}/public-keyring.gpg" "$expected_fpr"; then
+    return 1
+  fi
+  if [[ "${#hops[@]}" -gt 0 ]]; then
+    local_signing_verify_staged_manifest_gpgv "$stage_dir" "${hops[@]}" || return 1
+  else
+    local_signing_verify_staged_manifest_gpgv "$stage_dir" || return 1
+  fi
+  local_signing_assert_private_not_published "$stage_dir" || return 1
+  return 0
+}

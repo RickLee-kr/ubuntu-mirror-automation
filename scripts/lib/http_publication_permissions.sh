@@ -95,9 +95,11 @@ mm_http_expected_file_mode() {
   base="$(basename "$path")"
   case "$base" in
     *.sh) printf '0755\n' ;;
-    *.sha256|*.sha1|*.gpg|*.env|*.list|*.txt|READY|FROZEN)
+    *.sha256|*.sha1|*.gpg|*.asc|*.env|*.list|*.txt|READY|FROZEN)
       printf '0644\n' ;;
     fingerprint|signing-key-fingerprint|release.env|meta-release|meta-release-lts)
+      printf '0644\n' ;;
+    public-keyring.gpg|public.gpg|public.asc|offline-client-manifest.gpg)
       printf '0644\n' ;;
     *.tar|*.tar.gz|*.tgz)
       printf '0644\n' ;;

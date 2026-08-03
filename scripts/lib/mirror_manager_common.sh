@@ -1515,6 +1515,7 @@ MM_CLIENT_REQUIRED_FILES=(
   dp-offline-upgrade-jammy-to-noble.sh.sha256
   stage-dp-phase2.sh
   stage-dp-phase2.sh.sha256
+  public-keyring.gpg
 )
 
 MM_CLIENT_PHASE2_REQUIRED_FILES=(
