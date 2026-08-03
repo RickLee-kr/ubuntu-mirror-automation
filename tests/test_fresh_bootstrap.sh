@@ -103,6 +103,14 @@ for f in \
   "${INSTALL_LIB_DIR}/scripts/lib/dp-phase2-common.sh" \
   "${INSTALL_LIB_DIR}/scripts/lib/local_client_signing.sh" \
   "${INSTALL_LIB_DIR}/scripts/lib/os_core_package.py" \
+  "${INSTALL_LIB_DIR}/scripts/lib/client_build_repository.py" \
+  "${INSTALL_LIB_DIR}/scripts/lib/atomic_dir_swap.py" \
+  "${INSTALL_LIB_DIR}/scripts/lib/build_client_xenial_to_bionic.py" \
+  "${INSTALL_LIB_DIR}/scripts/lib/build_client_bionic_to_focal.py" \
+  "${INSTALL_LIB_DIR}/scripts/lib/build_client_focal_to_jammy.py" \
+  "${INSTALL_LIB_DIR}/scripts/lib/build_client_jammy_to_noble.py" \
+  "${INSTALL_LIB_DIR}/scripts/rebuild-publish-clients.sh" \
+  "${INSTALL_LIB_DIR}/lib/runtime_manifest.sh" \
   "${INSTALL_LIB_DIR}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh" \
   "${INSTALL_LIB_DIR}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1" \
   "${INSTALL_LIB_DIR}/templates/nginx.conf" \
@@ -116,6 +124,20 @@ do
   [[ -e "$f" ]] || { fail "missing $f"; continue; }
 done
 pass "runtime files present"
+pass "CLIENT_BUILD_REPOSITORY_INSTALLED=YES"
+pass "ATOMIC_DIR_SWAP_INSTALLED=YES"
+
+# Re-verify Python import closure against the installed tree only.
+set +e
+py_closure="$(um_runtime_verify_python_dependency_closure "$INSTALL_LIB_DIR" "$ROOT" 2>&1)"
+py_rc=$?
+set -e
+echo "$py_closure" | grep -q 'RUNTIME_PYTHON_DEPENDENCY_CLOSURE=PASS' \
+  && [[ "$py_rc" -eq 0 ]] \
+  && pass "RUNTIME_PYTHON_DEPENDENCY_CLOSURE=PASS" \
+  || fail "RUNTIME_PYTHON_DEPENDENCY_CLOSURE"
+echo "$py_closure" | grep -q 'RUNTIME_BUILDER_IMPORT=PASS hop=xenial-to-bionic' \
+  && pass "ALL_FOUR_BUILDER_IMPORTS (sample hop)" || fail "builder imports"
 # Without OS Core READY, hop clients are deferred (never copy stale git clients).
 if [[ -f "${BASE_PATH}/client/dp-offline-upgrade-xenial-to-bionic.sh" ]]; then
   fail "stale hop client published before OS Core READY"

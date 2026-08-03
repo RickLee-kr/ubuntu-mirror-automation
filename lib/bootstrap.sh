@@ -7,6 +7,10 @@ if [[ -n "${UM_BOOTSTRAP_LOADED:-}" ]]; then
 fi
 UM_BOOTSTRAP_LOADED=1
 
+# Authoritative installed-runtime file manifest (single source of truth).
+# shellcheck source=runtime_manifest.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime_manifest.sh"
+
 # Test-only override (never documented in README / --help).
 # UM_BOOTSTRAP_ALLOW_UNSUPPORTED_OS=1 skips the Ubuntu 24.04 gate.
 
@@ -259,81 +263,14 @@ um_bootstrap_install_runtime() {
   fi
 
   mkdir -p \
-    "${runtime}/lib" \
-    "${runtime}/scripts/lib" \
-    "${runtime}/vendor/dp-phase2" \
-    "${runtime}/templates" \
-    "${runtime}/config/client-signing" \
-    "${runtime}/client" \
+    "${runtime}" \
     "${confdir}" \
     "${bindir}" \
     /usr/local/sbin
 
-  local f
-  for f in common.sh config.sh state.sh progress.sh offline.sh upgrade-profile.sh bootstrap.sh; do
-    if [[ -f "${src_root}/lib/${f}" ]]; then
-      um_bootstrap_install_file "${src_root}/lib/${f}" "${runtime}/lib/${f}" 0644
-      # Flat copies for legacy drift/path helpers
-      um_bootstrap_install_file "${src_root}/lib/${f}" "${runtime}/${f}" 0644
-    fi
-  done
-
-  um_bootstrap_install_file \
-    "${src_root}/scripts/ubuntu-offline-mirror.sh" \
-    "${runtime}/scripts/ubuntu-offline-mirror.sh" 0755
-  um_bootstrap_install_file \
-    "${src_root}/scripts/install-dp-upgrade-mirror.sh" \
-    "${runtime}/scripts/install-dp-upgrade-mirror.sh" 0755
-
-  um_bootstrap_install_file \
-    "${src_root}/scripts/rebuild-publish-clients.sh" \
-    "${runtime}/scripts/rebuild-publish-clients.sh" 0755
-
-  for f in mirror_manager_common.sh mirror_install_engine.sh r2_acquire.sh acps_acquire.sh \
-           dp-phase2-common.sh mirror_host_ip.sh client_mirror_gates.sh local_client_signing.sh \
-           os_core_package.py \
-           build_client_xenial_to_bionic.py build_client_bionic_to_focal.py \
-           build_client_focal_to_jammy.py build_client_jammy_to_noble.py; do
-    um_bootstrap_install_file \
-      "${src_root}/scripts/lib/${f}" \
-      "${runtime}/scripts/lib/${f}" 0644
-  done
-  chmod 0755 "${runtime}/scripts/lib/os_core_package.py" 2>/dev/null || true
-
-  um_bootstrap_install_file \
-    "${src_root}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh" \
-    "${runtime}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh" 0755
-  um_bootstrap_install_file \
-    "${src_root}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1" \
-    "${runtime}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1" 0644
-
-  if [[ -f "${src_root}/templates/nginx.conf" ]]; then
-    um_bootstrap_install_file \
-      "${src_root}/templates/nginx.conf" \
-      "${runtime}/templates/nginx.conf" 0644
-  fi
-
-  # Templates + phase2 helpers (hop clients are rebuilt per host; do not publish
-  # stale prebuilt client/*.sh from the git checkout).
-  for f in \
-    dp-offline-upgrade-xenial-to-bionic.sh.in \
-    dp-offline-upgrade-bionic-to-focal.sh.in \
-    dp-offline-upgrade-focal-to-jammy.sh.in \
-    dp-offline-upgrade-jammy-to-noble.sh.in \
-    dp-postboot-readiness-policy.sh.inc \
-    stage-dp-phase2.sh \
-    stage-dp-phase2-6.5.0.sh
-  do
-    if [[ -f "${src_root}/client/${f}" ]]; then
-      mode=0644
-      [[ "$f" == *.sh ]] && mode=0755
-      um_bootstrap_install_file "${src_root}/client/${f}" "${runtime}/client/${f}" "$mode"
-    fi
-  done
-  if [[ -d "${src_root}/client/lib" ]]; then
-    mkdir -p "${runtime}/client/lib"
-    cp -a "${src_root}/client/lib/." "${runtime}/client/lib/"
-  fi
+  # Install every runtime file from the authoritative manifest (no hardcoded
+  # parallel allowlist; no wildcard copies).
+  um_runtime_install_tree "$src_root" "$runtime"
 
   # Resolve IP, local keypair, rebuild/sign/atomic-publish host-pinned clients
   um_bootstrap_deploy_client_http_artifacts
@@ -354,33 +291,10 @@ um_bootstrap_install_runtime() {
   # Record source repo for operators (path only)
   printf '%s\n' "${src_root}" >"${confdir}/source-repo"
 
-  # Verify dependency closure
-  local missing=()
-  for f in \
-    "${runtime}/scripts/install-dp-upgrade-mirror.sh" \
-    "${runtime}/scripts/ubuntu-offline-mirror.sh" \
-    "${runtime}/scripts/lib/mirror_manager_common.sh" \
-    "${runtime}/scripts/lib/mirror_install_engine.sh" \
-    "${runtime}/scripts/lib/mirror_host_ip.sh" \
-    "${runtime}/scripts/lib/client_mirror_gates.sh" \
-    "${runtime}/scripts/lib/local_client_signing.sh" \
-    "${runtime}/scripts/rebuild-publish-clients.sh" \
-    "${runtime}/scripts/lib/r2_acquire.sh" \
-    "${runtime}/scripts/lib/acps_acquire.sh" \
-    "${runtime}/scripts/lib/dp-phase2-common.sh" \
-    "${runtime}/scripts/lib/os_core_package.py" \
-    "${runtime}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh" \
-    "${runtime}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1" \
-    "${runtime}/templates/nginx.conf" \
-    "${bindir}/ubuntu-offline-mirror"
-  do
-    [[ -e "$f" ]] || missing+=("$f")
-  done
-  if [[ ${#missing[@]} -gt 0 ]]; then
-    um_die "RUNTIME_DEPENDENCY_CLOSURE=FAIL missing=${missing[*]}"
-  fi
+  # File + Python import dependency closure against the installed tree only.
+  um_runtime_verify_dependency_closure "$runtime" "$bindir"
+  um_runtime_verify_python_dependency_closure "$runtime" "$src_root"
   um_ok "RUNTIME_INSTALL=PASS"
-  um_ok "RUNTIME_DEPENDENCY_CLOSURE=PASS"
 }
 
 um_bootstrap_write_sha256_sidecar() {

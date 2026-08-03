@@ -151,44 +151,27 @@ EOF
 }
 
 # Install a minimal runtime tree mirroring bootstrap layout under $work/runtime
+# using the authoritative runtime manifest (never wildcard-copy scripts/lib).
 client_fixture_install_runtime() {
   local repo_root="$1"
   local work="$2"
   local runtime="${work}/runtime"
+  local runtime_root="${runtime}/usr/local/lib/ubuntu-mirror"
+
   mkdir -p \
-    "${runtime}/usr/local/lib/ubuntu-mirror/scripts/lib" \
-    "${runtime}/usr/local/lib/ubuntu-mirror/client/lib" \
-    "${runtime}/usr/local/lib/ubuntu-mirror/templates" \
+    "${runtime}/usr/local/lib/ubuntu-mirror" \
     "${runtime}/var/spool/apt-mirror/.install-cache" \
     "${runtime}/var/spool/apt-mirror/client" \
     "${runtime}/var/spool/apt-mirror/selective" \
     "${runtime}/etc/ubuntu-mirror/client-signing"
 
-  # Copy product scripts needed for rebuild/publish (installed-runtime parity).
-  cp -a "${repo_root}/scripts/rebuild-publish-clients.sh" \
-    "${runtime}/usr/local/lib/ubuntu-mirror/scripts/"
-  cp -a "${repo_root}/scripts/lib/"*.py \
-    "${runtime}/usr/local/lib/ubuntu-mirror/scripts/lib/"
-  cp -a "${repo_root}/scripts/lib/"*.sh \
-    "${runtime}/usr/local/lib/ubuntu-mirror/scripts/lib/" 2>/dev/null || true
-  cp -a "${repo_root}/client/"*.sh.in \
-    "${runtime}/usr/local/lib/ubuntu-mirror/client/" 2>/dev/null || true
-  cp -a "${repo_root}/client/"*.inc \
-    "${runtime}/usr/local/lib/ubuntu-mirror/client/" 2>/dev/null || true
-  cp -a "${repo_root}/client/lib/"*.sh \
-    "${runtime}/usr/local/lib/ubuntu-mirror/client/lib/" 2>/dev/null || true
-  # Also copy any nested client helpers required by jammy→noble.
-  if [[ -d "${repo_root}/client" ]]; then
-    find "${repo_root}/client" -maxdepth 1 -type f \( -name '*.inc' -o -name '*.sh.in' \) \
-      -exec cp -a {} "${runtime}/usr/local/lib/ubuntu-mirror/client/" \;
-  fi
-  for f in stage-dp-phase2.sh stage-dp-phase2-6.5.0.sh; do
-    [[ -f "${repo_root}/client/${f}" ]] && \
-      cp -a "${repo_root}/client/${f}" "${runtime}/usr/local/lib/ubuntu-mirror/client/"
-  done
-  if [[ -d "${repo_root}/templates" ]]; then
-    cp -a "${repo_root}/templates/." "${runtime}/usr/local/lib/ubuntu-mirror/templates/" 2>/dev/null || true
-  fi
+  # shellcheck source=../../lib/runtime_manifest.sh
+  source "${repo_root}/lib/runtime_manifest.sh"
+  um_runtime_install_tree "$repo_root" "$runtime_root"
+
+  echo "TEST_RUNTIME_SOURCE=AUTHORITATIVE_MANIFEST"
+  echo "TEST_RUNTIME_WILDCARD_COPY=NO"
+  echo "TEST_RUNTIME_LAYOUT_MATCHES_BOOTSTRAP=YES"
 
   # Place selective + signing into runtime paths.
   cp -a "${work}/selective/." "${runtime}/var/spool/apt-mirror/selective/"
@@ -196,7 +179,7 @@ client_fixture_install_runtime() {
   chmod 600 "${runtime}/etc/ubuntu-mirror/client-signing/private.gpg"
 
   CLIENT_FIXTURE_RUNTIME="$runtime"
-  CLIENT_FIXTURE_RUNTIME_ROOT="${runtime}/usr/local/lib/ubuntu-mirror"
+  CLIENT_FIXTURE_RUNTIME_ROOT="$runtime_root"
   CLIENT_FIXTURE_MIRROR_ROOT="${runtime}/var/spool/apt-mirror"
   CLIENT_FIXTURE_SELECTIVE="${runtime}/var/spool/apt-mirror/selective"
   CLIENT_FIXTURE_CLIENT_ROOT="${runtime}/var/spool/apt-mirror/client"
