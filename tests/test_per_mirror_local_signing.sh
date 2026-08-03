@@ -165,20 +165,30 @@ rm -f "${HTTP}/private.gpg"
 
 # --- GUI command uses local mirror URL ---
 eval "$(awk '
+  /^gui_client_hop_command_block\(\)/ { in_fn=1 }
   /^gui_client_hop_command\(\)/ { in_fn=1 }
+  /^gui_client_hop_step_meta\(\)/ { in_fn=1 }
   in_fn { print }
-  in_fn && /^}/ { exit }
+  in_fn && /^}/ { if (++done >= 3) exit }
 ' "${ROOT}/scripts/install-dp-upgrade-mirror.sh")"
-cmd_a="$(gui_client_hop_command "$HOST_A" "dp-offline-upgrade-xenial-to-bionic.sh")"
-[[ "$cmd_a" == *"$HOST_A/client/"* ]] \
+# Prefer the multi-line block generator when present.
+if declare -F gui_client_hop_command_block >/dev/null 2>&1; then
+  cmd_a="$(gui_client_hop_command_block "$HOST_A" "dp-offline-upgrade-xenial-to-bionic.sh")"
+else
+  cmd_a="$(gui_client_hop_command "$HOST_A" "dp-offline-upgrade-xenial-to-bionic.sh")"
+fi
+[[ "$cmd_a" == *"MIRROR='${HOST_A}'"* || "$cmd_a" == *"$HOST_A/client/"* ]] \
   && pass "GUI hop command downloads from Host A" \
   || fail "GUI hop command missing Host A URL"
-[[ "$cmd_a" == *"public.gpg"* ]] \
-  && pass "GUI hop command downloads same-server public key" \
-  || fail "GUI hop command missing public key download"
-[[ "$cmd_a" == *"gpgv"* ]] \
-  && pass "GUI hop command verifies signature with public key" \
-  || fail "GUI hop command missing gpgv"
+[[ "$cmd_a" == *"public-keyring.gpg"* ]] \
+  && pass "GUI hop command downloads binary public keyring" \
+  || fail "GUI hop command missing public-keyring.gpg download"
+[[ "$cmd_a" == *"gpgv"* && "$cmd_a" == *"--keyring ./public-keyring.gpg"* ]] \
+  && pass "GUI hop command verifies signature with binary keyring" \
+  || fail "GUI hop command missing gpgv --keyring public-keyring.gpg"
+[[ "$cmd_a" != *"--keyring ./public.gpg"* ]] \
+  && pass "GUI hop command does not use armored public.gpg as keyring" \
+  || fail "GUI hop command still uses public.gpg as gpgv keyring"
 [[ "$cmd_a" != *"EXPECTED_FINGERPRINT"* ]] \
   && pass "GUI command has no EXPECTED_FINGERPRINT argument" \
   || fail "GUI command still passes EXPECTED_FINGERPRINT"

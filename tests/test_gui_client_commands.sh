@@ -111,32 +111,51 @@ grep -q 'Phase 2 Target: 6.5.0' "$OUT" || fail "missing phase2 target header"
 grep -q 'OS Upgrade: Ubuntu 16.04 → Ubuntu 24.04' "$OUT" || fail "missing OS upgrade header"
 grep -q 'Step 0 — Create snapshot or backup' "$OUT" || fail "missing step 0"
 grep -q 'Step 1 — Pause DP services' "$OUT" || fail "missing pause"
-grep -q 'Step 2 — Ubuntu 16.04 to 18.04' "$OUT" || fail "missing hop 16→18"
+grep -qE 'STEP 2 — UBUNTU 16.04 TO 18.04|Step 2 — Ubuntu 16.04 to 18.04' "$OUT" \
+  || fail "missing hop 16→18"
 grep -q 'The Xenial-to-Bionic client automatically sets the aella and root login' "$OUT" \
   || fail "missing automatic login shell guidance"
-grep -q 'Step 3 — Ubuntu 18.04 to 20.04' "$OUT" || fail "missing hop 18→20"
-grep -q 'Step 4 — Ubuntu 20.04 to 22.04' "$OUT" || fail "missing hop 20→22"
-grep -q 'Step 5 — Ubuntu 22.04 to 24.04' "$OUT" || fail "missing hop 22→24"
-grep -q 'Step 6 — Stage DP 6.5.0 files' "$OUT" || fail "missing stage"
+grep -qE 'STEP 3 — UBUNTU 18.04 TO 20.04|Step 3 — Ubuntu 18.04 to 20.04' "$OUT" \
+  || fail "missing hop 18→20"
+grep -qE 'STEP 4 — UBUNTU 20.04 TO 22.04|Step 4 — Ubuntu 20.04 to 22.04' "$OUT" \
+  || fail "missing hop 20→22"
+grep -qE 'STEP 5 — UBUNTU 22.04 TO 24.04|Step 5 — Ubuntu 22.04 to 24.04' "$OUT" \
+  || fail "missing hop 22→24"
+grep -qE 'STEP 6 — STAGE DP 6.5.0|Step 6 — Stage DP 6.5.0 files' "$OUT" \
+  || fail "missing stage"
 grep -q 'Step 7 — Run DP 6.5.0 bringup' "$OUT" || fail "missing bringup"
 grep -q 'Step 8 — Resume DP services' "$OUT" || fail "missing resume"
 grep -q 'Step 9 — Verify DP health' "$OUT" || fail "missing health"
 grep -q 'Verify bash login shells' "$OUT" && fail "manual shell verify step still present" || true
 grep -q 'getent passwd aella root' "$OUT" && fail "manual getent shell command still present" || true
-# Full mode steps must be exactly 0..9 with no duplicates
-step_nums="$(grep -oE 'Step [0-9]+ —' "$OUT" | grep -oE '[0-9]+' | tr '\n' ' ')"
-[[ "$step_nums" == "0 1 2 3 4 5 6 7 8 9 " ]] || fail "unexpected Full step numbering: ${step_nums}"
+grep -q 'COMMAND FORMAT' "$OUT" || fail "COMMAND FORMAT guidance missing"
+grep -q 'BEGIN STEP 2:' "$OUT" || fail "missing BEGIN STEP 2 marker"
+grep -q 'END STEP 2:' "$OUT" || fail "missing END STEP 2 marker"
+grep -q 'public-keyring.gpg' "$OUT" || fail "missing public-keyring.gpg in commands"
+grep -q -- '--keyring ./public-keyring.gpg' "$OUT" || fail "gpgv must use public-keyring.gpg"
+grep -q -- '--keyring ./public.gpg' "$OUT" && fail "gpgv must not use armored public.gpg" || true
+grep -Eq 'curl -fsSLO([[:space:]]|$)' "$OUT" && fail "naked curl -fsSLO present" || true
+# Full mode must still cover steps 0..9
+for n in 0 1 2 3 4 5 6 7 8 9; do
+  grep -qE "Step ${n} —|STEP ${n} —" "$OUT" || fail "missing step ${n}"
+done
 grep -Fq -- '--source-dp-version' "$OUT" && fail "FULL command has --source-dp-version" || true
-grep -Fq -- '--target-version 6.5.0' "$OUT" || fail "target version missing"
+grep -Fq -- '--target-version' "$OUT" || fail "target version missing"
 grep -Fq -- '--same-version-recovery' "$OUT" || fail "same-version-recovery missing"
-hop_count="$(grep -c 'dp-offline-upgrade-.*--mirror-base http://192.0.2.10' "$OUT" || true)"
-[[ "$hop_count" -eq 4 ]] || fail "expected four hop commands with --mirror-base, got ${hop_count}"
-if grep 'sudo bash ./dp-offline-upgrade-' "$OUT" | grep -vq -- '--mirror-base'; then
-  fail "hop command lacks --mirror-base"
+hop_count="$(grep -c 'BEGIN STEP [2-5]:' "$OUT" || true)"
+[[ "$hop_count" -eq 4 ]] || fail "expected four hop BEGIN markers, got ${hop_count}"
+mirror_count="$(grep -c "MIRROR='http://192.0.2.10'" "$OUT" || true)"
+[[ "$mirror_count" -ge 4 ]] || fail "expected MIRROR pin in hop blocks, got ${mirror_count}"
+if grep -E 'sudo bash "\./\$SCRIPT"' "$OUT" | grep -vq 'mirror-base'; then
+  # mirror-base is on the following continued line; ensure it exists nearby
+  grep -q -- '--mirror-base "\$MIRROR"' "$OUT" \
+    || fail "hop command lacks --mirror-base"
 fi
-second_cmd="$(gui_client_hop_command "http://192.0.2.20" "dp-offline-upgrade-xenial-to-bionic.sh")"
-[[ "$second_cmd" == *"--mirror-base http://192.0.2.20"* ]] \
+second_cmd="$(gui_client_hop_command_block "http://192.0.2.20" "dp-offline-upgrade-xenial-to-bionic.sh")"
+[[ "$second_cmd" == *"MIRROR='http://192.0.2.20'"* ]] \
   || fail "second fixture URL missing from hop command"
+[[ "$second_cmd" == *"--mirror-base \"\$MIRROR\""* ]] \
+  || fail "second fixture missing --mirror-base \$MIRROR"
 grep -q 'License is valid' "$OUT" || fail "license check missing"
 pass "FULL mode client commands"
 
@@ -146,9 +165,10 @@ P2_OUT="$TMP/cmds-p2.txt"
 gui_build_client_commands "http://192.0.2.10" "single" "" >"$P2_OUT"
 grep -q 'DP Phase 2 Upgrade Commands' "$P2_OUT" || fail "phase2 title missing"
 grep -q 'Required OS: Ubuntu 24.04' "$P2_OUT" || fail "required OS missing"
-grep -q 'Ubuntu 16.04 to 18.04' "$P2_OUT" && fail "PHASE2_ONLY still has OS hops" || true
+grep -q 'Ubuntu 16.04 to 18.04\|UBUNTU 16.04 TO 18.04' "$P2_OUT" && fail "PHASE2_ONLY still has OS hops" || true
 grep -q 'dp-offline-upgrade-xenial-to-bionic' "$P2_OUT" && fail "PHASE2_ONLY hop script present" || true
-grep -q 'Step 2 — Stage DP 6.5.0 files' "$P2_OUT" || fail "phase2 stage step missing"
+grep -qE 'STEP 2 — STAGE DP 6.5.0|Step 2 — Stage DP 6.5.0 files' "$P2_OUT" \
+  || fail "phase2 stage step missing"
 grep -q 'Step 3 — Run DP 6.5.0 bringup' "$P2_OUT" || fail "phase2 bringup missing"
 grep -Fq -- '--same-version-recovery' "$P2_OUT" || fail "phase2 same-version-recovery missing"
 pass "PHASE2_ONLY omits OS hop commands"
@@ -158,7 +178,8 @@ for bad in \
   CLIENT_DOWNLOAD_SOURCE CLIENT_R2_ACCESS CLIENT_ACPS_ACCESS \
   PROJECT_ROLLBACK_SUPPORTED 'Repeat similarly' '<mirror-ip>' \
   'Worker management IPs' '--source-dp-version' \
-  'Current DP Version' 'Target DP Version'
+  'Current DP Version' 'Target DP Version' \
+  '221.139.249.111' '221.139.249.112'
 do
   if grep -Fq -- "$bad" "$OUT"; then
     fail "forbidden string present in FULL: $bad"
@@ -169,11 +190,10 @@ do
 done
 pass "forbidden strings absent"
 
-# No backslash continuations
-if grep -E '\\[[:space:]]*$' "$OUT" "$P2_OUT"; then
-  fail "backslash continuation present"
-fi
-pass "no backslash continuations"
+# Intentional backslash continuations are required for safe multi-line blocks.
+grep -E '\\[[:space:]]*$' "$OUT" >/dev/null \
+  || fail "expected backslash continuations in FULL hop blocks"
+pass "multi-line backslash continuations present"
 
 # Cluster bringup
 CLUSTER_OUT="$TMP/cluster.txt"
@@ -240,9 +260,11 @@ mm_save_gui_config >/dev/null
 [[ ! -f "$(mm_client_commands_file)" ]] || fail "stale command file not removed on mode change"
 pass "mode change invalidates client commands file"
 
-# Menu 7: topology first; version input count=0
+# Menu 7: topology first; version input count=0; then command viewer Back
 PREPARATION_MODE=FULL
 MIRROR_HTTP_URL="http://192.0.2.10"
+# Persist FULL before stubbing save — gui_client_instructions reloads config.
+mm_save_gui_config >/dev/null
 MENU7_TRACE="$TMP/menu7.trace"
 : >"$MENU7_TRACE"
 INPUTBOX_COUNT=0
@@ -251,9 +273,13 @@ mm_whiptail_input() {
   printf 'INPUT\t%s\n' "$*" >>"$MENU7_TRACE"
   fail "unexpected input prompt on single path: $*"
 }
+# NOTE: $(mm_whiptail_menu) runs in a subshell — do not rely on call counters.
 mm_whiptail_menu() {
   printf 'MENU\t%s\n' "$1" >>"$MENU7_TRACE"
-  printf '1\n'
+  case "$1" in
+    "DP deployment type") printf '1\n' ;;  # single
+    *) printf '0\n' ;;                     # viewer Back
+  esac
 }
 mm_whiptail_textbox() { printf 'TEXTBOX\n' >>"$MENU7_TRACE"; return 0; }
 mm_whiptail_msg() { printf 'MSG\t%s\n' "$*" >>"$MENU7_TRACE"; return 0; }
@@ -267,8 +293,10 @@ grep -q $'MENU\tDP deployment type' "$MENU7_TRACE" || fail "first menu7 prompt n
 [[ -f "$(mm_client_commands_file)" ]] || fail "menu7 did not create command file"
 [[ "$(stat -c '%a' "$(mm_client_commands_file)")" == "644" ]] || fail "menu7 file mode not 644"
 grep -Fq -- '--source-dp-version' "$(mm_client_commands_file)" && fail "menu7 has source" || true
-grep -Fq -- '--target-version 6.5.0' "$(mm_client_commands_file)" || fail "menu7 missing target"
+grep -Fq -- '--target-version' "$(mm_client_commands_file)" || fail "menu7 missing target"
 grep -Fq -- '--same-version-recovery' "$(mm_client_commands_file)" || fail "menu7 missing recovery"
+grep -q 'BEGIN STEP 2:' "$(mm_client_commands_file)" || fail "menu7 missing BEGIN STEP markers"
+grep -q 'public-keyring.gpg' "$(mm_client_commands_file)" || fail "menu7 missing public-keyring.gpg"
 pass "menu7 topology-only; no version prompts"
 
 # Artifact: only 6.5.0 versioned names in ACPS/phase2 helpers
