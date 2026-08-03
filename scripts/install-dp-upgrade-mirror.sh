@@ -342,14 +342,23 @@ mm_whiptail_yesno() {
 gui_configuration() {
   mm_load_gui_config
   while true; do
-    local choice mode_label footer
+    local choice mode_label footer detected_ip ip_label
     mm_normalize_preparation_mode
     mm_force_phase2_target
     mode_label="$(mm_preparation_mode_label)"
     footer="$(mm_config_footer_text)"
+    detected_ip="$(mirror_host_suggest_primary_ipv4 2>/dev/null || true)"
+    if [[ -n "${MIRROR_SERVER_IP:-}" ]]; then
+      ip_label="${MIRROR_SERVER_IP}"
+    elif [[ -n "$detected_ip" ]]; then
+      ip_label="(suggested ${detected_ip})"
+    else
+      ip_label="(not set)"
+    fi
     # Trailing blank line: newt/whiptail can clip the final instruction line otherwise.
     choice="$(mm_whiptail_menu "Configuration" \
       "Preparation Mode: ${mode_label}
+Mirror Server IP: ${ip_label}
 ACPS Username: $(mm_configured_label "$ACPS_USERNAME")
 ACPS Password: $(mm_configured_label "$ACPS_PASSWORD")
 ACPS Server: Fixed
@@ -358,10 +367,11 @@ OS Core Source: Cloudflare R2
 ${footer}
 " \
       "1" "Preparation Mode" \
-      "2" "ACPS Username" \
-      "3" "ACPS Password" \
-      "4" "Test ACPS Connection" \
-      "5" "Save Configuration" \
+      "2" "Mirror Server IP" \
+      "3" "ACPS Username" \
+      "4" "ACPS Password" \
+      "5" "Test ACPS Connection" \
+      "6" "Save Configuration" \
       "0" "Back")" || return 0
     case "$choice" in
       1)
@@ -383,16 +393,51 @@ Phase 2 Only:
         esac
         ;;
       2)
+        local ip_in suggest_msg default_ip
+        suggest_msg=""
+        default_ip="${MIRROR_SERVER_IP:-}"
+        detected_ip="$(mirror_host_suggest_primary_ipv4 2>/dev/null || true)"
+        if [[ -n "$detected_ip" ]]; then
+          suggest_msg="Detected Mirror Server IP: ${detected_ip}
+
+Auto-detection is a suggestion only. Confirm or edit the value to save."
+          [[ -z "$default_ip" ]] && default_ip="$detected_ip"
+        else
+          suggest_msg="No single primary-interface IPv4 was detected.
+Enter the IPv4 address clients should use to reach this Mirror Server."
+        fi
+        ip_in="$(mm_whiptail_input "Mirror Server IP" \
+          "${suggest_msg}" \
+          "${default_ip}")" || continue
+        ip_in="$(printf '%s' "$ip_in" | tr -d '[:space:]')"
+        if ! mirror_host_is_usable_ipv4 "$ip_in"; then
+          mm_whiptail_msg "Mirror Server IP" \
+            "Invalid IPv4 address: ${ip_in}
+
+Loopback, link-local, and 0.0.0.0 are not allowed."
+          continue
+        fi
+        if ! mirror_host_validate_ipv4_on_host "$ip_in"; then
+          mm_whiptail_msg "Mirror Server IP" \
+            "${ip_in} is not configured on any active non-excluded interface.
+
+Choose an address that exists on this host."
+          continue
+        fi
+        MIRROR_SERVER_IP="$ip_in"
+        MIRROR_HTTP_URL="$(mirror_base_url_from_ipv4 "$ip_in")"
+        ;;
+      3)
         local u
         u="$(mm_whiptail_input "ACPS Username" "Enter ACPS username" "${ACPS_USERNAME}")" || continue
         ACPS_USERNAME="$u"
         ;;
-      3)
+      4)
         local p
         p="$(mm_whiptail_password "ACPS Password" "Enter ACPS password (not displayed later)")" || continue
         ACPS_PASSWORD="$p"
         ;;
-      4)
+      5)
         # Use in-memory credentials from this Configuration session.
         # Do NOT reload from disk here — that discarded unsaved Username/Password
         # entries and made the form look "reset".
@@ -402,8 +447,8 @@ Phase 2 Only:
           mm_whiptail_msg "ACPS" \
             "Enter ACPS Username and ACPS Password first.
 
-Use menu items 2 and 3, then Test again.
-Use 5) Save Configuration to persist them."
+Use menu items 3 and 4, then Test again.
+Use 6) Save Configuration to persist them."
           continue
         fi
         ACPS_BASE_URL="$ACPS_BASE_URL_FIXED"
@@ -415,8 +460,24 @@ Use 5) Save Configuration to persist them."
           mm_whiptail_msg "ACPS" "ACPS_CONNECTION=FAIL"
         fi
         ;;
-      5)
+      6)
         mm_force_phase2_target
+        if [[ -z "${MIRROR_SERVER_IP:-}" ]]; then
+          mm_whiptail_msg "Configuration" \
+            "Mirror Server IP is required before Save.
+
+Use 2) Mirror Server IP to confirm the advertised address."
+          continue
+        fi
+        if ! mirror_host_is_usable_ipv4 "${MIRROR_SERVER_IP}" \
+          || ! mirror_host_validate_ipv4_on_host "${MIRROR_SERVER_IP}"; then
+          mm_whiptail_msg "Configuration" \
+            "Mirror Server IP ${MIRROR_SERVER_IP} failed validation.
+
+Re-enter a usable IPv4 present on this host."
+          continue
+        fi
+        MIRROR_HTTP_URL="$(mirror_base_url_from_ipv4 "${MIRROR_SERVER_IP}")"
         mm_save_gui_config
         mm_record_config_validated
         mm_status_set PREPARATION_MODE "${PREPARATION_MODE}"
@@ -426,6 +487,7 @@ Use 5) Save Configuration to persist them."
             "Configuration saved.
 
 Preparation Mode: $(mm_preparation_mode_label)
+Mirror Server IP: ${MIRROR_SERVER_IP}
 Phase 2 Target: ${PHASE2_TARGET_VERSION} (fixed)
 
 Previously generated Client Commands are stale.
@@ -440,6 +502,7 @@ Saving configuration does NOT start the download."
             "Configuration saved.
 
 Preparation Mode: $(mm_preparation_mode_label)
+Mirror Server IP: ${MIRROR_SERVER_IP}
 Phase 2 Target: ${PHASE2_TARGET_VERSION} (fixed)
 
 Next step:
@@ -464,7 +527,14 @@ gui_download_and_prepare() {
   mm_force_phase2_target
   if ! mm_config_ready; then
     mm_whiptail_msg "Configuration required" \
-      "Set Preparation Mode, ACPS Username, and ACPS Password first."
+      "Set Preparation Mode, Mirror Server IP, ACPS Username, and ACPS Password first."
+    return 0
+  fi
+  if ! mm_require_configured_mirror_server_ip; then
+    mm_whiptail_msg "Mirror Server IP required" \
+      "Confirm Mirror Server IP in Configuration before Download and Prepare.
+
+Use menu 1 → 2) Mirror Server IP, then Save Configuration."
     return 0
   fi
   if ! mm_is_phase2_only && ! mm_r2_url_configured; then

@@ -81,14 +81,14 @@ field() { printf '%s\n' "$2" | awk -F= -v k="$1" '$1==k{print $2; exit}'; }
 # ---------------------------------------------------------------------------
 BIN_A="${WORKDIR}/bin-a"
 make_ip_mock "$BIN_A" eth0 "eth0 192.0.2.10/24" "docker0 172.17.0.1/16"
-printf 'MIRROR_HTTP_URL=http://192.0.2.10\n' >"${WORKDIR}/mm-a.conf"
+printf 'MIRROR_SERVER_IP=192.0.2.10\nMIRROR_HTTP_URL=http://192.0.2.10\n' >"${WORKDIR}/mm-a.conf"
 : >"${WORKDIR}/empty.conf"
 out="$(run_resolver "$BIN_A" "${WORKDIR}/mm-a.conf" "${WORKDIR}/empty.conf")" && rc=0 || rc=$?
 if [[ "$rc" -eq 0 ]] \
   && [[ "$(field RESOLVED_MIRROR_BASE_URL "$out")" == "http://192.0.2.10" ]] \
-  && [[ "$(field MIRROR_IP_RESOLUTION_SOURCE "$out")" == "PERSISTED_MM_CONFIG" ]] \
+  && [[ "$(field MIRROR_IP_RESOLUTION_SOURCE "$out")" == "OPERATOR_CONFIRMED_CONFIG" ]] \
   && [[ "$(field MIRROR_IP_RESOLUTION_RESULT "$out")" == "PASS" ]]; then
-  pass "config A resolves to http://192.0.2.10 from PERSISTED_MM_CONFIG"
+  pass "config A resolves to http://192.0.2.10 from OPERATOR_CONFIRMED_CONFIG"
 else
   fail "config A resolution: ${out}"
 fi
@@ -98,7 +98,7 @@ fi
 # ---------------------------------------------------------------------------
 BIN_B="${WORKDIR}/bin-b"
 make_ip_mock "$BIN_B" ens160 "ens160 192.0.2.20/24"
-printf 'MIRROR_HTTP_URL="http://192.0.2.20"\n' >"${WORKDIR}/mm-b.conf"
+printf 'MIRROR_SERVER_IP=192.0.2.20\nMIRROR_HTTP_URL="http://192.0.2.20"\n' >"${WORKDIR}/mm-b.conf"
 out="$(run_resolver "$BIN_B" "${WORKDIR}/mm-b.conf" "${WORKDIR}/empty.conf")" && rc=0 || rc=$?
 if [[ "$rc" -eq 0 ]] \
   && [[ "$(field RESOLVED_MIRROR_BASE_URL "$out")" == "http://192.0.2.20" ]] \
