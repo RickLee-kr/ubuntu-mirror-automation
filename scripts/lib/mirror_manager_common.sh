@@ -611,9 +611,33 @@ mm_load_gui_config() {
 
 mm_save_gui_config() {
   local prev_mode="" cmd_file
+  local mem_user="${ACPS_USERNAME:-}"
+  local mem_pass="${ACPS_PASSWORD:-}"
+  local mem_mirror="${MIRROR_HTTP_URL:-}"
+  local mem_mode="${PREPARATION_MODE:-}"
+  local disk_user="" disk_pass="" disk_mirror=""
+
   if [[ -f "${MM_CONFIG_FILE}" ]]; then
-    prev_mode="$(awk -F= '/^PREPARATION_MODE=/{print $2; exit}' "${MM_CONFIG_FILE}" 2>/dev/null || true)"
+    prev_mode="$(awk -F= '/^PREPARATION_MODE=/{print substr($0,index($0,"=")+1); exit}' "${MM_CONFIG_FILE}" 2>/dev/null || true)"
+    # Read disk values in a subshell so we do not clobber caller memory.
+    # shellcheck disable=SC1090
+    eval "$(
+      set -a
+      # shellcheck source=/dev/null
+      source "${MM_CONFIG_FILE}"
+      set +a
+      printf 'disk_user=%s\n' "$(printf '%q' "${ACPS_USERNAME:-}")"
+      printf 'disk_pass=%s\n' "$(printf '%q' "${ACPS_PASSWORD:-}")"
+      printf 'disk_mirror=%s\n' "$(printf '%q' "${MIRROR_HTTP_URL:-}")"
+    )"
   fi
+
+  # Prefer in-memory values; fall back to disk so URL-only saves cannot wipe ACPS.
+  ACPS_USERNAME="${mem_user:-$disk_user}"
+  ACPS_PASSWORD="${mem_pass:-$disk_pass}"
+  MIRROR_HTTP_URL="${mem_mirror:-$disk_mirror}"
+  PREPARATION_MODE="${mem_mode:-${prev_mode:-FULL}}"
+
   mm_normalize_preparation_mode
   mm_force_phase2_target
   mkdir -p "$(dirname "$MM_CONFIG_FILE")"
@@ -621,15 +645,16 @@ mm_save_gui_config() {
   tmp="$(mktemp)"
   old_umask="$(umask)"
   umask 077
-  cat >"$tmp" <<EOF
-# DP Upgrade Mirror Manager configuration (managed by GUI)
-# Do not store secrets in world-readable locations.
-# Phase 2 target is fixed at ${PHASE2_TARGET_VERSION} (not user-editable).
-PREPARATION_MODE=${PREPARATION_MODE}
-ACPS_USERNAME=${ACPS_USERNAME}
-ACPS_PASSWORD=${ACPS_PASSWORD}
-MIRROR_HTTP_URL=${MIRROR_HTTP_URL:-}
-EOF
+  # printf %q so passwords with spaces/$/\` survive a later `source`.
+  {
+    printf '%s\n' "# DP Upgrade Mirror Manager configuration (managed by GUI)"
+    printf '%s\n' "# Do not store secrets in world-readable locations."
+    printf '%s\n' "# Phase 2 target is fixed at ${PHASE2_TARGET_VERSION} (not user-editable)."
+    printf 'PREPARATION_MODE=%s\n' "$(printf '%q' "${PREPARATION_MODE}")"
+    printf 'ACPS_USERNAME=%s\n' "$(printf '%q' "${ACPS_USERNAME}")"
+    printf 'ACPS_PASSWORD=%s\n' "$(printf '%q' "${ACPS_PASSWORD}")"
+    printf 'MIRROR_HTTP_URL=%s\n' "$(printf '%q' "${MIRROR_HTTP_URL:-}")"
+  } >"$tmp"
   umask "$old_umask"
   chmod 600 "$tmp"
   mv -f "$tmp" "$MM_CONFIG_FILE"

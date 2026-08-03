@@ -393,11 +393,17 @@ Phase 2 Only:
         ACPS_PASSWORD="$p"
         ;;
       4)
+        # Use in-memory credentials from this Configuration session.
+        # Do NOT reload from disk here — that discarded unsaved Username/Password
+        # entries and made the form look "reset".
         load_mirror_defaults
         engine_resolve_paths
-        mm_load_gui_config
-        if [[ -z "$ACPS_USERNAME" || -z "$ACPS_PASSWORD" ]]; then
-          mm_whiptail_msg "ACPS" "Save username and password first."
+        if [[ -z "${ACPS_USERNAME:-}" || -z "${ACPS_PASSWORD:-}" ]]; then
+          mm_whiptail_msg "ACPS" \
+            "Enter ACPS Username and ACPS Password first.
+
+Use menu items 2 and 3, then Test again.
+Use 5) Save Configuration to persist them."
           continue
         fi
         ACPS_BASE_URL="$ACPS_BASE_URL_FIXED"

@@ -431,10 +431,10 @@ um_bootstrap_persist_local_mirror_url() {
   cat >"$tmp" <<EOF
 # DP Upgrade Mirror Manager configuration (managed by install/bootstrap)
 # Phase 2 target is fixed at 6.5.0 (not user-editable).
-PREPARATION_MODE=${prep}
-ACPS_USERNAME=${user}
-ACPS_PASSWORD=${pass}
-MIRROR_HTTP_URL=${mirror_base}
+PREPARATION_MODE=$(printf '%q' "${prep}")
+ACPS_USERNAME=$(printf '%q' "${user}")
+ACPS_PASSWORD=$(printf '%q' "${pass}")
+MIRROR_HTTP_URL=$(printf '%q' "${mirror_base}")
 EOF
   chmod 600 "$tmp"
   mv -f "$tmp" "$conf"
