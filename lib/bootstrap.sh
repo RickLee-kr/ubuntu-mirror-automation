@@ -525,16 +525,19 @@ um_bootstrap_deploy_client_http_artifacts() {
   um_info "TARGET_INSTALL_REQUIRES_PREEXISTING_PRIVATE_KEY=NO"
 
   if ! um_bootstrap_selective_ready; then
-    um_warn "SELECTIVE_READY=NO — deferring hop-client rebuild until OS Core is prepared"
-    um_warn "CLIENT_SET_DEFERRED_UNTIL_OS_CORE=YES"
-    um_info "Stale prebuilt git client/*.sh will NOT be published"
+    # Fresh bootstrap before Download and Prepare: deferred state is expected, not a warning.
+    um_info "SELECTIVE_READY=NOT_PREPARED_YET"
+    um_info "CLIENT_SET_BUILD=DEFERRED_UNTIL_OS_CORE"
+    um_info "STALE_PREBUILT_CLIENT_PUBLISH=PROHIBITED"
+    um_info "STALE_CLIENT_COPY_ALLOWED=NO"
+    um_info "PARTIAL_CLIENT_DEPLOY_ALLOWED=NO"
     # Still publish Phase 2 helpers + local public key metadata (no hop clients).
     um_bootstrap_publish_phase2_helpers_only "$dest" || true
-    if um_bootstrap_verify_client_files "$dest" 2>/dev/null; then
-      um_ok "CLIENT_HTTP_ARTIFACTS=PASS (helpers present; hops rebuild after OS Core)"
-    else
-      um_warn "CLIENT_FILES_READY=NO (hop clients deferred until Download and Prepare)"
-    fi
+    local_signing_assert_private_not_published "$dest" \
+      || um_die "PRIVATE_KEY_HTTP_PUBLISHED=YES"
+    um_info "PRIVATE_KEY_HTTP_PUBLISHED=NO"
+    um_info "CLIENT_FILES_READY=NOT_REQUIRED_DURING_BOOTSTRAP"
+    um_info "CLIENT_HTTP_READY=DEFERRED_UNTIL_ENABLE_HTTP"
     return 0
   fi
 
@@ -668,15 +671,87 @@ um_bootstrap_install_nginx_base() {
   fi
   um_ok "NGINX_TEST=PASS"
 
-  # Install/bootstrap: package + site config only. Do not start nginx or expose
-  # incomplete artifacts. Enable HTTP Distribution performs start/reload + HTTP verify.
-  systemctl enable nginx >/dev/null 2>&1 || true
-  um_info "HTTP_DISTRIBUTION=DISABLED"
-  um_info "BOOTSTRAP_NGINX_START=SKIPPED"
+  # Install/bootstrap: package + site config only. Do not start nginx, do not
+  # enable on boot, and do not expose incomplete artifacts. If apt post-install
+  # auto-started/enabled nginx, stop and disable it. Enable HTTP Distribution
+  # owns enable/start/reload + HTTP verify.
+  um_bootstrap_enforce_http_disabled
   um_ok "NGINX_CONFIG_READY=YES"
-  if systemctl is-active --quiet nginx 2>/dev/null; then
-    um_warn "NGINX_ALREADY_ACTIVE=YES (Enable HTTP will re-verify; bootstrap did not start it)"
+}
+
+# Resolve systemctl binary (test override: UM_BOOTSTRAP_SYSTEMCTL_BIN).
+um_bootstrap_systemctl() {
+  if [[ -n "${UM_BOOTSTRAP_SYSTEMCTL_BIN:-}" ]]; then
+    "${UM_BOOTSTRAP_SYSTEMCTL_BIN}" "$@"
+  else
+    systemctl "$@"
   fi
+}
+
+# Authoritative bootstrap HTTP isolation: nginx must be stopped and not
+# boot-enabled so incomplete mirror artifacts are never served.
+um_bootstrap_enforce_http_disabled() {
+  local was_active=0
+  local was_enabled=0
+  local stop_needed=0
+  local disable_needed=0
+
+  if [[ "${UM_DRY_RUN:-0}" == "1" ]]; then
+    um_dry "Would enforce nginx stopped and boot-disabled (HTTP_DISTRIBUTION=DISABLED)"
+    return 0
+  fi
+
+  if um_bootstrap_systemctl is-active --quiet nginx 2>/dev/null; then
+    was_active=1
+    stop_needed=1
+  fi
+  if um_bootstrap_systemctl is-enabled nginx >/dev/null 2>&1; then
+    was_enabled=1
+    disable_needed=1
+  fi
+
+  if [[ "$was_active" -eq 1 || "$was_enabled" -eq 1 ]]; then
+    um_info "NGINX_PACKAGE_AUTO_START_DETECTED=YES"
+  else
+    um_info "NGINX_PACKAGE_AUTO_START_DETECTED=NO"
+  fi
+
+  if [[ "$stop_needed" -eq 1 ]]; then
+    if ! um_bootstrap_systemctl stop nginx >/dev/null 2>&1; then
+      um_error "BOOTSTRAP_NGINX_STOP=FAIL"
+      um_die "BOOTSTRAP_HTTP_ISOLATION=FAIL nginx stop failed"
+    fi
+    if um_bootstrap_systemctl is-active --quiet nginx 2>/dev/null; then
+      um_error "BOOTSTRAP_NGINX_STOP=FAIL still_active"
+      um_die "BOOTSTRAP_HTTP_ISOLATION=FAIL nginx still active after stop"
+    fi
+    um_ok "BOOTSTRAP_NGINX_STOP=PASS"
+  fi
+
+  if [[ "$disable_needed" -eq 1 ]]; then
+    if ! um_bootstrap_systemctl disable nginx >/dev/null 2>&1; then
+      um_error "BOOTSTRAP_NGINX_DISABLE=FAIL"
+      um_die "BOOTSTRAP_HTTP_ISOLATION=FAIL nginx disable failed"
+    fi
+    if um_bootstrap_systemctl is-enabled nginx >/dev/null 2>&1; then
+      um_error "BOOTSTRAP_NGINX_DISABLE=FAIL still_enabled"
+      um_die "BOOTSTRAP_HTTP_ISOLATION=FAIL nginx still enabled after disable"
+    fi
+    um_ok "BOOTSTRAP_NGINX_DISABLE=PASS"
+  fi
+
+  # Final fail-closed verification regardless of prior detection.
+  if um_bootstrap_systemctl is-active --quiet nginx 2>/dev/null; then
+    um_die "BOOTSTRAP_HTTP_ISOLATION=FAIL nginx active"
+  fi
+  if um_bootstrap_systemctl is-enabled nginx >/dev/null 2>&1; then
+    um_die "BOOTSTRAP_HTTP_ISOLATION=FAIL nginx enabled"
+  fi
+
+  um_ok "BOOTSTRAP_HTTP_ISOLATION=PASS"
+  um_info "HTTP_DISTRIBUTION=DISABLED"
+  um_info "NGINX_SERVICE_STATE=STOPPED"
+  um_info "NGINX_BOOT_ENABLE=DISABLED"
 }
 
 um_bootstrap_summary() {

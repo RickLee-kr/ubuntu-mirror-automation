@@ -132,6 +132,46 @@ else
   pass "PRIVATE_KEY_HTTP_PUBLISHED=NO"
 fi
 
+# Fresh selective-absent: deferred states are INFO (not WARN), with explicit values.
+_sign_dir="${INSTALL_CONF_DIR}/client-signing"
+set +e
+deferred_out="$(
+  UM_PROJECT_ROOT="$ROOT" \
+  BASE_PATH="$BASE_PATH" \
+  INSTALL_CONF_DIR="$INSTALL_CONF_DIR" \
+  UM_BOOTSTRAP_ALLOW_SIGNING_DIR_OVERRIDE=1 \
+  LOCAL_CLIENT_SIGNING_DIR="${_sign_dir}" \
+  bash -c '
+    set -euo pipefail
+    source "'"${ROOT}"'/lib/common.sh"
+    source "'"${ROOT}"'/lib/bootstrap.sh"
+    um_bootstrap_deploy_client_http_artifacts
+  ' 2>&1
+)"
+deferred_rc=$?
+set -e
+unset _sign_dir
+[[ "$deferred_rc" -eq 0 ]] && pass "fresh deferred deploy PASS" || fail "fresh deferred deploy FAIL"
+echo "$deferred_out" | grep -q 'SELECTIVE_READY=NOT_PREPARED_YET' \
+  && pass "SELECTIVE_READY=NOT_PREPARED_YET" || fail "SELECTIVE_READY log"
+echo "$deferred_out" | grep -q 'CLIENT_SET_BUILD=DEFERRED_UNTIL_OS_CORE' \
+  && pass "CLIENT_SET_BUILD=DEFERRED_UNTIL_OS_CORE" || fail "CLIENT_SET_BUILD log"
+echo "$deferred_out" | grep -q 'CLIENT_FILES_READY=NOT_REQUIRED_DURING_BOOTSTRAP' \
+  && pass "CLIENT_FILES_READY=NOT_REQUIRED_DURING_BOOTSTRAP" || fail "CLIENT_FILES_READY log"
+echo "$deferred_out" | grep -q 'CLIENT_HTTP_READY=DEFERRED_UNTIL_ENABLE_HTTP' \
+  && pass "CLIENT_HTTP_READY=DEFERRED_UNTIL_ENABLE_HTTP" || fail "CLIENT_HTTP_READY log"
+echo "$deferred_out" | grep -q 'STALE_PREBUILT_CLIENT_PUBLISH=PROHIBITED' \
+  && pass "STALE_PREBUILT_CLIENT_PUBLISH=PROHIBITED" || fail "STALE_PREBUILT log"
+# Project WARN must not fire for expected deferred lifecycle states.
+deferred_warn="$(
+  printf '%s\n' "$deferred_out" \
+    | grep -E '\[WARN\].*(SELECTIVE_READY|CLIENT_SET|CLIENT_FILES_READY|CLIENT_HTTP_READY)=' \
+    || true
+)"
+[[ -z "$deferred_warn" ]] \
+  && pass "WARN_COUNT_FROM_EXPECTED_DEFERRED_STATE=0" \
+  || fail "unexpected deferred WARN: ${deferred_warn}"
+
 # Rename source repo and ensure installed entrypoint still starts
 REPO_SHADOW="${WORKDIR}/repo-renamed-away"
 # Do not move real repo — simulate by invoking installed script with MM_PROJECT_ROOT=install tree
