@@ -70,6 +70,7 @@ TEST_LIST=(
   test_mirror_host_ip_resolution.sh
   test_client_mirror_pin_gates.sh
   test_per_mirror_local_signing.sh
+  test_client_ready_circular_gate.sh
 )
 
 is_long_test() {

@@ -253,6 +253,7 @@ setup_project_shadow_if_needed() {
   SHADOW_ROOT="${WORKDIR}/shadow-project"
   mkdir -p "$SHADOW_ROOT/vendor"
   ln -sfn "${ROOT}/scripts" "${SHADOW_ROOT}/scripts"
+  ln -sfn "${ROOT}/client" "${SHADOW_ROOT}/client"
   ln -sfn "${ROOT}/config" "${SHADOW_ROOT}/config"
   ln -sfn "${ROOT}/mirror.conf" "${SHADOW_ROOT}/mirror.conf" 2>/dev/null || true
   cp -a "${WORKDIR}/vendor/dp-phase2" "${SHADOW_ROOT}/vendor/dp-phase2"
@@ -286,15 +287,19 @@ common_env() {
   export MM_SELECTIVE_ROOT="${WORKDIR}/mirror/selective"
   export MM_DP_PHASE2_ROOT="${WORKDIR}/mirror/dp-phase2"
   export MM_CLIENT_ROOT="${WORKDIR}/mirror/client"
+  export MM_CONFIG_DIR="${WORKDIR}/config"
   export MM_CONFIG_FILE="${WORKDIR}/gui.conf"
   export MM_STATUS_FILE="${WORKDIR}/status.env"
+  export LOCAL_CLIENT_SIGNING_DIR="${WORKDIR}/config/client-signing"
+  # Synthetic OS Core fixtures lack hop/upgrader trees for a real client rebuild.
+  export MM_CLIENT_FINALIZATION_MODE=verify-only
   export DP_PHASE2_ROOT="${WORKDIR}/mirror/dp-phase2"
   export DP_PHASE2_SKIP_ROOT_CHECK=1
   export DP_PHASE2_MIN_FREE_GIB=0
   export ACPS_PROGRESS_INTERVAL_SEC=30
   export R2_PROGRESS_INTERVAL_SEC=30
   export ACPS_INSECURE_TLS=0
-  mkdir -p "$MM_LOG_DIR" "$MM_STATE_ROOT" "$MM_CLIENT_ROOT"
+  mkdir -p "$MM_LOG_DIR" "$MM_STATE_ROOT" "$MM_CLIENT_ROOT" "$MM_CONFIG_DIR"
   seed_client_files "$MM_CLIENT_ROOT"
 }
 

@@ -214,6 +214,19 @@ engine_assert_same_filesystem_layout() { return 0; }
 engine_preflight_host() { return 0; }
 mm_acquire_install_lock() { return 0; }
 mm_release_install_lock() { return 0; }
+# Disk/reuse fixtures do not ship a full selective tree; skip client finalization.
+engine_finalize_local_client_set() {
+  mm_state_set CLIENT_FILES_READY PASS
+  mm_status_set CLIENT_FILES_READY PASS
+  mm_ok "CLIENT_FILES_READY=PASS"
+  mm_ok "CLIENT_SET_FINALIZATION=PASS (test mock)"
+  return 0
+}
+mm_check_client_build_prerequisites_ready() {
+  mm_state_set CLIENT_BUILD_PREREQUISITES_READY PASS
+  mm_ok "CLIENT_BUILD_PREREQUISITES_READY=PASS"
+  return 0
+}
 
 install_create_mocks
 

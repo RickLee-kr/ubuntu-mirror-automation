@@ -517,21 +517,29 @@ Phases (names appear as each step starts):
   6. Verifying Published Bundle
   7. Cleaning Temporary Files
   8. Publishing Phase 2 Artifacts
+  9. Publishing Phase 2 Helper Clients
 
 R2 OS Core download is NOT run in Phase 2 Only mode.
+OS-hop client files are NOT required in Phase 2 Only mode.
 EOF
   else
     cat <<EOF
 
 Phases (names appear as each step starts):
-  1. Downloading ACPS Artifacts
-  2. Verifying ACPS Checksums
-  3. Preparing Patched Bringup Script
-  4. Creating Phase 2 Bundle
-  5. Calculating Bundle SHA256
-  6. Verifying Published Bundle
-  7. Cleaning Temporary Files
-  8. Publishing Phase 2 Artifacts
+  1. Downloading OS Core Artifacts
+  2. Verifying OS Core Artifacts
+  3. Downloading ACPS Artifacts
+  4. Verifying ACPS Checksums
+  5. Preparing Patched Bringup Script
+  6. Creating Phase 2 Bundle
+  7. Calculating Bundle SHA256
+  8. Verifying Published Bundle
+  9. Cleaning Temporary Files
+ 10. Publishing Phase 2 Artifacts
+ 11. Building Local OS Upgrade Clients
+ 12. Signing Local OS Upgrade Clients
+ 13. Publishing Local Client Set
+ 14. Verifying Local HTTP Clients
 EOF
   fi
   cat <<EOF

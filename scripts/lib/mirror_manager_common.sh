@@ -1492,3 +1492,144 @@ mm_check_client_files_ready() {
   mm_error "CLIENT_FILES_READY=FAIL (required scripts/checksums missing under ${MM_CLIENT_ROOT})"
   return 1
 }
+
+# Phase 2 helper scripts only (no OS-hop clients). Used by PHASE2_ONLY mode.
+mm_phase2_helpers_ready() {
+  mm_client_files_ready_phase2 "${1:-${MM_CLIENT_ROOT}}"
+}
+
+mm_check_phase2_helpers_ready() {
+  if mm_phase2_helpers_ready "${MM_CLIENT_ROOT}"; then
+    mm_state_set PHASE2_HELPERS_READY PASS
+    mm_ok "PHASE2_HELPERS_READY=PASS"
+    return 0
+  fi
+  mm_state_set PHASE2_HELPERS_READY FAIL
+  mm_error "PHASE2_HELPERS_READY=FAIL (stage-dp-phase2.sh/.sha256 missing under ${MM_CLIENT_ROOT})"
+  return 1
+}
+
+# Count published OS-hop client scripts under CLIENT_HTTP_ROOT (0..4).
+mm_count_published_hop_clients() {
+  local root="${1:-${MM_CLIENT_ROOT}}"
+  local n=0 hop
+  for hop in \
+    xenial-to-bionic \
+    bionic-to-focal \
+    focal-to-jammy \
+    jammy-to-noble
+  do
+    [[ -f "${root}/dp-offline-upgrade-${hop}.sh" ]] && n=$((n + 1))
+  done
+  printf '%s\n' "$n"
+}
+
+# Preflight before Download and Prepare: build/sign tooling must exist.
+# Does NOT require generated hop clients (those are produced after OS Core READY).
+mm_check_client_build_prerequisites_ready() {
+  local root="${MM_PROJECT_ROOT:-}"
+  local libdir rebuild prereq_fail=0 f
+  local mirror_url signing_base
+
+  [[ -n "$root" && -d "$root" ]] || {
+    mm_error "CLIENT_BUILD_PREREQUISITES_READY=FAIL MM_PROJECT_ROOT unset"
+    mm_state_set CLIENT_BUILD_PREREQUISITES_READY FAIL
+    return 1
+  }
+  libdir="${root}/scripts/lib"
+  rebuild="${root}/scripts/rebuild-publish-clients.sh"
+
+  for f in \
+    "${root}/client/dp-offline-upgrade-xenial-to-bionic.sh.in" \
+    "${root}/client/dp-offline-upgrade-bionic-to-focal.sh.in" \
+    "${root}/client/dp-offline-upgrade-focal-to-jammy.sh.in" \
+    "${root}/client/dp-offline-upgrade-jammy-to-noble.sh.in" \
+    "${libdir}/build_client_xenial_to_bionic.py" \
+    "${libdir}/build_client_bionic_to_focal.py" \
+    "${libdir}/build_client_focal_to_jammy.py" \
+    "${libdir}/build_client_jammy_to_noble.py" \
+    "${libdir}/mirror_host_ip.sh" \
+    "${libdir}/local_client_signing.sh" \
+    "${libdir}/client_mirror_gates.sh" \
+    "$rebuild"
+  do
+    if [[ ! -f "$f" ]]; then
+      mm_error "CLIENT_BUILD_PREREQ_MISSING=${f}"
+      prereq_fail=1
+    fi
+  done
+  if [[ ! -x "$rebuild" && ! -f "$rebuild" ]]; then
+    mm_error "CLIENT_BUILD_PREREQ_MISSING=${rebuild}"
+    prereq_fail=1
+  elif [[ ! -x "$rebuild" ]]; then
+    chmod +x "$rebuild" 2>/dev/null || true
+    if [[ ! -x "$rebuild" ]]; then
+      mm_error "CLIENT_BUILD_PREREQ_NOT_EXECUTABLE=${rebuild}"
+      prereq_fail=1
+    fi
+  fi
+
+  for f in gpg python3 sha256sum; do
+    if ! command -v "$f" >/dev/null 2>&1; then
+      mm_error "CLIENT_BUILD_PREREQ_CMD_MISSING=${f}"
+      prereq_fail=1
+    fi
+  done
+
+  # Prefer an explicit signing dir, then MM_CONFIG_DIR, then the GUI config
+  # directory (tests write MM_CONFIG_FILE under a temp workdir). Never require
+  # write access to /etc when a temp config path is already in use.
+  signing_base="${MM_CONFIG_DIR:-}"
+  if [[ -z "$signing_base" && -n "${MM_CONFIG_FILE:-}" ]]; then
+    signing_base="$(dirname "$MM_CONFIG_FILE")"
+  fi
+  signing_base="${signing_base:-/etc/ubuntu-mirror}"
+  # shellcheck source=local_client_signing.sh
+  source "${libdir}/local_client_signing.sh"
+  LOCAL_CLIENT_SIGNING_DIR="${LOCAL_CLIENT_SIGNING_DIR:-${signing_base}/client-signing}"
+  export LOCAL_CLIENT_SIGNING_DIR
+  if ! local_signing_ensure_keypair; then
+    mm_error "CLIENT_BUILD_PREREQ_SIGNING_KEY=FAIL"
+    prereq_fail=1
+  fi
+
+  # Private key must never be present under the HTTP client document root.
+  if [[ -d "${MM_CLIENT_ROOT:-}" ]]; then
+    if ! local_signing_assert_private_not_published "${MM_CLIENT_ROOT}"; then
+      mm_error "CLIENT_BUILD_PREREQ_PRIVATE_KEY_EXPOSED=YES"
+      prereq_fail=1
+    fi
+  fi
+  # Repo must not ship a private key under client/ or config templates.
+  if find "${root}/client" "${root}/config" -type f \( -name 'private.gpg' -o -name '*private*.gpg' \) 2>/dev/null | grep -q .; then
+    mm_error "CLIENT_BUILD_PREREQ_PRIVATE_KEY_IN_TREE=YES"
+    prereq_fail=1
+  fi
+
+  if mm_is_phase2_only; then
+    mm_info "OS_HOP_CLIENT_FILES_REQUIRED=NO"
+    # Phase 2 helpers come from install/bootstrap; require the source helper exists.
+    if [[ ! -f "${root}/client/stage-dp-phase2.sh" ]]; then
+      mm_error "CLIENT_BUILD_PREREQ_MISSING=${root}/client/stage-dp-phase2.sh"
+      prereq_fail=1
+    fi
+  else
+    # Resolve / validate Mirror HTTP URL (do not require hop clients yet).
+    if ! mirror_url="$(mm_client_mirror_url)"; then
+      mm_error "CLIENT_BUILD_PREREQ_MIRROR_URL=FAIL"
+      prereq_fail=1
+    else
+      MIRROR_HTTP_URL="$mirror_url"
+      mm_info "CLIENT_BUILD_PREREQ_MIRROR_URL=${mirror_url}"
+    fi
+  fi
+
+  if [[ "$prereq_fail" -ne 0 ]]; then
+    mm_state_set CLIENT_BUILD_PREREQUISITES_READY FAIL
+    mm_error "CLIENT_BUILD_PREREQUISITES_READY=FAIL"
+    return 1
+  fi
+  mm_state_set CLIENT_BUILD_PREREQUISITES_READY PASS
+  mm_ok "CLIENT_BUILD_PREREQUISITES_READY=PASS"
+  return 0
+}

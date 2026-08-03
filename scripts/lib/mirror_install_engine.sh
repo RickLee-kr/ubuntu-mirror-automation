@@ -13,8 +13,275 @@ MIRROR_INSTALL_ENGINE_LOADED=1
 
 engine_preflight_host() {
   mm_require_root
-  mm_require_cmds bash curl tar sha1sum sha256sum awk flock stat df readlink mv ln find mkdir chmod python3 mktemp sed grep
+  mm_require_cmds bash curl tar sha1sum sha256sum awk flock stat df readlink mv ln find mkdir chmod python3 mktemp sed grep gpg
   mm_ok "PREFLIGHT_HOST=PASS"
+}
+
+# Authoritative local client-set rebuild/sign/atomic-publish entrypoint.
+# Used by Download and Prepare finalization, Enable HTTP, and repair paths.
+# Arg1: SKIP_HTTP_VERIFY (default 1 — nginx may still be disabled during prepare).
+engine_rebuild_publish_local_client_set() {
+  local skip_http="${1:-1}"
+  local rebuild="${MM_PROJECT_ROOT}/scripts/rebuild-publish-clients.sh"
+  local mirror_url libdir
+  local artifact_dir signing_dir
+
+  [[ -f "$rebuild" ]] || {
+    mm_error "CLIENT_FINALIZER_MISSING=${rebuild}"
+    return 1
+  }
+  libdir="${MM_PROJECT_ROOT}/scripts/lib"
+  # shellcheck source=local_client_signing.sh
+  source "${libdir}/local_client_signing.sh"
+
+  mm_set_phase "Building Local OS Upgrade Clients"
+  if ! mirror_url="$(mm_client_mirror_url)"; then
+    mm_error "CLIENT_SET_MIRROR_URL=FAIL"
+    return 1
+  fi
+  MIRROR_HTTP_URL="$mirror_url"
+  export MIRROR_HTTP_URL
+
+  signing_dir="${LOCAL_CLIENT_SIGNING_DIR:-${MM_CONFIG_DIR}/client-signing}"
+  LOCAL_CLIENT_SIGNING_DIR="$signing_dir"
+  export LOCAL_CLIENT_SIGNING_DIR
+  local_signing_ensure_keypair || {
+    mm_error "CLIENT_SET_SIGNING_KEY=FAIL"
+    return 1
+  }
+
+  artifact_dir="${MM_PROJECT_ROOT}/artifacts/client"
+  mkdir -p "$artifact_dir" "$MM_CLIENT_ROOT"
+
+  mm_set_phase "Signing Local OS Upgrade Clients"
+  mm_info "CLIENT_FINALIZATION_ENTRYPOINT=rebuild-publish-clients.sh"
+  mm_info "PARTIAL_CLIENT_DEPLOY_ALLOWED=NO"
+  mm_info "STALE_CLIENT_COPY_ALLOWED=NO"
+
+  mm_set_phase "Publishing Local Client Set"
+  if ! env \
+    MIRROR_HTTP_URL="$MIRROR_HTTP_URL" \
+    RESOLVED_MIRROR_BASE_URL="${RESOLVED_MIRROR_BASE_URL:-$MIRROR_HTTP_URL}" \
+    LOCAL_CLIENT_SIGNING_DIR="$LOCAL_CLIENT_SIGNING_DIR" \
+    CLIENT_HTTP_ROOT="${MM_CLIENT_ROOT}" \
+    SELECTIVE_ROOT="${MM_SELECTIVE_ROOT}" \
+    BASE_PATH="${MM_MIRROR_ROOT}" \
+    ARTIFACT_DIR="$artifact_dir" \
+    SKIP_HTTP_VERIFY="$skip_http" \
+    bash "$rebuild"
+  then
+    mm_error "CLIENT_SET_REBUILD_PUBLISH=FAIL staging under ${artifact_dir}"
+    mm_info "CLIENT_SET_STAGING_EVIDENCE=${artifact_dir}"
+    return 1
+  fi
+
+  if [[ "$skip_http" != "1" ]]; then
+    mm_set_phase "Verifying Local HTTP Clients"
+  else
+    mm_info "CLIENT_HTTP_VERIFY=DEFERRED_UNTIL_ENABLE_HTTP"
+  fi
+  return 0
+}
+
+# Ensure Phase 2 helper scripts are published (no OS-hop clients).
+engine_ensure_phase2_helpers() {
+  local root="${MM_PROJECT_ROOT}"
+  local dest="${MM_CLIENT_ROOT}"
+  local stage f
+
+  if mm_phase2_helpers_ready "$dest"; then
+    mm_check_phase2_helpers_ready
+    return 0
+  fi
+
+  mkdir -p "$dest"
+  stage="$(mktemp -d "${dest}.helpers.XXXXXX")"
+  for f in stage-dp-phase2.sh stage-dp-phase2-6.5.0.sh; do
+    if [[ -f "${root}/client/${f}" ]]; then
+      install -m 0755 "${root}/client/${f}" "${stage}/${f}"
+      ( cd "$stage" && sha256sum "$f" >"${f}.sha256" )
+    fi
+  done
+  if [[ -d "${root}/client/lib" ]]; then
+    mkdir -p "${stage}/lib"
+    cp -a "${root}/client/lib/." "${stage}/lib/"
+  fi
+  cp -a "${stage}/." "$dest/"
+  rm -rf "$stage"
+  mm_check_phase2_helpers_ready
+}
+
+# Decide whether the existing hop client set can be reused or must be rebuilt.
+# Sets: CLIENT_SET_STATE, CLIENT_SET_ACTION, CLIENT_SET_PRESENT_AT_START
+engine_assess_client_set_for_finalize() {
+  local root="${MM_CLIENT_ROOT}"
+  local n mirror_url hop name
+  local pin_ok=1
+
+  CLIENT_SET_PRESENT_AT_START=NO
+  CLIENT_SET_STATE=ABSENT
+  CLIENT_SET_ACTION=REBUILD_SIGN_PUBLISH
+
+  n="$(mm_count_published_hop_clients "$root")"
+  if [[ "$n" -eq 0 ]]; then
+    CLIENT_SET_STATE=ABSENT
+    CLIENT_SET_ACTION=REBUILD_SIGN_PUBLISH
+    return 0
+  fi
+  if [[ "$n" -lt 4 ]]; then
+    CLIENT_SET_STATE=PARTIAL_OR_MIXED
+    CLIENT_SET_ACTION=REBUILD_FULL_SET
+    CLIENT_SET_PRESENT_AT_START=YES
+    return 0
+  fi
+
+  CLIENT_SET_PRESENT_AT_START=YES
+  if ! mm_client_files_ready "$root"; then
+    CLIENT_SET_STATE=PARTIAL_OR_MIXED
+    CLIENT_SET_ACTION=REBUILD_FULL_SET
+    return 0
+  fi
+
+  mirror_url="$(mm_client_mirror_url 2>/dev/null || true)"
+  mirror_url="${mirror_url%/}"
+  if [[ -z "$mirror_url" ]]; then
+    CLIENT_SET_STATE=INVALID_PIN
+    CLIENT_SET_ACTION=REBUILD_SIGN_PUBLISH
+    return 0
+  fi
+
+  # shellcheck source=client_mirror_gates.sh
+  source "${MM_PROJECT_ROOT}/scripts/lib/client_mirror_gates.sh"
+  for hop in xenial-to-bionic bionic-to-focal focal-to-jammy jammy-to-noble; do
+    name="dp-offline-upgrade-${hop}.sh"
+    if ! client_assert_mirror_base_match "${root}/${name}" "$mirror_url" >/dev/null 2>&1; then
+      pin_ok=0
+      break
+    fi
+  done
+  if [[ "$pin_ok" -ne 1 ]]; then
+    CLIENT_SET_STATE=STALE_OR_WRONG_PIN
+    CLIENT_SET_ACTION=REBUILD_SIGN_PUBLISH
+    return 0
+  fi
+
+  CLIENT_SET_STATE=COMPLETE_VERIFIED
+  CLIENT_SET_ACTION=REUSE_VERIFIED
+  return 0
+}
+
+# Post-preparation finalization: build/sign/publish clients (FULL) or helpers (PHASE2_ONLY).
+# CLIENT_FILES_READY is required here — never before preparation starts.
+#
+# MM_CLIENT_FINALIZATION_MODE=verify-only — test/fixture hook: only verify the
+# on-disk client set (used by synthetic Mirror Manager tests whose OS Core
+# packages lack full hop/upgrader trees required for a real rebuild).
+engine_finalize_local_client_set() {
+  local os_ready=NO
+
+  mm_normalize_preparation_mode
+  if [[ "${MM_CLIENT_FINALIZATION_MODE:-full}" == "verify-only" ]]; then
+    mm_info "CLIENT_FINALIZATION_MODE=verify-only"
+    mm_set_phase "Verifying Local HTTP Clients"
+    if ! mm_check_client_files_ready; then
+      mm_error "CLIENT_SET_FINALIZATION=FAIL"
+      mm_info "PREPARATION_ARTIFACTS_READY=YES"
+      mm_info "DOWNLOAD_AND_PREPARE_RESULT=FAIL_CLIENT_SET_FINALIZATION"
+      return 1
+    fi
+    mm_ok "CLIENT_SET_FINALIZATION=PASS"
+    return 0
+  fi
+
+  if mm_is_phase2_only; then
+    mm_info "OS_HOP_CLIENT_FILES_REQUIRED=NO"
+    mm_info "CLIENT_FILES_READY_AT_START=NOT_REQUIRED"
+    mm_set_phase "Publishing Phase 2 Helper Clients"
+    if ! engine_ensure_phase2_helpers; then
+      mm_error "CLIENT_SET_FINALIZATION=FAIL"
+      mm_info "PREPARATION_ARTIFACTS_READY=YES"
+      mm_info "DOWNLOAD_AND_PREPARE_RESULT=FAIL_CLIENT_SET_FINALIZATION"
+      return 1
+    fi
+    if ! mm_check_client_files_ready; then
+      mm_error "CLIENT_SET_FINALIZATION=FAIL"
+      mm_info "PREPARATION_ARTIFACTS_READY=YES"
+      mm_info "DOWNLOAD_AND_PREPARE_RESULT=FAIL_CLIENT_SET_FINALIZATION"
+      return 1
+    fi
+    mm_ok "CLIENT_SET_FINALIZATION=PASS"
+    return 0
+  fi
+
+  if [[ -f "${MM_SELECTIVE_ROOT}/state/READY" ]] \
+    || [[ "$(mm_status_get OS_MIRROR_READY)" == "PASS" ]]; then
+    os_ready=YES
+  fi
+  mm_info "OS_CORE_READY_AT_FINALIZE=${os_ready}"
+
+  if [[ "$os_ready" != "YES" ]]; then
+    mm_error "CLIENT_SET_FINALIZATION=FAIL OS Core/selective not READY"
+    mm_info "PREPARATION_ARTIFACTS_READY=YES"
+    mm_info "DOWNLOAD_AND_PREPARE_RESULT=FAIL_CLIENT_SET_FINALIZATION"
+    return 1
+  fi
+
+  # Ensure selective READY marker exists for builders (payload usually ships it).
+  if [[ ! -f "${MM_SELECTIVE_ROOT}/state/READY" ]]; then
+    mkdir -p "${MM_SELECTIVE_ROOT}/state"
+    # Builders require plan/discovery checksums; inventing empty values is forbidden.
+    # If OS materialize did not ship READY, refuse rather than publish unsigned stubs.
+    mm_error "SELECTIVE_READY=MISSING after OS Core materialize"
+    mm_error "CLIENT_SET_FINALIZATION=FAIL"
+    mm_info "PREPARATION_ARTIFACTS_READY=YES"
+    mm_info "DOWNLOAD_AND_PREPARE_RESULT=FAIL_CLIENT_SET_FINALIZATION"
+    return 1
+  fi
+
+  engine_assess_client_set_for_finalize
+  mm_info "CLIENT_SET_PRESENT_AT_START=${CLIENT_SET_PRESENT_AT_START}"
+  mm_info "CLIENT_SET_STATE=${CLIENT_SET_STATE}"
+  mm_info "CLIENT_SET_ACTION=${CLIENT_SET_ACTION}"
+
+  if [[ "${CLIENT_SET_ACTION}" == "REUSE_VERIFIED" ]]; then
+    mm_info "CLIENT_SET_ACTION=REUSE_VERIFIED"
+    mm_set_phase "Verifying Local HTTP Clients"
+    if mm_check_client_files_ready; then
+      mm_ok "CLIENT_SET_FINALIZATION=PASS"
+      return 0
+    fi
+    mm_warn "CLIENT_SET_REUSE_FAILED — falling through to full rebuild"
+    CLIENT_SET_ACTION=REBUILD_SIGN_PUBLISH
+  fi
+
+  if [[ "${CLIENT_SET_STATE}" == "PARTIAL_OR_MIXED" ]]; then
+    mm_info "CLIENT_SET_STATE=PARTIAL_OR_MIXED"
+    mm_info "CLIENT_SET_ACTION=REBUILD_FULL_SET"
+    mm_info "STALE_CLIENT_COPY_ALLOWED=NO"
+  fi
+
+  if ! engine_rebuild_publish_local_client_set 1; then
+    mm_error "CLIENT_SET_FINALIZATION=FAIL"
+    mm_info "PREPARATION_ARTIFACTS_READY=YES"
+    mm_info "DOWNLOAD_AND_PREPARE_RESULT=FAIL_CLIENT_SET_FINALIZATION"
+    mm_state_set CLIENT_SET_FINALIZATION FAIL
+    mm_status_set DOWNLOAD_PREPARE_RESULT FAIL_CLIENT_SET_FINALIZATION
+    return 1
+  fi
+
+  mm_set_phase "Verifying Local HTTP Clients"
+  if ! mm_check_client_files_ready; then
+    mm_error "CLIENT_SET_FINALIZATION=FAIL"
+    mm_info "PREPARATION_ARTIFACTS_READY=YES"
+    mm_info "DOWNLOAD_AND_PREPARE_RESULT=FAIL_CLIENT_SET_FINALIZATION"
+    mm_state_set CLIENT_SET_FINALIZATION FAIL
+    mm_status_set DOWNLOAD_PREPARE_RESULT FAIL_CLIENT_SET_FINALIZATION
+    return 1
+  fi
+  mm_state_set CLIENT_SET_FINALIZATION PASS
+  mm_ok "CLIENT_SET_FINALIZATION=PASS"
+  mm_ok "ALL_FOUR_CLIENTS_BUILT_AFTER_OS_CORE_READY=YES"
+  return 0
 }
 
 engine_resolve_paths() {
@@ -835,10 +1102,30 @@ engine_download_and_prepare() {
   mm_acquire_install_lock
   engine_assert_same_filesystem_layout
 
-  # Client HTTP artifacts must already be present (installed by bootstrap)
+  # Build tooling must exist before preparation. Generated hop clients are NOT
+  # required yet — they are produced after OS Core is READY (avoids circular gate).
   mkdir -p "$MM_CLIENT_ROOT"
-  if ! mm_check_client_files_ready; then
-    mm_die "CLIENT_FILES_READY=FAIL"
+  if ! mm_check_client_build_prerequisites_ready; then
+    mm_die "CLIENT_BUILD_PREREQUISITES_READY=FAIL"
+  fi
+  mm_info "CLIENT_FILES_READY_REQUIRED_BEFORE_PREPARE=NO"
+  if mm_is_phase2_only; then
+    mm_info "OS_HOP_CLIENT_FILES_REQUIRED=NO"
+    mm_info "CLIENT_FILES_READY_AT_START=NOT_REQUIRED"
+  else
+    if [[ -f "${MM_SELECTIVE_ROOT}/state/READY" ]]; then
+      mm_info "OS_CORE_READY_AT_START=YES"
+      if mm_client_files_ready "${MM_CLIENT_ROOT}"; then
+        mm_info "CLIENT_SET_PRESENT_AT_START=YES"
+      else
+        mm_info "CLIENT_SET_PRESENT_AT_START=NO"
+        mm_info "CLIENT_FILES_READY_AT_START=NOT_REQUIRED"
+      fi
+    else
+      mm_info "OS_CORE_READY_AT_START=NO"
+      mm_info "CLIENT_FILES_READY_AT_START=NOT_REQUIRED"
+      mm_info "CLIENT_BUILD_DEFERRED_UNTIL_OS_CORE_READY=YES"
+    fi
   fi
 
   # Decide Phase 2 action before any large Phase 2 download/build.
@@ -878,8 +1165,10 @@ engine_download_and_prepare() {
     OS_CORE_PACKAGE_BYTES=0
     OS_CORE_PAYLOAD_BYTES=0
   else
+    mm_set_phase "Downloading OS Core Artifacts"
     r2_require_url
     r2_download_package
+    mm_set_phase "Verifying OS Core Artifacts"
     engine_verify_os_core_package "$OS_CORE_PACKAGE"
   fi
 
@@ -921,6 +1210,10 @@ engine_download_and_prepare() {
     engine_cleanup_temps
     mm_state_set HTTP_DISTRIBUTION_READY NO
     mm_status_set HTTP_DISTRIBUTION DISABLED
+    if ! engine_finalize_local_client_set; then
+      mm_die "DOWNLOAD_AND_PREPARE=FAIL_CLIENT_SET_FINALIZATION"
+    fi
+    mm_info "CLIENT_FILES_READY_REQUIRED_AFTER_PREPARE=YES"
     mm_record_download_validated
     engine_write_install_report PASS
     mm_ok "DOWNLOAD_AND_PREPARE=PASS mode=${PREPARATION_MODE} phase2=REUSE"
@@ -949,6 +1242,10 @@ engine_download_and_prepare() {
 
   mm_state_set HTTP_DISTRIBUTION_READY NO
   mm_status_set HTTP_DISTRIBUTION DISABLED
+  if ! engine_finalize_local_client_set; then
+    mm_die "DOWNLOAD_AND_PREPARE=FAIL_CLIENT_SET_FINALIZATION"
+  fi
+  mm_info "CLIENT_FILES_READY_REQUIRED_AFTER_PREPARE=YES"
   mm_record_download_validated
   engine_write_install_report PASS
   mm_ok "DOWNLOAD_AND_PREPARE=PASS mode=${PREPARATION_MODE} phase2=${PHASE2_BUNDLE_ACTION}"
@@ -995,19 +1292,18 @@ engine_enable_http_distribution() {
   export MM_SHA256_OPERATION="${MM_SHA256_OPERATION:-enable-http}"
   MM_BUNDLE_SHA256_DONE_FP=""
 
-  # Ensure host-pinned clients exist (build/sign with local key when OS Core READY).
+  # Ensure host-pinned clients exist via the same authoritative finalizer used
+  # by Download and Prepare (no duplicate rebuild logic).
   if ! mm_check_client_files_ready; then
-    local rebuild="${MM_PROJECT_ROOT}/scripts/rebuild-publish-clients.sh"
-    if [[ -f "${MM_SELECTIVE_ROOT}/state/READY" && -f "$rebuild" ]]; then
+    if mm_is_phase2_only; then
+      mm_info "OS_HOP_CLIENT_FILES_REQUIRED=NO"
+      engine_ensure_phase2_helpers || true
+    elif [[ -f "${MM_SELECTIVE_ROOT}/state/READY" ]]; then
       mm_info "CLIENT_FILES_READY=NO — rebuilding local signed client set"
-      env \
-        MIRROR_HTTP_URL="${MIRROR_HTTP_URL:-}" \
-        LOCAL_CLIENT_SIGNING_DIR="${LOCAL_CLIENT_SIGNING_DIR:-/etc/ubuntu-mirror/client-signing}" \
-        CLIENT_HTTP_ROOT="${MM_CLIENT_ROOT}" \
-        SELECTIVE_ROOT="${MM_SELECTIVE_ROOT}" \
-        BASE_PATH="${MM_MIRROR_ROOT}" \
-        ARTIFACT_DIR="${MM_PROJECT_ROOT}/artifacts/client" \
-        bash "$rebuild" || mm_die "HTTP_DISTRIBUTION=FAIL client rebuild"
+      mm_info "DOWNLOAD_PREPARE_USES_AUTHORITATIVE_CLIENT_FINALIZER=YES"
+      # HTTP verify runs after nginx enable below; skip during rebuild.
+      engine_rebuild_publish_local_client_set 1 \
+        || mm_die "HTTP_DISTRIBUTION=FAIL client rebuild"
     fi
   fi
 
@@ -1016,6 +1312,7 @@ engine_enable_http_distribution() {
     mm_state_set HTTP_DISTRIBUTION_READY NO
     mm_die "HTTP_DISTRIBUTION=FAIL CLIENT_FILES_READY"
   fi
+  mm_info "ENABLE_HTTP_USES_AUTHORITATIVE_CLIENT_FINALIZER=YES"
 
   # Layout validation without requiring live HTTP yet (defer probes until nginx is up)
   local prev_skip="${MM_SKIP_HTTP_VALIDATE:-0}"
