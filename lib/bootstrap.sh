@@ -19,6 +19,7 @@ UM_BOOTSTRAP_REQUIRED_PKGS=(
   curl
   ca-certificates
   whiptail
+  less
   python3
   tar
   coreutils
@@ -36,6 +37,7 @@ UM_BOOTSTRAP_REQUIRED_CMDS=(
   nginx
   curl
   whiptail
+  less
   python3
   tar
   sha256sum
@@ -204,7 +206,16 @@ um_bootstrap_install_packages() {
   for c in "${UM_BOOTSTRAP_REQUIRED_CMDS[@]}"; do
     um_command_exists "$c" || um_die "PACKAGE_INSTALL=FAIL missing command after install: ${c}"
   done
-  um_ok "PACKAGE_INSTALL=PASS commands verified (whiptail nginx python3 present)"
+  if um_command_exists less; then
+    um_ok "TERMINAL_PAGER_COMMAND=less"
+    um_ok "TERMINAL_PAGER_SECURITY=LESSSECURE"
+    um_ok "TERMINAL_PAGER_RESULT=PASS"
+  else
+    um_error "TERMINAL_PAGER_RESULT=FAIL"
+    um_error "TERMINAL_PAGER_REASON=less_missing"
+    um_die "PACKAGE_INSTALL=FAIL missing command after install: less"
+  fi
+  um_ok "PACKAGE_INSTALL=PASS commands verified (whiptail less nginx python3 present)"
 }
 
 um_bootstrap_prepare_dirs() {

@@ -1322,13 +1322,17 @@ Mirror Manager must run as root:
     title="DP Client Upgrade Commands"
   fi
   rm -f "$tmp"
-  # Show the complete instructions in one textbox — no secondary viewer menu.
-  mm_whiptail_textbox "$title" "$out_file" || true
-  # Reprint on an interactive TTY so operators can copy long one-liners easily.
-  if [[ -t 1 ]]; then
-    clear 2>/dev/null || true
-    cat "$out_file"
-    printf '\nFor horizontal scrolling without wrapping:\n  less -S %s\n' "$out_file"
+  # Navigable secure pager — not whiptail textbox (long one-liners break scroll).
+  # No secondary step submenu; the full document is shown in one viewer.
+  if ! mm_view_long_text_file "$title" "$out_file"; then
+    mm_whiptail_msg "$title" \
+      "Could not open the terminal pager for:
+${out_file}
+
+Ensure less is installed (Mirror Manager bootstrap installs it).
+
+View manually:
+  LESSSECURE=1 LESSHISTFILE=- less -R -- ${out_file}" || true
   fi
   return 0
 }
