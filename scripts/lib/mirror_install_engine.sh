@@ -995,6 +995,22 @@ engine_enable_http_distribution() {
   export MM_SHA256_OPERATION="${MM_SHA256_OPERATION:-enable-http}"
   MM_BUNDLE_SHA256_DONE_FP=""
 
+  # Ensure host-pinned clients exist (build/sign with local key when OS Core READY).
+  if ! mm_check_client_files_ready; then
+    local rebuild="${MM_PROJECT_ROOT}/scripts/rebuild-publish-clients.sh"
+    if [[ -f "${MM_SELECTIVE_ROOT}/state/READY" && -f "$rebuild" ]]; then
+      mm_info "CLIENT_FILES_READY=NO — rebuilding local signed client set"
+      env \
+        MIRROR_HTTP_URL="${MIRROR_HTTP_URL:-}" \
+        LOCAL_CLIENT_SIGNING_DIR="${LOCAL_CLIENT_SIGNING_DIR:-/etc/ubuntu-mirror/client-signing}" \
+        CLIENT_HTTP_ROOT="${MM_CLIENT_ROOT}" \
+        SELECTIVE_ROOT="${MM_SELECTIVE_ROOT}" \
+        BASE_PATH="${MM_MIRROR_ROOT}" \
+        ARTIFACT_DIR="${MM_PROJECT_ROOT}/artifacts/client" \
+        bash "$rebuild" || mm_die "HTTP_DISTRIBUTION=FAIL client rebuild"
+    fi
+  fi
+
   if ! mm_check_client_files_ready; then
     mm_status_set HTTP_DISTRIBUTION DISABLED
     mm_state_set HTTP_DISTRIBUTION_READY NO

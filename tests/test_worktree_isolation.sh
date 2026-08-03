@@ -29,7 +29,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-MIRROR_BASE="${TEST_MIRROR_BASE:-http://221.139.249.111}"
+MIRROR_BASE="${TEST_MIRROR_BASE:-http://192.0.2.10}"
 SEL_ROOT="${TEST_SELECTIVE_ROOT:-/var/spool/apt-mirror/selective}"
 
 echo "[test] A. generator isolation (temp output; tracked client/artifacts unchanged)"

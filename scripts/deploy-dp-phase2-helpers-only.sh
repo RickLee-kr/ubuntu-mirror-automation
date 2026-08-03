@@ -11,9 +11,16 @@ cd "$ROOT"
 
 # shellcheck source=lib/dp-phase2-common.sh
 source "${ROOT}/scripts/lib/dp-phase2-common.sh"
+# shellcheck source=lib/mirror_host_ip.sh
+source "${ROOT}/scripts/lib/mirror_host_ip.sh"
 
 TARGET_DP_VERSION="${TARGET_DP_VERSION:-6.5.0}"
-MIRROR_BASE="${MIRROR_BASE:-http://221.139.249.111}"
+MIRROR_BASE="${RESOLVED_MIRROR_BASE_URL:-${MIRROR_BASE:-}}"
+MIRROR_BASE="${MIRROR_BASE%/}"
+if [[ -z "$MIRROR_BASE" ]]; then
+  mirror_host_resolve_and_log || exit 1
+  MIRROR_BASE="${RESOLVED_MIRROR_BASE_URL%/}"
+fi
 MIRROR_LOCAL="${MIRROR_LOCAL:-http://127.0.0.1}"
 DP_PHASE2_ROOT="${DP_PHASE2_ROOT:-/var/spool/apt-mirror/dp-phase2}"
 READY_PATH="${READY_PATH:-/var/spool/apt-mirror/selective/state/READY}"

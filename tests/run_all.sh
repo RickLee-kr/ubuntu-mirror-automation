@@ -67,6 +67,9 @@ TEST_LIST=(
   test_distupgrade_source_compat.py
   test_prepare_backup_staging.sh
   test_migrate_apt_mirror_to_root.sh
+  test_mirror_host_ip_resolution.sh
+  test_client_mirror_pin_gates.sh
+  test_per_mirror_local_signing.sh
 )
 
 is_long_test() {

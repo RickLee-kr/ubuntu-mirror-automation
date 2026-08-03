@@ -21,7 +21,7 @@ import distupgrade_mirror_rewrite as dmr  # noqa: E402
 import distupgrade_source_compat as dsc  # noqa: E402
 
 
-LOCAL = 'http://221.139.249.111/hops/xenial-to-bionic/ubuntu'
+LOCAL = 'http://192.0.2.10/hops/xenial-to-bionic/ubuntu'
 XENIAL_SOURCES = [
     'deb [arch=amd64] %s xenial main universe' % LOCAL,
     'deb [arch=amd64] %s xenial-updates main universe' % LOCAL,

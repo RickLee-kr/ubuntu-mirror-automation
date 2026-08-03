@@ -14,6 +14,9 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 export MM_PROJECT_ROOT="$ROOT"
+# Fixture mirror addresses are RFC 5737 documentation IPs that are not
+# configured on the test host; skip the interface-presence check only.
+export SKIP_MIRROR_HOST_VALIDATE=1
 export MM_LOG_DIR="$TMP/logs"
 export MM_CONFIG_DIR="$TMP/config"
 export MM_CONFIG_FILE="$TMP/config/dp-upgrade-mirror.conf"
@@ -23,7 +26,7 @@ export SCRIPT_DIR="${ROOT}/scripts"
 mkdir -p "$MM_LOG_DIR" "$MM_CONFIG_DIR" "$MM_CLIENT_ROOT"
 : >"$MM_STATUS_FILE"
 PREPARATION_MODE=FULL
-MIRROR_HTTP_URL="http://221.139.249.111"
+MIRROR_HTTP_URL="http://192.0.2.10"
 
 LIB="$TMP/installer-lib.sh"
 awk -v sd="${ROOT}/scripts" '
@@ -100,7 +103,7 @@ pass "Phase 2 target fixed at 6.5.0"
 # --- FULL mode command generation ---
 PREPARATION_MODE=FULL
 OUT="$TMP/cmds-full.txt"
-gui_build_client_commands "http://221.139.249.111" "single" "" >"$OUT"
+gui_build_client_commands "http://192.0.2.10" "single" "" >"$OUT"
 
 grep -q 'Supported Starting DP Versions: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0' "$OUT" \
   || fail "missing supported starting versions"
@@ -126,13 +129,21 @@ step_nums="$(grep -oE 'Step [0-9]+ —' "$OUT" | grep -oE '[0-9]+' | tr '\n' ' '
 grep -Fq -- '--source-dp-version' "$OUT" && fail "FULL command has --source-dp-version" || true
 grep -Fq -- '--target-version 6.5.0' "$OUT" || fail "target version missing"
 grep -Fq -- '--same-version-recovery' "$OUT" || fail "same-version-recovery missing"
+hop_count="$(grep -c 'dp-offline-upgrade-.*--mirror-base http://192.0.2.10' "$OUT" || true)"
+[[ "$hop_count" -eq 4 ]] || fail "expected four hop commands with --mirror-base, got ${hop_count}"
+if grep 'sudo bash ./dp-offline-upgrade-' "$OUT" | grep -vq -- '--mirror-base'; then
+  fail "hop command lacks --mirror-base"
+fi
+second_cmd="$(gui_client_hop_command "http://192.0.2.20" "dp-offline-upgrade-xenial-to-bionic.sh")"
+[[ "$second_cmd" == *"--mirror-base http://192.0.2.20"* ]] \
+  || fail "second fixture URL missing from hop command"
 grep -q 'License is valid' "$OUT" || fail "license check missing"
 pass "FULL mode client commands"
 
 # --- PHASE2_ONLY mode: no OS hops ---
 PREPARATION_MODE=PHASE2_ONLY
 P2_OUT="$TMP/cmds-p2.txt"
-gui_build_client_commands "http://221.139.249.111" "single" "" >"$P2_OUT"
+gui_build_client_commands "http://192.0.2.10" "single" "" >"$P2_OUT"
 grep -q 'DP Phase 2 Upgrade Commands' "$P2_OUT" || fail "phase2 title missing"
 grep -q 'Required OS: Ubuntu 24.04' "$P2_OUT" || fail "required OS missing"
 grep -q 'Ubuntu 16.04 to 18.04' "$P2_OUT" && fail "PHASE2_ONLY still has OS hops" || true
@@ -167,7 +178,7 @@ pass "no backslash continuations"
 # Cluster bringup
 CLUSTER_OUT="$TMP/cluster.txt"
 PREPARATION_MODE=FULL
-gui_build_client_commands "http://221.139.249.111" "cluster" "192.168.124.23,192.168.124.24" \
+gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23,192.168.124.24" \
   >"$CLUSTER_OUT"
 grep -q -- '--worker-ips "192.168.124.23,192.168.124.24"' "$CLUSTER_OUT" || fail "worker ips missing"
 grep -q 'Cluster IP addresses are recommended' "$CLUSTER_OUT" || fail "cluster IP recommendation missing"
@@ -195,7 +206,7 @@ pass "worker-ips argv verified as single CSV argument"
 PREPARATION_MODE=FULL
 ACPS_USERNAME=u
 ACPS_PASSWORD=p
-MIRROR_HTTP_URL="http://221.139.249.111"
+MIRROR_HTTP_URL="http://192.0.2.10"
 mm_save_gui_config >/dev/null
 grep -q '^PREPARATION_MODE=FULL$' "$MM_CONFIG_FILE" || fail "PREPARATION_MODE not saved"
 grep -q 'TARGET_DP_VERSION' "$MM_CONFIG_FILE" && fail "TARGET_DP_VERSION still written" || true
@@ -208,7 +219,7 @@ TARGET_DP_VERSION=9.9.9
 PREPARATION_MODE=PHASE2_ONLY
 ACPS_USERNAME=u
 ACPS_PASSWORD=p
-MIRROR_HTTP_URL=http://221.139.249.111
+MIRROR_HTTP_URL=http://192.0.2.10
 EOF
 chmod 600 "$MM_CONFIG_FILE"
 mm_load_gui_config
@@ -231,7 +242,7 @@ pass "mode change invalidates client commands file"
 
 # Menu 7: topology first; version input count=0
 PREPARATION_MODE=FULL
-MIRROR_HTTP_URL="http://221.139.249.111"
+MIRROR_HTTP_URL="http://192.0.2.10"
 MENU7_TRACE="$TMP/menu7.trace"
 : >"$MENU7_TRACE"
 INPUTBOX_COUNT=0

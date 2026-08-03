@@ -105,8 +105,9 @@ Login shells: operators do not manually run `getent`/`chsh`/`usermod` for
 aella/root in Full mode. The Xenial-to-Bionic client sets both shells to
 `/bin/bash` after upgrade confirmation and re-verifies with `getent`.
 
-Test Mirror clients must use `http://221.139.249.112` for download URLs and
-embedded Mirror pins. `http://221.139.249.111` is the development Mirror only.
+Each Mirror Server install resolves its own primary IPv4 and embeds that
+`MIRROR_HTTP_URL` into the four OS-hop clients. Do not hardcode development
+or test server addresses into source; install.sh detects the current host.
 
 ```
 

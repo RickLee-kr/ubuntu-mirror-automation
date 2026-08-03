@@ -250,13 +250,30 @@ um_write_file() {
 # ---------------------------------------------------------------------------
 # Detection helpers
 # ---------------------------------------------------------------------------
+# Authoritative Mirror Host IPv4. Delegates to scripts/lib/mirror_host_ip.sh so
+# build, deploy and GUI paths all agree on one address. Fails closed: callers
+# get an empty value and non-zero status rather than a loopback placeholder that
+# would be baked into client artifacts.
 um_detect_primary_ip() {
-  local ip
-  ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  if [[ -z "$ip" ]]; then
-    ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+  local candidate ip=""
+  if ! declare -F mirror_host_resolve_ipv4 >/dev/null 2>&1; then
+    for candidate in \
+      "${UM_PROJECT_ROOT:-}/scripts/lib/mirror_host_ip.sh" \
+      "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)/scripts/lib/mirror_host_ip.sh"
+    do
+      [[ -n "$candidate" && -f "$candidate" ]] || continue
+      # shellcheck source=/dev/null
+      source "$candidate"
+      break
+    done
   fi
-  printf '%s\n' "${ip:-127.0.0.1}"
+  if ! declare -F mirror_host_resolve_ipv4 >/dev/null 2>&1; then
+    um_error "MIRROR_IP_RESOLUTION_RESULT=FAIL mirror_host_ip.sh not found"
+    return 1
+  fi
+  ip="$(mirror_host_resolve_ipv4)" || return 1
+  [[ -n "$ip" ]] || return 1
+  printf '%s\n' "$ip"
 }
 
 um_command_exists() { command -v "$1" >/dev/null 2>&1; }

@@ -340,7 +340,7 @@ class SourcesAndCompareTests(unittest.TestCase):
     def test_signed_by_invalidates_distupgrade_parser(self):
         line = (
             'deb [arch=amd64 signed-by=/etc/apt/keyrings/stellar-offline-upgrade.gpg] '
-            'http://221.139.249.111/hops/xenial-to-bionic/ubuntu xenial-updates '
+            'http://192.0.2.10/hops/xenial-to-bionic/ubuntu xenial-updates '
             'main universe'
         )
         parsed = xba.distupgrade_source_entry_valid(line)

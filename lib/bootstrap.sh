@@ -50,6 +50,14 @@ UM_BOOTSTRAP_REQUIRED_CMDS=(
   gpgv
 )
 
+# OS-hop clients (built and signed per Mirror install against local MIRROR_HTTP_URL)
+UM_CLIENT_HOP_SCRIPTS=(
+  dp-offline-upgrade-xenial-to-bionic.sh
+  dp-offline-upgrade-bionic-to-focal.sh
+  dp-offline-upgrade-focal-to-jammy.sh
+  dp-offline-upgrade-jammy-to-noble.sh
+)
+
 # Client HTTP artifacts required for CLIENT_FILES_READY=PASS
 UM_CLIENT_REQUIRED_FILES=(
   dp-offline-upgrade-xenial-to-bionic.sh
@@ -277,8 +285,15 @@ um_bootstrap_install_runtime() {
     "${src_root}/scripts/install-dp-upgrade-mirror.sh" \
     "${runtime}/scripts/install-dp-upgrade-mirror.sh" 0755
 
+  um_bootstrap_install_file \
+    "${src_root}/scripts/rebuild-publish-clients.sh" \
+    "${runtime}/scripts/rebuild-publish-clients.sh" 0755
+
   for f in mirror_manager_common.sh mirror_install_engine.sh r2_acquire.sh acps_acquire.sh \
-           dp-phase2-common.sh os_core_package.py; do
+           dp-phase2-common.sh mirror_host_ip.sh client_mirror_gates.sh local_client_signing.sh \
+           os_core_package.py \
+           build_client_xenial_to_bionic.py build_client_bionic_to_focal.py \
+           build_client_focal_to_jammy.py build_client_jammy_to_noble.py; do
     um_bootstrap_install_file \
       "${src_root}/scripts/lib/${f}" \
       "${runtime}/scripts/lib/${f}" 0644
@@ -298,24 +313,21 @@ um_bootstrap_install_runtime() {
       "${runtime}/templates/nginx.conf" 0644
   fi
 
-  # Public signing key only — never install private key material
-  if [[ -f "${src_root}/config/client-signing/offline-client-manifest.gpg" ]]; then
-    um_bootstrap_install_file \
-      "${src_root}/config/client-signing/offline-client-manifest.gpg" \
-      "${runtime}/config/client-signing/offline-client-manifest.gpg" 0644
-  fi
-
-  # Reference client scripts under runtime tree
+  # Templates + phase2 helpers (hop clients are rebuilt per host; do not publish
+  # stale prebuilt client/*.sh from the git checkout).
   for f in \
-    dp-offline-upgrade-xenial-to-bionic.sh \
-    dp-offline-upgrade-bionic-to-focal.sh \
-    dp-offline-upgrade-focal-to-jammy.sh \
-    dp-offline-upgrade-jammy-to-noble.sh \
+    dp-offline-upgrade-xenial-to-bionic.sh.in \
+    dp-offline-upgrade-bionic-to-focal.sh.in \
+    dp-offline-upgrade-focal-to-jammy.sh.in \
+    dp-offline-upgrade-jammy-to-noble.sh.in \
+    dp-postboot-readiness-policy.sh.inc \
     stage-dp-phase2.sh \
     stage-dp-phase2-6.5.0.sh
   do
     if [[ -f "${src_root}/client/${f}" ]]; then
-      um_bootstrap_install_file "${src_root}/client/${f}" "${runtime}/client/${f}" 0755
+      mode=0644
+      [[ "$f" == *.sh ]] && mode=0755
+      um_bootstrap_install_file "${src_root}/client/${f}" "${runtime}/client/${f}" "$mode"
     fi
   done
   if [[ -d "${src_root}/client/lib" ]]; then
@@ -323,7 +335,7 @@ um_bootstrap_install_runtime() {
     cp -a "${src_root}/client/lib/." "${runtime}/client/lib/"
   fi
 
-  # Deploy HTTP client artifacts + checksum sidecars
+  # Resolve IP, local keypair, rebuild/sign/atomic-publish host-pinned clients
   um_bootstrap_deploy_client_http_artifacts
 
   # Entry points (sbin path overridable for temp-root tests)
@@ -349,6 +361,10 @@ um_bootstrap_install_runtime() {
     "${runtime}/scripts/ubuntu-offline-mirror.sh" \
     "${runtime}/scripts/lib/mirror_manager_common.sh" \
     "${runtime}/scripts/lib/mirror_install_engine.sh" \
+    "${runtime}/scripts/lib/mirror_host_ip.sh" \
+    "${runtime}/scripts/lib/client_mirror_gates.sh" \
+    "${runtime}/scripts/lib/local_client_signing.sh" \
+    "${runtime}/scripts/rebuild-publish-clients.sh" \
     "${runtime}/scripts/lib/r2_acquire.sh" \
     "${runtime}/scripts/lib/acps_acquire.sh" \
     "${runtime}/scripts/lib/dp-phase2-common.sh" \
@@ -378,39 +394,181 @@ um_bootstrap_write_sha256_sidecar() {
   )
 }
 
+um_bootstrap_source_mirror_host_libs() {
+  local root="${UM_PROJECT_ROOT}"
+  [[ -f "${root}/scripts/lib/mirror_host_ip.sh" ]] || return 1
+  [[ -f "${root}/scripts/lib/client_mirror_gates.sh" ]] || return 1
+  [[ -f "${root}/scripts/lib/local_client_signing.sh" ]] || return 1
+  # shellcheck source=/dev/null
+  source "${root}/scripts/lib/mirror_host_ip.sh"
+  # shellcheck source=/dev/null
+  source "${root}/scripts/lib/client_mirror_gates.sh"
+  # shellcheck source=/dev/null
+  source "${root}/scripts/lib/local_client_signing.sh"
+}
+
+# Persist resolved local Mirror URL for Mirror Manager command generation.
+um_bootstrap_persist_local_mirror_url() {
+  local confdir="${INSTALL_CONF_DIR:-/etc/ubuntu-mirror}"
+  local conf="${confdir}/dp-upgrade-mirror.conf"
+  local mirror_base="$1"
+  local tmp prep user pass
+  mkdir -p "$confdir"
+  prep="FULL"
+  user=""
+  pass=""
+  if [[ -f "$conf" ]]; then
+    # shellcheck disable=SC1090
+    set -a
+    # shellcheck source=/dev/null
+    source "$conf"
+    set +a
+    prep="${PREPARATION_MODE:-FULL}"
+    user="${ACPS_USERNAME:-}"
+    pass="${ACPS_PASSWORD:-}"
+  fi
+  tmp="$(mktemp)"
+  cat >"$tmp" <<EOF
+# DP Upgrade Mirror Manager configuration (managed by install/bootstrap)
+# Phase 2 target is fixed at 6.5.0 (not user-editable).
+PREPARATION_MODE=${prep}
+ACPS_USERNAME=${user}
+ACPS_PASSWORD=${pass}
+MIRROR_HTTP_URL=${mirror_base}
+EOF
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$conf"
+  chmod 600 "$conf"
+  if [[ "${EUID}" -eq 0 ]]; then
+    chown root:root "$conf" 2>/dev/null || true
+  fi
+  um_ok "INSTALL_PERSISTS_LOCAL_MIRROR_URL=YES path=${conf} url=${mirror_base}"
+}
+
+um_bootstrap_selective_ready() {
+  local selective="${SELECTIVE_MIRROR_ROOT:-${BASE_PATH:-/var/spool/apt-mirror}/selective}"
+  [[ -f "${selective}/state/READY" ]] || return 1
+  [[ -f "${selective}/keys/ubuntu-mirror-selective.gpg" ]] || return 1
+  return 0
+}
+
+# Publish Phase 2 helpers + local public key without hop clients (pre-OS-Core).
+um_bootstrap_publish_phase2_helpers_only() {
+  local dest="${1:-${BASE_PATH:-/var/spool/apt-mirror}/client}"
+  local src_root="${UM_PROJECT_ROOT}"
+  local stage f
+  mkdir -p "$dest"
+  stage="$(mktemp -d "${dest}.helpers.XXXXXX")"
+  for f in stage-dp-phase2.sh stage-dp-phase2-6.5.0.sh; do
+    if [[ -f "${src_root}/client/${f}" ]]; then
+      install -m 0755 "${src_root}/client/${f}" "${stage}/${f}"
+      um_bootstrap_write_sha256_sidecar "${stage}/${f}"
+    fi
+  done
+  if [[ -d "${src_root}/client/lib" ]]; then
+    mkdir -p "${stage}/lib"
+    cp -a "${src_root}/client/lib/." "${stage}/lib/"
+  fi
+  if [[ -n "${LOCAL_SIGNING_PUBLIC_KEY:-}" && -f "${LOCAL_SIGNING_PUBLIC_KEY}" ]]; then
+    install -m 0644 "$LOCAL_SIGNING_PUBLIC_KEY" "${stage}/public.gpg"
+    install -m 0644 "$LOCAL_SIGNING_PUBLIC_KEY" "${stage}/offline-client-manifest.gpg"
+    if [[ -n "${LOCAL_KEY_FINGERPRINT:-}" ]]; then
+      printf '%s\n' "$LOCAL_KEY_FINGERPRINT" >"${stage}/fingerprint"
+      chmod 0644 "${stage}/fingerprint"
+    fi
+  fi
+  # Merge helpers into dest without removing an existing hop set.
+  cp -a "${stage}/." "$dest/"
+  rm -rf "$stage"
+  local_signing_assert_private_not_published "$dest" || return 1
+  return 0
+}
+
+# Resolve host IP, ensure local signing keypair, rebuild/sign/atomic-publish the
+# four host-pinned clients. Never copies stale prebuilt client/*.sh from git.
 um_bootstrap_deploy_client_http_artifacts() {
   local src_root="${UM_PROJECT_ROOT}"
   local dest="${BASE_PATH:-/var/spool/apt-mirror}/client"
+  local mirror_base rebuild="${src_root}/scripts/rebuild-publish-clients.sh"
+  local confdir="${INSTALL_CONF_DIR:-/etc/ubuntu-mirror}"
   mkdir -p "$dest"
 
-  local f
-  for f in \
-    dp-offline-upgrade-xenial-to-bionic.sh \
-    dp-offline-upgrade-bionic-to-focal.sh \
-    dp-offline-upgrade-focal-to-jammy.sh \
-    dp-offline-upgrade-jammy-to-noble.sh \
-    stage-dp-phase2.sh
-  do
-    [[ -f "${src_root}/client/${f}" ]] || um_die "CLIENT_ARTIFACT=FAIL missing ${src_root}/client/${f}"
-    um_bootstrap_install_file "${src_root}/client/${f}" "${dest}/${f}" 0755
-    um_bootstrap_write_sha256_sidecar "${dest}/${f}"
-  done
+  um_bootstrap_source_mirror_host_libs \
+    || um_die "CLIENT_ARTIFACT=FAIL mirror host resolution / signing libraries missing"
+  mirror_host_resolve_and_log \
+    || um_die "MIRROR_IP_RESOLUTION_RESULT=FAIL refusing to install without an authoritative mirror host IPv4"
+  mirror_base="${RESOLVED_MIRROR_BASE_URL%/}"
+  um_bootstrap_persist_local_mirror_url "$mirror_base"
+  um_info "INSTALL_RESOLVES_LOCAL_HOST_IP=YES url=${mirror_base}"
+  um_info "CENTRAL_PRODUCTION_PRIVATE_KEY_REQUIRED=NO"
+  um_info "OUT_OF_BAND_FINGERPRINT_REQUIRED=NO"
+  um_info "EXPECTED_FINGERPRINT_COMMAND_ARGUMENT_REQUIRED=NO"
 
-  # Optional versioned helper (not required for CLIENT_FILES_READY)
-  if [[ -f "${src_root}/client/stage-dp-phase2-6.5.0.sh" ]]; then
-    um_bootstrap_install_file \
-      "${src_root}/client/stage-dp-phase2-6.5.0.sh" \
-      "${dest}/stage-dp-phase2-6.5.0.sh" 0755
-    um_bootstrap_write_sha256_sidecar "${dest}/stage-dp-phase2-6.5.0.sh"
+  # Install-time key directory is always under INSTALL_CONF_DIR. Ambient
+  # LOCAL_CLIENT_SIGNING_DIR from a developer shell must not leak into bootstrap.
+  if [[ "${UM_BOOTSTRAP_ALLOW_SIGNING_DIR_OVERRIDE:-0}" == "1" && -n "${LOCAL_CLIENT_SIGNING_DIR:-}" ]]; then
+    :
+  else
+    LOCAL_CLIENT_SIGNING_DIR="${confdir}/client-signing"
+  fi
+  export LOCAL_CLIENT_SIGNING_DIR
+  local_signing_ensure_keypair \
+    || um_die "LOCAL_SIGNING_KEY_ACTION=FAIL INSTALL_RESULT=FAIL"
+  um_ok "INSTALL_GENERATES_OR_REUSES_LOCAL_KEYPAIR=YES action=${LOCAL_SIGNING_KEY_ACTION}"
+  um_info "LOCAL_SIGNING_KEY_PATH=${LOCAL_SIGNING_PRIVATE_KEY}"
+  um_info "LOCAL_PUBLIC_KEY_PATH=${LOCAL_SIGNING_PUBLIC_KEY}"
+  um_info "LOCAL_KEY_FINGERPRINT=${LOCAL_KEY_FINGERPRINT}"
+
+  um_info "TARGET_INSTALL_GENERATES_OR_REUSES_LOCAL_PRIVATE_KEY=YES"
+  um_info "TARGET_INSTALL_REBUILDS_CLIENTS=YES"
+  um_info "TARGET_INSTALL_SIGNS_CLIENTS=YES"
+  um_info "TARGET_INSTALL_REQUIRES_PREEXISTING_PRIVATE_KEY=NO"
+
+  if ! um_bootstrap_selective_ready; then
+    um_warn "SELECTIVE_READY=NO — deferring hop-client rebuild until OS Core is prepared"
+    um_warn "CLIENT_SET_DEFERRED_UNTIL_OS_CORE=YES"
+    um_info "Stale prebuilt git client/*.sh will NOT be published"
+    # Still publish Phase 2 helpers + local public key metadata (no hop clients).
+    um_bootstrap_publish_phase2_helpers_only "$dest" || true
+    if um_bootstrap_verify_client_files "$dest" 2>/dev/null; then
+      um_ok "CLIENT_HTTP_ARTIFACTS=PASS (helpers present; hops rebuild after OS Core)"
+    else
+      um_warn "CLIENT_FILES_READY=NO (hop clients deferred until Download and Prepare)"
+    fi
+    return 0
   fi
 
-  if [[ -d "${src_root}/client/lib" ]]; then
-    mkdir -p "${dest}/lib"
-    cp -a "${src_root}/client/lib/." "${dest}/lib/"
+  [[ -x "$rebuild" || -f "$rebuild" ]] \
+    || um_die "CLIENT_ARTIFACT=FAIL missing ${rebuild}"
+
+  local artifact_dir="${src_root}/artifacts/client"
+  mkdir -p "$artifact_dir"
+  if ! env \
+    MIRROR_HTTP_URL="$mirror_base" \
+    RESOLVED_MIRROR_HOST_IPV4="${RESOLVED_MIRROR_HOST_IPV4}" \
+    RESOLVED_MIRROR_BASE_URL="$mirror_base" \
+    LOCAL_CLIENT_SIGNING_DIR="$LOCAL_CLIENT_SIGNING_DIR" \
+    CLIENT_HTTP_ROOT="$dest" \
+    ARTIFACT_DIR="$artifact_dir" \
+    SELECTIVE_ROOT="${SELECTIVE_MIRROR_ROOT:-${BASE_PATH:-/var/spool/apt-mirror}/selective}" \
+    BASE_PATH="${BASE_PATH:-/var/spool/apt-mirror}" \
+    SKIP_HTTP_VERIFY="${UM_BOOTSTRAP_SKIP_HTTP_VERIFY:-0}" \
+    bash "$rebuild"
+  then
+    um_die "CLIENT_SET_BUILD_OR_PUBLISH=FAIL existing HTTP set left unchanged"
   fi
 
   um_bootstrap_verify_client_files "$dest" || um_die "CLIENT_FILES_READY=FAIL after deploy"
+  local_signing_assert_private_not_published "$dest" \
+    || um_die "PRIVATE_KEY_HTTP_PUBLISHED=YES"
   um_ok "CLIENT_HTTP_ARTIFACTS=PASS path=${dest}"
+  um_ok "INSTALL_BUILDS_LOCAL_CLIENT_SET=YES"
+  um_ok "INSTALL_SIGNS_LOCAL_CLIENT_SET=YES"
+  um_ok "INSTALL_PUBLISHES_LOCAL_PUBLIC_KEY=YES"
+  um_ok "INSTALL_ATOMICALLY_PUBLISHES_FULL_SET=YES"
+  um_ok "CLIENT_SET_DEPLOY_ATOMIC=YES"
+  um_ok "PARTIAL_CLIENT_DEPLOY_ALLOWED=NO"
+  um_ok "PRIVATE_KEY_HTTP_PUBLISHED=NO"
 }
 
 um_bootstrap_verify_client_files() {
@@ -426,7 +584,6 @@ um_bootstrap_verify_client_files() {
   done
   [[ "$missing_flag" -eq 0 ]] || return 1
 
-  # Verify sha256 sidecars for the four hop scripts + stage helper
   for f in \
     dp-offline-upgrade-xenial-to-bionic.sh \
     dp-offline-upgrade-bionic-to-focal.sh \
@@ -439,6 +596,15 @@ um_bootstrap_verify_client_files() {
       return 1
     fi
   done
+  # Public key must be published; private key must not.
+  if [[ ! -f "${root}/public.gpg" && ! -f "${root}/offline-client-manifest.gpg" ]]; then
+    um_error "CLIENT_PUBLIC_KEY=MISSING"
+    return 1
+  fi
+  if [[ -f "${root}/private.gpg" ]]; then
+    um_error "PRIVATE_KEY_HTTP_PUBLISHED=YES"
+    return 1
+  fi
   return 0
 }
 

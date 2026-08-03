@@ -101,16 +101,36 @@ for f in \
   "${INSTALL_LIB_DIR}/scripts/lib/r2_acquire.sh" \
   "${INSTALL_LIB_DIR}/scripts/lib/acps_acquire.sh" \
   "${INSTALL_LIB_DIR}/scripts/lib/dp-phase2-common.sh" \
+  "${INSTALL_LIB_DIR}/scripts/lib/local_client_signing.sh" \
   "${INSTALL_LIB_DIR}/scripts/lib/os_core_package.py" \
   "${INSTALL_LIB_DIR}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh" \
   "${INSTALL_LIB_DIR}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1" \
   "${INSTALL_LIB_DIR}/templates/nginx.conf" \
-  "${BASE_PATH}/client/dp-offline-upgrade-xenial-to-bionic.sh" \
-  "${BASE_PATH}/client/stage-dp-phase2.sh.sha256"
+  "${BASE_PATH}/client/stage-dp-phase2.sh" \
+  "${BASE_PATH}/client/stage-dp-phase2.sh.sha256" \
+  "${BASE_PATH}/client/public.gpg" \
+  "${INSTALL_CONF_DIR}/client-signing/public.gpg" \
+  "${INSTALL_CONF_DIR}/client-signing/private.gpg" \
+  "${INSTALL_CONF_DIR}/client-signing/fingerprint"
 do
   [[ -e "$f" ]] || { fail "missing $f"; continue; }
 done
 pass "runtime files present"
+# Without OS Core READY, hop clients are deferred (never copy stale git clients).
+if [[ -f "${BASE_PATH}/client/dp-offline-upgrade-xenial-to-bionic.sh" ]]; then
+  fail "stale hop client published before OS Core READY"
+else
+  pass "hop clients deferred until OS Core READY"
+fi
+[[ -f "${INSTALL_CONF_DIR}/client-signing/private.gpg" ]] \
+  && pass "local signing private key generated under confdir" \
+  || fail "local signing private key missing"
+# Private key must not appear under the HTTP client root.
+if [[ -f "${BASE_PATH}/client/private.gpg" ]]; then
+  fail "PRIVATE_KEY_HTTP_PUBLISHED=YES"
+else
+  pass "PRIVATE_KEY_HTTP_PUBLISHED=NO"
+fi
 
 # Rename source repo and ensure installed entrypoint still starts
 REPO_SHADOW="${WORKDIR}/repo-renamed-away"

@@ -957,7 +957,7 @@ LIFE_OUT="$(
     mm_whiptail_yesno() { return 0; }
     mm_whiptail_input() { printf "%s\n" "${3:-6.3.0}"; return 0; }
     load_mirror_defaults() { :; }
-    mm_load_gui_config() { TARGET_DP_VERSION=6.5.0; MIRROR_HTTP_URL="http://221.139.249.111"; }
+    mm_load_gui_config() { TARGET_DP_VERSION=6.5.0; MIRROR_HTTP_URL="http://192.0.2.10"; }
     engine_resolve_paths() {
       printf "PATH_RESOLVE\n" >>"$TRACE"
       return 0
@@ -1008,7 +1008,7 @@ LIFE_OUT="$(
     gui_client_instructions() {
       printf "ACTION_7\n" >>"$TRACE"
       local tmp; tmp="$(mktemp)"
-      gui_build_client_commands "http://221.139.249.111" "6.3.0" "single" "" >"$tmp"
+      gui_build_client_commands "http://192.0.2.10" "6.3.0" "single" "" >"$tmp"
       mm_whiptail_textbox "DP Client Upgrade Commands" "$tmp" || true
       rm -f "$tmp"
       return 0

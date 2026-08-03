@@ -48,9 +48,13 @@ artifacts/upgrade-discovery/.index.tsv.tmp.*
 artifacts/client/
 # Unsigned test-only client builds (never deploy / never nginx)
 artifacts/client-unsigned-test/
-# Manifest signing private key (public .gpg may be committed)
+# Manifest signing private key (public .gpg may be committed; install-time
+# /etc/ubuntu-mirror/client-signing/private.gpg is never in this repo)
 config/client-signing/*.private.gpg
 config/client-signing/*private*
+config/client-signing/private.gpg
+**/client-signing/private.gpg
+
 artifacts/upgrade-discovery/
 artifacts/recovery/
 artifacts/logs/

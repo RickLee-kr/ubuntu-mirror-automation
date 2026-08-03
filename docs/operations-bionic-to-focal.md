@@ -13,7 +13,7 @@ evidence VM for integration testing — deploy or snapshot-restore a clean Bioni
 - Selective mirror READY with hop gates for `bionic-to-focal` PASS
 - Published repository: `http://221.139.249.111/hops/bionic-to-focal/ubuntu`
 - Mirror signer fingerprint: `D1FF722556ED95F5E779BAE66B1BA1673A997CA5`
-- Client manifest signer: `C786FE9887290E2CF759271DFDD38BE958EABD4A`
+- Client manifest signer: per-mirror local key (published as /client/public.gpg)
 - Suites registered: `bionic`, `bionic-updates`, `bionic-security`, `bionic-backports`,
   `focal`, `focal-updates`, `focal-security`, `focal-backports`
 

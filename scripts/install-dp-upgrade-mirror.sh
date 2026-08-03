@@ -49,6 +49,10 @@ load_mirror_defaults() {
   MM_CLIENT_ROOT="${MM_CLIENT_ROOT:-${MM_MIRROR_ROOT}/client}"
   if [[ -n "${CLIENT_SIGNING_PUBLIC_KEY:-}" ]]; then
     OS_CORE_PUBLIC_KEY="$CLIENT_SIGNING_PUBLIC_KEY"
+  elif [[ -f "${LOCAL_CLIENT_SIGNING_DIR:-/etc/ubuntu-mirror/client-signing}/public.gpg" ]]; then
+    OS_CORE_PUBLIC_KEY="${LOCAL_CLIENT_SIGNING_DIR:-/etc/ubuntu-mirror/client-signing}/public.gpg"
+  elif [[ -f "${MM_CLIENT_ROOT}/public.gpg" ]]; then
+    OS_CORE_PUBLIC_KEY="${MM_CLIENT_ROOT}/public.gpg"
   elif [[ -f "${PROJECT_ROOT}/config/client-signing/offline-client-manifest.gpg" ]]; then
     OS_CORE_PUBLIC_KEY="${PROJECT_ROOT}/config/client-signing/offline-client-manifest.gpg"
   fi
@@ -802,11 +806,22 @@ gui_view_logs() {
   return 0
 }
 
-# One physical line: rm → curl script → curl sha → sha256sum -c → sudo bash.
+# One physical line: download client + sha + public key + detached manifest sig,
+# verify checksum and signature with the same-server public key, then run.
+# --mirror-base matches the persisted local Mirror URL (no operator typing).
 gui_client_hop_command() {
   local mirror="$1" script="$2"
-  printf 'cd /home/aella && rm -f %s %s.sha256 && curl -fsSLO %s/client/%s && curl -fsSLO %s/client/%s.sha256 && sha256sum -c %s.sha256 && sudo bash ./%s' \
-    "$script" "$script" "$mirror" "$script" "$mirror" "$script" "$script" "$script"
+  local hop="${script#dp-offline-upgrade-}"
+  hop="${hop%.sh}"
+  printf 'cd /home/aella && rm -f %s %s.sha256 public.gpg client-manifest.json client-manifest.json.asc && curl -fsSLO %s/client/%s && curl -fsSLO %s/client/%s.sha256 && curl -fsSLO %s/client/public.gpg && curl -fsSLO %s/client/%s/client-manifest.json && curl -fsSLO %s/client/%s/client-manifest.json.asc && sha256sum -c %s.sha256 && gpgv --keyring ./public.gpg client-manifest.json.asc client-manifest.json && sudo bash ./%s --mirror-base %s' \
+    "$script" "$script" \
+    "$mirror" "$script" \
+    "$mirror" "$script" \
+    "$mirror" \
+    "$mirror" "$hop" \
+    "$mirror" "$hop" \
+    "$script" \
+    "$script" "$mirror"
 }
 
 gui_build_client_commands() {
@@ -1047,8 +1062,8 @@ gui_client_instructions() {
     mm_whiptail_msg "DP Client Upgrade Commands" \
       "Could not determine the Mirror Server HTTP address.
 
-Set MIRROR_HTTP_URL in ${MM_CONFIG_FILE} (example: http://221.139.249.111)
-or ensure this host has a reachable IPv4 address."
+Set MIRROR_HTTP_URL in ${MM_CONFIG_FILE} (example: http://192.0.2.10)
+or ensure this host has exactly one reachable global IPv4 address."
     return 0
   }
   # Persist resolved URL for next runs (no secrets).

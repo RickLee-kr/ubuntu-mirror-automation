@@ -13,9 +13,12 @@ DEST_ROOT="${DEST_ROOT:-/var/spool/apt-mirror/client}"
 NAME="dp-offline-upgrade-bionic-to-focal.sh"
 BUILD_PY="${ROOT}/scripts/lib/build_client_bionic_to_focal.py"
 DEPLOY_PY="${ROOT}/scripts/lib/deploy_client_artifacts_atomic.py"
-PUB_KEY="${ROOT}/config/client-signing/offline-client-manifest.gpg"
-EXPECTED_ARTIFACT_SHA="${EXPECTED_ARTIFACT_SHA:-09557479ba5700ffe9c48f81e8526cd56925bb7ea808a93d775cf5d205de8f3d}"
-ALLOWED_FINGERPRINT="${ALLOWED_FINGERPRINT:-C786FE9887290E2CF759271DFDD38BE958EABD4A}"
+PUB_KEY="${CLIENT_SIGNING_PUBLIC_KEY:-${LOCAL_CLIENT_SIGNING_DIR:-/etc/ubuntu-mirror/client-signing}/public.gpg}"
+if [[ ! -f "$PUB_KEY" ]]; then
+  PUB_KEY="${ROOT}/config/client-signing/offline-client-manifest.gpg"
+fi
+EXPECTED_ARTIFACT_SHA="${EXPECTED_ARTIFACT_SHA:-}"
+ALLOWED_FINGERPRINT="${ALLOWED_FINGERPRINT:-}"
 
 [[ -f "$ARTIFACT" && -f "$SHAFILE" ]] || { echo "missing artifact/sha256" >&2; exit 1; }
 [[ -d "$HOP_DIR" ]] || { echo "missing hop dir: $HOP_DIR" >&2; exit 1; }
@@ -23,13 +26,20 @@ ALLOWED_FINGERPRINT="${ALLOWED_FINGERPRINT:-C786FE9887290E2CF759271DFDD38BE958EA
 [[ -f "$DEPLOY_PY" ]] || { echo "missing deploy helper: $DEPLOY_PY" >&2; exit 1; }
 [[ -f "$PUB_KEY" ]] || { echo "missing production public key: $PUB_KEY" >&2; exit 1; }
 
+if [[ -z "$ALLOWED_FINGERPRINT" && -f "$PUB_KEY" ]]; then
+  ALLOWED_FINGERPRINT="$(gpg --batch --with-colons --import-options show-only --import "$PUB_KEY" 2>/dev/null | awk -F: '/^fpr:/{print toupper($10); exit}')"
+fi
+[[ -n "$ALLOWED_FINGERPRINT" ]] || { echo "ALLOWED_FINGERPRINT missing and could not derive from $PUB_KEY" >&2; exit 1; }
+
 ART_SHA="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
 SIDECAR_SHA="$(awk '{print $1}' "$SHAFILE")"
 [[ "$ART_SHA" == "$SIDECAR_SHA" ]] || { echo "artifact/sidecar SHA mismatch" >&2; exit 1; }
-[[ "$ART_SHA" == "$EXPECTED_ARTIFACT_SHA" ]] || {
-  echo "artifact SHA ${ART_SHA} != approved ${EXPECTED_ARTIFACT_SHA}" >&2
-  exit 1
-}
+if [[ -n "$EXPECTED_ARTIFACT_SHA" ]]; then
+  [[ "$ART_SHA" == "$EXPECTED_ARTIFACT_SHA" ]] || {
+    echo "artifact SHA ${ART_SHA} != approved ${EXPECTED_ARTIFACT_SHA}" >&2
+    exit 1
+  }
+fi
 
 READY_PATH="${READY_PATH:-/var/spool/apt-mirror/selective/state/READY}"
 READY_BEFORE=""
@@ -82,7 +92,7 @@ if [[ "${SKIP_HTTP_VERIFY:-0}" == "1" ]]; then
   exit 0
 fi
 
-MIRROR_BASE="${MIRROR_BASE:-http://221.139.249.111}"
+MIRROR_BASE="${MIRROR_BASE:-${RESOLVED_MIRROR_BASE_URL:-${MIRROR_HTTP_URL:-}}}"
 TMP="$(mktemp)"
 trap 'rm -f "$TMP" "${TMP}.sha256" "${TMP}.hop" "${TMP}.manifest" "${TMP}.asc"' EXIT
 curl -fsS -o "$TMP" "${MIRROR_BASE}/client/${NAME}"

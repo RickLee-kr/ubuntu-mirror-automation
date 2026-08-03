@@ -8,10 +8,17 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/mirror_host_ip.sh
+source "${ROOT}/scripts/lib/mirror_host_ip.sh"
 DEST_ROOT="${DEST_ROOT:-/var/spool/apt-mirror/client}"
 READY_PATH="${READY_PATH:-/var/spool/apt-mirror/selective/state/READY}"
-MIRROR_BASE="${MIRROR_BASE:-http://221.139.249.111}"
 SKIP_HTTP_VERIFY="${SKIP_HTTP_VERIFY:-0}"
+MIRROR_BASE="${RESOLVED_MIRROR_BASE_URL:-${MIRROR_BASE:-}}"
+MIRROR_BASE="${MIRROR_BASE%/}"
+if [[ -z "$MIRROR_BASE" && "$SKIP_HTTP_VERIFY" != "1" ]]; then
+  mirror_host_resolve_and_log || exit 1
+  MIRROR_BASE="${RESOLVED_MIRROR_BASE_URL%/}"
+fi
 
 HELPERS=(
   stage-dp-phase2.sh
@@ -45,7 +52,10 @@ deploy_one() {
       echo "REFUSE: BRINGUP_EXECUTED=YES assignment present" >&2
       exit 1
     fi
-    grep -q '221.139.249.111' "$src" || { echo "missing default mirror IP" >&2; exit 1; }
+    grep -Eq '^DEFAULT_MIRROR_URL=""$' "$src" || {
+      echo "REFUSE: stage helper must not carry a built-in mirror address" >&2
+      exit 1
+    }
     if grep -Eq -- 'chown[[:space:]]+aella:aella|install[[:space:]]+-o[[:space:]]+aella|[[:space:]]-g[[:space:]]+aella[[:space:]]+-m' "$src"; then
       echo "REFUSE: literal aella group ownership present" >&2
       exit 1

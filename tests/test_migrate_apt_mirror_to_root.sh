@@ -698,11 +698,11 @@ parse_fixture() {
 
 # 1) outbound HTTPS peer :443 is not inbound
 cat >"$SSFX/outbound_https.txt" <<'EOF'
-0 0 221.139.249.111:51234 32.194.135.169:443
+0 0 192.0.2.10:51234 32.194.135.169:443
 EOF
 out="$(parse_fixture "$SSFX/outbound_https.txt")" || true
 if printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=0' \
-  && printf '%s\n' "$out" | grep -q 'OUTBOUND_HTTPS_LOCAL=221.139.249.111:51234 REMOTE=32.194.135.169:443' \
+  && printf '%s\n' "$out" | grep -q 'OUTBOUND_HTTPS_LOCAL=192.0.2.10:51234 REMOTE=32.194.135.169:443' \
   && ! printf '%s\n' "$out" | grep -q 'INBOUND_HTTP_LOCAL='; then
   pass "http-guard outbound HTTPS not counted as inbound"
 else
@@ -711,21 +711,21 @@ fi
 
 # 2) inbound HTTP :80
 cat >"$SSFX/inbound_80.txt" <<'EOF'
-0 0 221.139.249.111:80 192.168.1.10:53000
+0 0 192.0.2.10:80 192.168.1.10:53000
 EOF
 out="$(parse_fixture "$SSFX/inbound_80.txt")" || true
 printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=1' \
-  && printf '%s\n' "$out" | grep -q 'INBOUND_HTTP_LOCAL=221.139.249.111:80 REMOTE=192.168.1.10:53000' \
+  && printf '%s\n' "$out" | grep -q 'INBOUND_HTTP_LOCAL=192.0.2.10:80 REMOTE=192.168.1.10:53000' \
   && pass "http-guard inbound HTTP :80 counted" \
   || fail "http-guard inbound :80 ($out)"
 
 # 3) inbound HTTPS :443
 cat >"$SSFX/inbound_443.txt" <<'EOF'
-0 0 221.139.249.111:443 192.168.1.10:53001
+0 0 192.0.2.10:443 192.168.1.10:53001
 EOF
 out="$(parse_fixture "$SSFX/inbound_443.txt")" || true
 printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=1' \
-  && printf '%s\n' "$out" | grep -q 'INBOUND_HTTP_LOCAL=221.139.249.111:443 REMOTE=192.168.1.10:53001' \
+  && printf '%s\n' "$out" | grep -q 'INBOUND_HTTP_LOCAL=192.0.2.10:443 REMOTE=192.168.1.10:53001' \
   && pass "http-guard inbound HTTPS :443 counted" \
   || fail "http-guard inbound :443 ($out)"
 
@@ -759,8 +759,8 @@ printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=0' \
 
 # 7) several outbound remote 443 → inbound 0
 cat >"$SSFX/many_outbound.txt" <<'EOF'
-0 0 221.139.249.111:51234 32.194.135.169:443
-0 0 221.139.249.111:51235 1.2.3.4:443
+0 0 192.0.2.10:51234 32.194.135.169:443
+0 0 192.0.2.10:51235 1.2.3.4:443
 0 0 10.0.0.2:40000 8.8.8.8:443
 EOF
 out="$(parse_fixture "$SSFX/many_outbound.txt")" || true
@@ -771,11 +771,11 @@ printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=0' \
 
 # 8) mixed inbound + outbound → count inbound only
 cat >"$SSFX/mixed.txt" <<'EOF'
-0 0 221.139.249.111:51234 32.194.135.169:443
-0 0 221.139.249.111:80 192.168.1.10:53000
+0 0 192.0.2.10:51234 32.194.135.169:443
+0 0 192.0.2.10:80 192.168.1.10:53000
 0 0 0.0.0.0:443 192.168.1.11:53002
 0 0 *:80 192.168.1.12:53003
-0 0 221.139.249.111:52000 9.9.9.9:443
+0 0 192.0.2.10:52000 9.9.9.9:443
 EOF
 out="$(parse_fixture "$SSFX/mixed.txt")" || true
 if printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=3' \
@@ -877,13 +877,13 @@ fi
 
 # 14) logs must not confuse peer port with local port
 cat >"$SSFX/peer_vs_local.txt" <<'EOF'
-0 0 221.139.249.111:51234 32.194.135.169:443
-0 0 221.139.249.111:80 192.168.1.10:53000
+0 0 192.0.2.10:51234 32.194.135.169:443
+0 0 192.0.2.10:80 192.168.1.10:53000
 EOF
 out="$(parse_fixture "$SSFX/peer_vs_local.txt")" || true
 if printf '%s\n' "$out" | grep -qx 'INBOUND_HTTP_CONNECTIONS=1' \
-  && printf '%s\n' "$out" | grep -q 'INBOUND_HTTP_LOCAL=221.139.249.111:80 REMOTE=192.168.1.10:53000' \
-  && printf '%s\n' "$out" | grep -q 'OUTBOUND_HTTPS_LOCAL=221.139.249.111:51234 REMOTE=32.194.135.169:443' \
+  && printf '%s\n' "$out" | grep -q 'INBOUND_HTTP_LOCAL=192.0.2.10:80 REMOTE=192.168.1.10:53000' \
+  && printf '%s\n' "$out" | grep -q 'OUTBOUND_HTTPS_LOCAL=192.0.2.10:51234 REMOTE=32.194.135.169:443' \
   && ! printf '%s\n' "$out" | grep -q 'INBOUND_HTTP_LOCAL=.*:51234' \
   && ! printf '%s\n' "$out" | grep -q 'INBOUND_HTTP_LOCAL=32.194.135.169:443'; then
   pass "http-guard local vs peer ports not confused in output"

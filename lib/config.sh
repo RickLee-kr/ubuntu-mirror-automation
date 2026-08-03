@@ -123,9 +123,9 @@ um_load_config() {
   um_apply_mirror_mode_components
 
   if [[ -z "${MIRROR_IP}" ]]; then
-    MIRROR_IP="$(um_detect_primary_ip)"
+    MIRROR_IP="$(um_detect_primary_ip || true)"
   fi
-  if [[ -z "${MIRROR_URL}" ]]; then
+  if [[ -z "${MIRROR_URL}" && -n "${MIRROR_IP}" ]]; then
     if [[ "${MIRROR_PORT}" == "80" ]]; then
       MIRROR_URL="http://${MIRROR_IP}"
     else

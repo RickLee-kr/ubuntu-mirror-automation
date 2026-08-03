@@ -247,7 +247,10 @@ MOCK
   chmod +x "$mock/curl"
 
   set +e
+  # Fixture mirror base (RFC 5737): HTTP Date fallback must use the client pin,
+  # never a hardcoded environment address.
   PATH="$mock:$PATH" GETENT_BIN=getent CURL_BIN=curl NTPQ_BIN=ntpq NTPWAIT_BIN=ntpwait TIMEDATECTL_BIN=timedatectl \
+    PIN_MIRROR_BASE="http://192.0.2.10" \
     check_time_readiness >"$td/out" 2>&1
   rc=$?
   set -e

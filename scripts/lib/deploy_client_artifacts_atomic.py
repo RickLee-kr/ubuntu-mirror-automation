@@ -17,8 +17,6 @@ import tempfile
 import time
 
 
-EXPECTED_CLIENT_SIGNER = "C786FE9887290E2CF759271DFDD38BE958EABD4A"
-
 HOP_FILES = (
     "client-manifest.json",
     "client-manifest.json.asc",
@@ -127,7 +125,7 @@ def deploy(args: argparse.Namespace) -> int:
     pub_key = os.path.abspath(args.pub_key)
     script_name = args.script_name
     hop_name = args.hop_name
-    allowed_fpr = (args.allowed_fingerprint or EXPECTED_CLIENT_SIGNER).upper()
+    allowed_fpr = (args.allowed_fingerprint or os.environ.get("ALLOWED_FINGERPRINT", "")).upper()
 
     for path, label in (
         (artifact, "artifact"),
@@ -244,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dest-root", required=True)
     p.add_argument("--pub-key", required=True)
     p.add_argument("--expected-sha", default="")
-    p.add_argument("--allowed-fingerprint", default=EXPECTED_CLIENT_SIGNER)
+    p.add_argument("--allowed-fingerprint", default="")
     args = p.parse_args(argv)
     try:
         return deploy(args)

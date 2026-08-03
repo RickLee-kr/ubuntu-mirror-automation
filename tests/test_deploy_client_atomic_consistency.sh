@@ -1,146 +1,133 @@
 #!/usr/bin/env bash
-# Verify atomic client deploy publishes one unified generation
-# (top-level + per-hop script/manifest/signature) without resigning.
+# Verify atomic publication of a host-pinned signed client generation.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEPLOY_X2B="${ROOT}/scripts/deploy-client-xenial-to-bionic-atomic.sh"
 DEPLOY_PY="${ROOT}/scripts/lib/deploy_client_artifacts_atomic.py"
-PUB_KEY="${ROOT}/config/client-signing/offline-client-manifest.gpg"
-APPROVED_X2B="a41038fb816c1b6cdec439188d851c50f54d7eb191e7e007752399ba73ae0213"
-
+NAME="dp-offline-upgrade-xenial-to-bionic.sh"
+HOST_A="http://192.0.2.10"
 FAIL=0
 pass() { echo "  PASS: $*"; }
 fail() { echo "  FAIL: $*"; FAIL=1; }
 
-echo "=== test_deploy_client_atomic_consistency ==="
-BEFORE_STATUS="$(git -C "$ROOT" status --short)"
-
-[[ -f "$DEPLOY_X2B" && -f "$DEPLOY_PY" && -f "$PUB_KEY" ]] || {
-  echo "missing deploy tooling" >&2
-  exit 1
-}
-
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
-DEST="${WORKDIR}/client"
-mkdir -p "$DEST/other-hop-should-remain"
+SRC="${WORKDIR}/source"
+HOP="${SRC}/xenial-to-bionic"
+DEST="${WORKDIR}/dest/client"
+GPG_HOME="${WORKDIR}/gnupg"
+mkdir -p "$HOP" "$DEST/other-hop-should-remain" "$GPG_HOME"
+chmod 700 "$GPG_HOME"
 printf 'keep\n' >"$DEST/other-hop-should-remain/marker"
-# Seed stale mixed generation under xenial hop + top-level.
-mkdir -p "$DEST/xenial-to-bionic"
-printf 'stale-top\n' >"$DEST/dp-offline-upgrade-xenial-to-bionic.sh"
-printf 'deadbeef  dp-offline-upgrade-xenial-to-bionic.sh\n' >"$DEST/dp-offline-upgrade-xenial-to-bionic.sh.sha256"
-printf 'stale-hop\n' >"$DEST/xenial-to-bionic/dp-offline-upgrade-xenial-to-bionic.sh"
-printf '{}\n' >"$DEST/xenial-to-bionic/client-manifest.json"
-printf 'bad\n' >"$DEST/xenial-to-bionic/client-manifest.json.asc"
 
-# 1) helper refuses non-.../client dest
-set +e
-python3 "$DEPLOY_PY" \
-  --artifact "${ROOT}/artifacts/client/dp-offline-upgrade-xenial-to-bionic.sh" \
-  --sidecar "${ROOT}/artifacts/client/dp-offline-upgrade-xenial-to-bionic.sh.sha256" \
-  --hop-dir "${ROOT}/artifacts/client/xenial-to-bionic" \
-  --hop-name xenial-to-bionic \
-  --script-name dp-offline-upgrade-xenial-to-bionic.sh \
-  --dest-root "${WORKDIR}/not-client-root" \
-  --pub-key "$PUB_KEY" \
-  --expected-sha "$APPROVED_X2B" >"${WORKDIR}/refuse-root.log" 2>&1
-rc=$?
-set -e
-if [[ "$rc" -ne 0 ]] && grep -qi 'refusing dest-root' "${WORKDIR}/refuse-root.log"; then
-  pass "helper refuses non-client dest-root"
-else
-  fail "helper should refuse non-client dest-root (rc=${rc})"
-fi
+cat >"${WORKDIR}/gpg.batch" <<'EOF'
+Key-Type: RSA
+Key-Length: 2048
+Name-Real: Atomic Deploy Fixture
+Name-Email: atomic-deploy@example.invalid
+Expire-Date: 0
+%no-protection
+%commit
+EOF
+gpg --homedir "$GPG_HOME" --batch --gen-key "${WORKDIR}/gpg.batch" >/dev/null 2>&1
+FPR="$(gpg --homedir "$GPG_HOME" --batch --with-colons --fingerprint |
+  awk -F: '$1=="fpr"{print $10; exit}')"
+PUB_KEY="${WORKDIR}/public.gpg"
+gpg --homedir "$GPG_HOME" --batch --export >"$PUB_KEY"
 
-# 2) helper refuses top/hop SHA mismatch
+cat >"${HOP}/client-manifest.json" <<EOF
+{"schema_version":1,"hop":"xenial-to-bionic","mirror_base":"${HOST_A}","sample_deb_url":"${HOST_A}/hops/xenial-to-bionic/sample.deb"}
+EOF
+gpg --homedir "$GPG_HOME" --batch --yes --armor --detach-sign \
+  -o "${HOP}/client-manifest.json.asc" "${HOP}/client-manifest.json"
+MAN_SHA="$(sha256sum "${HOP}/client-manifest.json" | awk '{print $1}')"
+python3 - "${SRC}/${NAME}" "$MAN_SHA" "$HOST_A" <<'PY'
+import base64, json, sys
+path, manifest_sha, host = sys.argv[1:4]
+meta = (
+    "Release-File: {0}/hops/xenial-to-bionic/ubuntu/dists/bionic/Release\n"
+    "UpgradeTool: {0}/offline/release-upgraders/bionic/bionic.tar.gz\n"
+).format(host)
+manifest = json.dumps({"schema_version": 1, "mirror_base": host})
+enc = lambda value: base64.b64encode(value.encode()).decode()
+open(path, "w", encoding="utf-8").write(
+    "#!/usr/bin/env bash\n"
+    "PIN_MIRROR_BASE='{0}'\n"
+    "PIN_SAMPLE_DEB_URL='{0}/hops/xenial-to-bionic/sample.deb'\n"
+    "PIN_MANIFEST_SHA256='{1}'\n"
+    "PIN_META_B64='{2}'\n"
+    "PIN_MANIFEST_B64='{3}'\n".format(host, manifest_sha, enc(meta), enc(manifest))
+)
+PY
+chmod 755 "${SRC}/${NAME}"
+cp "${SRC}/${NAME}" "${HOP}/${NAME}"
+for file in meta-release-lts ReleaseAnnouncement ReleaseAnnouncement.html; do
+  printf 'fixture\n' >"${HOP}/${file}"
+done
+cp "$PUB_KEY" "${HOP}/stellar-offline-manifest.gpg"
+cp "$PUB_KEY" "${HOP}/stellar-offline-upgrade.gpg"
+ART_SHA="$(sha256sum "${SRC}/${NAME}" | awk '{print $1}')"
+printf '%s  %s\n' "$ART_SHA" "$NAME" >"${SRC}/${NAME}.sha256"
+
+deploy() {
+  local artifact="${1:-${SRC}/${NAME}}" hop="${2:-$HOP}" dest="${3:-$DEST}"
+  python3 "$DEPLOY_PY" \
+    --artifact "$artifact" --sidecar "${SRC}/${NAME}.sha256" \
+    --hop-dir "$hop" --hop-name xenial-to-bionic --script-name "$NAME" \
+    --dest-root "$dest" --pub-key "$PUB_KEY" --expected-sha "$ART_SHA" \
+    --allowed-fingerprint "$FPR"
+}
+
+out="$(deploy "${SRC}/${NAME}" "$HOP" "${WORKDIR}/not-client-root" 2>&1)" && rc=0 || rc=$?
+[[ "$rc" -ne 0 && "$out" == *"refusing dest-root"* ]] \
+  && pass "helper refuses non-client dest-root" || fail "non-client root accepted"
+
 BAD_HOP="${WORKDIR}/bad-hop"
-mkdir -p "$BAD_HOP"
-cp -a "${ROOT}/artifacts/client/xenial-to-bionic/." "$BAD_HOP/"
-printf 'tampered\n' >"$BAD_HOP/dp-offline-upgrade-xenial-to-bionic.sh"
-set +e
-python3 "$DEPLOY_PY" \
-  --artifact "${ROOT}/artifacts/client/dp-offline-upgrade-xenial-to-bionic.sh" \
-  --sidecar "${ROOT}/artifacts/client/dp-offline-upgrade-xenial-to-bionic.sh.sha256" \
-  --hop-dir "$BAD_HOP" \
-  --hop-name xenial-to-bionic \
-  --script-name dp-offline-upgrade-xenial-to-bionic.sh \
-  --dest-root "$DEST" \
-  --pub-key "$PUB_KEY" \
-  --expected-sha "$APPROVED_X2B" >"${WORKDIR}/mismatch.log" 2>&1
-rc=$?
-set -e
-if [[ "$rc" -ne 0 ]] && grep -qi 'top-level/per-hop script SHA mismatch' "${WORKDIR}/mismatch.log"; then
-  pass "helper refuses top/hop SHA mismatch"
+cp -a "$HOP" "$BAD_HOP"
+printf 'tampered\n' >"${BAD_HOP}/${NAME}"
+out="$(deploy "${SRC}/${NAME}" "$BAD_HOP" 2>&1)" && rc=0 || rc=$?
+[[ "$rc" -ne 0 && "$out" == *"top-level/per-hop script SHA mismatch"* ]] \
+  && pass "helper refuses top/hop SHA mismatch" || fail "top/hop mismatch accepted"
+
+printf 'stale\n' >"${DEST}/${NAME}"
+out="$(deploy 2>&1)" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$out" == *"DEPLOY_OK"* && "$out" == *"GENERATION_UNIFIED=YES"* ]]; then
+  pass "host-pinned generation deployed atomically"
 else
-  fail "helper should refuse top/hop mismatch (rc=${rc})"
+  fail "atomic deploy failed: ${out}"
 fi
 
-# 3) full atomic deploy into temp client root (no HTTP, no production write)
-set +e
-DEST_ROOT="$DEST" SKIP_HTTP_VERIFY=1 bash "$DEPLOY_X2B" >"${WORKDIR}/deploy.log" 2>&1
-rc=$?
-set -e
-if [[ "$rc" -eq 0 ]] \
-  && grep -q 'DEPLOY_OK' "${WORKDIR}/deploy.log" \
-  && grep -q 'GENERATION_UNIFIED=YES' "${WORKDIR}/deploy.log" \
-  && grep -q 'HOP_MANIFEST_SIGNATURE_VERIFY=PASS' "${WORKDIR}/deploy.log"; then
-  pass "xenial atomic deploy into temp DEST_ROOT"
+TOP_SHA="$(sha256sum "${DEST}/${NAME}" | awk '{print $1}')"
+HOP_SHA="$(sha256sum "${DEST}/xenial-to-bionic/${NAME}" | awk '{print $1}')"
+SIDE_SHA="$(awk '{print $1}' "${DEST}/${NAME}.sha256")"
+[[ "$TOP_SHA" == "$ART_SHA" && "$HOP_SHA" == "$ART_SHA" && "$SIDE_SHA" == "$ART_SHA" ]] \
+  && pass "top/hop/sidecar generation unified" || fail "published generation differs"
+[[ "$(stat -c '%a' "${DEST}/${NAME}")" == 755 ]] || fail "script mode is not 0755"
+[[ "$(stat -c '%a' "${DEST}/${NAME}.sha256")" == 644 ]] || fail "sidecar mode is not 0644"
+[[ -f "$DEST/other-hop-should-remain/marker" ]] || fail "unrelated hop removed"
+compgen -G "${DEST}/${NAME}.bak-*" >/dev/null \
+  && pass "existing artifact backed up" || fail "artifact backup missing"
+if compgen -G "${DEST}/**/*.tmp.*" >/dev/null; then
+  fail "temporary publication files remain"
 else
-  fail "xenial atomic deploy failed (rc=${rc})"
-  tail -40 "${WORKDIR}/deploy.log" || true
+  pass "no temporary publication files remain"
 fi
 
-TOP_SHA="$(sha256sum "$DEST/dp-offline-upgrade-xenial-to-bionic.sh" | awk '{print $1}')"
-HOP_SHA="$(sha256sum "$DEST/xenial-to-bionic/dp-offline-upgrade-xenial-to-bionic.sh" | awk '{print $1}')"
-SIDE_SHA="$(awk '{print $1}' "$DEST/dp-offline-upgrade-xenial-to-bionic.sh.sha256")"
-MAN_SHA="$(sha256sum "$DEST/xenial-to-bionic/client-manifest.json" | awk '{print $1}')"
-REPO_MAN_SHA="$(sha256sum "${ROOT}/artifacts/client/xenial-to-bionic/client-manifest.json" | awk '{print $1}')"
+# Wrong signer fingerprint blocks publish
+out="$(python3 "$DEPLOY_PY" \
+  --artifact "${SRC}/${NAME}" --sidecar "${SRC}/${NAME}.sha256" \
+  --hop-dir "$HOP" --hop-name xenial-to-bionic --script-name "$NAME" \
+  --dest-root "${WORKDIR}/dest2/client" --pub-key "$PUB_KEY" \
+  --allowed-fingerprint "0000000000000000000000000000000000000000" 2>&1)" && rc=0 || rc=$?
+[[ "$rc" -ne 0 ]] && pass "wrong fingerprint blocks publish" || fail "wrong fingerprint accepted"
 
-[[ "$TOP_SHA" == "$APPROVED_X2B" ]] && pass "top-level SHA approved" || fail "top-level SHA $TOP_SHA"
-[[ "$HOP_SHA" == "$APPROVED_X2B" ]] && pass "per-hop SHA approved" || fail "per-hop SHA $HOP_SHA"
-[[ "$SIDE_SHA" == "$APPROVED_X2B" ]] && pass "sidecar declares approved SHA" || fail "sidecar $SIDE_SHA"
-[[ "$TOP_SHA" == "$HOP_SHA" && "$TOP_SHA" == "$SIDE_SHA" ]] && pass "top/hop/sidecar unified" || fail "generation not unified"
-[[ "$MAN_SHA" == "$REPO_MAN_SHA" ]] && pass "manifest copied from approved repo" || fail "manifest mismatch"
-[[ -f "$DEST/xenial-to-bionic/client-manifest.json.asc" ]] && pass "detached signature published" || fail "signature missing"
-[[ -f "$DEST/other-hop-should-remain/marker" ]] && pass "unrelated hop files preserved" || fail "unrelated hop deleted"
+grep -q 'C786FE98' "$DEPLOY_X2B" \
+  && fail "wrapper still hardcodes central fingerprint" \
+  || pass "wrapper has no central fingerprint hardcode"
+bash -n "$DEPLOY_X2B" || fail "deploy wrapper syntax"
+python3 -m py_compile "$DEPLOY_PY" || fail "deploy helper syntax"
 
-# modes
-TOP_MODE="$(stat -c '%a' "$DEST/dp-offline-upgrade-xenial-to-bionic.sh")"
-SIDE_MODE="$(stat -c '%a' "$DEST/dp-offline-upgrade-xenial-to-bionic.sh.sha256")"
-[[ "$TOP_MODE" == "755" ]] && pass "script mode 0755" || fail "script mode $TOP_MODE"
-[[ "$SIDE_MODE" == "644" ]] && pass "sidecar mode 0644" || fail "sidecar mode $SIDE_MODE"
-
-# no temp leftovers
-if find "$DEST" -name '*.tmp.*' | grep -q .; then
-  fail "temp leftovers present"
-else
-  pass "no temp leftovers"
-fi
-
-# backups created for prior stale files
-if compgen -G "$DEST/dp-offline-upgrade-xenial-to-bionic.sh.bak-*" >/dev/null; then
-  pass "top-level backup created"
-else
-  fail "top-level backup missing"
-fi
-
-AFTER_STATUS="$(git -C "$ROOT" status --short)"
-if [[ "$BEFORE_STATUS" == "$AFTER_STATUS" ]]; then
-  pass "worktree unchanged by consistency test"
-else
-  fail "worktree changed unexpectedly"
-  echo "BEFORE:$BEFORE_STATUS"
-  echo "AFTER:$AFTER_STATUS"
-fi
-
-# syntax
-bash -n "$DEPLOY_X2B" && pass "bash -n deploy xenial" || fail "bash -n deploy xenial"
-python3 -m py_compile "$DEPLOY_PY" && pass "py_compile deploy helper" || fail "py_compile deploy helper"
-
-if [[ "$FAIL" -eq 0 ]]; then
-  echo "ALL test_deploy_client_atomic_consistency CHECKS PASSED"
-  exit 0
-fi
+[[ "$FAIL" -eq 0 ]] && echo "ALL test_deploy_client_atomic_consistency CHECKS PASSED" && exit 0
 echo "SOME test_deploy_client_atomic_consistency CHECKS FAILED"
 exit 1

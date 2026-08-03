@@ -30,8 +30,22 @@ else
   pass "no ACPS download source"
 fi
 
-echo "[test] default mirror IP"
-grep -q 'DEFAULT_MIRROR_URL="http://221.139.249.111"' "$HELPER" && pass "default mirror IP" || fail "default mirror IP"
+echo "[test] no built-in mirror address; --mirror-url required"
+grep -q '^DEFAULT_MIRROR_URL=""$' "$HELPER" && pass "no default mirror URL" || fail "no default mirror URL"
+if grep -qE '^DEFAULT_MIRROR_URL="https?://[0-9]' "$HELPER"; then
+  fail "hardcoded default mirror address present"
+else
+  pass "no hardcoded default mirror address"
+fi
+set +e
+out="$(bash "$HELPER" --target-version 6.5.0 2>&1)"
+rc=$?
+set -e
+if [[ "$rc" -ne 0 ]] && echo "$out" | grep -q -- '--mirror-url is required'; then
+  pass "missing --mirror-url fails closed"
+else
+  fail "missing --mirror-url should fail: rc=${rc} ${out}"
+fi
 
 echo "[test] bringup never auto-executed"
 grep -Eq 'BRINGUP_EXECUTED=("NO"|NO)|BRINGUP_EXECUTED=\$\{BRINGUP_EXECUTED\}' "$HELPER" \

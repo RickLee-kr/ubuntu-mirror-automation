@@ -13,7 +13,9 @@ SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 readonly MIN_SUPPORTED_SOURCE_DP_VERSION="6.2.0"
-DEFAULT_MIRROR_URL="http://221.139.249.111"
+# No built-in mirror address: the address is site-specific and a stale default
+# silently points the DP at the wrong (or no) mirror. --mirror-url is required.
+DEFAULT_MIRROR_URL=""
 MIRROR_URL="$DEFAULT_MIRROR_URL"
 ARTIFACT_DIR="/opt/aelladata/aelladeb_py3"
 BRINGUP_DIR="/home/aella"
@@ -69,10 +71,10 @@ Does NOT execute bringup_py3_dp_after_os_upgrade.sh.
 
 Required:
   --target-version VER     Phase 2 artifact / bundle target version
+  --mirror-url URL         Internal mirror base (e.g. http://192.0.2.10)
 
 Options:
   --source-dp-version VER  Explicit source DP product version (operator override)
-  --mirror-url URL         Internal mirror base (default: ${DEFAULT_MIRROR_URL})
   --same-version-recovery  Allow source==target when COMPLETED_NOBLE recovery applies
   --keep-cache             Keep verified bundle cache after successful staging
   -h, --help               Show this help
@@ -220,6 +222,7 @@ parse_args() {
     esac
   done
   MIRROR_URL="${MIRROR_URL%/}"
+  [[ -n "$MIRROR_URL" ]] || die "--mirror-url is required (internal mirror base, e.g. http://192.0.2.10)"
   if [[ "$MIRROR_URL" == *acps.stellarcyber.ai* ]] || [[ "$MIRROR_URL" == *stellarcyber.ai* ]]; then
     die "Refusing ACPS/external stellarcyber URL; use internal mirror only"
   fi

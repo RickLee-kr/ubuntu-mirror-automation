@@ -43,9 +43,6 @@ CLIENT_SIGNING_PRIV_REL = os.path.join(
 CLIENT_SIGNING_PUB_REL = os.path.join(
     "config", "client-signing", "offline-client-manifest.gpg"
 )
-PRODUCTION_MANIFEST_SIGNER_FINGERPRINT = (
-    "C786FE9887290E2CF759271DFDD38BE958EABD4A"
-)
 REPOSITORY_SIGNER_FINGERPRINT = (
     "D1FF722556ED95F5E779BAE66B1BA1673A997CA5"
 )
@@ -253,6 +250,21 @@ def build_meta_release_lts(mirror_base, hop, announcement_name="ReleaseAnnouncem
         raise BuildError("generated meta-release still contains external hosts")
     return text
 
+
+def resolve_upgrader_tar(selective_root, codename):
+    """Prefer direct selective/shared layout; fall back to legacy current/shared."""
+    rel = os.path.join(
+        "shared", "offline", "release-upgraders", codename, codename + ".tar.gz"
+    )
+    direct = os.path.join(selective_root, rel)
+    legacy = os.path.join(selective_root, "current", rel)
+    if os.path.isfile(direct):
+        return direct
+    if os.path.isfile(legacy):
+        return legacy
+    return direct
+
+
 def extract_announcements(upgrader_tar_path, dest_dir):
     os.makedirs(dest_dir, exist_ok=True)
     names = ("ReleaseAnnouncement", "ReleaseAnnouncement.html")
@@ -334,33 +346,56 @@ def is_production_output_dir(project_root, output_dir):
     return out == prod or out.startswith(prod + os.sep)
 
 
-def client_signing_paths(project_root):
-    return (
-        os.path.join(project_root, CLIENT_SIGNING_PRIV_REL),
-        os.path.join(project_root, CLIENT_SIGNING_PUB_REL),
-    )
+def client_signing_paths(project_root, private_key=None, public_key=None):
+    """Resolve signing key paths for this build.
+
+    Precedence:
+      1. Explicit private_key/public_key arguments
+      2. CLIENT_SIGNING_PRIVATE_KEY / CLIENT_SIGNING_PUBLIC_KEY env
+      3. CLIENT_SIGNING_KEY_DIR/{private.gpg,public.gpg} (per-mirror install)
+      4. CLIENT_SIGNING_KEY_DIR/offline-client-manifest.{private.,}gpg
+      5. <project-root>/config/client-signing/offline-client-manifest.*
+    """
+    env_priv = os.environ.get("CLIENT_SIGNING_PRIVATE_KEY", "").strip()
+    env_pub = os.environ.get("CLIENT_SIGNING_PUBLIC_KEY", "").strip()
+    key_dir = os.environ.get("CLIENT_SIGNING_KEY_DIR", "").strip()
+    priv = private_key or env_priv
+    pub = public_key or env_pub
+    if not priv or not pub:
+        if key_dir:
+            cand_priv = os.path.join(key_dir, "private.gpg")
+            cand_pub = os.path.join(key_dir, "public.gpg")
+            legacy_priv = os.path.join(key_dir, "offline-client-manifest.private.gpg")
+            legacy_pub = os.path.join(key_dir, "offline-client-manifest.gpg")
+            if os.path.isfile(cand_priv) and os.path.isfile(cand_pub):
+                priv = priv or cand_priv
+                pub = pub or cand_pub
+            elif os.path.isfile(legacy_priv) and os.path.isfile(legacy_pub):
+                priv = priv or legacy_priv
+                pub = pub or legacy_pub
+    if not priv or not pub:
+        priv = os.path.join(project_root, CLIENT_SIGNING_PRIV_REL)
+        pub = os.path.join(project_root, CLIENT_SIGNING_PUB_REL)
+    return priv, pub
 
 
-def resolve_production_manifest_signing_key(project_root):
-    """Return (private_path, public_bytes, fingerprint) for production signing.
+def resolve_production_manifest_signing_key(project_root, private_key=None, public_key=None):
+    """Return (private_path, public_bytes, fingerprint) for manifest signing.
 
-    Uses only config/client-signing/offline-client-manifest.* — never auto-generates
+    Uses the local Mirror install keypair (or test override). Never auto-generates
     and never falls back to the selective repository private key.
     """
-    priv, pub = client_signing_paths(project_root)
+    priv, pub = client_signing_paths(project_root, private_key, public_key)
     if not os.path.isfile(priv) or not os.access(priv, os.R_OK):
         raise BuildError(
-            "production client manifest signing key missing or unreadable: {}".format(
-                priv
-            )
+            "client manifest signing key missing or unreadable: {}".format(priv)
         )
     if not os.path.isfile(pub) or not os.access(pub, os.R_OK):
         raise BuildError(
-            "production client manifest public key missing or unreadable: {}".format(pub)
+            "client manifest public key missing or unreadable: {}".format(pub)
         )
     pub_raw = open(pub, "rb").read()
     return priv, pub_raw, key_fingerprint(pub_raw)
-
 
 def ensure_manifest_signing_key(project_root, allow_generate=False):
     """Return (private_path, public_bytes) for client-manifest signing.
@@ -575,7 +610,12 @@ def bash_single_quote(s):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--project-root", required=True)
-    ap.add_argument("--mirror-base", required=True, help="e.g. http://221.139.249.111")
+    ap.add_argument("--mirror-base", required=True, help="local Mirror HTTP base, e.g. http://192.0.2.10")
+
+    ap.add_argument("--signing-private-key", default="",
+                    help="local Mirror private signing key (or CLIENT_SIGNING_PRIVATE_KEY)")
+    ap.add_argument("--signing-public-key", default="",
+                    help="local Mirror public signing key (or CLIENT_SIGNING_PUBLIC_KEY)")
     ap.add_argument(
         "--selective-root",
         default="/var/spool/apt-mirror/selective",
@@ -637,15 +677,7 @@ def main(argv=None):
 
     key_path = os.path.join(selective_root, "keys", "ubuntu-mirror-selective.gpg")
     ready_path = os.path.join(selective_root, "state", "READY")
-    upgrader_tar = os.path.join(
-        selective_root,
-        "current",
-        "shared",
-        "offline",
-        "release-upgraders",
-        "jammy",
-        "jammy.tar.gz",
-    )
+    upgrader_tar = resolve_upgrader_tar(selective_root, "jammy")
     upgrader_gpg = upgrader_tar + ".gpg"
 
     for path in (key_path, upgrader_tar, upgrader_gpg):
@@ -751,15 +783,17 @@ def main(argv=None):
     allowed_production_fpr = None
     if not args.skip_sign:
         sign_priv, manifest_pub_raw, manifest_key_fpr = (
-            resolve_production_manifest_signing_key(project_root)
+            resolve_production_manifest_signing_key(
+            project_root,
+            private_key=getattr(args, "signing_private_key", "") or None,
+            public_key=getattr(args, "signing_public_key", "") or None,
+        )
         )
         manifest_key_bin = dearmor_key(manifest_pub_raw)
         manifest_key_sha = sha256_bytes(manifest_key_bin)
         allowed_production_fpr = manifest_key_fpr
         print(
-            "manifest_signing_key=production-client-signing ({})".format(
-                os.path.join("config", "client-signing")
-            )
+            "manifest_signing_key=local-mirror-client-signing path={}".format(sign_priv)
         )
 
     manifest = OrderedDict(
@@ -912,15 +946,6 @@ def main(argv=None):
                 fingerprint, REPOSITORY_SIGNER_FINGERPRINT
             )
         )
-    if (
-        not args.skip_sign
-        and manifest_key_fpr.upper() != PRODUCTION_MANIFEST_SIGNER_FINGERPRINT
-    ):
-        raise BuildError(
-            "production manifest signer fingerprint mismatch: got {} want {}".format(
-                manifest_key_fpr, PRODUCTION_MANIFEST_SIGNER_FINGERPRINT
-            )
-        )
     script_name = "dp-offline-upgrade-focal-to-jammy.sh"
     script_path = os.path.join(out_dir, script_name)
     # also place under hop dir; production signed builds also refresh client/
@@ -931,14 +956,9 @@ def main(argv=None):
     os.chmod(script_path, 0o755)
     hop_script = os.path.join(hop_out, script_name)
     shutil.copy2(script_path, hop_script)
-    client_script = os.path.join(project_root, "client", script_name)
-    if not args.skip_sign and is_production_output_dir(project_root, out_dir):
-        # Refresh repo client/ only for production artifacts/client signed builds.
-        # Temp/test --output-dir builds must not mutate tracked client/*.sh.
-        shutil.copy2(script_path, client_script)
-        os.chmod(client_script, 0o755)
-    else:
-        client_script = ""
+    # Host-pinned clients are install-time artifacts. Never refresh tracked
+    # client/*.sh in the git checkout (templates *.in are the source of truth).
+    client_script = ""
 
     script_sha = sha256_file(script_path)
     sha_path = os.path.join(out_dir, script_name + ".sha256")

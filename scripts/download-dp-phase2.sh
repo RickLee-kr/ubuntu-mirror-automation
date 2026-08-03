@@ -431,7 +431,7 @@ cmd_status() {
     printf 'VERIFICATION_RESULT=%s\n' "${VERIFICATION_RESULT:-}"
   fi
   printf 'PUBLIC_PATH=%s\n' "${DP_PHASE2_PUBLIC_PATH:-/dp-phase2/${DP_PHASE2_VERSION}/}"
-  printf 'PUBLIC_URL=%s\n' "${MIRROR_URL:-http://221.139.249.111}${DP_PHASE2_PUBLIC_PATH:-/dp-phase2/${DP_PHASE2_VERSION}/}"
+  printf 'PUBLIC_URL=%s\n' "${MIRROR_URL:-}${DP_PHASE2_PUBLIC_PATH:-/dp-phase2/${DP_PHASE2_VERSION}/}"
   if [[ -d "$DP_PHASE2_ROOT" ]]; then
     printf 'DISK_USAGE=%s\n' "$(du -sh "$DP_PHASE2_ROOT" 2>/dev/null | awk '{print $1}')"
     printf 'FREE_GIB=%s\n' "$(( $(dp2_free_kib "$DP_PHASE2_ROOT") / 1024 / 1024 ))"

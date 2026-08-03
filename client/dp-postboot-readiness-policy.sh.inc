@@ -437,7 +437,8 @@ ntpq_clock_reference_from_text() {
 }
 
 http_date_clock_skew_seconds() {
-  local base_url="${1:-http://221.139.249.111}" headers date_value ref_epoch local_epoch delta
+  local base_url="${1:-}" headers date_value ref_epoch local_epoch delta
+  [[ -n "$base_url" ]] || return 1
   headers="$("$CURL_BIN" -fsSI --connect-timeout 5 --max-time 10 "$base_url" 2>/dev/null || true)"
   date_value="$(printf '%s\n' "$headers" | awk 'BEGIN{IGNORECASE=1} /^Date:[[:space:]]*/ {sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}')"
   [[ -n "$date_value" ]] || return 1
@@ -506,8 +507,15 @@ check_time_readiness() {
         ref_peer="${ref#*|}"
         postboot_policy_log INFO "TIME_REFERENCE=NTP_PEER peer=${ref_peer}"
       else
-        skew="$(http_date_clock_skew_seconds "${DP_TIME_REFERENCE_URL:-http://221.139.249.111}" || true)"
-        [[ -n "$skew" ]] && postboot_policy_log INFO "TIME_REFERENCE=HTTP_DATE url=${DP_TIME_REFERENCE_URL:-http://221.139.249.111}"
+        # The mirror this client was built for is the only trusted HTTP Date
+        # reference; skip the probe rather than guess an address.
+        local time_ref_url="${DP_TIME_REFERENCE_URL:-${PIN_MIRROR_BASE:-${MIRROR_BASE:-}}}"
+        if [[ -n "$time_ref_url" ]]; then
+          skew="$(http_date_clock_skew_seconds "$time_ref_url" || true)"
+          [[ -n "$skew" ]] && postboot_policy_log INFO "TIME_REFERENCE=HTTP_DATE url=${time_ref_url}"
+        else
+          postboot_policy_log WARN "TIME_REFERENCE=UNAVAILABLE no NTP peer and no mirror base for HTTP Date"
+        fi
       fi
       if [[ "$skew" =~ ^[0-9]+$ ]]; then
         CLOCK_SKEW_SECONDS="$skew"

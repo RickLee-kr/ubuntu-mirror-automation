@@ -23,6 +23,10 @@ MM_CACHE_ROOT="${MM_CACHE_ROOT:-${MM_MIRROR_ROOT}/.install-cache}"
 MM_VERIFY_HTTP_BASE="${MM_VERIFY_HTTP_BASE:-http://127.0.0.1}"
 MM_SKIP_ROOT_CHECK="${MM_SKIP_ROOT_CHECK:-0}"
 
+# Authoritative Mirror Host IPv4 resolution (single source of truth).
+# shellcheck source=mirror_host_ip.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mirror_host_ip.sh"
+
 # Fixed ACPS endpoint (not user-editable). Credentials come from GUI config only.
 ACPS_BASE_URL_FIXED="${ACPS_BASE_URL_FIXED:-https://acps.stellarcyber.ai/provision/aelladeb_py3}"
 
@@ -647,30 +651,28 @@ EOF
 
 # Public HTTP base clients use (no trailing slash). Never logs credentials.
 mm_client_mirror_url() {
-  local url ip def stage
+  local url host
   mm_load_gui_config
   url="${MIRROR_HTTP_URL:-}"
-  if [[ -z "$url" ]]; then
-    ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      url="http://${ip}"
-    fi
-  fi
-  if [[ -z "$url" ]]; then
-    stage="${MM_PROJECT_ROOT:-}/client/stage-dp-phase2.sh"
-    if [[ -f "$stage" ]]; then
-      def="$(awk -F= '/^DEFAULT_MIRROR_URL=/{gsub(/"/,"",$2); print $2; exit}' "$stage" || true)"
-      [[ -n "$def" ]] && url="$def"
-    fi
-  fi
   url="${url%/}"
-  if [[ -z "$url" ]]; then
-    return 1
+  if [[ -n "$url" ]] && [[ "$url" =~ ^https?://[A-Za-z0-9._:-]+(/.*)?$ ]]; then
+    host="$(mirror_host_extract_ipv4_from_url "$url" || true)"
+    if [[ -z "$host" ]]; then
+      # Operator-configured DNS name: nothing to validate against interfaces.
+      printf '%s\n' "$url"
+      return 0
+    fi
+    if mirror_host_validate_ipv4_on_host "$host"; then
+      printf '%s\n' "$url"
+      return 0
+    fi
+    mm_warn "MIRROR_HTTP_URL=${url} is not configured on this host; re-resolving"
   fi
-  if ! [[ "$url" =~ ^https?://[A-Za-z0-9._:-]+(/.*)?$ ]]; then
-    return 1
-  fi
-  printf '%s\n' "$url"
+  # Resolution record goes to stderr so callers can capture the URL on stdout.
+  mirror_host_resolve_and_log >&2 || return 1
+  [[ -n "${RESOLVED_MIRROR_BASE_URL:-}" ]] || return 1
+  MIRROR_HTTP_URL="$RESOLVED_MIRROR_BASE_URL"
+  printf '%s\n' "$RESOLVED_MIRROR_BASE_URL"
 }
 
 mm_validate_source_dp_version() {

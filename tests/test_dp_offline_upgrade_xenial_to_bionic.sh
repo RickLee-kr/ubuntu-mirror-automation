@@ -519,7 +519,7 @@ text = text.replace(
     _hp.read_text(encoding="utf-8").rstrip("\n") + "\n",
 )
 pins = {
-    "MIRROR_BASE": "http://127.0.0.1:9",
+    "MIRROR_BASE": "",
     "HOP": "xenial-to-bionic",
     "SOURCE_CODENAME": "xenial",
     "TARGET_CODENAME": "bionic",
@@ -538,7 +538,7 @@ pins = {
     "PLAN_CHECKSUM": "0" * 64,
     "DISCOVERY_CHECKSUM": "0" * 64,
     "MANIFEST_SHA256": "0" * 64,
-    "SAMPLE_DEB_URL": "http://127.0.0.1:9/sample.deb",
+    "SAMPLE_DEB_PATH": "/sample.deb",
     "CONFIRM_PHRASE": "UPGRADE-XENIAL-TO-BIONIC",
     "GENERATED_AT": "1970-01-01T00:00:00Z",
     "PROFILE_NAME": "offline-upgrade-selective",
@@ -562,7 +562,7 @@ run_preflight_fixture() {
   local root="$1"
   shift
   set +e
-  env DP_OFFLINE_TEST_ROOT="$root" "$@" bash "$STUB" --preflight-only >"$root/out.txt" 2>&1
+  env DP_OFFLINE_TEST_ROOT="$root" "$@" bash "$STUB" --mirror-base http://127.0.0.1:9 --preflight-only >"$root/out.txt" 2>&1
   local rc=$?
   set -e
   printf '%s' "$rc"
@@ -761,7 +761,7 @@ run_commit_fixture() {
   set +e
   env DP_OFFLINE_TEST_ROOT="$root" DP_OFFLINE_FAKE_CONFIRM=UPGRADE-XENIAL-TO-BIONIC \
     DP_OFFLINE_FAKE_MIRROR_TRUST=1 "$@" \
-    bash "$STUB" >"$root/out-commit.txt" 2>&1
+    bash "$STUB" --mirror-base http://127.0.0.1:9 >"$root/out-commit.txt" 2>&1
   local rc=$?
   set -e
   printf '%s' "$rc"
@@ -773,7 +773,7 @@ printf 'systemd\nudev\n' >"$fx2/tmp/held-packages.txt"
 cp -a "$fx2/tmp/held-packages.txt" "$fx2/tmp/held-packages.before"
 set +e
 DP_OFFLINE_TEST_ROOT="$fx2" DP_OFFLINE_FAKE_CONFIRM=nope \
-  bash "$STUB" >"$fx2/out-reject.txt" 2>&1
+  bash "$STUB" --mirror-base http://127.0.0.1:9 >"$fx2/out-reject.txt" 2>&1
 rc=$?
 set -e
 if [[ "$rc" -ne 0 ]] \
@@ -1710,7 +1710,7 @@ export PATH
 unset DP_OFFLINE_TEST_ROOT TEST_ROOT || true
 
 # 4) Build against live selective mirror when available
-MIRROR_BASE="${TEST_MIRROR_BASE:-http://221.139.249.111}"
+MIRROR_BASE="${TEST_MIRROR_BASE:-http://192.0.2.10}"
 SEL_ROOT="${TEST_SELECTIVE_ROOT:-/var/spool/apt-mirror/selective}"
 BUILT=""
 if [[ -f "${SEL_ROOT}/keys/ubuntu-mirror-selective.gpg" \
@@ -1731,6 +1731,13 @@ if [[ -f "${SEL_ROOT}/keys/ubuntu-mirror-selective.gpg" \
       pass "live build-client"
       BUILT="${OUT_DIR}/dp-offline-upgrade-xenial-to-bionic.sh"
       bash -n "$BUILT" && pass "built script bash -n" || fail "built script bash -n"
+      grep -q "^PIN_MIRROR_BASE='${MIRROR_BASE}'$" "$BUILT" \
+        && pass "built client pins local mirror base" || fail "built client mirror pin mismatch"
+      if grep -Fq "$MIRROR_BASE" "$BUILT"; then
+        pass "built client embeds local mirror base"
+      else
+        fail "built client missing local mirror base"
+      fi
       grep -q 'trusted.gpg.d/stellar-offline-xenial-to-bionic.gpg' "$BUILT" \
         || grep -q 'LEGACY_APT_KEYRING_PATH=' "$BUILT" \
         || fail "legacy apt keyring path missing"
@@ -1822,7 +1829,7 @@ EOF
   sed -i 's/16.04/20.04/;s/xenial/focal/' "$fake/etc/os-release"
   set +e
   DP_OFFLINE_TEST_ROOT="$fake" DP_OFFLINE_FAKE_DP_VERSION=6.2.0 DP_OFFLINE_FAKE_ROLE=AIO \
-    bash "$BUILT" --preflight-only >"$fake/out-wrongos.txt" 2>&1
+    bash "$BUILT" --mirror-base "$MIRROR_BASE" --preflight-only >"$fake/out-wrongos.txt" 2>&1
   rc=$?
   set -e
   [[ "$rc" -ne 0 ]] && pass "reject non-xenial OS" || fail "accepted non-xenial OS"
@@ -1836,7 +1843,7 @@ EOF
 
   # Unsupported DP version is NOT a Phase 1 hard gate (OS-only)
   set +e
-  DP_OFFLINE_TEST_ROOT="$fake" DP_OFFLINE_FAKE_DP_VERSION=5.0.0 DP_OFFLINE_FAKE_ROLE=AIO     DP_OFFLINE_FAKE_MIRROR_TRUST=1     bash "$BUILT" --preflight-only >"$fake/out-dp.txt" 2>&1
+  DP_OFFLINE_TEST_ROOT="$fake" DP_OFFLINE_FAKE_DP_VERSION=5.0.0 DP_OFFLINE_FAKE_ROLE=AIO     DP_OFFLINE_FAKE_MIRROR_TRUST=1     bash "$BUILT" --mirror-base "$MIRROR_BASE" --preflight-only >"$fake/out-dp.txt" 2>&1
   rc=$?
   set -e
   if grep -q 'DP_VERSION_GATE=SKIPPED_PHASE1_OS_ONLY' "$fake/out-dp.txt"      && ! grep -q 'FAIL_UNSUPPORTED_DP_VERSION' "$fake/out-dp.txt"; then
@@ -1848,7 +1855,7 @@ EOF
 
   # Unknown topology is SKIPPED, not FAIL
   set +e
-  DP_OFFLINE_TEST_ROOT="$fake" DP_OFFLINE_FAKE_DP_VERSION=6.2.0 DP_OFFLINE_FAKE_ROLE=UNKNOWN     DP_OFFLINE_FAKE_MIRROR_TRUST=1     bash "$BUILT" --preflight-only >"$fake/out-cluster.txt" 2>&1
+  DP_OFFLINE_TEST_ROOT="$fake" DP_OFFLINE_FAKE_DP_VERSION=6.2.0 DP_OFFLINE_FAKE_ROLE=UNKNOWN     DP_OFFLINE_FAKE_MIRROR_TRUST=1     bash "$BUILT" --mirror-base "$MIRROR_BASE" --preflight-only >"$fake/out-cluster.txt" 2>&1
   rc=$?
   set -e
   if ! grep -q 'FAIL_DP_TOPOLOGY_UNDETERMINED' "$fake/out-cluster.txt"      && grep -q 'DP_TOPOLOGY_GATE=SKIPPED_PHASE1_OS_ONLY' "$fake/out-cluster.txt"; then
@@ -1860,7 +1867,7 @@ EOF
 
   # Worker topology is SKIPPED, not FAIL
   set +e
-  DP_OFFLINE_TEST_ROOT="$fake" DP_OFFLINE_FAKE_DP_VERSION=6.2.0 DP_OFFLINE_FAKE_ROLE=WORKER     DP_OFFLINE_FAKE_MIRROR_TRUST=1     bash "$BUILT" --preflight-only >"$fake/out-worker.txt" 2>&1
+  DP_OFFLINE_TEST_ROOT="$fake" DP_OFFLINE_FAKE_DP_VERSION=6.2.0 DP_OFFLINE_FAKE_ROLE=WORKER     DP_OFFLINE_FAKE_MIRROR_TRUST=1     bash "$BUILT" --mirror-base "$MIRROR_BASE" --preflight-only >"$fake/out-worker.txt" 2>&1
   rc=$?
   set -e
   if ! grep -q 'FAIL_UNSUPPORTED_DP_TOPOLOGY' "$fake/out-worker.txt"      && grep -q 'DP_TOPOLOGY_GATE=SKIPPED_PHASE1_OS_ONLY' "$fake/out-worker.txt"; then
@@ -1875,7 +1882,7 @@ EOF
   set +e
   # Mirror checks will run against live network; allow if mirror up
   DP_OFFLINE_TEST_ROOT="$fake" DP_OFFLINE_FAKE_DP_VERSION=6.2.0 DP_OFFLINE_FAKE_ROLE=AIO \
-    bash "$BUILT" --preflight-only >"$fake/out-preflight.txt" 2>&1
+    bash "$BUILT" --mirror-base "$MIRROR_BASE" --preflight-only >"$fake/out-preflight.txt" 2>&1
   rc=$?
   set -e
   if cmp -s "$fake/sources.before" "$fake/etc/apt/sources.list"; then
@@ -1893,7 +1900,7 @@ EOF
   set +e
   DP_OFFLINE_TEST_ROOT="$fake" DP_OFFLINE_FAKE_DP_VERSION=6.2.0 DP_OFFLINE_FAKE_ROLE=AIO \
     DP_OFFLINE_FAKE_CONFIRM=nope \
-    bash "$BUILT" >"$fake/out-badconfirm.txt" 2>&1
+    bash "$BUILT" --mirror-base "$MIRROR_BASE" >"$fake/out-badconfirm.txt" 2>&1
   rc=$?
   set -e
   [[ "$rc" -ne 0 ]] && pass "bad confirmation rejected" || fail "bad confirmation accepted"
@@ -1909,7 +1916,7 @@ EOF
   set +e
   DP_OFFLINE_TEST_ROOT="$fake" DP_OFFLINE_FAKE_DP_VERSION=6.2.0 DP_OFFLINE_FAKE_ROLE=AIO \
     DP_OFFLINE_FAKE_CONFIRM=UPGRADE-XENIAL-TO-BIONIC \
-    bash "$BUILT" >"$fake/out-commit.txt" 2>&1
+    bash "$BUILT" --mirror-base "$MIRROR_BASE" >"$fake/out-commit.txt" 2>&1
   rc=$?
   set -e
   if [[ "$rc" -eq 0 ]]; then
@@ -1975,7 +1982,7 @@ EOF
     set +e
     DP_OFFLINE_TEST_ROOT="$fake" DP_OFFLINE_FAKE_DP_VERSION=6.2.0 DP_OFFLINE_FAKE_ROLE=AIO \
       DP_OFFLINE_FAKE_MIRROR_TRUST=1 DP_OFFLINE_FAKE_CONFIRM=nope \
-      bash "$BUILT" >"$fake/out-resume-reject.txt" 2>&1
+      bash "$BUILT" --mirror-base "$MIRROR_BASE" >"$fake/out-resume-reject.txt" 2>&1
     rc=$?
     set -e
     if [[ "$rc" -ne 0 ]] && grep -qE 'confirmation rejected|Confirmation|RESUME_SAFETY_VALIDATION=PASS|READY_FOR_RESUME' "$fake/out-resume-reject.txt"; then
@@ -1998,7 +2005,7 @@ EOF
     printf 'UPGRADING_XENIAL_TO_BIONIC\n' >"$fake/opt/aelladata/os-upgrade/offline/state"
     set +e
     DP_OFFLINE_TEST_ROOT="$fake" DP_OFFLINE_FAKE_DP_VERSION=6.2.0 DP_OFFLINE_FAKE_ROLE=AIO \
-      bash "$BUILT" --preflight-only >"$fake/out-busy.txt" 2>&1
+      bash "$BUILT" --mirror-base "$MIRROR_BASE" --preflight-only >"$fake/out-busy.txt" 2>&1
     rc=$?
     set -e
     [[ "$rc" -ne 0 ]] && pass "duplicate in-progress rejected" || fail "duplicate allowed"
@@ -2006,7 +2013,7 @@ EOF
     # Corrupt state not deleted
     printf '!!!CORRUPT!!!\n' >"$fake/opt/aelladata/os-upgrade/offline/state"
     set +e
-    DP_OFFLINE_TEST_ROOT="$fake" bash "$BUILT" >"$fake/out-corrupt.txt" 2>&1
+    DP_OFFLINE_TEST_ROOT="$fake" bash "$BUILT" --mirror-base "$MIRROR_BASE" >"$fake/out-corrupt.txt" 2>&1
     rc=$?
     set -e
     [[ "$rc" -ne 0 ]] && pass "corrupt state rejected" || fail "corrupt state accepted"
@@ -2027,7 +2034,7 @@ EOF
   mkdir -p "$fake/opt/aelladata/os-upgrade/offline"
   printf 'COMPLETED_BIONIC\n' >"$fake/opt/aelladata/os-upgrade/offline/state"
   set +e
-  DP_OFFLINE_TEST_ROOT="$fake" bash "$BUILT" >"$fake/out-done.txt" 2>&1
+  DP_OFFLINE_TEST_ROOT="$fake" bash "$BUILT" --mirror-base "$MIRROR_BASE" >"$fake/out-done.txt" 2>&1
   rc=$?
   set -e
   [[ "$rc" -eq 0 ]] && pass "COMPLETED_BIONIC idempotent exit 0" || fail "COMPLETED_BIONIC rerun failed"
@@ -2039,7 +2046,7 @@ VERSION_ID="20.04"
 VERSION_CODENAME=focal
 EOF
   set +e
-  DP_OFFLINE_TEST_ROOT="$fake" bash "$BUILT" >"$fake/out-focal.txt" 2>&1
+  DP_OFFLINE_TEST_ROOT="$fake" bash "$BUILT" --mirror-base "$MIRROR_BASE" >"$fake/out-focal.txt" 2>&1
   rc=$?
   set -e
   [[ "$rc" -ne 0 ]] && pass "refuse 20.04+" || fail "accepted 20.04"
@@ -2154,6 +2161,7 @@ text = text.replace(
     "@@DESTRUCTIVE_CONFIRMATION_HELPER@@",
     hp.read_text(encoding="utf-8").rstrip("\n") + "\n",
 )
+text = text.replace("@@SAMPLE_DEB_PATH@@", "/sample.deb")
 text = re.sub(r"@@[A-Z0-9_]*@@", "x", text)
 Path(dst).write_text(text, encoding="utf-8")
 PY
@@ -2168,7 +2176,7 @@ VERSION_CODENAME=xenial
 EOF
 printf 'FAILED\n' >"$fx_fail/opt/aelladata/os-upgrade/offline/state"
 set +e
-DP_OFFLINE_TEST_ROOT="$fx_fail" bash "$STUB_FAIL" --preflight-only >"$fx_fail/out.txt" 2>&1
+DP_OFFLINE_TEST_ROOT="$fx_fail" bash "$STUB_FAIL" --mirror-base http://127.0.0.1:9 --preflight-only >"$fx_fail/out.txt" 2>&1
 rc=$?
 set -e
 if grep -q 'FAIL_PARTIAL_RELEASE_TRANSITION_DETECTED' "$fx_fail/out.txt"; then
@@ -2204,7 +2212,7 @@ printf 'aella:x:1000:1000::/home/aella:/bin/bash\n' >"$fx_resume/etc/passwd"
 printf 'UnicodeDecodeError MetaRelease\n' >"$fx_resume/var/log/aella/offline_os_upgrade.log"
 set +e
 DP_OFFLINE_TEST_ROOT="$fx_resume" DP_OFFLINE_FAKE_MIRROR_TRUST=1 \
-  bash "$STUB" --preflight-only >"$fx_resume/out.txt" 2>&1
+  bash "$STUB" --mirror-base http://127.0.0.1:9 --preflight-only >"$fx_resume/out.txt" 2>&1
 rc=$?
 set -e
 if grep -q 'RESUME_SAFETY_VALIDATION=PASS' "$fx_resume/out.txt" \
@@ -2230,7 +2238,7 @@ VERSION_CODENAME=xenial
 EOF
 : >"$fx_mix/opt/aelladata/os-upgrade/offline/force-partial-transition"
 set +e
-DP_OFFLINE_TEST_ROOT="$fx_mix" bash "$STUB_FAIL" --preflight-only >"$fx_mix/out.txt" 2>&1
+DP_OFFLINE_TEST_ROOT="$fx_mix" bash "$STUB_FAIL" --mirror-base http://127.0.0.1:9 --preflight-only >"$fx_mix/out.txt" 2>&1
 rc=$?
 set -e
 grep -q 'FAIL_PARTIAL_RELEASE_TRANSITION_DETECTED' "$fx_mix/out.txt" \
@@ -2852,7 +2860,7 @@ make_dp_fixture "$hf"
 mkdir -p "$hf/opt/aelladata/os-upgrade/offline" "$hf/var/log/aella"
 printf 'UPGRADING_XENIAL_TO_BIONIC\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
 set +e
-DP_OFFLINE_TEST_ROOT="$hf" bash "$STUB" --preflight-only >"$hf/out-upgrading.txt" 2>&1
+DP_OFFLINE_TEST_ROOT="$hf" bash "$STUB" --mirror-base http://127.0.0.1:9 --preflight-only >"$hf/out-upgrading.txt" 2>&1
 rc=$?
 set -e
 if [[ "$rc" -ne 0 ]] && grep -qE 'UPGRADE_ALREADY_RUNNING=YES|duplicate execution refused' "$hf/out-upgrading.txt"; then
@@ -3358,7 +3366,7 @@ make_runner_fixture() {
     >"$root/opt/aelladata/os-upgrade/offline/backups/${stamp}/passwd/shells.txt"
   printf 'aella\t/usr/bin/aella_cli\n' >"$root/opt/aelladata/os-upgrade/offline/backups/${stamp}/passwd/shell-changes.tsv"
   # Mutated live state (as if commit already ran)
-  printf 'deb [arch=amd64] http://221.139.249.111/hops/xenial-to-bionic/ubuntu xenial main universe\n' \
+  printf 'deb [arch=amd64] http://192.0.2.10/hops/xenial-to-bionic/ubuntu xenial main universe\n' \
     >"$root/etc/apt/sources.list"
   printf 'Acquire::Languages "none";\n' >"$root/etc/apt/apt.conf.d/99stellar-offline-upgrade"
   printf 'root:x:0:0:root:/root:/bin/bash\naella:x:1000:1000:aella:/home/aella:/bin/bash\n' >"$root/etc/passwd"
@@ -3369,10 +3377,10 @@ make_runner_fixture() {
   printf 'false\n' >"$root/opt/aelladata/os-upgrade/offline/critical-holds/release_upgrade_package_transition_started"
   # DistUpgrade target sources (4 bionic pockets)
   {
-    echo 'deb [arch=amd64] http://221.139.249.111/hops/xenial-to-bionic/ubuntu bionic main universe'
-    echo 'deb [arch=amd64] http://221.139.249.111/hops/xenial-to-bionic/ubuntu bionic-updates main universe'
-    echo 'deb [arch=amd64] http://221.139.249.111/hops/xenial-to-bionic/ubuntu bionic-security main universe'
-    echo 'deb [arch=amd64] http://221.139.249.111/hops/xenial-to-bionic/ubuntu bionic-backports main universe'
+    echo 'deb [arch=amd64] http://192.0.2.10/hops/xenial-to-bionic/ubuntu bionic main universe'
+    echo 'deb [arch=amd64] http://192.0.2.10/hops/xenial-to-bionic/ubuntu bionic-updates main universe'
+    echo 'deb [arch=amd64] http://192.0.2.10/hops/xenial-to-bionic/ubuntu bionic-security main universe'
+    echo 'deb [arch=amd64] http://192.0.2.10/hops/xenial-to-bionic/ubuntu bionic-backports main universe'
   } >"$root/opt/aelladata/os-upgrade/offline/distupgrade-target.sources.list"
   # Fake keyring file (gpg stub will report fingerprint)
   printf 'FAKEKEY\n' >"$root/etc/apt/trusted.gpg.d/stellar-offline-xenial-to-bionic.gpg"
@@ -3385,8 +3393,8 @@ EOF
   touch "$root/boot/vmlinuz-4.4.0-test"
   # EnvironmentFile
   cat >"$root/etc/default/stellar-offline-os-upgrade" <<EOF
-PIN_MIRROR_BASE='http://221.139.249.111'
-MIRROR_BASE='http://221.139.249.111'
+PIN_MIRROR_BASE='http://192.0.2.10'
+MIRROR_BASE='http://192.0.2.10'
 PIN_HOP='xenial-to-bionic'
 PIN_SOURCE_CODENAME='xenial'
 PIN_TARGET_CODENAME='bionic'
@@ -3518,7 +3526,7 @@ env -i \
 rc=$?
 set -e
 if [[ "$rc" -eq 0 ]] \
-  && grep -q 'PIN_MIRROR_BASE_RESOLVED=http://221.139.249.111' "$rf/var/log/aella/offline_os_upgrade.log" \
+  && grep -q 'PIN_MIRROR_BASE_RESOLVED=http://192.0.2.10' "$rf/var/log/aella/offline_os_upgrade.log" \
   && grep -q 'PIN_HOP=xenial-to-bionic' "$rf/var/log/aella/offline_os_upgrade.log" \
   && grep -q 'PRE_DRO_REPOSITORY_SEMANTIC_GATE=PASS' "$rf/var/log/aella/offline_os_upgrade.log" \
   && grep -q 'SMOKE_STOP_BEFORE_DRO=YES' "$rf/var/log/aella/offline_os_upgrade.log" \
@@ -3779,7 +3787,7 @@ PINS_HARNESS="${OUT_DIR}/pins-harness.sh"
 set -euo pipefail
 TEST_ROOT="${DP_OFFLINE_TEST_ROOT:-}"
 EC_INTERNAL=99
-MIRROR_BASE="http://221.139.249.111"
+MIRROR_BASE="http://192.0.2.10"
 PIN_MIRROR_BASE="http://old.example"
 PIN_HOP="xenial-to-bionic"
 PIN_SOURCE_CODENAME=xenial
@@ -3823,7 +3831,7 @@ export DP_OFFLINE_TEST_ROOT="$pf" TEST_ROOT="$pf"
 source "$PINS_HARNESS"
 write_pins_env "20260722T999999Z"
 envf="$pf/etc/default/stellar-offline-os-upgrade"
-if grep -q "PIN_MIRROR_BASE='http://221.139.249.111'" "$envf" \
+if grep -q "PIN_MIRROR_BASE='http://192.0.2.10'" "$envf" \
   && grep -q "PIN_HOP='xenial-to-bionic'" "$envf" \
   && grep -q "PIN_TARGET_SUITES='bionic bionic-updates bionic-security bionic-backports'" "$envf" \
   && grep -q "COMMIT_BACKUP_PATH='/opt/aelladata/os-upgrade/offline/backups/20260722T999999Z'" "$envf"; then
@@ -4074,7 +4082,7 @@ os.chmod(gate, 0o755)
 print(gate)
 PY
 )"
-LOCAL_URI='http://221.139.249.111/hops/xenial-to-bionic/ubuntu'
+LOCAL_URI='http://192.0.2.10/hops/xenial-to-bionic/ubuntu'
 write_xenial_sources() {
   local dest="$1"
   cat >"$dest" <<EOF
@@ -4332,7 +4340,7 @@ passed = os.path.join(root, 'opt/aelladata/os-upgrade/offline/effective-source-g
 evid = os.path.join(root, 'opt/aelladata/os-upgrade/offline/evidence/effective-source-gate')
 os.makedirs(evid, exist_ok=True)
 open(bin_path + '.env', 'w').write(
-    'STELLAR_EXPECTED_MIRROR_URI=http://221.139.249.111/hops/xenial-to-bionic/ubuntu\n'
+    'STELLAR_EXPECTED_MIRROR_URI=http://192.0.2.10/hops/xenial-to-bionic/ubuntu\n'
     'STELLAR_TARGET_CODENAME=bionic\n'
     'STELLAR_SOURCE_CODENAME=xenial\n'
     'STELLAR_COMPONENTS=main universe\n'

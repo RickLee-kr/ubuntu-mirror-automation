@@ -2135,6 +2135,42 @@ Mirror root: ${SELECTIVE_MIRROR_ROOT}
 EOF
 }
 
+# Resolve the mirror base every generated client is pinned to.
+# Precedence: explicit --mirror-base / PUBLIC_BASE_URL when it names a real host,
+# then the persisted Mirror Manager URL, then authoritative host IPv4 detection.
+# Never falls back to a hardcoded address; prints the resolved base on stdout.
+uom_resolve_client_mirror_base() {
+  local candidate="${1:-}" host
+  local lib="${PROJECT_ROOT}/scripts/lib/mirror_host_ip.sh"
+
+  candidate="${candidate%/}"
+  if [[ -z "$candidate" || "$candidate" == "http://ubuntu-mirror.local" ]]; then
+    if [[ -f /etc/default/ubuntu-offline-mirror ]]; then
+      candidate="$(set +u; # shellcheck source=/dev/null
+        source /etc/default/ubuntu-offline-mirror
+        printf '%s' "${PUBLIC_BASE_URL:-}")"
+      candidate="${candidate%/}"
+    fi
+  fi
+
+  [[ -f "$lib" ]] || return 1
+  # shellcheck source=/dev/null
+  source "$lib"
+
+  if [[ -n "$candidate" && "$candidate" != "http://ubuntu-mirror.local" ]]; then
+    host="$(mirror_host_extract_ipv4_from_url "$candidate" || true)"
+    if [[ -z "$host" ]] || mirror_host_validate_ipv4_on_host "$host"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    warn "PUBLIC_BASE_URL/--mirror-base ${candidate} is not configured on this host; re-resolving"
+  fi
+
+  mirror_host_resolve_and_log >&2 || return 1
+  [[ -n "${RESOLVED_MIRROR_BASE_URL:-}" ]] || return 1
+  printf '%s\n' "$RESOLVED_MIRROR_BASE_URL"
+}
+
 cmd_build_client_xenial_to_bionic() {
   require_cmds python3 gpg gpgv curl sha256sum
   local py mirror_base out_dir skip_sign=0 deploy_nginx=0
@@ -2157,16 +2193,9 @@ cmd_build_client_xenial_to_bionic() {
         die "unknown build-client argument: $1" ;;
     esac
   done
-  if [[ -z "$mirror_base" || "$mirror_base" == "http://ubuntu-mirror.local" ]]; then
-    if [[ -f /etc/default/ubuntu-offline-mirror ]]; then
-      # shellcheck disable=SC1091
-      mirror_base="$(set +u; # shellcheck source=/dev/null
-        source /etc/default/ubuntu-offline-mirror
-        printf '%s' "${PUBLIC_BASE_URL:-}")"
-    fi
-  fi
+  mirror_base="$(uom_resolve_client_mirror_base "$mirror_base" || true)"
   [[ -n "$mirror_base" && "$mirror_base" != "http://ubuntu-mirror.local" ]] \
-    || die "PUBLIC_BASE_URL / --mirror-base required (got '${mirror_base}')"
+    || die "MIRROR_BASE_RESOLUTION=FAIL pass --mirror-base or set MIRROR_HTTP_URL; host IPv4 could not be resolved"
   if [[ "$skip_sign" -eq 1 ]]; then
     out_dir="${PROJECT_ROOT}/artifacts/client-unsigned-test"
   else
@@ -2217,16 +2246,9 @@ cmd_build_client_bionic_to_focal() {
         die "unknown build-client argument: $1" ;;
     esac
   done
-  if [[ -z "$mirror_base" || "$mirror_base" == "http://ubuntu-mirror.local" ]]; then
-    if [[ -f /etc/default/ubuntu-offline-mirror ]]; then
-      # shellcheck disable=SC1091
-      mirror_base="$(set +u; # shellcheck source=/dev/null
-        source /etc/default/ubuntu-offline-mirror
-        printf '%s' "${PUBLIC_BASE_URL:-}")"
-    fi
-  fi
+  mirror_base="$(uom_resolve_client_mirror_base "$mirror_base" || true)"
   [[ -n "$mirror_base" && "$mirror_base" != "http://ubuntu-mirror.local" ]] \
-    || die "PUBLIC_BASE_URL / --mirror-base required (got '${mirror_base}')"
+    || die "MIRROR_BASE_RESOLUTION=FAIL pass --mirror-base or set MIRROR_HTTP_URL; host IPv4 could not be resolved"
   if [[ "$skip_sign" -eq 1 ]]; then
     out_dir="${PROJECT_ROOT}/artifacts/client-unsigned-test"
   else
@@ -2276,16 +2298,9 @@ cmd_build_client_focal_to_jammy() {
         die "unknown build-client argument: $1" ;;
     esac
   done
-  if [[ -z "$mirror_base" || "$mirror_base" == "http://ubuntu-mirror.local" ]]; then
-    if [[ -f /etc/default/ubuntu-offline-mirror ]]; then
-      # shellcheck disable=SC1091
-      mirror_base="$(set +u; # shellcheck source=/dev/null
-        source /etc/default/ubuntu-offline-mirror
-        printf '%s' "${PUBLIC_BASE_URL:-}")"
-    fi
-  fi
+  mirror_base="$(uom_resolve_client_mirror_base "$mirror_base" || true)"
   [[ -n "$mirror_base" && "$mirror_base" != "http://ubuntu-mirror.local" ]] \
-    || die "PUBLIC_BASE_URL / --mirror-base required (got '${mirror_base}')"
+    || die "MIRROR_BASE_RESOLUTION=FAIL pass --mirror-base or set MIRROR_HTTP_URL; host IPv4 could not be resolved"
   if [[ "$skip_sign" -eq 1 ]]; then
     out_dir="${PROJECT_ROOT}/artifacts/client-unsigned-test"
   else
@@ -2335,16 +2350,9 @@ cmd_build_client_jammy_to_noble() {
         die "unknown build-client argument: $1" ;;
     esac
   done
-  if [[ -z "$mirror_base" || "$mirror_base" == "http://ubuntu-mirror.local" ]]; then
-    if [[ -f /etc/default/ubuntu-offline-mirror ]]; then
-      # shellcheck disable=SC1091
-      mirror_base="$(set +u; # shellcheck source=/dev/null
-        source /etc/default/ubuntu-offline-mirror
-        printf '%s' "${PUBLIC_BASE_URL:-}")"
-    fi
-  fi
+  mirror_base="$(uom_resolve_client_mirror_base "$mirror_base" || true)"
   [[ -n "$mirror_base" && "$mirror_base" != "http://ubuntu-mirror.local" ]] \
-    || die "PUBLIC_BASE_URL / --mirror-base required (got '${mirror_base}')"
+    || die "MIRROR_BASE_RESOLUTION=FAIL pass --mirror-base or set MIRROR_HTTP_URL; host IPv4 could not be resolved"
   if [[ "$skip_sign" -eq 1 ]]; then
     out_dir="${PROJECT_ROOT}/artifacts/client-unsigned-test"
   else

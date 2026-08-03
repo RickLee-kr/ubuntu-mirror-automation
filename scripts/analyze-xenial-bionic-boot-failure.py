@@ -25,7 +25,7 @@ DEFAULT_SUITES = [
 DEFAULT_COMPONENTS = ['main', 'universe']
 DEFAULT_CLIENT_SOURCES = [
     'deb [arch=amd64 signed-by=/etc/apt/keyrings/stellar-offline-upgrade.gpg] '
-    'http://221.139.249.111/hops/xenial-to-bionic/ubuntu %s main universe' % s
+    'http://192.0.2.10/hops/xenial-to-bionic/ubuntu %s main universe' % s
     for s in (
         'xenial', 'xenial-updates', 'xenial-security', 'xenial-backports',
     )
