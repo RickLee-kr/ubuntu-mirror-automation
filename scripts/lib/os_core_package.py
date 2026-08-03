@@ -68,6 +68,205 @@ def iso_now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def sha256_bytes(data):
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+
+def is_hex64(value):
+    return bool(value) and bool(re.match(r"^[0-9a-fA-F]{64}$", str(value).strip()))
+
+
+def read_ready_fields(ready_path):
+    fields = {}
+    if not ready_path or not os.path.isfile(ready_path):
+        return fields
+    with open(ready_path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if "=" in line:
+                k, v = line.split("=", 1)
+                fields[k.strip()] = v.strip()
+    return fields
+
+
+def derive_os_core_provenance(pkg_root, payload_root=None):
+    """Derive selective READY provenance from a verified ubuntu-os-core package root.
+
+    Prefer (in order):
+      1. Embedded payload/state/READY with valid hex checksums
+      2. Explicit selective_plan_checksum / discovery_artifact_checksum in manifest.json
+         (discovery must match sha256(payload.sha256))
+      3. Backward-compatible derivation for packages already on R2:
+         selective_plan_checksum = sha256(manifest.json)
+         discovery_artifact_checksum = sha256(payload.sha256)
+
+    Never invents empty or placeholder checksums.
+    """
+    pkg_root = os.path.abspath(pkg_root)
+    if payload_root is None:
+        payload_root = os.path.join(pkg_root, "payload")
+    else:
+        payload_root = os.path.abspath(payload_root)
+
+    manifest_path = os.path.join(pkg_root, "manifest.json")
+    payload_sum = os.path.join(pkg_root, "payload.sha256")
+    if not os.path.isfile(manifest_path):
+        raise OsCoreError("MANIFEST_MISSING for provenance")
+    if not os.path.isfile(payload_sum):
+        raise OsCoreError("PAYLOAD_SHA256_MISSING for provenance")
+
+    manifest_sha = sha256_file(manifest_path)
+    payload_manifest_sha = sha256_file(payload_sum)
+
+    embedded = os.path.join(payload_root, "state", "READY")
+    # After payload has been moved out of pkg_root, callers may pass the moved
+    # payload path separately; also accept READY already under that tree.
+    if not os.path.isfile(embedded):
+        embedded = os.path.join(payload_root, "state", "READY")
+    if os.path.isfile(embedded):
+        fields = read_ready_fields(embedded)
+        plan = fields.get("selective_plan_checksum") or fields.get("plan_checksum") or ""
+        disc = fields.get("discovery_artifact_checksum") or ""
+        if is_hex64(plan) and is_hex64(disc):
+            return {
+                "source": "PACKAGE_EMBEDDED_READY",
+                "action": "REUSE_VERIFIED",
+                "selective_plan_checksum": plan.lower(),
+                "discovery_artifact_checksum": disc.lower(),
+                "os_core_manifest_sha256": manifest_sha,
+                "os_core_payload_manifest_sha256": payload_manifest_sha,
+                "release_id": fields.get("os_core_release_id") or "",
+            }
+
+    with open(manifest_path, "r", encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    plan = (manifest.get("selective_plan_checksum") or "").strip()
+    disc = (manifest.get("discovery_artifact_checksum") or "").strip()
+    if is_hex64(plan) and is_hex64(disc):
+        if disc.lower() != payload_manifest_sha:
+            raise OsCoreError(
+                "MANIFEST_DISCOVERY_MISMATCH manifest=%s actual=%s"
+                % (disc.lower(), payload_manifest_sha)
+            )
+        return {
+            "source": "PACKAGE_MANIFEST_FIELDS",
+            "action": "CREATE_VERIFIED",
+            "selective_plan_checksum": plan.lower(),
+            "discovery_artifact_checksum": disc.lower(),
+            "os_core_manifest_sha256": manifest_sha,
+            "os_core_payload_manifest_sha256": payload_manifest_sha,
+            "release_id": str(manifest.get("release_id") or ""),
+        }
+
+    # Current R2 packages: no READY, no explicit provenance fields.
+    return {
+        "source": "PACKAGE_MANIFEST_AND_PAYLOAD_SHA256",
+        "action": "CREATE_VERIFIED",
+        "selective_plan_checksum": manifest_sha,
+        "discovery_artifact_checksum": payload_manifest_sha,
+        "os_core_manifest_sha256": manifest_sha,
+        "os_core_payload_manifest_sha256": payload_manifest_sha,
+        "release_id": str(manifest.get("release_id") or ""),
+    }
+
+
+def write_selective_ready_from_provenance(selective_root, provenance):
+    """Atomically write selective/state/READY from verified provenance dict."""
+    plan = provenance.get("selective_plan_checksum") or ""
+    disc = provenance.get("discovery_artifact_checksum") or ""
+    if not is_hex64(plan) or not is_hex64(disc):
+        raise OsCoreError("PROVENANCE_CHECKSUM_INVALID")
+    state_dir = os.path.join(selective_root, "state")
+    os.makedirs(state_dir, exist_ok=True)
+    ready_path = os.path.join(state_dir, "READY")
+    lines = [
+        "READY",
+        "profile_name=offline-upgrade-selective",
+        "created_at=%s" % iso_now(),
+        "os_core_provenance_source=%s" % provenance.get("source", ""),
+        "os_core_manifest_sha256=%s" % provenance.get("os_core_manifest_sha256", ""),
+        "os_core_payload_manifest_sha256=%s"
+        % provenance.get("os_core_payload_manifest_sha256", ""),
+        "selective_plan_checksum=%s" % plan.lower(),
+        "plan_checksum=%s" % plan.lower(),
+        "discovery_artifact_checksum=%s" % disc.lower(),
+        "validation_phase=os_core_materialize",
+    ]
+    if provenance.get("release_id"):
+        lines.append("os_core_release_id=%s" % provenance["release_id"])
+    tmp = ready_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.replace(tmp, ready_path)
+    # Post-write verify
+    fields = read_ready_fields(ready_path)
+    got_plan = fields.get("selective_plan_checksum") or fields.get("plan_checksum") or ""
+    got_disc = fields.get("discovery_artifact_checksum") or ""
+    if got_plan.lower() != plan.lower() or got_disc.lower() != disc.lower():
+        raise OsCoreError("READY_WRITE_VERIFY_FAIL")
+    if not is_hex64(got_plan) or not is_hex64(got_disc):
+        raise OsCoreError("READY_WRITE_VERIFY_FAIL empty_or_malformed")
+    return ready_path
+
+
+def verify_selective_ready_file(ready_path):
+    """Fail closed unless READY carries two non-empty 64-hex provenance checksums."""
+    if not ready_path or not os.path.isfile(ready_path):
+        raise OsCoreError("SELECTIVE_READY_MISSING path=%s" % ready_path)
+    fields = read_ready_fields(ready_path)
+    plan = fields.get("selective_plan_checksum") or fields.get("plan_checksum") or ""
+    disc = fields.get("discovery_artifact_checksum") or ""
+    if not plan or not disc:
+        raise OsCoreError("SELECTIVE_READY_EMPTY_CHECKSUM")
+    if not is_hex64(plan):
+        raise OsCoreError("SELECTIVE_READY_MALFORMED_PLAN")
+    if not is_hex64(disc):
+        raise OsCoreError("SELECTIVE_READY_MALFORMED_DISCOVERY")
+    return {
+        "selective_plan_checksum": plan.lower(),
+        "discovery_artifact_checksum": disc.lower(),
+        "source": fields.get("os_core_provenance_source") or "LEGACY_READY",
+    }
+
+
+def cmd_write_selective_ready(args):
+    """Write selective/state/READY from a verified package root + payload tree."""
+    pkg_root = os.path.abspath(args.package_root)
+    selective_root = os.path.abspath(args.selective_root)
+    payload_root = os.path.abspath(args.payload_root) if args.payload_root else None
+
+    if os.path.basename(pkg_root) != PACKAGE_ROOT_NAME:
+        raise OsCoreError("PACKAGE_ROOT_NAME_INVALID want=%s" % PACKAGE_ROOT_NAME)
+    if not os.path.isfile(os.path.join(pkg_root, "manifest.json")):
+        raise OsCoreError("MANIFEST_MISSING")
+    if not os.path.isfile(os.path.join(pkg_root, "payload.sha256")):
+        raise OsCoreError("PAYLOAD_SHA256_MISSING")
+    # When payload is still inside the package root, re-validate the tree.
+    if payload_root is None and os.path.isdir(os.path.join(pkg_root, "payload")):
+        validate_package_tree(os.path.dirname(pkg_root))
+
+    provenance = derive_os_core_provenance(pkg_root, payload_root=payload_root)
+    ready_path = write_selective_ready_from_provenance(selective_root, provenance)
+    print("OS_CORE_PROVENANCE_SOURCE=%s" % provenance["source"])
+    print("OS_CORE_MANIFEST_SHA256=%s" % provenance["os_core_manifest_sha256"])
+    print("OS_CORE_PAYLOAD_MANIFEST_SHA256=%s" % provenance["os_core_payload_manifest_sha256"])
+    print("SELECTIVE_PLAN_CHECKSUM=%s" % provenance["selective_plan_checksum"])
+    print("DISCOVERY_ARTIFACT_CHECKSUM=%s" % provenance["discovery_artifact_checksum"])
+    print("SELECTIVE_READY_ACTION=%s" % provenance["action"])
+    print("SELECTIVE_READY_VERIFY=PASS")
+    print("SELECTIVE_READY_PATH=%s" % ready_path)
+
+
+def cmd_verify_selective_ready(args):
+    info = verify_selective_ready_file(os.path.abspath(args.ready_path))
+    print("SELECTIVE_READY_VERIFY=PASS")
+    print("OS_CORE_PROVENANCE_SOURCE=%s" % info.get("source", ""))
+    print("SELECTIVE_PLAN_CHECKSUM=%s" % info["selective_plan_checksum"])
+    print("DISCOVERY_ARTIFACT_CHECKSUM=%s" % info["discovery_artifact_checksum"])
+
+
 def sha256_file(path):
     h = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -77,6 +276,7 @@ def sha256_file(path):
                 break
             h.update(chunk)
     return h.hexdigest()
+
 
 
 def is_safe_relpath(rel):
@@ -484,6 +684,21 @@ def cmd_build(args):
             raise OsCoreError("PAYLOAD_COUNT_INTERNAL")
         # Safety margin: package + extract + stage (~3x payload) + 512MiB
         required_free = payload_bytes * 3 + (512 * 1024 * 1024)
+        discovery_ck = sha256_file(payload_sum)
+        # Deterministic plan identity (excludes timestamps / mutable paths).
+        plan_identity = {
+            "artifact_type": ARTIFACT_TYPE,
+            "schema_version": SCHEMA_VERSION,
+            "supported_hops": list(SUPPORTED_HOPS),
+            "supported_source_os": "16.04",
+            "target_os": "24.04",
+            "payload_file_count": file_count,
+            "payload_bytes": payload_bytes,
+            "discovery_artifact_checksum": discovery_ck,
+        }
+        selective_plan_ck = sha256_bytes(
+            json.dumps(plan_identity, sort_keys=True, separators=(",", ":"))
+        )
         manifest = {
             "schema_version": SCHEMA_VERSION,
             "artifact_type": ARTIFACT_TYPE,
@@ -497,6 +712,8 @@ def cmd_build(args):
             "payload_bytes": payload_bytes,
             "required_free_bytes": required_free,
             "source_selective_root": "SELECTIVE_PUBLISHED",
+            "selective_plan_checksum": selective_plan_ck,
+            "discovery_artifact_checksum": discovery_ck,
         }
         with open(os.path.join(pkg_root, "manifest.json"), "w", encoding="utf-8") as fh:
             json.dump(manifest, fh, indent=2, sort_keys=True)
@@ -535,6 +752,8 @@ def cmd_build(args):
         print("RELEASE_ID=%s" % release_id)
         print("PAYLOAD_FILE_COUNT=%s" % file_count)
         print("PAYLOAD_BYTES=%s" % payload_bytes)
+        print("SELECTIVE_PLAN_CHECKSUM=%s" % selective_plan_ck)
+        print("DISCOVERY_ARTIFACT_CHECKSUM=%s" % discovery_ck)
         print("SIGNATURE=%s" % ("YES" if signed else "NO"))
     finally:
         shutil.rmtree(build_tmp, ignore_errors=True)
@@ -644,7 +863,23 @@ def main(argv=None):
     p_extract.add_argument("--public-key", default="")
     p_extract.set_defaults(func=cmd_extract_staging)
 
+    p_ready = sub.add_parser("write-selective-ready")
+    p_ready.add_argument("--package-root", required=True,
+                         help="Path to extracted ubuntu-os-core/ directory")
+    p_ready.add_argument("--selective-root", required=True,
+                         help="Destination selective tree (payload/final_tmp)")
+    p_ready.add_argument("--payload-root", default="",
+                         help="Payload path when already moved out of package-root")
+    p_ready.set_defaults(func=cmd_write_selective_ready)
+
+    p_vready = sub.add_parser("verify-selective-ready")
+    p_vready.add_argument("--ready-path", required=True)
+    p_vready.set_defaults(func=cmd_verify_selective_ready)
+
     args = parser.parse_args(argv)
+    # Normalize optional empty payload-root.
+    if getattr(args, "payload_root", None) == "":
+        args.payload_root = None
     try:
         args.func(args)
     except OsCoreError as exc:

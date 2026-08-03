@@ -164,7 +164,10 @@ engine_verify_os_core_package() { mm_status_set R2_OS_CORE_CHECKSUM PASS; return
 engine_materialize_os_mirror() {
   mkdir -p "${MM_SELECTIVE_ROOT}/state" "${MM_SELECTIVE_ROOT}/keys" \
     "${MM_SELECTIVE_ROOT}/shared/offline/release-upgraders/bionic"
-  printf 'selective_plan_checksum=abc\ndiscovery_artifact_checksum=def\n' \
+  printf 'selective_plan_checksum=%s\ndiscovery_artifact_checksum=%s\nplan_checksum=%s\n' \
+    "$(printf 'a%.0s' {1..64})" \
+    "$(printf 'b%.0s' {1..64})" \
+    "$(printf 'a%.0s' {1..64})" \
     >"${MM_SELECTIVE_ROOT}/state/READY"
   printf 'KEY\n' >"${MM_SELECTIVE_ROOT}/keys/ubuntu-mirror-selective.gpg"
   mm_status_set OS_MIRROR_READY PASS
@@ -306,7 +309,10 @@ engine_rebuild_publish_local_client_set() {
   return 1
 }
 mkdir -p "${MM_SELECTIVE_ROOT}/state"
-printf 'selective_plan_checksum=abc\ndiscovery_artifact_checksum=def\n' \
+printf 'selective_plan_checksum=%s\ndiscovery_artifact_checksum=%s\nplan_checksum=%s\n' \
+  "$(printf 'a%.0s' {1..64})" \
+  "$(printf 'b%.0s' {1..64})" \
+  "$(printf 'a%.0s' {1..64})" \
   >"${MM_SELECTIVE_ROOT}/state/READY"
 mm_status_set OS_MIRROR_READY PASS
 set +e

@@ -71,6 +71,7 @@ TEST_LIST=(
   test_client_mirror_pin_gates.sh
   test_per_mirror_local_signing.sh
   test_client_ready_circular_gate.sh
+  test_os_core_selective_ready_provenance.sh
 )
 
 is_long_test() {

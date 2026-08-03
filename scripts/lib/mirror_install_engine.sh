@@ -226,12 +226,10 @@ engine_finalize_local_client_set() {
     return 1
   fi
 
-  # Ensure selective READY marker exists for builders (payload usually ships it).
-  if [[ ! -f "${MM_SELECTIVE_ROOT}/state/READY" ]]; then
-    mkdir -p "${MM_SELECTIVE_ROOT}/state"
-    # Builders require plan/discovery checksums; inventing empty values is forbidden.
-    # If OS materialize did not ship READY, refuse rather than publish unsigned stubs.
-    mm_error "SELECTIVE_READY=MISSING after OS Core materialize"
+  # READY must exist with verified non-empty provenance checksums (created during
+  # OS Core materialize from package manifest + payload.sha256, or legacy selective).
+  if ! engine_verify_selective_ready_provenance; then
+    mm_error "SELECTIVE_READY_VERIFY=FAIL"
     mm_error "CLIENT_SET_FINALIZATION=FAIL"
     mm_info "PREPARATION_ARTIFACTS_READY=YES"
     mm_info "DOWNLOAD_AND_PREPARE_RESULT=FAIL_CLIENT_SET_FINALIZATION"
@@ -402,13 +400,78 @@ engine_verify_os_core_package() {
   mm_ok "VERIFY_OS_CORE=PASS release_id=${OS_CORE_RELEASE_ID}"
 }
 
+engine_verify_selective_ready_provenance() {
+  local ready="${MM_SELECTIVE_ROOT}/state/READY"
+  local out
+  if [[ ! -f "$ready" ]]; then
+    mm_error "SELECTIVE_READY_VERIFY=FAIL reason=missing"
+    return 1
+  fi
+  out="$(python3 "${MM_PROJECT_ROOT}/scripts/lib/os_core_package.py" \
+    verify-selective-ready --ready-path "$ready" 2>&1)" || {
+    mm_error "SELECTIVE_READY_VERIFY=FAIL reason=verify"
+    printf '%s\n' "$out" | while IFS= read -r line; do mm_error "$line"; done
+    return 1
+  }
+  printf '%s\n' "$out" | while IFS= read -r line; do
+    case "$line" in
+      SELECTIVE_READY_VERIFY=*|SELECTIVE_PLAN_CHECKSUM=*|DISCOVERY_ARTIFACT_CHECKSUM=*|OS_CORE_PROVENANCE_SOURCE=*)
+        mm_info "$line"
+        ;;
+    esac
+  done
+  mm_ok "SELECTIVE_READY_VERIFY=PASS"
+  return 0
+}
+
+engine_write_selective_ready_from_os_core() {
+  # Write verified READY into selective_tmp using package metadata still at pkg_root.
+  local pkg_root="$1"
+  local selective_tmp="$2"
+  local payload_root="${3:-}"
+  local out line
+  local args=(
+    write-selective-ready
+    --package-root "$pkg_root"
+    --selective-root "$selective_tmp"
+  )
+  if [[ -n "$payload_root" ]]; then
+    args+=(--payload-root "$payload_root")
+  fi
+  out="$(python3 "${MM_PROJECT_ROOT}/scripts/lib/os_core_package.py" "${args[@]}" 2>&1)" || {
+    mm_error "SELECTIVE_READY_VERIFY=FAIL reason=write_from_os_core"
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  while IFS= read -r line; do
+    case "$line" in
+      OS_CORE_PROVENANCE_SOURCE=*|OS_CORE_MANIFEST_SHA256=*|OS_CORE_PAYLOAD_MANIFEST_SHA256=*|\
+      SELECTIVE_PLAN_CHECKSUM=*|DISCOVERY_ARTIFACT_CHECKSUM=*|SELECTIVE_READY_ACTION=*|\
+      SELECTIVE_READY_VERIFY=*|SELECTIVE_READY_PATH=*)
+        mm_info "$line"
+        ;;
+      OS_CORE_ERROR=*)
+        mm_error "$line"
+        return 1
+        ;;
+    esac
+  done <<<"$out"
+  [[ -f "${selective_tmp}/state/READY" ]] || {
+    mm_error "SELECTIVE_READY_VERIFY=FAIL reason=ready_not_written"
+    return 1
+  }
+  return 0
+}
+
 engine_materialize_os_mirror() {
   # Extract verified OS Core into selective root directly (no current/previous/releases).
   # Same-filesystem: rename payload into place (no second full copy). Cross-device: cp fallback.
+  # Writes verified selective/state/READY provenance into the staged tree BEFORE rename.
   local package="$1"
   local staging_extract
   staging_extract="${MM_CACHE_ROOT}/os-core-extract/$(mm_run_id)"
   local final_tmp="${MM_SELECTIVE_ROOT}.new.$$"
+  local pkg_root
 
   if [[ "${MM_DRY_RUN}" == "1" ]]; then
     mm_info "DRY_RUN skip materialize_os_mirror"
@@ -422,8 +485,11 @@ engine_materialize_os_mirror() {
     ${OS_CORE_PUBLIC_KEY:+--public-key "$OS_CORE_PUBLIC_KEY"} \
     || mm_die "OS_CORE_EXTRACT=FAIL"
 
-  local payload="${staging_extract}/ubuntu-os-core/payload"
+  pkg_root="${staging_extract}/ubuntu-os-core"
+  local payload="${pkg_root}/payload"
   [[ -d "$payload" ]] || mm_die "OS_CORE_PAYLOAD_MISSING"
+  [[ -f "${pkg_root}/manifest.json" ]] || mm_die "OS_CORE_MANIFEST_MISSING"
+  [[ -f "${pkg_root}/payload.sha256" ]] || mm_die "OS_CORE_PAYLOAD_SHA256_MISSING"
 
   local hop
   for hop in xenial-to-bionic bionic-to-focal focal-to-jammy jammy-to-noble; do
@@ -439,12 +505,18 @@ engine_materialize_os_mirror() {
   else
     mkdir -p "$final_tmp"
     cp -a "$payload"/. "$final_tmp"/ || mm_die "OS_MIRROR_STAGE_COPY=FAIL"
+    rm -rf "$payload"
   fi
 
   # Ensure ubuntu alias for nginx /ubuntu/
   if [[ ! -e "${final_tmp}/ubuntu" ]]; then
     ln -sfn hops/jammy-to-noble/ubuntu "${final_tmp}/ubuntu"
   fi
+
+  # Authoritative provenance → selective READY inside the staged tree (atomic with publish).
+  # Uses verified package manifest.json + payload.sha256 still at pkg_root.
+  engine_write_selective_ready_from_os_core "$pkg_root" "$final_tmp" "$final_tmp" \
+    || mm_die "SELECTIVE_READY_FROM_OS_CORE=FAIL"
 
   # Preserve keys/ if present outside payload.
   local keys_backup=""
@@ -464,8 +536,12 @@ engine_materialize_os_mirror() {
     mm_die "OS_MIRROR_PUBLISH_MOVE=FAIL"
   fi
   if [[ -n "$keys_backup" && -d "$keys_backup" ]]; then
-    rm -rf "${MM_SELECTIVE_ROOT}/keys"
-    mv -f "$keys_backup" "${MM_SELECTIVE_ROOT}/keys" || mm_die "OS_KEYS_RESTORE=FAIL"
+    # Prefer package keys; only restore backup when package shipped none.
+    if [[ ! -d "${MM_SELECTIVE_ROOT}/keys" ]]; then
+      mv -f "$keys_backup" "${MM_SELECTIVE_ROOT}/keys" || mm_die "OS_KEYS_RESTORE=FAIL"
+    else
+      rm -rf "$keys_backup"
+    fi
   fi
   rm -rf "$old" "$staging_extract"
 
@@ -478,8 +554,13 @@ engine_materialize_os_mirror() {
     "${MM_SELECTIVE_ROOT}/os-core-releases" \
     "${MM_SELECTIVE_ROOT}/releases" 2>/dev/null || true
 
+  # Post-rename provenance gate — OS_MIRROR_READY only after READY verifies.
+  engine_verify_selective_ready_provenance \
+    || mm_die "SELECTIVE_READY_VERIFY=FAIL after materialize"
+
   mm_mark_changed
   mm_state_set OS_MIRROR_READY PASS
+  mm_status_set OS_MIRROR_READY PASS
   mm_ok "OS_MIRROR_MATERIALIZE=PASS path=${MM_SELECTIVE_ROOT}"
 }
 
