@@ -157,6 +157,7 @@ engine_ensure_phase2_helpers() {
 
   mkdir -p "$dest"
   stage="$(mktemp -d "${dest}.helpers.XXXXXX")"
+  chmod 0755 "$stage"
   for f in stage-dp-phase2.sh stage-dp-phase2-6.5.0.sh; do
     if [[ -f "${root}/client/${f}" ]]; then
       install -m 0755 "${root}/client/${f}" "${stage}/${f}"
@@ -165,10 +166,23 @@ engine_ensure_phase2_helpers() {
   done
   if [[ -d "${root}/client/lib" ]]; then
     mkdir -p "${stage}/lib"
+    chmod 0755 "${stage}/lib"
     cp -a "${root}/client/lib/." "${stage}/lib/"
   fi
+  if declare -F mm_normalize_http_public_tree_permissions >/dev/null 2>&1; then
+    mm_normalize_http_public_tree_permissions "$stage" client || {
+      rm -rf "$stage"
+      return 1
+    }
+  else
+    chmod 0755 "$stage"
+  fi
+  chmod 0755 "$dest" 2>/dev/null || true
   cp -a "${stage}/." "$dest/"
   rm -rf "$stage"
+  if declare -F mm_normalize_http_public_tree_permissions >/dev/null 2>&1; then
+    mm_normalize_http_public_tree_permissions "$dest" client || true
+  fi
   mm_check_phase2_helpers_ready
 }
 
@@ -1119,7 +1133,28 @@ engine_validate_http_layout() {
     return 1
   fi
 
-  local base="${MM_VERIFY_HTTP_BASE}"
+  local stable_name
+  stable_name="$(dp2_stable_bundle_name)"
+  # A. Local nginx smoke — service/alias/filesystem (never classify as IP detection).
+  if ! engine_http_local_smoke "$ver" "$stable_name"; then
+    mm_state_set HTTP_CONFIGURATION_READY FAIL
+    return 1
+  fi
+  # B. Advertised address smoke — configured Mirror Server IP / routing.
+  if ! engine_http_advertised_smoke "$ver" "$stable_name"; then
+    mm_state_set HTTP_CONFIGURATION_READY FAIL
+    return 1
+  fi
+  mm_state_set HTTP_CONFIGURATION_READY PASS
+  mm_ok "HTTP_VALIDATION=PASS"
+  return 0
+}
+
+# Build the concrete artifact URL list for a given HTTP base.
+engine_http_smoke_urls() {
+  local base="${1%/}"
+  local ver="$2"
+  local stable="$3"
   local urls=(
     "${base}/client/stage-dp-phase2.sh"
     "${base}/client/stage-dp-phase2.sh.sha256"
@@ -1127,8 +1162,6 @@ engine_validate_http_layout() {
     "${base}/dp-phase2/${ver}/${stable}.sha256"
   )
   if ! mm_is_phase2_only; then
-    # Probe /offline/meta-release-lts (not /offline/): nginx keeps autoindex off for
-    # /offline/, so a bare directory GET returns 403 even when content is healthy.
     urls+=(
       "${base}/ubuntu/"
       "${base}/ubuntu-security/"
@@ -1137,30 +1170,111 @@ engine_validate_http_layout() {
       "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh.sha256"
     )
   fi
-  local u code body bytes
-  mm_info "HTTP_VALIDATION_START"
-  body="$(mktemp)"
+  local u
   for u in "${urls[@]}"; do
-    code="$(curl -sS -o "$body" -w '%{http_code}' --connect-timeout 5 --max-time 15 "$u" 2>/dev/null || echo 000)"
-    bytes="$(wc -c <"$body" | tr -d ' ')"
-    # Only HTTP 200 with non-empty body is PASS; 3xx/4xx (incl. 403)/5xx/000/empty are FAIL.
-    if [[ "$code" != "200" ]]; then
-      rm -f "$body"
-      mm_error "HTTP_VALIDATION=FAIL url=${u} code=${code}"
-      mm_state_set HTTP_CONFIGURATION_READY FAIL
-      return 1
-    fi
-    if ! [[ "$bytes" =~ ^[0-9]+$ ]] || [[ "$bytes" -le 0 ]]; then
-      rm -f "$body"
-      mm_error "HTTP_VALIDATION=FAIL url=${u} code=${code} empty_body=1"
-      mm_state_set HTTP_CONFIGURATION_READY FAIL
-      return 1
-    fi
-    mm_info "HTTP_CHECK url=${u} code=${code} bytes=${bytes}"
+    printf '%s\n' "$u"
   done
+}
+
+engine_http_probe_url() {
+  local u="$1"
+  local body code bytes
+  body="$(mktemp)"
+  code="$(curl -sS -o "$body" -w '%{http_code}' --connect-timeout 5 --max-time 15 "$u" 2>/dev/null || echo 000)"
+  bytes="$(wc -c <"$body" | tr -d ' ')"
   rm -f "$body"
-  mm_state_set HTTP_CONFIGURATION_READY PASS
-  mm_ok "HTTP_VALIDATION=PASS"
+  if [[ "$code" != "200" ]]; then
+    printf '%s\n' "$code"
+    return 1
+  fi
+  if ! [[ "$bytes" =~ ^[0-9]+$ ]] || [[ "$bytes" -le 0 ]]; then
+    printf '%s\n' "$code"
+    return 1
+  fi
+  printf '%s\n' "$code"
+  return 0
+}
+
+engine_nginx_error_log_tail() {
+  local log="${MM_NGINX_ERROR_LOG:-/var/log/nginx/error.log}"
+  if [[ -f "$log" && -r "$log" ]]; then
+    tail -n 20 "$log" 2>/dev/null | tr '\n' '|' | sed 's/|$//'
+  fi
+}
+
+engine_http_local_smoke() {
+  local ver="${1:-${TARGET_DP_VERSION}}"
+  local stable="${2:-}"
+  local base u code
+  [[ -n "$stable" ]] || stable="$(dp2_stable_bundle_name)"
+  base="${MM_VERIFY_HTTP_BASE:-http://127.0.0.1}"
+  base="${base%/}"
+  mm_info "HTTP_LOCAL_SMOKE_START base=${base}"
+  while IFS= read -r u; do
+    [[ -n "$u" ]] || continue
+    if ! code="$(engine_http_probe_url "$u")"; then
+      mm_error "HTTP_LOCAL_SMOKE=FAIL"
+      mm_error "HTTP_FAILURE_CLASS=NGINX_OR_FILESYSTEM"
+      mm_error "HTTP_STATUS_CODE=${code}"
+      mm_error "url=${u}"
+      mm_error "NGINX_ERROR_LOG_TAIL=$(engine_nginx_error_log_tail)"
+      return 1
+    fi
+    mm_info "HTTP_LOCAL_CHECK url=${u} code=${code}"
+  done < <(engine_http_smoke_urls "$base" "$ver" "$stable")
+  mm_ok "HTTP_LOCAL_SMOKE=PASS"
+  return 0
+}
+
+engine_http_advertised_smoke() {
+  local ver="${1:-${TARGET_DP_VERSION}}"
+  local stable="${2:-}"
+  local base u code configured
+  [[ -n "$stable" ]] || stable="$(dp2_stable_bundle_name)"
+
+  # Prefer operator-confirmed Mirror Server IP; fall back to MIRROR_HTTP_URL.
+  configured="${MIRROR_SERVER_IP:-}"
+  if [[ -z "$configured" ]]; then
+    mm_load_gui_config
+    configured="${MIRROR_SERVER_IP:-}"
+  fi
+  if [[ -z "$configured" && -n "${MIRROR_HTTP_URL:-}" ]]; then
+    configured="$(mirror_host_extract_ipv4_from_url "${MIRROR_HTTP_URL}" || true)"
+  fi
+  if [[ -z "$configured" && -n "${RESOLVED_MIRROR_HOST_IPV4:-}" ]]; then
+    configured="${RESOLVED_MIRROR_HOST_IPV4}"
+  fi
+  if [[ -z "$configured" ]]; then
+    mm_error "HTTP_ADVERTISED_SMOKE=FAIL"
+    mm_error "HTTP_FAILURE_CLASS=ADVERTISED_ADDRESS_OR_NETWORK"
+    mm_error "reason=no_configured_mirror_server_ip"
+    return 1
+  fi
+  base="http://${configured}"
+  # Allow test override of advertised probe base without changing configured IP.
+  if [[ -n "${MM_VERIFY_ADVERTISED_HTTP_BASE:-}" ]]; then
+    base="${MM_VERIFY_ADVERTISED_HTTP_BASE}"
+  fi
+  base="${base%/}"
+  # Skip redundant advertised probe when it is the same as local base (unit tests).
+  if [[ "$base" == "${MM_VERIFY_HTTP_BASE:-http://127.0.0.1}" ]]; then
+    mm_info "HTTP_ADVERTISED_SMOKE=SKIPPED reason=same_as_local_base"
+    mm_ok "HTTP_ADVERTISED_SMOKE=PASS"
+    return 0
+  fi
+  mm_info "HTTP_ADVERTISED_SMOKE_START base=${base}"
+  while IFS= read -r u; do
+    [[ -n "$u" ]] || continue
+    if ! code="$(engine_http_probe_url "$u")"; then
+      mm_error "HTTP_ADVERTISED_SMOKE=FAIL"
+      mm_error "HTTP_FAILURE_CLASS=ADVERTISED_ADDRESS_OR_NETWORK"
+      mm_error "HTTP_STATUS_CODE=${code}"
+      mm_error "url=${u}"
+      return 1
+    fi
+    mm_info "HTTP_ADVERTISED_CHECK url=${u} code=${code}"
+  done < <(engine_http_smoke_urls "$base" "$ver" "$stable")
+  mm_ok "HTTP_ADVERTISED_SMOKE=PASS"
   return 0
 }
 
@@ -1272,6 +1386,9 @@ engine_download_and_prepare() {
     mm_die "CONFIGURATION_READY=FAIL"
   fi
   mm_state_set CONFIGURATION_READY PASS
+  if ! mm_require_configured_mirror_server_ip; then
+    mm_die "MIRROR_SERVER_IP_REQUIRED=YES"
+  fi
   mm_validate_dp_version "$TARGET_DP_VERSION"
   [[ "$TARGET_DP_VERSION" == "$PHASE2_TARGET_VERSION" ]] \
     || mm_die "PHASE2_TARGET=FAIL expected=${PHASE2_TARGET_VERSION} got=${TARGET_DP_VERSION}"
@@ -1479,8 +1596,9 @@ engine_nginx_bin() { printf '%s\n' "${MM_NGINX_BIN:-nginx}"; }
 engine_systemctl_bin() { printf '%s\n' "${MM_SYSTEMCTL_BIN:-systemctl}"; }
 
 engine_enable_http_distribution() {
-  # Real nginx enable: layout check → site install → nginx -t → enable/reload → HTTP smoke.
-  # On any failure: restore previous site config and do NOT set HTTP_DISTRIBUTION=ENABLED.
+  # Real nginx enable: layout check → permission closure → site install →
+  # nginx -t → enable/reload → local + advertised HTTP smoke.
+  # On any failure: restore previous site config/service state; preserve artifacts.
   mm_load_gui_config
   engine_resolve_paths
   dp2_set_version "$TARGET_DP_VERSION"
@@ -1488,27 +1606,75 @@ engine_enable_http_distribution() {
   export MM_SHA256_OPERATION="${MM_SHA256_OPERATION:-enable-http}"
   MM_BUNDLE_SHA256_DONE_FP=""
 
+  # Require operator-confirmed Mirror Server IP before enabling HTTP.
+  if ! mm_require_configured_mirror_server_ip; then
+    mm_status_set HTTP_DISTRIBUTION DISABLED
+    mm_state_set HTTP_DISTRIBUTION_READY NO
+    mm_die "HTTP_DISTRIBUTION=FAIL MIRROR_SERVER_IP_REQUIRED"
+  fi
+
   # Ensure host-pinned clients exist via the same authoritative finalizer used
   # by Download and Prepare (no duplicate rebuild logic).
-  if ! mm_check_client_files_ready; then
+  # First check is silent (on-disk presence only) to avoid duplicate CLIENT_FILES_READY logs.
+  local clients_on_disk=0
+  if mm_is_phase2_only; then
+    mm_client_files_ready_phase2 "${MM_CLIENT_ROOT}" && clients_on_disk=1
+  else
+    mm_client_files_ready "${MM_CLIENT_ROOT}" && clients_on_disk=1
+  fi
+  if [[ "$clients_on_disk" -ne 1 ]]; then
     if mm_is_phase2_only; then
       mm_info "OS_HOP_CLIENT_FILES_REQUIRED=NO"
+      mm_info "CLIENT_FILES_ON_DISK_READY=NO"
       engine_ensure_phase2_helpers || true
     elif [[ -f "${MM_SELECTIVE_ROOT}/state/READY" ]]; then
-      mm_info "CLIENT_FILES_READY=NO — rebuilding local signed client set"
+      mm_info "CLIENT_FILES_ON_DISK_READY=NO — rebuilding local signed client set"
       mm_info "DOWNLOAD_PREPARE_USES_AUTHORITATIVE_CLIENT_FINALIZER=YES"
       # HTTP verify runs after nginx enable below; skip during rebuild.
       engine_rebuild_publish_local_client_set 1 \
         || mm_die "HTTP_DISTRIBUTION=FAIL client rebuild"
     fi
+  else
+    mm_info "CLIENT_FILES_ON_DISK_READY=PASS"
   fi
 
+  # Single authoritative CLIENT_FILES_READY log for this Enable HTTP run.
   if ! mm_check_client_files_ready; then
     mm_status_set HTTP_DISTRIBUTION DISABLED
     mm_state_set HTTP_DISTRIBUTION_READY NO
     mm_die "HTTP_DISTRIBUTION=FAIL CLIENT_FILES_READY"
   fi
   mm_info "ENABLE_HTTP_USES_AUTHORITATIVE_CLIENT_FINALIZER=YES"
+
+  # Normalize + verify HTTP public tree permissions before touching nginx.
+  chmod 0755 "${MM_MIRROR_ROOT}" 2>/dev/null || true
+  if [[ -d "${MM_CLIENT_ROOT}" ]]; then
+    mm_normalize_http_public_tree_permissions "${MM_CLIENT_ROOT}" client \
+      || mm_die "HTTP_DISTRIBUTION=FAIL CLIENT_PUBLIC_PERMISSION_NORMALIZE"
+  fi
+  if [[ -d "${MM_DP_PHASE2_ROOT}" ]]; then
+    mm_normalize_http_public_tree_permissions "${MM_DP_PHASE2_ROOT}" phase2 \
+      || mm_die "HTTP_DISTRIBUTION=FAIL PHASE2_PUBLIC_PERMISSION_NORMALIZE"
+  fi
+  if [[ -d "${MM_SELECTIVE_ROOT}" ]]; then
+    # Ensure nginx can traverse the selective root (avoid chmod -R / full-tree walk).
+    chmod 0755 "${MM_SELECTIVE_ROOT}" 2>/dev/null || true
+    for _sel_sub in ubuntu shared offline keys hops; do
+      [[ -d "${MM_SELECTIVE_ROOT}/${_sel_sub}" ]] || continue
+      chmod 0755 "${MM_SELECTIVE_ROOT}/${_sel_sub}" 2>/dev/null || true
+    done
+    if [[ -d "${MM_SELECTIVE_ROOT}/shared/offline" ]]; then
+      chmod 0755 "${MM_SELECTIVE_ROOT}/shared" "${MM_SELECTIVE_ROOT}/shared/offline" 2>/dev/null || true
+    fi
+  fi
+  if ! mm_verify_http_publication_permission_closure \
+    "${MM_MIRROR_ROOT}" "${MM_CLIENT_ROOT}" "${MM_DP_PHASE2_ROOT}" "$TARGET_DP_VERSION"
+  then
+    mm_status_set HTTP_DISTRIBUTION DISABLED
+    mm_state_set HTTP_DISTRIBUTION_READY NO
+    mm_die "HTTP_DISTRIBUTION=FAIL HTTP_PUBLICATION_PERMISSION_CLOSURE"
+  fi
+  mm_ok "CLIENT_FILES_PERMISSION_READY=PASS"
 
   # Layout validation without requiring live HTTP yet (defer probes until nginx is up)
   local prev_skip="${MM_SKIP_HTTP_VALIDATE:-0}"
@@ -1549,11 +1715,19 @@ engine_enable_http_distribution() {
   local site_avail="${MM_NGINX_SITE_AVAIL:-/etc/nginx/sites-available/${site_name}}"
   local site_en="${MM_NGINX_SITE_ENABLED:-/etc/nginx/sites-enabled/${site_name}}"
   local nginx_bin systemctl_bin ngx_tmp backup=""
+  local prev_active=0 prev_enabled=0
   nginx_bin="$(engine_nginx_bin)"
   systemctl_bin="$(engine_systemctl_bin)"
 
   command -v "$nginx_bin" >/dev/null 2>&1 || mm_die "NGINX_PACKAGE=FAIL binary missing"
   command -v "$systemctl_bin" >/dev/null 2>&1 || mm_die "SYSTEMCTL=FAIL missing"
+
+  if "$systemctl_bin" is-active --quiet nginx 2>/dev/null; then
+    prev_active=1
+  fi
+  if "$systemctl_bin" is-enabled --quiet nginx 2>/dev/null; then
+    prev_enabled=1
+  fi
 
   ngx_tmp="$(mktemp)"
   engine_render_nginx_site >"$ngx_tmp"
@@ -1578,13 +1752,47 @@ engine_enable_http_distribution() {
 
   local restore_nginx
   restore_nginx() {
+    local rollback_config=FAIL rollback_svc=FAIL
     if [[ -n "${backup:-}" && -f "$backup" ]]; then
       cp -a "$backup" "$site_avail"
+      rollback_config=PASS
+      mm_ok "NGINX_ROLLBACK_CONFIG=PASS"
       mm_warn "NGINX_ROLLBACK=YES restored ${backup}"
+    else
+      # No prior site: remove the site we just installed.
+      rm -f "$site_en" 2>/dev/null || true
+      if [[ -z "${backup:-}" ]]; then
+        rm -f "$site_avail" 2>/dev/null || true
+      fi
+      rollback_config=PASS
+      mm_ok "NGINX_ROLLBACK_CONFIG=PASS"
+      mm_warn "NGINX_ROLLBACK=YES removed new site"
+    fi
+    if command -v "$nginx_bin" >/dev/null 2>&1; then
+      "$nginx_bin" -t >/dev/null 2>&1 || true
+    fi
+    if command -v "$systemctl_bin" >/dev/null 2>&1; then
+      if [[ "$prev_active" -eq 1 ]]; then
+        "$systemctl_bin" reload nginx 2>/dev/null \
+          || "$systemctl_bin" restart nginx 2>/dev/null \
+          || true
+      else
+        "$systemctl_bin" stop nginx 2>/dev/null || true
+      fi
+      if [[ "$prev_enabled" -eq 0 ]]; then
+        "$systemctl_bin" disable nginx 2>/dev/null || true
+      fi
+      rollback_svc=PASS
+      mm_ok "NGINX_ROLLBACK_SERVICE_STATE=PASS"
     fi
     mm_status_set HTTP_DISTRIBUTION DISABLED
     mm_state_set HTTP_DISTRIBUTION_READY NO
     mm_status_set HTTP_ENABLE_RESULT FAIL
+    mm_info "HTTP_ENABLE_RESULT=FAIL"
+    mm_info "HTTP_DISTRIBUTION=DISABLED"
+    mm_info "PREPARED_ARTIFACTS_PRESERVED=YES"
+    mm_info "NGINX_ROLLBACK_CONFIG=${rollback_config}"
+    mm_info "NGINX_ROLLBACK_SERVICE_STATE=${rollback_svc}"
   }
 
   if [[ "${MM_NGINX_TEST_FAIL:-0}" == "1" ]] || ! "$nginx_bin" -t; then
@@ -1613,11 +1821,6 @@ engine_enable_http_distribution() {
   if [[ "${MM_SKIP_HTTP_VALIDATE:-0}" != "1" ]]; then
     if [[ "${MM_HTTP_VALIDATE_MOCK_FAIL:-0}" == "1" ]] || ! engine_validate_http_layout; then
       restore_nginx
-      if command -v "$systemctl_bin" >/dev/null 2>&1; then
-        "$systemctl_bin" reload nginx 2>/dev/null \
-          || "$systemctl_bin" restart nginx 2>/dev/null \
-          || true
-      fi
       mm_die "HTTP_SMOKE=FAIL"
     fi
   else
@@ -1629,6 +1832,7 @@ engine_enable_http_distribution() {
   mm_status_set HTTP_DISTRIBUTION ENABLED
   mm_state_set HTTP_DISTRIBUTION_READY YES
   mm_status_set HTTP_CONFIGURATION_READY PASS
+  mm_status_set HTTP_ENABLE_RESULT PASS
   mm_record_http_validated
   mm_info "CLIENT_HTTP_READY=PASS"
   mm_ok "HTTP_DISTRIBUTION=ENABLED"

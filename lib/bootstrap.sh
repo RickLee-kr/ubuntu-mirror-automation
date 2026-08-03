@@ -321,16 +321,19 @@ um_bootstrap_source_mirror_host_libs() {
   source "${root}/scripts/lib/local_client_signing.sh"
 }
 
-# Persist resolved local Mirror URL for Mirror Manager command generation.
+# Persist operator-confirmed Mirror URL for Mirror Manager command generation.
+# When mirror_base is empty, leave MIRROR_SERVER_IP/MIRROR_HTTP_URL unset so the
+# operator must confirm them in Configuration before prepare/enable.
 um_bootstrap_persist_local_mirror_url() {
   local confdir="${INSTALL_CONF_DIR:-/etc/ubuntu-mirror}"
   local conf="${confdir}/dp-upgrade-mirror.conf"
-  local mirror_base="$1"
-  local tmp prep user pass
+  local mirror_base="${1:-}"
+  local tmp prep user pass server_ip
   mkdir -p "$confdir"
   prep="FULL"
   user=""
   pass=""
+  server_ip=""
   if [[ -f "$conf" ]]; then
     # shellcheck disable=SC1090
     set -a
@@ -340,6 +343,10 @@ um_bootstrap_persist_local_mirror_url() {
     prep="${PREPARATION_MODE:-FULL}"
     user="${ACPS_USERNAME:-}"
     pass="${ACPS_PASSWORD:-}"
+    server_ip="${MIRROR_SERVER_IP:-}"
+  fi
+  if [[ -n "$mirror_base" ]]; then
+    server_ip="$(mirror_host_extract_ipv4_from_url "$mirror_base" || true)"
   fi
   tmp="$(mktemp)"
   cat >"$tmp" <<EOF
@@ -348,6 +355,7 @@ um_bootstrap_persist_local_mirror_url() {
 PREPARATION_MODE=$(printf '%q' "${prep}")
 ACPS_USERNAME=$(printf '%q' "${user}")
 ACPS_PASSWORD=$(printf '%q' "${pass}")
+MIRROR_SERVER_IP=$(printf '%q' "${server_ip}")
 MIRROR_HTTP_URL=$(printf '%q' "${mirror_base}")
 EOF
   chmod 600 "$tmp"
@@ -356,7 +364,11 @@ EOF
   if [[ "${EUID}" -eq 0 ]]; then
     chown root:root "$conf" 2>/dev/null || true
   fi
-  um_ok "INSTALL_PERSISTS_LOCAL_MIRROR_URL=YES path=${conf} url=${mirror_base}"
+  if [[ -n "$mirror_base" ]]; then
+    um_ok "INSTALL_PERSISTS_LOCAL_MIRROR_URL=YES path=${conf} url=${mirror_base}"
+  else
+    um_info "INSTALL_PERSISTS_LOCAL_MIRROR_URL=DEFERRED path=${conf}"
+  fi
 }
 
 um_bootstrap_selective_ready() {
@@ -373,6 +385,7 @@ um_bootstrap_publish_phase2_helpers_only() {
   local stage f
   mkdir -p "$dest"
   stage="$(mktemp -d "${dest}.helpers.XXXXXX")"
+  chmod 0755 "$stage"
   for f in stage-dp-phase2.sh stage-dp-phase2-6.5.0.sh; do
     if [[ -f "${src_root}/client/${f}" ]]; then
       install -m 0755 "${src_root}/client/${f}" "${stage}/${f}"
@@ -381,6 +394,7 @@ um_bootstrap_publish_phase2_helpers_only() {
   done
   if [[ -d "${src_root}/client/lib" ]]; then
     mkdir -p "${stage}/lib"
+    chmod 0755 "${stage}/lib"
     cp -a "${src_root}/client/lib/." "${stage}/lib/"
   fi
   if [[ -n "${LOCAL_SIGNING_PUBLIC_KEY:-}" && -f "${LOCAL_SIGNING_PUBLIC_KEY}" ]]; then
@@ -391,9 +405,17 @@ um_bootstrap_publish_phase2_helpers_only() {
       chmod 0644 "${stage}/fingerprint"
     fi
   fi
+  chmod 0755 "$dest" 2>/dev/null || true
   # Merge helpers into dest without removing an existing hop set.
   cp -a "${stage}/." "$dest/"
   rm -rf "$stage"
+  chmod 0755 "$dest" 2>/dev/null || true
+  # Apply public permission contract when the helper is available.
+  if [[ -f "${src_root}/scripts/lib/http_publication_permissions.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${src_root}/scripts/lib/http_publication_permissions.sh"
+    mm_normalize_http_public_tree_permissions "$dest" client || true
+  fi
   local_signing_assert_private_not_published "$dest" || return 1
   return 0
 }
@@ -409,11 +431,49 @@ um_bootstrap_deploy_client_http_artifacts() {
 
   um_bootstrap_source_mirror_host_libs \
     || um_die "CLIENT_ARTIFACT=FAIL mirror host resolution / signing libraries missing"
-  mirror_host_resolve_and_log \
-    || um_die "MIRROR_IP_RESOLUTION_RESULT=FAIL refusing to install without an authoritative mirror host IPv4"
-  mirror_base="${RESOLVED_MIRROR_BASE_URL%/}"
-  um_bootstrap_persist_local_mirror_url "$mirror_base"
-  um_info "INSTALL_RESOLVES_LOCAL_HOST_IP=YES url=${mirror_base}"
+
+  # Fresh bootstrap: operator-confirmed Mirror Server IP may not exist yet.
+  # Auto-detection is a suggestion only — do not treat it as authoritative and
+  # do not fail install when Configuration has not been saved.
+  mirror_base=""
+  if [[ -f "${confdir}/dp-upgrade-mirror.conf" ]]; then
+    local existing_ip existing_url
+    existing_ip="$(mirror_host_read_conf_field "${confdir}/dp-upgrade-mirror.conf" MIRROR_SERVER_IP || true)"
+    existing_url="$(mirror_host_read_conf_field "${confdir}/dp-upgrade-mirror.conf" MIRROR_HTTP_URL || true)"
+    if [[ -n "$existing_ip" ]] && ! mirror_host_is_placeholder_value "$existing_ip"; then
+      if mirror_host_validate_ipv4_on_host "$existing_ip" 2>/dev/null \
+        || [[ "${SKIP_MIRROR_HOST_VALIDATE:-0}" == "1" ]]; then
+        mirror_base="$(mirror_base_url_from_ipv4 "$existing_ip")"
+        RESOLVED_MIRROR_HOST_IPV4="$existing_ip"
+        RESOLVED_MIRROR_BASE_URL="$mirror_base"
+        MIRROR_IP_SOURCE=OPERATOR_CONFIRMED_CONFIG
+      fi
+    elif [[ -n "$existing_url" ]] && ! mirror_host_is_placeholder_value "$existing_url"; then
+      existing_ip="$(mirror_host_extract_ipv4_from_url "$existing_url" || true)"
+      if [[ -n "$existing_ip" ]] && mirror_host_validate_ipv4_on_host "$existing_ip" 2>/dev/null; then
+        mirror_base="$(mirror_base_url_from_ipv4 "$existing_ip")"
+        RESOLVED_MIRROR_HOST_IPV4="$existing_ip"
+        RESOLVED_MIRROR_BASE_URL="$mirror_base"
+        MIRROR_IP_SOURCE=OPERATOR_CONFIRMED_CONFIG
+      fi
+    fi
+  fi
+
+  if [[ -z "$mirror_base" ]]; then
+    local suggested=""
+    suggested="$(mirror_host_suggest_primary_ipv4 2>/dev/null || true)"
+    um_info "MIRROR_IP_CONFIGURATION=REQUIRED_BEFORE_PREPARE"
+    if [[ -n "$suggested" ]]; then
+      um_info "Detected Mirror Server IP suggestion: ${suggested}"
+      um_info "AUTO_DETECTION_ROLE=CONFIGURATION_SUGGESTION"
+    fi
+    um_bootstrap_persist_local_mirror_url ""
+    um_info "INSTALL_RESOLVES_LOCAL_HOST_IP=DEFERRED"
+  else
+    um_bootstrap_persist_local_mirror_url "$mirror_base"
+    um_info "INSTALL_RESOLVES_LOCAL_HOST_IP=YES url=${mirror_base}"
+    um_info "MIRROR_IP_SOURCE=OPERATOR_CONFIRMED_CONFIG"
+  fi
   um_info "CENTRAL_PRODUCTION_PRIVATE_KEY_REQUIRED=NO"
   um_info "OUT_OF_BAND_FINGERPRINT_REQUIRED=NO"
   um_info "EXPECTED_FINGERPRINT_COMMAND_ARGUMENT_REQUIRED=NO"
@@ -452,6 +512,14 @@ um_bootstrap_deploy_client_http_artifacts() {
     um_info "PRIVATE_KEY_HTTP_PUBLISHED=NO"
     um_info "CLIENT_FILES_READY=NOT_REQUIRED_DURING_BOOTSTRAP"
     um_info "CLIENT_HTTP_READY=DEFERRED_UNTIL_ENABLE_HTTP"
+    return 0
+  fi
+
+  if [[ -z "$mirror_base" ]]; then
+    um_info "CLIENT_SET_BUILD=DEFERRED_UNTIL_MIRROR_IP_CONFIGURED"
+    um_bootstrap_publish_phase2_helpers_only "$dest" || true
+    um_info "CLIENT_FILES_READY=NOT_REQUIRED_DURING_BOOTSTRAP"
+    um_info "MIRROR_IP_CONFIGURATION=REQUIRED_BEFORE_PREPARE"
     return 0
   fi
 

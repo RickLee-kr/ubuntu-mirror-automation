@@ -26,6 +26,9 @@ MM_SKIP_ROOT_CHECK="${MM_SKIP_ROOT_CHECK:-0}"
 # Authoritative Mirror Host IPv4 resolution (single source of truth).
 # shellcheck source=mirror_host_ip.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mirror_host_ip.sh"
+# HTTP public-tree permission contract (nginx-readable publish).
+# shellcheck source=http_publication_permissions.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/http_publication_permissions.sh"
 
 # Fixed ACPS endpoint (not user-editable). Credentials come from GUI config only.
 ACPS_BASE_URL_FIXED="${ACPS_BASE_URL_FIXED:-https://acps.stellarcyber.ai/provision/aelladeb_py3}"
@@ -592,6 +595,7 @@ mm_load_gui_config() {
   ACPS_USERNAME="${ACPS_USERNAME:-}"
   ACPS_PASSWORD="${ACPS_PASSWORD:-}"
   MIRROR_HTTP_URL="${MIRROR_HTTP_URL:-}"
+  MIRROR_SERVER_IP="${MIRROR_SERVER_IP:-}"
   if [[ -f "${MM_CONFIG_FILE}" ]]; then
     # shellcheck disable=SC1090
     set -a
@@ -606,6 +610,14 @@ mm_load_gui_config() {
   ACPS_USERNAME="${ACPS_USERNAME:-${ACPS_USER:-}}"
   ACPS_PASSWORD="${ACPS_PASSWORD:-${ACPS_PASS:-}}"
   MIRROR_HTTP_URL="${MIRROR_HTTP_URL:-}"
+  MIRROR_SERVER_IP="${MIRROR_SERVER_IP:-}"
+  # Derive missing field from the other when only one is present.
+  if [[ -z "${MIRROR_SERVER_IP}" && -n "${MIRROR_HTTP_URL}" ]]; then
+    MIRROR_SERVER_IP="$(mirror_host_extract_ipv4_from_url "${MIRROR_HTTP_URL}" || true)"
+  fi
+  if [[ -n "${MIRROR_SERVER_IP}" && -z "${MIRROR_HTTP_URL}" ]]; then
+    MIRROR_HTTP_URL="$(mirror_base_url_from_ipv4 "${MIRROR_SERVER_IP}" || true)"
+  fi
   ACPS_BASE_URL="${ACPS_BASE_URL_FIXED}"
 }
 
@@ -614,8 +626,9 @@ mm_save_gui_config() {
   local mem_user="${ACPS_USERNAME:-}"
   local mem_pass="${ACPS_PASSWORD:-}"
   local mem_mirror="${MIRROR_HTTP_URL:-}"
+  local mem_ip="${MIRROR_SERVER_IP:-}"
   local mem_mode="${PREPARATION_MODE:-}"
-  local disk_user="" disk_pass="" disk_mirror=""
+  local disk_user="" disk_pass="" disk_mirror="" disk_ip=""
 
   if [[ -f "${MM_CONFIG_FILE}" ]]; then
     prev_mode="$(awk -F= '/^PREPARATION_MODE=/{print substr($0,index($0,"=")+1); exit}' "${MM_CONFIG_FILE}" 2>/dev/null || true)"
@@ -629,6 +642,7 @@ mm_save_gui_config() {
       printf 'disk_user=%s\n' "$(printf '%q' "${ACPS_USERNAME:-}")"
       printf 'disk_pass=%s\n' "$(printf '%q' "${ACPS_PASSWORD:-}")"
       printf 'disk_mirror=%s\n' "$(printf '%q' "${MIRROR_HTTP_URL:-}")"
+      printf 'disk_ip=%s\n' "$(printf '%q' "${MIRROR_SERVER_IP:-}")"
     )"
   fi
 
@@ -636,7 +650,15 @@ mm_save_gui_config() {
   ACPS_USERNAME="${mem_user:-$disk_user}"
   ACPS_PASSWORD="${mem_pass:-$disk_pass}"
   MIRROR_HTTP_URL="${mem_mirror:-$disk_mirror}"
+  MIRROR_SERVER_IP="${mem_ip:-$disk_ip}"
   PREPARATION_MODE="${mem_mode:-${prev_mode:-FULL}}"
+
+  # Keep MIRROR_SERVER_IP and MIRROR_HTTP_URL consistent.
+  if [[ -n "${MIRROR_SERVER_IP}" ]]; then
+    MIRROR_HTTP_URL="$(mirror_base_url_from_ipv4 "${MIRROR_SERVER_IP}" || true)"
+  elif [[ -n "${MIRROR_HTTP_URL}" ]]; then
+    MIRROR_SERVER_IP="$(mirror_host_extract_ipv4_from_url "${MIRROR_HTTP_URL}" || true)"
+  fi
 
   mm_normalize_preparation_mode
   mm_force_phase2_target
@@ -653,6 +675,7 @@ mm_save_gui_config() {
     printf 'PREPARATION_MODE=%s\n' "$(printf '%q' "${PREPARATION_MODE}")"
     printf 'ACPS_USERNAME=%s\n' "$(printf '%q' "${ACPS_USERNAME}")"
     printf 'ACPS_PASSWORD=%s\n' "$(printf '%q' "${ACPS_PASSWORD}")"
+    printf 'MIRROR_SERVER_IP=%s\n' "$(printf '%q' "${MIRROR_SERVER_IP:-}")"
     printf 'MIRROR_HTTP_URL=%s\n' "$(printf '%q' "${MIRROR_HTTP_URL:-}")"
   } >"$tmp"
   umask "$old_umask"
@@ -678,6 +701,20 @@ mm_save_gui_config() {
 mm_client_mirror_url() {
   local url host
   mm_load_gui_config
+  # Prefer operator-confirmed Mirror Server IP.
+  if [[ -n "${MIRROR_SERVER_IP:-}" ]]; then
+    if ! mirror_host_is_usable_ipv4 "${MIRROR_SERVER_IP}"; then
+      mm_error "MIRROR_SERVER_IP=${MIRROR_SERVER_IP} is not a usable IPv4"
+      return 1
+    fi
+    if ! mirror_host_validate_ipv4_on_host "${MIRROR_SERVER_IP}"; then
+      mm_error "MIRROR_SERVER_IP=${MIRROR_SERVER_IP} is not configured on this host"
+      return 1
+    fi
+    MIRROR_HTTP_URL="$(mirror_base_url_from_ipv4 "${MIRROR_SERVER_IP}")"
+    printf '%s\n' "$MIRROR_HTTP_URL"
+    return 0
+  fi
   url="${MIRROR_HTTP_URL:-}"
   url="${url%/}"
   if [[ -n "$url" ]] && [[ "$url" =~ ^https?://[A-Za-z0-9._:-]+(/.*)?$ ]]; then
@@ -697,7 +734,46 @@ mm_client_mirror_url() {
   mirror_host_resolve_and_log >&2 || return 1
   [[ -n "${RESOLVED_MIRROR_BASE_URL:-}" ]] || return 1
   MIRROR_HTTP_URL="$RESOLVED_MIRROR_BASE_URL"
+  MIRROR_SERVER_IP="${RESOLVED_MIRROR_HOST_IPV4:-}"
   printf '%s\n' "$RESOLVED_MIRROR_BASE_URL"
+}
+
+# Require operator-confirmed Mirror Server IP for prepare / enable-http.
+# Auto-detection is not authoritative here.
+mm_require_configured_mirror_server_ip() {
+  local ip url
+  mm_load_gui_config
+  ip="${MIRROR_SERVER_IP:-}"
+  if [[ -z "$ip" && -n "${MIRROR_HTTP_URL:-}" ]]; then
+    ip="$(mirror_host_extract_ipv4_from_url "${MIRROR_HTTP_URL}" || true)"
+  fi
+  if [[ -z "$ip" ]]; then
+    mm_error "MIRROR_IP_SOURCE=MISSING"
+    mm_error "MIRROR_SERVER_IP_REQUIRED=YES"
+    mm_info "Set Mirror Server IP in Configuration before Download and Prepare / Enable HTTP"
+    return 1
+  fi
+  if ! mirror_host_is_usable_ipv4 "$ip"; then
+    mm_error "MIRROR_SERVER_IP_INVALID=${ip}"
+    return 1
+  fi
+  if ! mirror_host_validate_ipv4_on_host "$ip"; then
+    mm_error "MIRROR_IP_INTERFACE_VALIDATION=FAIL ip=${ip}"
+    mm_error "configured Mirror Server IP is not on an active non-excluded interface"
+    return 1
+  fi
+  url="$(mirror_base_url_from_ipv4 "$ip")"
+  MIRROR_SERVER_IP="$ip"
+  MIRROR_HTTP_URL="$url"
+  RESOLVED_MIRROR_HOST_IPV4="$ip"
+  RESOLVED_MIRROR_BASE_URL="$url"
+  MIRROR_IP_SOURCE=OPERATOR_CONFIRMED_CONFIG
+  MIRROR_IP_RESOLUTION_SOURCE=OPERATOR_CONFIRMED_CONFIG
+  mm_info "MIRROR_IP_SOURCE=OPERATOR_CONFIRMED_CONFIG"
+  mm_info "CONFIGURED_MIRROR_SERVER_IP=${ip}"
+  mm_info "CONFIGURED_MIRROR_BASE_URL=${url}"
+  mm_ok "MIRROR_IP_INTERFACE_VALIDATION=PASS"
+  return 0
 }
 
 mm_validate_source_dp_version() {

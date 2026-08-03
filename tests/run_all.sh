@@ -70,6 +70,9 @@ TEST_LIST=(
   test_prepare_backup_staging.sh
   test_migrate_apt_mirror_to_root.sh
   test_mirror_host_ip_resolution.sh
+  test_mirror_manager_ip_configuration.sh
+  test_http_publication_permissions.sh
+  test_http_enable_local_smoke.sh
   test_client_mirror_pin_gates.sh
   test_per_mirror_local_signing.sh
   test_client_ready_circular_gate.sh

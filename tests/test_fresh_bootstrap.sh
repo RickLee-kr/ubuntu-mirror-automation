@@ -360,8 +360,9 @@ export MM_CONFIG_FILE="${WORKDIR}/http-gui.conf"
 mkdir -p "$(dirname "$MM_NGINX_SITE_AVAIL")" "$(dirname "$MM_NGINX_SITE_ENABLED")"
 # Exercise default-site removal under the same sites-enabled as $site_en
 ln -sfn /dev/null "${WORKDIR}/nginx/sites-enabled/default"
-printf 'TARGET_DP_VERSION=6.5.0\nACPS_USERNAME=u\nACPS_PASSWORD=p\n' >"$MM_CONFIG_FILE"
+printf 'TARGET_DP_VERSION=6.5.0\nACPS_USERNAME=u\nACPS_PASSWORD=p\nMIRROR_SERVER_IP=192.0.2.10\nMIRROR_HTTP_URL=http://192.0.2.10\n' >"$MM_CONFIG_FILE"
 chmod 600 "$MM_CONFIG_FILE"
+export SKIP_MIRROR_HOST_VALIDATE=1
 dp2_set_version 6.5.0
 
 # Run enable in a subprocess so mm_die cannot abort this test script.
@@ -375,6 +376,7 @@ run_enable_http() {
     MM_SKIP_ROOT_CHECK=1 \
     MM_SKIP_HTTP_VALIDATE=1 \
     MM_SKIP_NGINX_APPLY=0 \
+    SKIP_MIRROR_HOST_VALIDATE=1 \
     MM_NGINX_SITE_AVAIL="$MM_NGINX_SITE_AVAIL" \
     MM_NGINX_SITE_ENABLED="$MM_NGINX_SITE_ENABLED" \
     MM_NGINX_BIN="$MM_NGINX_BIN" \

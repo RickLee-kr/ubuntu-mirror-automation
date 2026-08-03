@@ -16,6 +16,8 @@ source "${ROOT}/scripts/lib/mirror_host_ip.sh"
 source "${ROOT}/scripts/lib/client_mirror_gates.sh"
 # shellcheck source=lib/local_client_signing.sh
 source "${ROOT}/scripts/lib/local_client_signing.sh"
+# shellcheck source=lib/http_publication_permissions.sh
+source "${ROOT}/scripts/lib/http_publication_permissions.sh"
 
 BASE_PATH="${BASE_PATH:-/var/spool/apt-mirror}"
 CLIENT_HTTP_ROOT="${CLIENT_HTTP_ROOT:-${BASE_PATH}/client}"
@@ -304,7 +306,11 @@ if [[ "$SKIP_DEPLOY" == "1" ]]; then
 fi
 
 STAGE_DIR="$(mktemp -d "${CLIENT_HTTP_ROOT}.stage.XXXXXX")"
+# mktemp -d creates 0700; nginx (www-data) cannot traverse 0700 roots after swap.
+chmod 0755 "$STAGE_DIR"
 mkdir -p "$STAGE_DIR"
+# Ensure live parent spool allows nginx traversal before publish.
+chmod 0755 "$(dirname "$CLIENT_HTTP_ROOT")" 2>/dev/null || true
 
 # Stage full set: clients, sidecars, hop dirs, public key, fingerprint, phase2 helpers.
 for hop in "${HOPS[@]}"; do
@@ -317,6 +323,7 @@ for hop in "${HOPS[@]}"; do
   fi
   if [[ -d "${ARTIFACT_DIR}/${hop}" ]]; then
     mkdir -p "${STAGE_DIR}/${hop}"
+    chmod 0755 "${STAGE_DIR}/${hop}"
     cp -a "${ARTIFACT_DIR}/${hop}/." "${STAGE_DIR}/${hop}/"
   fi
 done
@@ -339,6 +346,7 @@ for f in stage-dp-phase2.sh stage-dp-phase2-6.5.0.sh; do
 done
 if [[ -d "${ROOT}/client/lib" ]]; then
   mkdir -p "${STAGE_DIR}/lib"
+  chmod 0755 "${STAGE_DIR}/lib"
   cp -a "${ROOT}/client/lib/." "${STAGE_DIR}/lib/"
 fi
 
@@ -363,7 +371,21 @@ echo "CLIENT_SET_PREPUBLISH_VERIFY=PASS"
 echo "CLIENT_SET_VERIFY_COMPLETE=YES"
 echo "ALL_FOUR_CLIENTS_PREPUBLISH_VERIFIED=YES"
 
+# Permission contract before atomic swap — never publish a 0700 tree.
+# On failure leave the existing live client set untouched.
+if ! mm_client_stage_prepare_public_permissions "$STAGE_DIR" "$(dirname "$CLIENT_HTTP_ROOT")"; then
+  evidence "CLIENT_PUBLIC_PERMISSION_VERIFY=FAIL"
+  evidence "CLIENT_SET_ATOMIC_SWAP=NOT_STARTED"
+  echo "CLIENT_PUBLIC_PERMISSION_VERIFY=FAIL" >&2
+  echo "CLIENT_SET_ATOMIC_SWAP=NOT_STARTED" >&2
+  fail_build "" "prepublish_permissions" "CLIENT_PUBLIC_PERMISSION_PREPUBLISH_VERIFY=FAIL" 1
+fi
+evidence_echo "CLIENT_PUBLIC_PERMISSION_NORMALIZE=PASS"
+evidence_echo "CLIENT_PUBLIC_PERMISSION_PREPUBLISH_VERIFY=PASS"
+evidence_echo "CLIENT_PUBLIC_ROOT_MODE=0755"
+
 # Atomic directory swap with rollback-safe helper.
+# atomic_dir_swap.py must not alter permissions; staging is already correct.
 set +e
 swap_out="$(python3 "${ROOT}/scripts/lib/atomic_dir_swap.py" \
   --stage-dir "$STAGE_DIR" \
@@ -380,6 +402,14 @@ STAGE_DIR=""
 local_signing_assert_private_not_published "$CLIENT_HTTP_ROOT" || {
   fail_build "" "private_key_published" "private key present under client HTTP root" 1
 }
+
+if ! mm_client_live_postpublish_permission_verify "$CLIENT_HTTP_ROOT"; then
+  evidence "CLIENT_PUBLIC_PERMISSION_POSTPUBLISH_VERIFY=FAIL"
+  fail_build "" "postpublish_permissions" "CLIENT_PUBLIC_PERMISSION_POSTPUBLISH_VERIFY=FAIL" 1
+fi
+evidence_echo "CLIENT_PUBLIC_PERMISSION_POSTPUBLISH_VERIFY=PASS"
+evidence_echo "CLIENT_PUBLIC_NGINX_USER_READ=PASS"
+evidence_echo "CLIENT_PUBLIC_ROOT_MODE=0755"
 
 evidence_echo "CLIENT_SET_ATOMIC_SWAP=PASS"
 evidence_echo "CLIENT_SET_ROLLBACK=NOT_REQUIRED"

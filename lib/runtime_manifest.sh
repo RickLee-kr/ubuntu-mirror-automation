@@ -42,6 +42,7 @@ UM_RUNTIME_SCRIPT_LIB_SHELL=(
   acps_acquire.sh
   dp-phase2-common.sh
   mirror_host_ip.sh
+  http_publication_permissions.sh
   client_mirror_gates.sh
   local_client_signing.sh
 )
@@ -106,6 +107,7 @@ UM_RUNTIME_REQUIRED_RELATIVE_PATHS=(
   scripts/lib/acps_acquire.sh
   scripts/lib/dp-phase2-common.sh
   scripts/lib/mirror_host_ip.sh
+  scripts/lib/http_publication_permissions.sh
   scripts/lib/client_mirror_gates.sh
   scripts/lib/local_client_signing.sh
   scripts/lib/os_core_package.py
