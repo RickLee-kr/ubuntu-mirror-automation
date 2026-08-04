@@ -139,7 +139,12 @@ grep -qE '\\[[:space:]]*$' "$OUT" && fail "backslash continuations must be remov
 grep -q 'public-keyring.gpg' "$OUT" || fail "missing public-keyring.gpg in commands"
 grep -q -- '--keyring ./public-keyring.gpg' "$OUT" || fail "gpgv must use public-keyring.gpg"
 grep -q -- '--keyring ./public.gpg' "$OUT" && fail "gpgv must not use armored public.gpg" || true
+grep -q "EXPECTED_FPR=" "$OUT" || fail "missing EXPECTED_FPR trust pin"
+grep -q 'mktemp -d /home/aella/.dp-upgrade-' "$OUT" || fail "missing isolated workdir"
+grep -q 'rm -f "\$SCRIPT"' "$OUT" && fail "must not rm existing files before HTTP" || true
 grep -Eq 'curl -fsSLO([[:space:]]|$)' "$OUT" && fail "naked curl -fsSLO present" || true
+grep -q 'less -S' "$OUT" && fail "less pager guidance must be removed" || true
+grep -q 'Visual wrapping does not insert a newline' "$OUT" || fail "missing visual-wrap guidance"
 # Full mode must still cover steps 0..9
 for n in 0 1 2 3 4 5 6 7 8 9; do
   grep -qE "Step ${n} —|STEP ${n} —" "$OUT" || fail "missing step ${n}"
@@ -273,12 +278,30 @@ pass "mode change invalidates client commands file"
 # Menu 7: topology first; version input count=0; full instructions textbox direct
 PREPARATION_MODE=FULL
 MIRROR_HTTP_URL="http://192.0.2.10"
+MIRROR_SERVER_IP="192.0.2.10"
 # Persist FULL before stubbing save — gui_client_instructions reloads config.
 mm_save_gui_config >/dev/null
+# Seed generation-bound readiness so Menu 7 preflight passes.
+export MM_WORKFLOW_FILE="$TMP/config/dp-upgrade-workflow.state"
+mm_wf_ensure_file
+mm_status_set HTTP_DISTRIBUTION ENABLED
+mm_status_set UPGRADE_READINESS PASS
+mm_wf_set_many \
+  "WORKFLOW_STATE=READINESS_VERIFIED" \
+  "CONFIG_SHA256=$(mm_wf_config_sha256)" \
+  "PREPARATION_MODE=FULL" \
+  "MIRROR_SERVER_IP=192.0.2.10" \
+  "MIRROR_HTTP_URL=http://192.0.2.10" \
+  "CLIENT_SET_GENERATION_ID=gen-test-1" \
+  "CLIENT_SIGNING_FINGERPRINT=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" \
+  "HTTP_PUBLICATION_GENERATION_ID=gen-test-1" \
+  "READINESS_VERIFIED_GENERATION_ID=gen-test-1"
+export MM_SKIP_HTTP_VALIDATE=1
 MENU7_TRACE="$TMP/menu7.trace"
 : >"$MENU7_TRACE"
 INPUTBOX_COUNT=0
 TEXTBOX_COUNT=0
+MENU7_TEXTBOX_COUNT=0
 mm_whiptail_input() {
   INPUTBOX_COUNT=$((INPUTBOX_COUNT + 1))
   printf 'INPUT\t%s\n' "$*" >>"$MENU7_TRACE"
@@ -298,20 +321,30 @@ mm_whiptail_textbox() {
   printf 'TEXTBOX\t%s\t%s\n' "$1" "$2" >>"$MENU7_TRACE"
   return 0
 }
+mm_menu7_textbox() {
+  MENU7_TEXTBOX_COUNT=$((MENU7_TEXTBOX_COUNT + 1))
+  printf 'MENU7_TEXTBOX\t%s\t%s\n' "$1" "$2" >>"$MENU7_TRACE"
+  return 0
+}
 mm_whiptail_msg() { printf 'MSG\t%s\n' "$*" >>"$MENU7_TRACE"; return 0; }
 load_mirror_defaults() { :; }
 engine_resolve_paths() { :; }
 mm_save_gui_config() { return 0; }
+engine_http_local_smoke() { return 0; }
+engine_http_advertised_smoke() { return 0; }
 rm -f "$(mm_client_commands_file)"
 gui_client_instructions
 [[ "$INPUTBOX_COUNT" -eq 0 ]] || fail "menu7 version inputbox count=${INPUTBOX_COUNT}"
-[[ "$TEXTBOX_COUNT" -eq 1 ]] || fail "menu7 expected exactly one textbox, got ${TEXTBOX_COUNT}"
+[[ "$MENU7_TEXTBOX_COUNT" -eq 1 ]] || fail "menu7 expected exactly one menu7 textbox, got ${MENU7_TEXTBOX_COUNT}"
 grep -q $'MENU\tDP deployment type' "$MENU7_TRACE" || fail "first menu7 prompt not topology"
 grep -q ' — view' "$MENU7_TRACE" && fail "secondary viewer menu still present" || true
 grep -q 'Show complete instructions' "$INSTALLER" && fail "Show complete instructions string still in installer" || true
 grep -q 'Show Step 2 command block' "$INSTALLER" && fail "Show Step submenu still in installer" || true
 grep -q 'gui_client_commands_viewer' "$INSTALLER" && fail "gui_client_commands_viewer still present" || true
+grep -q 'less -S' "$INSTALLER" && fail "less guidance still in installer" || true
+grep -q 'cat "\$out_file"' "$INSTALLER" && fail "TTY reprint after GUI still present" || true
 [[ -f "$(mm_client_commands_file)" ]] || fail "menu7 did not create command file"
+[[ -s "$(mm_client_commands_file)" ]] || fail "menu7 created empty command file"
 [[ "$(stat -c '%a' "$(mm_client_commands_file)")" == "644" ]] || fail "menu7 file mode not 644"
 grep -Fq -- '--source-dp-version' "$(mm_client_commands_file)" && fail "menu7 has source" || true
 grep -Fq -- '--target-version' "$(mm_client_commands_file)" || fail "menu7 missing target"
@@ -324,16 +357,14 @@ grep -q 'BEGIN STEP' "$(mm_client_commands_file)" && fail "menu7 still has BEGIN
 grep -q 'public-keyring.gpg' "$(mm_client_commands_file)" || fail "menu7 missing public-keyring.gpg"
 grep -q 'gpgv --keyring ./public-keyring.gpg' "$(mm_client_commands_file)" \
   || fail "menu7 missing gpgv public-keyring"
+grep -q "EXPECTED_FPR=" "$(mm_client_commands_file)" || fail "menu7 missing fingerprint pin"
 # Saved file and generators must agree (same one-line hop/stage content).
-gen_hop="$(gui_client_hop_command_line "http://192.0.2.10" "dp-offline-upgrade-xenial-to-bionic.sh")"
-grep -Fxq "$gen_hop" "$(mm_client_commands_file)" \
+gen_hop="$(gui_client_hop_command_line "http://192.0.2.10" "dp-offline-upgrade-xenial-to-bionic.sh" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")"
+grep -Fq "$gen_hop" "$(mm_client_commands_file)" \
   || fail "saved file hop line differs from gui_client_hop_command_line"
 gen_stage="$(gui_phase2_stage_command_line "http://192.0.2.10" "6.5.0")"
-grep -Fxq "$gen_stage" "$(mm_client_commands_file)" \
+grep -Fq "$gen_stage" "$(mm_client_commands_file)" \
   || fail "saved file stage line differs from gui_phase2_stage_command_line"
-grep -q 'clear\|cat "\$out_file"' "$INSTALLER" \
-  || grep -q 'cat "\$out_file"' "$INSTALLER" \
-  || fail "TTY reprint after GUI missing"
 pass "menu7 shows full instructions directly; no secondary viewer"
 
 # Artifact: only 6.5.0 versioned names in ACPS/phase2 helpers

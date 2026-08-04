@@ -113,16 +113,24 @@ for script in "${HOPS[@]}"; do
     pass "${hop}: no hardcoded 221.139.249.111/112"
   fi
 
-  # Order: sha256sum then gpgv then sudo bash (fail-closed && chain)
-  sha_pos="$(grep -ob 'sha256sum -c' "${TMP}/line-${hop}.sh" | head -1 | cut -d: -f1)"
+  # Order: fingerprint pin → gpgv → manifest/sidecar SHA → sudo bash
+  fpr_pos="$(grep -ob 'EXPECTED_FPR=' "${TMP}/line-${hop}.sh" | head -1 | cut -d: -f1)"
   gpg_pos="$(grep -ob 'gpgv --keyring' "${TMP}/line-${hop}.sh" | head -1 | cut -d: -f1)"
   sudo_pos="$(grep -ob 'sudo bash' "${TMP}/line-${hop}.sh" | head -1 | cut -d: -f1)"
-  if [[ -n "$sha_pos" && -n "$gpg_pos" && -n "$sudo_pos" \
-        && "$sha_pos" -lt "$gpg_pos" && "$gpg_pos" -lt "$sudo_pos" ]]; then
-    pass "${hop}: sha256 → gpgv → sudo order"
+  calc_pos="$(grep -ob 'sha256sum' "${TMP}/line-${hop}.sh" | head -1 | cut -d: -f1)"
+  if [[ -n "$fpr_pos" && -n "$gpg_pos" && -n "$sudo_pos" && -n "$calc_pos" \
+        && "$fpr_pos" -lt "$gpg_pos" && "$gpg_pos" -lt "$sudo_pos" \
+        && "$calc_pos" -lt "$sudo_pos" ]]; then
+    pass "${hop}: fingerprint/gpgv/sha → sudo order"
   else
-    fail "${hop}: verify/sudo order wrong (sha=${sha_pos} gpg=${gpg_pos} sudo=${sudo_pos})"
+    fail "${hop}: verify/sudo order wrong (fpr=${fpr_pos} gpg=${gpg_pos} calc=${calc_pos} sudo=${sudo_pos})"
   fi
+  grep -q 'EXPECTED_FPR=' "${TMP}/line-${hop}.sh" \
+    && pass "${hop}: EXPECTED_FPR pin" || fail "${hop}: missing EXPECTED_FPR"
+  grep -q 'mktemp -d' "${TMP}/line-${hop}.sh" \
+    && pass "${hop}: isolated workdir" || fail "${hop}: missing workdir"
+  grep -q 'rm -f "\$SCRIPT"' "${TMP}/line-${hop}.sh" \
+    && fail "${hop}: pre-HTTP rm still present" || pass "${hop}: no pre-HTTP rm"
   grep -q ' && ' "${TMP}/line-${hop}.sh" \
     && pass "${hop}: && fail-closed chain" || fail "${hop}: missing && chain"
 done

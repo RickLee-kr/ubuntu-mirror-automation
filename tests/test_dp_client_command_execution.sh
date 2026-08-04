@@ -48,14 +48,35 @@ mkdir -p "${HTTP_ROOT}/client/${HOP}"
 printf '#!/bin/bash\necho REAL_UPGRADE_SHOULD_NOT_RUN\nexit 99\n' \
   >"${HTTP_ROOT}/client/${SCRIPT}"
 chmod 0755 "${HTTP_ROOT}/client/${SCRIPT}"
+SCRIPT_SHA="$(sha256sum "${HTTP_ROOT}/client/${SCRIPT}" | awk '{print $1}')"
 ( cd "${HTTP_ROOT}/client" && sha256sum "$SCRIPT" >"${SCRIPT}.sha256" )
 cp "$KR" "${HTTP_ROOT}/client/public-keyring.gpg"
 cp "$PUB" "${HTTP_ROOT}/client/public.gpg"
-printf '{"hop":"%s","fixture":true}\n' "$HOP" \
-  >"${HTTP_ROOT}/client/${HOP}/client-manifest.json"
-gpg --homedir "$GPG_HOME" --batch --yes --detach-sign --armor \
-  -o "${HTTP_ROOT}/client/${HOP}/client-manifest.json.asc" \
-  "${HTTP_ROOT}/client/${HOP}/client-manifest.json" >/dev/null 2>&1
+cat >"${HTTP_ROOT}/client/client-set.env" <<EOF
+CLIENT_SET_GENERATION_ID=fixture-gen-1
+CLIENT_SIGNING_FINGERPRINT=${FPR}
+MIRROR_HTTP_URL=http://127.0.0.1
+PREPARATION_MODE=FULL
+EOF
+chmod 0644 "${HTTP_ROOT}/client/client-set.env"
+
+write_manifest() {
+  local sha="${1:-$SCRIPT_SHA}"
+  python3 - "$HOP" "$SCRIPT" "$sha" "${HTTP_ROOT}/client/${HOP}/client-manifest.json" <<'PY'
+import json, sys
+hop, script, sha, path = sys.argv[1:5]
+open(path, "w", encoding="utf-8").write(json.dumps({
+    "hop": hop,
+    "script": script,
+    "script_sha256": sha,
+    "fixture": True,
+}, indent=2) + "\n")
+PY
+  gpg --homedir "$GPG_HOME" --batch --yes --detach-sign --armor \
+    -o "${HTTP_ROOT}/client/${HOP}/client-manifest.json.asc" \
+    "${HTTP_ROOT}/client/${HOP}/client-manifest.json" >/dev/null 2>&1
+}
+write_manifest
 
 # Local HTTP server on an ephemeral free port
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
@@ -79,15 +100,26 @@ awk -v sd="${ROOT}/scripts" '
 # shellcheck disable=SC1090
 source "$LIB"
 
-line="$(gui_client_hop_command_line "$MIRROR" "$SCRIPT")"
+line="$(gui_client_hop_command_line "$MIRROR" "$SCRIPT" "$FPR")"
 [[ "$(printf '%s\n' "$line" | wc -l | tr -d ' ')" == "1" ]] \
   && pass "generator emits one physical line" \
   || fail "generator not one physical line"
 printf '%s\n' "$line" >"${WORKDIR}/cmd.sh"
+grep -q "EXPECTED_FPR='${FPR}'" "${WORKDIR}/cmd.sh" \
+  && pass "fingerprint pinned in command" \
+  || fail "fingerprint missing from command"
+grep -q 'rm -f "\$SCRIPT"' "${WORKDIR}/cmd.sh" \
+  && fail "command still deletes files before HTTP" \
+  || pass "no pre-HTTP rm of existing files"
+grep -q 'mktemp -d' "${WORKDIR}/cmd.sh" \
+  && pass "isolated workdir present" \
+  || fail "isolated workdir missing"
 
 # Workdir for DP-side execution (replaces /home/aella)
 DP_HOME="${WORKDIR}/dp-home"
 mkdir -p "$DP_HOME"
+# Pre-existing operator evidence that must survive HTTP failure.
+printf 'keep-me\n' >"${DP_HOME}/precious.txt"
 
 # Stubs: sudo and gpgv stay real; sudo bash runs stub client counter
 STUB_RUNS="${WORKDIR}/stub.runs"
@@ -107,7 +139,8 @@ EOF
 chmod +x "${STUB_BIN}/sudo"
 
 # Rewrite cd target in the command for the test home
-sed "s|cd /home/aella|cd '${DP_HOME}'|" "${WORKDIR}/cmd.sh" >"${WORKDIR}/cmd.run.sh"
+sed "s|cd /home/aella|cd '${DP_HOME}'|; s|/home/aella/.dp-upgrade-|${DP_HOME}/.dp-upgrade-|g" \
+  "${WORKDIR}/cmd.sh" >"${WORKDIR}/cmd.run.sh"
 
 run_cmd() {
   env PATH="${STUB_BIN}:/usr/bin:/bin" bash "${WORKDIR}/cmd.run.sh"
@@ -123,32 +156,32 @@ set -e
   fail "full one-line command execution rc=${rc}"
   cat "${WORKDIR}/happy.err" || true
 }
-[[ -f "${DP_HOME}/${SCRIPT}" ]] && pass "downloads PASS (script)" || fail "script missing"
-[[ -f "${DP_HOME}/public-keyring.gpg" ]] && pass "downloads PASS (keyring)" || fail "keyring missing"
 [[ "$(wc -l <"$STUB_RUNS" | tr -d ' ')" == "1" ]] \
   && pass "stub upgrade client executed once" \
   || fail "stub runs=$(wc -l <"$STUB_RUNS")"
+[[ -f "${DP_HOME}/precious.txt" ]] && pass "pre-existing home files preserved" \
+  || fail "precious.txt deleted"
 grep -q "MIRROR='${MIRROR}'" "${WORKDIR}/cmd.sh" \
   && pass "mirror URL matches configured value" \
   || fail "mirror URL mismatch"
 
-# --- 2) Bad SHA256 → 0 stub runs ---
-find "$DP_HOME" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
-printf 'deadbeef  %s\n' "$SCRIPT" >"${HTTP_ROOT}/client/${SCRIPT}.sha256"
+# --- 2) Bad SHA256 (manifest) → 0 stub runs ---
+write_manifest "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 : >"$STUB_RUNS"
 set +e
 run_cmd >"${WORKDIR}/badsha.out" 2>"${WORKDIR}/badsha.err"
 badsha_rc=$?
 set -e
-[[ "$badsha_rc" -ne 0 ]] && pass "bad SHA256 fails command" || fail "bad SHA256 should fail"
+[[ "$badsha_rc" -ne 0 ]] && pass "bad manifest SHA256 fails command" || fail "bad SHA256 should fail"
 [[ "$(wc -l <"$STUB_RUNS" | tr -d ' ')" == "0" ]] \
   && pass "SHA256_FAILURE_PREVENTS_UPGRADE_EXECUTION=YES" \
   || fail "stub ran after SHA256 failure"
-( cd "${HTTP_ROOT}/client" && sha256sum "$SCRIPT" >"${SCRIPT}.sha256" )
+write_manifest
 
 # --- 3) Bad signature → 0 stub runs ---
-find "$DP_HOME" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
-printf '{"tampered":true}\n' >"${HTTP_ROOT}/client/${HOP}/client-manifest.json"
+printf '{"hop":"%s","script":"%s","script_sha256":"%s","tampered":true}\n' \
+  "$HOP" "$SCRIPT" "$SCRIPT_SHA" \
+  >"${HTTP_ROOT}/client/${HOP}/client-manifest.json"
 # leave old .asc → mismatch
 : >"$STUB_RUNS"
 set +e
@@ -159,16 +192,23 @@ set -e
 [[ "$(wc -l <"$STUB_RUNS" | tr -d ' ')" == "0" ]] \
   && pass "SIGNATURE_FAILURE_PREVENTS_UPGRADE_EXECUTION=YES" \
   || fail "stub ran after signature failure"
+write_manifest
 
-# restore valid manifest+sig
-printf '{"hop":"%s","fixture":true}\n' "$HOP" \
-  >"${HTTP_ROOT}/client/${HOP}/client-manifest.json"
-gpg --homedir "$GPG_HOME" --batch --yes --detach-sign --armor \
-  -o "${HTTP_ROOT}/client/${HOP}/client-manifest.json.asc" \
-  "${HTTP_ROOT}/client/${HOP}/client-manifest.json" >/dev/null 2>&1
+# --- 4) Fingerprint mismatch → 0 runs ---
+: >"$STUB_RUNS"
+bad_line="$(gui_client_hop_command_line "$MIRROR" "$SCRIPT" "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")"
+sed "s|cd /home/aella|cd '${DP_HOME}'|; s|/home/aella/.dp-upgrade-|${DP_HOME}/.dp-upgrade-|g" \
+  <<<"$bad_line" >"${WORKDIR}/cmd.badfpr.sh"
+set +e
+env PATH="${STUB_BIN}:/usr/bin:/bin" bash "${WORKDIR}/cmd.badfpr.sh" >/dev/null 2>&1
+fpr_rc=$?
+set -e
+[[ "$fpr_rc" -ne 0 ]] && pass "fingerprint mismatch fails" || fail "fingerprint mismatch should fail"
+[[ "$(wc -l <"$STUB_RUNS" | tr -d ' ')" == "0" ]] \
+  && pass "FINGERPRINT_MISMATCH_PREVENTS_UPGRADE_EXECUTION=YES" \
+  || fail "stub ran after fingerprint mismatch"
 
-# --- 4) Corrupt public-keyring → 0 runs ---
-find "$DP_HOME" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+# --- 5) Corrupt public-keyring → 0 runs ---
 printf 'CORRUPT\n' >"${HTTP_ROOT}/client/public-keyring.gpg"
 : >"$STUB_RUNS"
 set +e
@@ -181,8 +221,7 @@ set -e
   || fail "stub ran with corrupt keyring"
 cp "$KR" "${HTTP_ROOT}/client/public-keyring.gpg"
 
-# --- 5) HTTP 404 → 0 runs ---
-find "$DP_HOME" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+# --- 6) HTTP 404 → 0 runs; precious file survives ---
 rm -f "${HTTP_ROOT}/client/${SCRIPT}"
 : >"$STUB_RUNS"
 set +e
@@ -193,14 +232,31 @@ set -e
 [[ "$(wc -l <"$STUB_RUNS" | tr -d ' ')" == "0" ]] \
   && pass "HTTP_404_PREVENTS_UPGRADE_EXECUTION=YES" \
   || fail "stub ran after 404"
+[[ -f "${DP_HOME}/precious.txt" ]] && pass "HTTP failure does not delete home evidence" \
+  || fail "precious.txt removed on HTTP failure"
 
-# --- 6) Missing public-keyring artifact → fail closed ---
-# restore script for next checks
+# --- 7) Trailing GUI/status garbage on the same physical line → safe failure ---
 printf '#!/bin/bash\necho REAL\n' >"${HTTP_ROOT}/client/${SCRIPT}"
 chmod 0755 "${HTTP_ROOT}/client/${SCRIPT}"
+SCRIPT_SHA="$(sha256sum "${HTTP_ROOT}/client/${SCRIPT}" | awk '{print $1}')"
 ( cd "${HTTP_ROOT}/client" && sha256sum "$SCRIPT" >"${SCRIPT}.sha256" )
+write_manifest
+: >"$STUB_RUNS"
+# Reproduce less/status contamination: trailer glued onto the executable line.
+sed 's|$| /var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt|' \
+  "${WORKDIR}/cmd.run.sh" >"${WORKDIR}/cmd.trailer.sh"
+set +e
+env PATH="${STUB_BIN}:/usr/bin:/bin" bash "${WORKDIR}/cmd.trailer.sh" >/dev/null 2>&1
+trail_rc=$?
+set -e
+[[ "$trail_rc" -ne 0 ]] && pass "trailing GUI status text fails safely" \
+  || fail "trailing status should not execute cleanly"
+[[ "$(wc -l <"$STUB_RUNS" | tr -d ' ')" == "0" ]] \
+  && pass "TRAILING_STATUS_PREVENTS_UPGRADE_EXECUTION=YES" \
+  || fail "stub ran with trailing status text"
+
+# --- 8) Missing public-keyring artifact → fail closed ---
 rm -f "${HTTP_ROOT}/client/public-keyring.gpg"
-find "$DP_HOME" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
 : >"$STUB_RUNS"
 set +e
 run_cmd >/dev/null 2>&1
