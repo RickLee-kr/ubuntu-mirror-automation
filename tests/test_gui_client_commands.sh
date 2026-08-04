@@ -270,7 +270,7 @@ mm_save_gui_config >/dev/null
 [[ ! -f "$(mm_client_commands_file)" ]] || fail "stale command file not removed on mode change"
 pass "mode change invalidates client commands file"
 
-# Menu 7: topology first; version input count=0; full instructions via secure pager
+# Menu 7: topology first; version input count=0; full instructions textbox direct
 PREPARATION_MODE=FULL
 MIRROR_HTTP_URL="http://192.0.2.10"
 # Persist FULL before stubbing save — gui_client_instructions reloads config.
@@ -279,7 +279,6 @@ MENU7_TRACE="$TMP/menu7.trace"
 : >"$MENU7_TRACE"
 INPUTBOX_COUNT=0
 TEXTBOX_COUNT=0
-PAGER_COUNT=0
 mm_whiptail_input() {
   INPUTBOX_COUNT=$((INPUTBOX_COUNT + 1))
   printf 'INPUT\t%s\n' "$*" >>"$MENU7_TRACE"
@@ -299,11 +298,6 @@ mm_whiptail_textbox() {
   printf 'TEXTBOX\t%s\t%s\n' "$1" "$2" >>"$MENU7_TRACE"
   return 0
 }
-mm_view_long_text_file() {
-  PAGER_COUNT=$((PAGER_COUNT + 1))
-  printf 'PAGER\t%s\t%s\n' "$1" "$2" >>"$MENU7_TRACE"
-  return 0
-}
 mm_whiptail_msg() { printf 'MSG\t%s\n' "$*" >>"$MENU7_TRACE"; return 0; }
 load_mirror_defaults() { :; }
 engine_resolve_paths() { :; }
@@ -311,8 +305,7 @@ mm_save_gui_config() { return 0; }
 rm -f "$(mm_client_commands_file)"
 gui_client_instructions
 [[ "$INPUTBOX_COUNT" -eq 0 ]] || fail "menu7 version inputbox count=${INPUTBOX_COUNT}"
-[[ "$TEXTBOX_COUNT" -eq 0 ]] || fail "menu7 must not use textbox for long commands, got ${TEXTBOX_COUNT}"
-[[ "$PAGER_COUNT" -eq 1 ]] || fail "menu7 expected exactly one pager view, got ${PAGER_COUNT}"
+[[ "$TEXTBOX_COUNT" -eq 1 ]] || fail "menu7 expected exactly one textbox, got ${TEXTBOX_COUNT}"
 grep -q $'MENU\tDP deployment type' "$MENU7_TRACE" || fail "first menu7 prompt not topology"
 grep -q ' — view' "$MENU7_TRACE" && fail "secondary viewer menu still present" || true
 grep -q 'Show complete instructions' "$INSTALLER" && fail "Show complete instructions string still in installer" || true
@@ -338,11 +331,10 @@ grep -Fxq "$gen_hop" "$(mm_client_commands_file)" \
 gen_stage="$(gui_phase2_stage_command_line "http://192.0.2.10" "6.5.0")"
 grep -Fxq "$gen_stage" "$(mm_client_commands_file)" \
   || fail "saved file stage line differs from gui_phase2_stage_command_line"
-grep -q 'mm_view_long_text_file\|mm_terminal_pager' "$INSTALLER" \
-  || fail "menu7 missing secure pager call"
-grep -q 'mm_whiptail_textbox "\$title" "\$out_file"' "$INSTALLER" \
-  && fail "menu7 still uses whiptail textbox for command file" || true
-pass "menu7 shows full instructions via secure pager; no secondary viewer"
+grep -q 'clear\|cat "\$out_file"' "$INSTALLER" \
+  || grep -q 'cat "\$out_file"' "$INSTALLER" \
+  || fail "TTY reprint after GUI missing"
+pass "menu7 shows full instructions directly; no secondary viewer"
 
 # Artifact: only 6.5.0 versioned names in ACPS/phase2 helpers
 grep -E 'images-6\.[234]\.0|aella-uvp-2404_6\.[234]\.0' \
