@@ -958,8 +958,9 @@ gui_expected_signing_fingerprint() {
 }
 
 # Three physical-line OS-hop command block (one Bash logical command):
-#   line 1: cd, mirror, EXPECTED_FPR, HOP/SCRIPT, isolated workdir + trap
-#   line 2: download keyring + authenticated command-runner + signed manifest
+#   Entire operation runs in a subshell so caller cwd / EXIT trap are unchanged.
+#   line 1: subshell + cd, mirror, EXPECTED_FPR, HOP/SCRIPT, isolated workdir + trap
+#   line 2: ephemeral GNUPGHOME + download keyring/runner/manifest
 #   line 3: fingerprint pin, gpgv manifest, SHA bindings, then bash runner
 # Max intended physical-line length: 240. Trailing \ on lines 1–2 only.
 # Fail-closed: partial copy of line 1 or lines 1–2 waits for continuation.
@@ -975,9 +976,9 @@ gui_client_hop_command_line() {
     fpr="MISSING_SIGNING_FINGERPRINT"
   fi
   printf '%s\n' \
-    "cd /home/aella && MIRROR='${mirror}' && EXPECTED_FPR='${fpr}' && HOP='${hop}' && SCRIPT=\"dp-offline-upgrade-\${HOP}.sh\" && W=\$(mktemp -d)&&trap 'rm -rf \"\$W\"' EXIT&&cd \"\$W\" && \\" \
-    "  R=dp-client-command-runner.sh M=runner-manifest K=public-keyring.gpg && for f in \"\$K\" \"\$R\" \"\$R.sha256\" \"\$M\" \"\$M.asc\"; do curl -fsSLo \"\$f\" \"\$MIRROR/client/\$f\"&&test -s \"\$f\"||exit 1; done && \\" \
-    "  gpg --batch --no-default-keyring --keyring ./\$K --with-colons --fingerprint|grep -q :\$EXPECTED_FPR:&&gpgv --keyring ./\$K \$M.asc \$M&&sha256sum -c \$M&&sha256sum -c \$R.sha256&&bash \$R \"\$MIRROR\" \"\$HOP\" \"\$SCRIPT\" \"\$EXPECTED_FPR\""
+    "( cd /home/aella && MIRROR='${mirror}' && EXPECTED_FPR='${fpr}' && HOP='${hop}' && SCRIPT=\"dp-offline-upgrade-\${HOP}.sh\" && W=\$(mktemp -d)&&trap 'rm -rf \"\$W\"' EXIT&&cd \"\$W\" && \\" \
+    "  export GNUPGHOME=\"\$W/gnupg\"&&mkdir -m700 \"\$GNUPGHOME\"&&R=dp-client-command-runner.sh M=runner-manifest K=public-keyring.gpg&&for f in \$K \$R \$R.sha256 \$M \$M.asc;do curl -fsSLo \"\$f\" \"\$MIRROR/client/\$f\"&&test -s \"\$f\"||exit 1;done && \\" \
+    "  gpg --batch --no-default-keyring --keyring ./\$K --with-colons --fingerprint|grep -q :\$EXPECTED_FPR:&&gpgv --keyring ./\$K \$M.asc \$M&&sha256sum -c \$M&&sha256sum -c \$R.sha256&&bash \$R \"\$MIRROR\" \"\$HOP\" \"\$SCRIPT\" \"\$EXPECTED_FPR\")"
 }
 
 # Backward-compatible names used by older tests/callers.
@@ -989,13 +990,13 @@ gui_client_hop_command() {
   gui_client_hop_command_line "$@"
 }
 
-# Phase 2 staging: two or three physical lines, one Bash logical command.
+# Phase 2 staging: two or three physical lines, one Bash logical command (subshell).
 gui_phase2_stage_command_line() {
   local mirror="$1" ver="$2"
   printf '%s\n' \
-    "cd /home/aella && MIRROR='${mirror}' && VER='${ver}' && SCRIPT='stage-dp-phase2.sh' && W=\$(mktemp -d)&&trap 'rm -rf \"\$W\"' EXIT&&cd \"\$W\" && \\" \
+    "( cd /home/aella && MIRROR='${mirror}' && VER='${ver}' && SCRIPT='stage-dp-phase2.sh' && W=\$(mktemp -d)&&trap 'rm -rf \"\$W\"' EXIT&&cd \"\$W\" && \\" \
     "  curl -fsSLo \"\$SCRIPT\" \"\$MIRROR/client/\$SCRIPT\" && curl -fsSLo \"\$SCRIPT.sha256\" \"\$MIRROR/client/\$SCRIPT.sha256\" && test -s \"\$SCRIPT\" && test -s \"\$SCRIPT.sha256\" && \\" \
-    "  sha256sum -c \"\$SCRIPT.sha256\" && { sudo bash \"./\$SCRIPT\" --target-version \"\$VER\" --same-version-recovery --mirror-url \"\$MIRROR\"; }"
+    "  sha256sum -c \"\$SCRIPT.sha256\" && { sudo bash \"./\$SCRIPT\" --target-version \"\$VER\" --same-version-recovery --mirror-url \"\$MIRROR\"; })"
 }
 
 gui_phase2_stage_command_block() {

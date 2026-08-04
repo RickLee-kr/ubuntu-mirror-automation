@@ -502,7 +502,8 @@ mm_wf_validate_os_hop_block_at() {
     printf 'COMMAND_FILE_HOP_BLOCK_INCOMPLETE=YES\n'
     return 1
   }
-  [[ "$l1" == cd\ /home/aella\ \&\&* ]] || {
+  # Subshell-scoped bootstrap: "( cd /home/aella && ..." (caller cwd/trap preserved).
+  [[ "$l1" == \(\ cd\ /home/aella\ \&\&* || "$l1" == cd\ /home/aella\ \&\&* ]] || {
     printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
     printf 'COMMAND_FILE_HOP_BLOCK_PREFIX=FAIL\n'
     return 1
@@ -588,14 +589,15 @@ mm_wf_validate_command_file_content() {
 
   lines="$(wc -l <"$file" | tr -d ' ')"
   # Count executable command blocks (start lines), not continuation lines.
-  exec_count="$(grep -cE '^cd /home/aella && ' "$file" || true)"
-  hop_count="$(grep -cE "^cd /home/aella && .*HOP='(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)'" "$file" || true)"
-  stage_count="$(grep -cE "^cd /home/aella && .*SCRIPT='stage-dp-phase2\.sh'" "$file" || true)"
+  # Subshell form: "( cd /home/aella && ..." (Menu 7 bootstrap lifecycle fix).
+  exec_count="$(grep -cE '^\( cd /home/aella && |^cd /home/aella && ' "$file" || true)"
+  hop_count="$(grep -cE "^\( cd /home/aella && .*HOP='(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)'|^cd /home/aella && .*HOP='(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)'" "$file" || true)"
+  stage_count="$(grep -cE "^\( cd /home/aella && .*SCRIPT='stage-dp-phase2\.sh'|^cd /home/aella && .*SCRIPT='stage-dp-phase2\.sh'" "$file" || true)"
   bringup_count="$(grep -cE 'bringup_py3_dp_after_os_upgrade\.sh' "$file" || true)"
-  xenial="$(grep -cE "^cd /home/aella && .*HOP='xenial-to-bionic'" "$file" || true)"
-  bionic="$(grep -cE "^cd /home/aella && .*HOP='bionic-to-focal'" "$file" || true)"
-  focal="$(grep -cE "^cd /home/aella && .*HOP='focal-to-jammy'" "$file" || true)"
-  jammy="$(grep -cE "^cd /home/aella && .*HOP='jammy-to-noble'" "$file" || true)"
+  xenial="$(grep -cE "^\( cd /home/aella && .*HOP='xenial-to-bionic'|^cd /home/aella && .*HOP='xenial-to-bionic'" "$file" || true)"
+  bionic="$(grep -cE "^\( cd /home/aella && .*HOP='bionic-to-focal'|^cd /home/aella && .*HOP='bionic-to-focal'" "$file" || true)"
+  focal="$(grep -cE "^\( cd /home/aella && .*HOP='focal-to-jammy'|^cd /home/aella && .*HOP='focal-to-jammy'" "$file" || true)"
+  jammy="$(grep -cE "^\( cd /home/aella && .*HOP='jammy-to-noble'|^cd /home/aella && .*HOP='jammy-to-noble'" "$file" || true)"
 
   block_count="$exec_count"
   hop_block_count="$hop_count"
@@ -606,7 +608,8 @@ mm_wf_validate_command_file_content() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     lineno=$((lineno + 1))
     [[ ${#line} -gt "$max_phys" ]] && max_phys=${#line}
-    if [[ "$line" == cd\ /home/aella\ \&\&* && "$line" == *HOP=* ]]; then
+    if { [[ "$line" == \(\ cd\ /home/aella\ \&\&* ]] || [[ "$line" == cd\ /home/aella\ \&\&* ]]; } \
+      && [[ "$line" == *HOP=* ]]; then
       hop_starts+=("$lineno")
     fi
   done <"$file"
@@ -685,7 +688,7 @@ mm_wf_validate_command_file_content() {
       done
       # Reject trailing backslashes outside hop/stage command blocks.
       local stage_start="" ok_cont hs
-      stage_start="$(grep -nE "^cd /home/aella && .*SCRIPT='stage-dp-phase2\.sh'" "$file" | head -1 | cut -d: -f1 || true)"
+      stage_start="$(grep -nE "^\( cd /home/aella && .*SCRIPT='stage-dp-phase2\.sh'|^cd /home/aella && .*SCRIPT='stage-dp-phase2\.sh'" "$file" | head -1 | cut -d: -f1 || true)"
       lineno=0
       while IFS= read -r line || [[ -n "$line" ]]; do
         lineno=$((lineno + 1))
@@ -736,7 +739,7 @@ mm_wf_validate_command_file_content() {
       max_block_lines=3
       # Validate phase2 stage continuation if present.
       local stage_start
-      stage_start="$(grep -nE "^cd /home/aella && .*SCRIPT='stage-dp-phase2\.sh'" "$file" | head -1 | cut -d: -f1 || true)"
+      stage_start="$(grep -nE "^\( cd /home/aella && .*SCRIPT='stage-dp-phase2\.sh'|^cd /home/aella && .*SCRIPT='stage-dp-phase2\.sh'" "$file" | head -1 | cut -d: -f1 || true)"
       if [[ -n "$stage_start" ]]; then
         local s1 s2 s3
         s1="$(sed -n "${stage_start}p" "$file")"

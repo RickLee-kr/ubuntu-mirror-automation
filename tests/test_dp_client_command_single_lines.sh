@@ -59,7 +59,7 @@ assert_three_line_hop_block() {
   l1="${lines[0]}"
   l2="${lines[1]}"
   l3="${lines[2]}"
-  [[ "$l1" == cd\ /home/aella\ \&\&* ]] \
+  [[ "$l1" == cd\ /home/aella\ \&\&* || "$l1" == \(\ cd\ /home/aella\ \&\&* ]] \
     && pass "${label}: line1 cd prefix" || fail "${label}: line1 cd prefix"
   [[ "$l1" =~ \\[[:space:]]*$ ]] \
     && pass "${label}: line1 trailing backslash" || fail "${label}: line1 backslash"
@@ -95,8 +95,12 @@ for script in "${HOPS[@]}"; do
     && pass "${hop}: configured mirror" || fail "${hop}: mirror"
   grep -q "HOP='${hop}'" "${TMP}/block-${hop}.sh" \
     && pass "${hop}: HOP var" || fail "${hop}: HOP var"
-  grep -q '^cd /home/aella &&' "${TMP}/block-${hop}.sh" \
+  grep -qE '^\( cd /home/aella &&|^cd /home/aella &&' "${TMP}/block-${hop}.sh" \
     && pass "${hop}: starts with cd /home/aella" || fail "${hop}: cd prefix"
+  grep -q 'GNUPGHOME=' "${TMP}/block-${hop}.sh" \
+    && pass "${hop}: ephemeral GNUPGHOME" || fail "${hop}: missing GNUPGHOME"
+  grep -qE '^\(' "${TMP}/block-${hop}.sh" \
+    && pass "${hop}: runs in subshell" || fail "${hop}: missing subshell"
 
   if bash -n "${TMP}/block-${hop}.sh"; then
     pass "${hop}: bash -n PASS"
