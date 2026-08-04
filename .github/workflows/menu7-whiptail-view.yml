@@ -1,0 +1,82 @@
+name: Restore Menu 7 whiptail view
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/menu7-whiptail-view.yml
+
+permissions:
+  contents: write
+
+jobs:
+  restore-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Restore the pre-pager Menu 7 implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "4310737eaad0fc2f49802dbc6efbf0d14af5028e"
+          git revert --no-commit 80f0954b55fbb97792a8db1cfd941ef9ddf02714
+          rm -f .github/workflows/menu7-whiptail-view.yml
+
+          for path in \
+            lib/bootstrap.sh \
+            scripts/install-dp-upgrade-mirror.sh \
+            scripts/lib/mirror_manager_common.sh \
+            tests/test_gui_client_commands.sh; do
+            test -f "$path"
+          done
+          test ! -e tests/test_dp_client_commands_pager.sh
+
+          grep -q 'mm_whiptail_textbox "$title" "$out_file"' scripts/install-dp-upgrade-mirror.sh
+          ! grep -q 'mm_view_long_text_file "$title" "$out_file"' scripts/install-dp-upgrade-mirror.sh
+          ! grep -q 'gui_client_commands_viewer' scripts/install-dp-upgrade-mirror.sh
+          ! grep -q 'Show Step 2 command block' scripts/install-dp-upgrade-mirror.sh
+
+      - name: Install targeted test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck whiptail less
+
+      - name: Run targeted tests only
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n lib/bootstrap.sh
+          bash -n scripts/install-dp-upgrade-mirror.sh
+          bash -n scripts/lib/mirror_manager_common.sh
+          bash -n tests/test_gui_client_commands.sh
+          shellcheck lib/bootstrap.sh scripts/install-dp-upgrade-mirror.sh scripts/lib/mirror_manager_common.sh tests/test_gui_client_commands.sh || true
+          git diff --check
+
+          timeout 180 bash tests/test_gui_client_commands.sh
+          timeout 180 bash tests/test_dp_client_command_single_lines.sh
+          timeout 180 bash tests/test_dp_client_command_execution.sh
+          timeout 300 bash tests/test_installed_runtime_client_finalization.sh
+
+          grep -q 'exactly one physical line' scripts/install-dp-upgrade-mirror.sh
+          grep -q -- '--keyring ./public-keyring.gpg' scripts/install-dp-upgrade-mirror.sh
+          ! grep -q -- '--keyring ./public.gpg' scripts/install-dp-upgrade-mirror.sh
+
+      - name: Commit and push tested change
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "OpenAI"
+          git config user.email "openai@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix(gui): restore Menu 7 whiptail command view"
+          git push origin HEAD:main
