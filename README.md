@@ -20,14 +20,48 @@ RECOVERY_METHOD=HYPERVISOR_SNAPSHOT
 
 ## Supported environment
 
-- Clean **Ubuntu 24.04 LTS amd64**
+### Mirror Server sizing
+
+| Resource | Baseline | Recommendation / notes |
+|----------|----------|------------------------|
+| OS | Clean **Ubuntu 24.04 LTS amd64** | Server or minimal installation |
+| CPU | **2 vCPU** | 4 vCPU recommended to reduce SHA256 verification and tar creation time |
+| Memory | **4 GB RAM** | 8 GB recommended for operational headroom |
+| Disk | **100 GB total** | Validated on the current test Mirror Server with Ubuntu OS and all mirror data on one disk |
+| Network | **100 Mbps or faster** outbound | Faster connectivity reduces the initial R2 and ACPS download time |
+| Distribution | **TCP 80** inbound from DP hosts | nginx HTTP mirror distribution |
+
+The current workflow does **not** build a full Ubuntu archive mirror. It keeps only
+one discovery-exact selective OS data set and one DP 6.5.0 Phase 2 bundle. For the
+current artifacts:
+
+- R2 OS Core / selective tree: approximately **3.4 GiB**
+- Phase 2 final bundle: approximately **28.2 GiB**
+- Fresh Download and Prepare projected peak: approximately **70 GiB**
+- Tested disk configuration: **one 100 GB disk including Ubuntu OS and mirror data**
+
+A separate data disk is optional, not required. When a separate filesystem is
+used, `/var/spool/apt-mirror`, `.install-cache`, `selective`, and `dp-phase2`
+must remain on the same filesystem because the workflow uses hard links and
+atomic rename operations.
+
+Other requirements:
+
 - `sudo` / root
+- An operator-confirmed static IPv4 address on an active interface
 - Outbound HTTPS to:
   - `https://xdrsolutions.uk` (R2 OS Core)
   - fixed ACPS endpoint (credentials entered in GUI)
   - Ubuntu apt repositories (bootstrap package install only)
-- Enough free space under `/var/spool/apt-mirror` (exact requirement is calculated at **Download and Prepare** from package size + extract + Phase 2 + safety margin)
-- Port **80** for HTTP distribution
+- Port **80** available for HTTP distribution
+
+At **Download and Prepare**, the application calculates the exact free-space
+requirement from the current R2 package size, extracted OS payload, ACPS
+Content-Length, Phase 2 bundle output, metadata overhead, and a safety reserve
+of at least **10 GiB**. Insufficient space fails closed before the large build
+steps. Therefore **100 GB or larger** is the supported baseline for the current
+artifact set; future larger artifacts are governed by the same preflight rather
+than by an inflated fixed recommendation such as 500 GB.
 
 ## Install
 
@@ -131,7 +165,7 @@ Credentials are stored as root-owned mode `600` under `/etc/ubuntu-mirror/dp-upg
 
 **Phase 2 Only** skips R2 and OS hops; it prepares or reuses the same single 6.5.0 Phase 2 bundle only.
 
-Mirror server disk requirement: **100GB** (one selective OS set + one Phase 2 bundle; projected peak ≈ 70 GiB).
+Mirror server disk requirement: **100 GB total including Ubuntu OS and mirror data** for the current 6.5.0 artifact set. This configuration is validated on the test Mirror Server; the projected fresh-prepare peak is approximately **70 GiB**, and the exact free-space preflight runs before the large download/build steps.
 
 ### 3. Enable HTTP Distribution
 
