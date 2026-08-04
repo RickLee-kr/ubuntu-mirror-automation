@@ -244,6 +244,31 @@ mm_whiptail_textbox() {
   return 0
 }
 
+# Menu 7 only: prefer dialog --textbox for reliable vertical navigation.
+# Remains an ncurses TUI; never falls through to less or raw terminal pagers.
+# Exit/q closes the viewer and returns to the GUI (does not exit Mirror Manager).
+mm_menu7_textbox() {
+  local title="$1" file="$2"
+  local h w
+  mm_term_size
+  h=$((HEIGHT - 4))
+  w=$((WIDTH - 6))
+  [[ "$h" -lt 12 ]] && h=12
+  [[ "$w" -lt 60 ]] && w=60
+  if command -v dialog >/dev/null 2>&1; then
+    dialog --title "${title}" --textbox "$file" "$h" "$w" || true
+    clear 2>/dev/null || true
+    return 0
+  fi
+  # Fallback when dialog is unavailable (tests / minimal hosts).
+  mm_whiptail_textbox "$title" "$file"
+  return 0
+}
+
+mm_has_dialog() {
+  command -v dialog >/dev/null 2>&1
+}
+
 mm_whiptail_infobox() {
   # Non-blocking notice that remains visible until the next whiptail dialog.
   # Always returns 0 so callers never inherit dialog exit status.
@@ -901,17 +926,49 @@ gui_view_logs() {
   return 0
 }
 
-# One physical-line hop command: download client + sha + binary keyring +
-# detached manifest sig, verify checksum and signature, then run.
-# Fail-closed && chain: any download/verify failure skips sudo bash.
-# --mirror-base matches the persisted local Mirror URL (no operator typing).
+# Resolve local signing fingerprint for command trust pinning.
+# Prefer workflow state, then on-disk fingerprint file, then public key.
+gui_expected_signing_fingerprint() {
+  local fpr="" confdir
+  if declare -F mm_wf_get >/dev/null 2>&1; then
+    fpr="$(mm_wf_get CLIENT_SIGNING_FINGERPRINT)"
+  fi
+  if [[ -z "$fpr" ]]; then
+    confdir="${MM_CONFIG_DIR:-/etc/ubuntu-mirror}"
+    if [[ -f "${confdir}/client-signing/fingerprint" ]]; then
+      fpr="$(tr -d '[:space:]' <"${confdir}/client-signing/fingerprint")"
+    fi
+  fi
+  if [[ -z "$fpr" && -f "${confdir:-/etc/ubuntu-mirror}/client-signing/public.gpg" ]]; then
+    if declare -F local_signing_fingerprint_of >/dev/null 2>&1; then
+      fpr="$(local_signing_fingerprint_of "${confdir}/client-signing/public.gpg" || true)"
+    fi
+  fi
+  fpr="${fpr^^}"
+  fpr="${fpr// /}"
+  [[ -n "$fpr" && ${#fpr} -eq 40 ]] || return 1
+  printf '%s\n' "$fpr"
+}
 
-# Exactly one physical line — safe to copy from whiptail or the saved file.
+# One physical-line hop command:
+#   isolated mktemp workdir, no pre-HTTP rm of operator files,
+#   EXPECTED_FPR trust pin, fingerprint verify before gpgv,
+#   manifest script/SHA binding, sidecar SHA binding, then sudo bash.
+# Fail-closed && chain: any download/verify failure skips sudo bash.
 gui_client_hop_command_line() {
   local mirror="$1" script="$2"
   local hop="${script#dp-offline-upgrade-}"
   hop="${hop%.sh}"
-  printf '%s\n' "cd /home/aella && MIRROR='${mirror}' && HOP='${hop}' && SCRIPT='${script}' && rm -f \"\$SCRIPT\" \"\$SCRIPT.sha256\" public-keyring.gpg client-manifest.json client-manifest.json.asc && curl -fsSLo \"\$SCRIPT\" \"\$MIRROR/client/\$SCRIPT\" && curl -fsSLo \"\$SCRIPT.sha256\" \"\$MIRROR/client/\$SCRIPT.sha256\" && curl -fsSLo public-keyring.gpg \"\$MIRROR/client/public-keyring.gpg\" && curl -fsSLo client-manifest.json \"\$MIRROR/client/\$HOP/client-manifest.json\" && curl -fsSLo client-manifest.json.asc \"\$MIRROR/client/\$HOP/client-manifest.json.asc\" && sha256sum -c \"\$SCRIPT.sha256\" && gpgv --keyring ./public-keyring.gpg client-manifest.json.asc client-manifest.json && sudo bash \"./\$SCRIPT\" --mirror-base \"\$MIRROR\""
+  local fpr="${3:-}"
+  if [[ -z "$fpr" ]]; then
+    fpr="$(gui_expected_signing_fingerprint 2>/dev/null || true)"
+  fi
+  if [[ -z "$fpr" ]]; then
+    fpr="MISSING_SIGNING_FINGERPRINT"
+  fi
+  # Xenial-compatible fingerprint read + JSON field extract via python3
+  # (present on DP images) with awk fallbacks inside the one-liner.
+  printf '%s\n' "cd /home/aella && MIRROR='${mirror}' && EXPECTED_FPR='${fpr}' && HOP='${hop}' && SCRIPT='${script}' && WORKDIR=\"\$(mktemp -d /home/aella/.dp-upgrade-\${HOP}.XXXXXX)\" && trap 'rm -rf \"\$WORKDIR\"' EXIT && cd \"\$WORKDIR\" && curl -fsSLo client-set.env \"\$MIRROR/client/client-set.env\" && curl -fsSLo \"\$SCRIPT\" \"\$MIRROR/client/\$SCRIPT\" && curl -fsSLo \"\$SCRIPT.sha256\" \"\$MIRROR/client/\$SCRIPT.sha256\" && curl -fsSLo public-keyring.gpg \"\$MIRROR/client/public-keyring.gpg\" && curl -fsSLo client-manifest.json \"\$MIRROR/client/\$HOP/client-manifest.json\" && curl -fsSLo client-manifest.json.asc \"\$MIRROR/client/\$HOP/client-manifest.json.asc\" && test -s \"\$SCRIPT\" && test -s \"\$SCRIPT.sha256\" && test -s public-keyring.gpg && test -s client-manifest.json && test -s client-manifest.json.asc && GOT_FPR=\"\$(gpg --batch --no-default-keyring --keyring ./public-keyring.gpg --with-colons --fingerprint 2>/dev/null | awk -F: '/^fpr:/{print toupper(\$10); exit}')\" && test -n \"\$GOT_FPR\" && test \"\$GOT_FPR\" = \"\$EXPECTED_FPR\" && gpgv --keyring ./public-keyring.gpg client-manifest.json.asc client-manifest.json && MANIFEST_HOP=\"\$(python3 -c 'import json;print(json.load(open(\"client-manifest.json\")).get(\"hop\",\"\"))' 2>/dev/null || true)\" && test \"\$MANIFEST_HOP\" = \"\$HOP\" && MANIFEST_SCRIPT=\"\$(python3 -c 'import json;print(json.load(open(\"client-manifest.json\")).get(\"script\",\"\"))' 2>/dev/null || true)\" && test \"\$MANIFEST_SCRIPT\" = \"\$SCRIPT\" && CALC=\"\$(sha256sum \"\$SCRIPT\" | awk '{print \$1}')\" && MANIFEST_SHA=\"\$(python3 -c 'import json;print(json.load(open(\"client-manifest.json\")).get(\"script_sha256\",\"\"))' 2>/dev/null || true)\" && test -n \"\$MANIFEST_SHA\" && test \"\$MANIFEST_SHA\" = \"\$CALC\" && SIDE=\"\$(awk '{print \$1; exit}' \"\$SCRIPT.sha256\")\" && test \"\$SIDE\" = \"\$CALC\" && { sudo bash \"./\$SCRIPT\" --mirror-base \"\$MIRROR\"; }"
 }
 
 # Backward-compatible names used by older tests/callers.
@@ -925,7 +982,7 @@ gui_client_hop_command() {
 
 gui_phase2_stage_command_line() {
   local mirror="$1" ver="$2"
-  printf '%s\n' "cd /home/aella && MIRROR='${mirror}' && VER='${ver}' && SCRIPT='stage-dp-phase2.sh' && rm -f \"\$SCRIPT\" \"\$SCRIPT.sha256\" && curl -fsSLo \"\$SCRIPT\" \"\$MIRROR/client/\$SCRIPT\" && curl -fsSLo \"\$SCRIPT.sha256\" \"\$MIRROR/client/\$SCRIPT.sha256\" && sha256sum -c \"\$SCRIPT.sha256\" && sudo bash \"./\$SCRIPT\" --target-version \"\$VER\" --same-version-recovery --mirror-url \"\$MIRROR\""
+  printf '%s\n' "cd /home/aella && MIRROR='${mirror}' && VER='${ver}' && SCRIPT='stage-dp-phase2.sh' && WORKDIR=\"\$(mktemp -d /home/aella/.dp-upgrade-phase2.XXXXXX)\" && trap 'rm -rf \"\$WORKDIR\"' EXIT && cd \"\$WORKDIR\" && curl -fsSLo \"\$SCRIPT\" \"\$MIRROR/client/\$SCRIPT\" && curl -fsSLo \"\$SCRIPT.sha256\" \"\$MIRROR/client/\$SCRIPT.sha256\" && test -s \"\$SCRIPT\" && test -s \"\$SCRIPT.sha256\" && sha256sum -c \"\$SCRIPT.sha256\" && { sudo bash \"./\$SCRIPT\" --target-version \"\$VER\" --same-version-recovery --mirror-url \"\$MIRROR\"; }"
 }
 
 gui_phase2_stage_command_block() {
@@ -979,9 +1036,10 @@ If DP ${ver} is already healthy on Ubuntu 24.04, do not run these commands.
 Commands saved to:
 $(mm_client_commands_file)
 
-Every executable command below is exactly one physical line.
-Copy the complete line beginning with "cd" or "sudo".
-Do not copy only part of a visually wrapped line.
+Each executable command below is exactly one physical line.
+Copy the complete line from "cd /home/aella" through the final argument.
+Visual wrapping does not insert a newline.
+Do not include borders, status text, or the next section heading.
 
 STEP 0 — SNAPSHOT
 -----------------
@@ -1080,9 +1138,10 @@ Do not edit the stage command to add a source version.
 Commands saved to:
 $(mm_client_commands_file)
 
-Every executable command below is exactly one physical line.
-Copy the complete line beginning with "cd" or "sudo".
-Do not copy only part of a visually wrapped line.
+Each executable command below is exactly one physical line.
+Copy the complete line from "cd /home/aella" through the final argument.
+Visual wrapping does not insert a newline.
+Do not include borders, status text, or the next section heading.
 
 STEP 0 — SNAPSHOT
 -----------------
@@ -1225,9 +1284,6 @@ EOF
   cat <<EOF
 A copy of these commands was saved to:
 $(mm_client_commands_file)
-
-For horizontal scrolling without wrapping:
-  less -S $(mm_client_commands_file)
 EOF
 }
 
@@ -1238,13 +1294,55 @@ gui_client_instructions() {
   mm_force_phase2_target
   engine_resolve_paths
   local ver="${PHASE2_TARGET_VERSION}"
-  local mirror topology worker_ips="" topo_choice out_file tmp title
+  local mirror topology worker_ips="" topo_choice out_file tmp title ready_gen
+  local block_msg
+
+  # Lightweight readiness preflight — never show commands when blocked.
+  if ! mm_wf_commands_preflight; then
+    block_msg="DP_CLIENT_COMMANDS_AVAILABLE=NO
+BLOCK_REASON=${MM_WF_BLOCK_REASON:-UNKNOWN}
+REQUIRED_ACTION=${MM_WF_REQUIRED_ACTION:-Verify Upgrade Readiness}
+
+Menu 7 will not display upgrade commands until the workflow
+generation contract is satisfied.
+
+Typical next steps:
+  3. Enable HTTP Distribution
+  4. Verify Upgrade Readiness
+  then reopen this menu."
+    mm_whiptail_msg "DP Client Upgrade Commands — Blocked" "$block_msg"
+    return 0
+  fi
+
+  # Local + advertised HTTP smoke (lightweight; fail closed).
+  if declare -F engine_http_local_smoke >/dev/null 2>&1; then
+    if [[ "${MM_SKIP_HTTP_VALIDATE:-0}" != "1" ]] \
+      && ! engine_http_local_smoke >/dev/null 2>&1; then
+      mm_whiptail_msg "DP Client Upgrade Commands — Blocked" \
+        "DP_CLIENT_COMMANDS_AVAILABLE=NO
+BLOCK_REASON=LOCAL_HTTP_SMOKE_FAIL
+REQUIRED_ACTION=Enable HTTP Distribution"
+      return 0
+    fi
+  fi
+  if declare -F engine_http_advertised_smoke >/dev/null 2>&1; then
+    if [[ "${MM_SKIP_HTTP_VALIDATE:-0}" != "1" ]] \
+      && ! engine_http_advertised_smoke >/dev/null 2>&1; then
+      mm_whiptail_msg "DP Client Upgrade Commands — Blocked" \
+        "DP_CLIENT_COMMANDS_AVAILABLE=NO
+BLOCK_REASON=ADVERTISED_HTTP_SMOKE_FAIL
+REQUIRED_ACTION=Enable HTTP Distribution"
+      return 0
+    fi
+  fi
+
   mirror="$(mm_client_mirror_url)" || {
     mm_whiptail_msg "DP Client Upgrade Commands" \
-      "Could not determine the Mirror Server HTTP address.
+      "DP_CLIENT_COMMANDS_AVAILABLE=NO
+BLOCK_REASON=MIRROR_URL_UNRESOLVED
+REQUIRED_ACTION=Configuration
 
-Set MIRROR_HTTP_URL in ${MM_CONFIG_FILE} (example: http://192.0.2.10)
-or ensure this host has exactly one reachable global IPv4 address."
+Set Mirror Server IP in Configuration before generating commands."
     return 0
   }
   # Persist resolved URL for next runs (no secrets).
@@ -1255,7 +1353,8 @@ or ensure this host has exactly one reachable global IPv4 address."
 
   if mm_client_commands_stale; then
     mm_whiptail_msg "Client Commands" \
-      "Previously generated commands are stale because Preparation Mode changed.
+      "Previously generated commands are stale relative to the current
+workflow generation.
 
 New commands will be generated for: $(mm_preparation_mode_label)"
   fi
@@ -1305,31 +1404,26 @@ Shell metacharacters are not allowed."
   tmp="$(mktemp)"
   gui_build_client_commands "$mirror" "$topology" "$worker_ips" >"$tmp"
   out_file="$(mm_client_commands_file)"
-  if ! mkdir -p "$(dirname "$out_file")" || ! cp -f "$tmp" "$out_file" || ! chmod 0644 "$out_file"; then
+  ready_gen="$(mm_wf_get READINESS_VERIFIED_GENERATION_ID)"
+  if ! mm_wf_atomic_publish_command_file "$tmp" "$out_file" "${PREPARATION_MODE}" "$ready_gen"; then
     mm_whiptail_msg "DP Client Upgrade Commands" \
-      "Could not write command file:
-${out_file}
+      "COMMAND_FILE_BUILD=FAIL
 
-Mirror Manager must run as root:
-  sudo ubuntu-offline-mirror mirror-manager"
+Generated command content failed validation.
+The previous live command file (if any) was preserved.
+
+Required action: Regenerate Full-mode artifacts / Verify Upgrade Readiness"
     rm -f "$tmp"
     return 0
   fi
-  mm_mark_client_commands_fresh
   if mm_is_phase2_only; then
     title="DP Phase 2 Upgrade Commands"
   else
     title="DP Client Upgrade Commands"
   fi
-  rm -f "$tmp"
-  # Show the complete instructions in one textbox — no secondary viewer menu.
-  mm_whiptail_textbox "$title" "$out_file" || true
-  # Reprint on an interactive TTY so operators can copy long one-liners easily.
-  if [[ -t 1 ]]; then
-    clear 2>/dev/null || true
-    cat "$out_file"
-    printf '\nFor horizontal scrolling without wrapping:\n  less -S %s\n' "$out_file"
-  fi
+  # Show the full step list in one TUI textbox — no secondary viewer menu,
+  # no less pager, no terminal reprint after GUI close.
+  mm_menu7_textbox "$title" "$out_file" || true
   return 0
 }
 
