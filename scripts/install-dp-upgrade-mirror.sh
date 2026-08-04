@@ -272,7 +272,6 @@ Install dialog and reopen Menu 7 from the main menu."
   return 1
 }
 
-
 mm_has_dialog() {
   command -v dialog >/dev/null 2>&1
 }
@@ -958,11 +957,12 @@ gui_expected_signing_fingerprint() {
   printf '%s\n' "$fpr"
 }
 
-# One physical-line hop command:
-#   isolated mktemp workdir, no pre-HTTP rm of operator files,
-#   EXPECTED_FPR trust pin, fingerprint verify before gpgv,
-#   manifest script/SHA binding, sidecar SHA binding, then sudo bash.
-# Fail-closed && chain: any download/verify failure skips sudo bash.
+# Three physical-line OS-hop command block (one Bash logical command):
+#   line 1: cd, mirror, EXPECTED_FPR, HOP/SCRIPT, isolated workdir + trap
+#   line 2: download keyring + authenticated command-runner + signed manifest
+#   line 3: fingerprint pin, gpgv manifest, SHA bindings, then bash runner
+# Max intended physical-line length: 240. Trailing \ on lines 1–2 only.
+# Fail-closed: partial copy of line 1 or lines 1–2 waits for continuation.
 gui_client_hop_command_line() {
   local mirror="$1" script="$2"
   local hop="${script#dp-offline-upgrade-}"
@@ -974,9 +974,10 @@ gui_client_hop_command_line() {
   if [[ -z "$fpr" ]]; then
     fpr="MISSING_SIGNING_FINGERPRINT"
   fi
-  # Xenial-compatible fingerprint read + JSON field extract via python3
-  # (present on DP images) with awk fallbacks inside the one-liner.
-  printf '%s\n' "cd /home/aella && MIRROR='${mirror}' && EXPECTED_FPR='${fpr}' && HOP='${hop}' && SCRIPT='${script}' && WORKDIR=\"\$(mktemp -d /home/aella/.dp-upgrade-\${HOP}.XXXXXX)\" && trap 'rm -rf \"\$WORKDIR\"' EXIT && cd \"\$WORKDIR\" && curl -fsSLo client-set.env \"\$MIRROR/client/client-set.env\" && curl -fsSLo \"\$SCRIPT\" \"\$MIRROR/client/\$SCRIPT\" && curl -fsSLo \"\$SCRIPT.sha256\" \"\$MIRROR/client/\$SCRIPT.sha256\" && curl -fsSLo public-keyring.gpg \"\$MIRROR/client/public-keyring.gpg\" && curl -fsSLo client-manifest.json \"\$MIRROR/client/\$HOP/client-manifest.json\" && curl -fsSLo client-manifest.json.asc \"\$MIRROR/client/\$HOP/client-manifest.json.asc\" && test -s \"\$SCRIPT\" && test -s \"\$SCRIPT.sha256\" && test -s public-keyring.gpg && test -s client-manifest.json && test -s client-manifest.json.asc && GOT_FPR=\"\$(gpg --batch --no-default-keyring --keyring ./public-keyring.gpg --with-colons --fingerprint 2>/dev/null | awk -F: '/^fpr:/{print toupper(\$10); exit}')\" && test -n \"\$GOT_FPR\" && test \"\$GOT_FPR\" = \"\$EXPECTED_FPR\" && gpgv --keyring ./public-keyring.gpg client-manifest.json.asc client-manifest.json && MANIFEST_HOP=\"\$(python3 -c 'import json;print(json.load(open(\"client-manifest.json\")).get(\"hop\",\"\"))' 2>/dev/null || true)\" && test \"\$MANIFEST_HOP\" = \"\$HOP\" && MANIFEST_SCRIPT=\"\$(python3 -c 'import json;print(json.load(open(\"client-manifest.json\")).get(\"script\",\"\"))' 2>/dev/null || true)\" && test \"\$MANIFEST_SCRIPT\" = \"\$SCRIPT\" && CALC=\"\$(sha256sum \"\$SCRIPT\" | awk '{print \$1}')\" && MANIFEST_SHA=\"\$(python3 -c 'import json;print(json.load(open(\"client-manifest.json\")).get(\"script_sha256\",\"\"))' 2>/dev/null || true)\" && test -n \"\$MANIFEST_SHA\" && test \"\$MANIFEST_SHA\" = \"\$CALC\" && SIDE=\"\$(awk '{print \$1; exit}' \"\$SCRIPT.sha256\")\" && test \"\$SIDE\" = \"\$CALC\" && { sudo bash \"./\$SCRIPT\" --mirror-base \"\$MIRROR\"; }"
+  printf '%s\n' \
+    "cd /home/aella && MIRROR='${mirror}' && EXPECTED_FPR='${fpr}' && HOP='${hop}' && SCRIPT=\"dp-offline-upgrade-\${HOP}.sh\" && W=\$(mktemp -d)&&trap 'rm -rf \"\$W\"' EXIT&&cd \"\$W\" && \\" \
+    "  R=dp-client-command-runner.sh M=runner-manifest K=public-keyring.gpg && for f in \"\$K\" \"\$R\" \"\$R.sha256\" \"\$M\" \"\$M.asc\"; do curl -fsSLo \"\$f\" \"\$MIRROR/client/\$f\"&&test -s \"\$f\"||exit 1; done && \\" \
+    "  gpg --batch --no-default-keyring --keyring ./\$K --with-colons --fingerprint|grep -q :\$EXPECTED_FPR:&&gpgv --keyring ./\$K \$M.asc \$M&&sha256sum -c \$M&&sha256sum -c \$R.sha256&&bash \$R \"\$MIRROR\" \"\$HOP\" \"\$SCRIPT\" \"\$EXPECTED_FPR\""
 }
 
 # Backward-compatible names used by older tests/callers.
@@ -988,9 +989,13 @@ gui_client_hop_command() {
   gui_client_hop_command_line "$@"
 }
 
+# Phase 2 staging: two or three physical lines, one Bash logical command.
 gui_phase2_stage_command_line() {
   local mirror="$1" ver="$2"
-  printf '%s\n' "cd /home/aella && MIRROR='${mirror}' && VER='${ver}' && SCRIPT='stage-dp-phase2.sh' && WORKDIR=\"\$(mktemp -d /home/aella/.dp-upgrade-phase2.XXXXXX)\" && trap 'rm -rf \"\$WORKDIR\"' EXIT && cd \"\$WORKDIR\" && curl -fsSLo \"\$SCRIPT\" \"\$MIRROR/client/\$SCRIPT\" && curl -fsSLo \"\$SCRIPT.sha256\" \"\$MIRROR/client/\$SCRIPT.sha256\" && test -s \"\$SCRIPT\" && test -s \"\$SCRIPT.sha256\" && sha256sum -c \"\$SCRIPT.sha256\" && { sudo bash \"./\$SCRIPT\" --target-version \"\$VER\" --same-version-recovery --mirror-url \"\$MIRROR\"; }"
+  printf '%s\n' \
+    "cd /home/aella && MIRROR='${mirror}' && VER='${ver}' && SCRIPT='stage-dp-phase2.sh' && W=\$(mktemp -d)&&trap 'rm -rf \"\$W\"' EXIT&&cd \"\$W\" && \\" \
+    "  curl -fsSLo \"\$SCRIPT\" \"\$MIRROR/client/\$SCRIPT\" && curl -fsSLo \"\$SCRIPT.sha256\" \"\$MIRROR/client/\$SCRIPT.sha256\" && test -s \"\$SCRIPT\" && test -s \"\$SCRIPT.sha256\" && \\" \
+    "  sha256sum -c \"\$SCRIPT.sha256\" && { sudo bash \"./\$SCRIPT\" --target-version \"\$VER\" --same-version-recovery --mirror-url \"\$MIRROR\"; }"
 }
 
 gui_phase2_stage_command_block() {
@@ -1000,13 +1005,14 @@ gui_phase2_stage_command_block() {
 gui_build_client_commands() {
   # Writes command text to stdout. Args: mirror topology worker_ips
   # Uses PREPARATION_MODE from config (FULL or PHASE2_ONLY).
-  # Every executable command is exactly one physical line (no backslash
-  # continuations, no BEGIN/END multi-line blocks).
+  # OS-hop commands are three physical lines (backslash continuations) forming
+  # one Bash logical command. Short bringup/prereq commands may remain one line.
   local mirror="$1" topology="$2" worker_ips="${3:-}"
   mm_normalize_preparation_mode
   mm_force_phase2_target
   local ver="${PHASE2_TARGET_VERSION}"
   local snap_line stage_cmd bringup_cmd prereq_cmd hop2 hop3 hop4 hop5
+  local copy_block_guide
   if [[ "$topology" == "cluster" ]]; then
     snap_line="Create a full hypervisor snapshot of every DP VM."
   else
@@ -1023,6 +1029,14 @@ gui_build_client_commands() {
     bringup_cmd="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download"
   fi
   prereq_cmd="set -euo pipefail; . /etc/os-release; test \"\$ID\" = ubuntu; test \"\$VERSION_ID\" = 24.04; test \"\$VERSION_CODENAME\" = noble; getent passwd aella root | awk -F: '\$7!=\"/bin/bash\"{exit 1}'; avail_root=\$(df -BG --output=avail / | awk 'NR==2{gsub(/G/,\"\"); print}'); avail_data=\$(df -BG --output=avail /opt/aelladata 2>/dev/null | awk 'NR==2{gsub(/G/,\"\"); print}'); test \"\${avail_root:-0}\" -ge 20; test \"\${avail_data:-0}\" -ge 70; ! pgrep -fa 'apt-get|dpkg|do-release-upgrade|dp-offline-upgrade' >/dev/null"
+
+  copy_block_guide='Each executable block below is one logical Bash command shown on three physical lines.
+
+Copy all three lines together, including the trailing backslashes on the
+first two lines, and paste them into the DP terminal once.
+
+Do not copy only one or two lines.
+Do not include borders, status text, or the next section heading.'
 
   if mm_is_phase2_only; then
     cat <<EOF
@@ -1044,10 +1058,7 @@ If DP ${ver} is already healthy on Ubuntu 24.04, do not run these commands.
 Commands saved to:
 $(mm_client_commands_file)
 
-Each executable command below is exactly one physical line.
-Copy the complete line from "cd /home/aella" through the final argument.
-Visual wrapping does not insert a newline.
-Do not include borders, status text, or the next section heading.
+${copy_block_guide}
 
 STEP 0 — SNAPSHOT
 -----------------
@@ -1065,7 +1076,7 @@ ${prereq_cmd}
 STEP 2 — STAGE DP ${ver} FILES
 ------------------------------------------------------------------------
 
-Copy and paste the following entire line into the DP terminal:
+Copy all three lines of the following block into the DP terminal once:
 
 ${stage_cmd}
 
@@ -1146,10 +1157,7 @@ Do not edit the stage command to add a source version.
 Commands saved to:
 $(mm_client_commands_file)
 
-Each executable command below is exactly one physical line.
-Copy the complete line from "cd /home/aella" through the final argument.
-Visual wrapping does not insert a newline.
-Do not include borders, status text, or the next section heading.
+${copy_block_guide}
 
 STEP 0 — SNAPSHOT
 -----------------
@@ -1177,7 +1185,7 @@ STEP 2 — UBUNTU 16.04 TO 18.04
 The Xenial-to-Bionic client automatically sets the aella and root login
 shells to /bin/bash after upgrade confirmation.
 
-Copy and paste the following entire line into the DP terminal:
+Copy all three lines of the following block into the DP terminal once:
 
 ${hop2}
 
@@ -1185,7 +1193,7 @@ ${hop2}
 STEP 3 — UBUNTU 18.04 TO 20.04
 ------------------------------------------------------------------------
 
-Copy and paste the following entire line into the DP terminal:
+Copy all three lines of the following block into the DP terminal once:
 
 ${hop3}
 
@@ -1193,7 +1201,7 @@ ${hop3}
 STEP 4 — UBUNTU 20.04 TO 22.04
 ------------------------------------------------------------------------
 
-Copy and paste the following entire line into the DP terminal:
+Copy all three lines of the following block into the DP terminal once:
 
 ${hop4}
 
@@ -1201,7 +1209,7 @@ ${hop4}
 STEP 5 — UBUNTU 22.04 TO 24.04
 ------------------------------------------------------------------------
 
-Copy and paste the following entire line into the DP terminal:
+Copy all three lines of the following block into the DP terminal once:
 
 ${hop5}
 
@@ -1211,7 +1219,7 @@ Do not resume the DP during the intermediate OS upgrades.
 STEP 6 — STAGE DP ${ver} FILES
 ------------------------------------------------------------------------
 
-Copy and paste the following entire line into the DP terminal:
+Copy all three lines of the following block into the DP terminal once:
 
 ${stage_cmd}
 

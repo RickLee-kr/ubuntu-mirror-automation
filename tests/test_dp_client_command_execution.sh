@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tests/test_dp_client_command_execution.sh
-# Execute a generated one-line hop command against a local HTTP fixture with stubs.
+# Execute a generated three-line hop command against a local HTTP fixture with stubs.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,13 +38,15 @@ gpg --homedir "$GPG_HOME" --batch --export-secret-keys --armor >"$PRIV"
 FPR="$(local_signing_fingerprint_of "$PUB")"
 KR="${WORKDIR}/public-keyring.gpg"
 local_signing_build_binary_keyring "$PUB" "$KR"
+LOCAL_SIGNING_PRIVATE_KEY="$PRIV"
+LOCAL_SIGNING_PUBLIC_KEY="$PUB"
+LOCAL_KEY_FINGERPRINT="$FPR"
 
 # --- HTTP fixture tree ---
 HTTP_ROOT="${WORKDIR}/http"
 HOP="xenial-to-bionic"
 SCRIPT="dp-offline-upgrade-${HOP}.sh"
 mkdir -p "${HTTP_ROOT}/client/${HOP}"
-# Client script content does not matter — sudo/bash are stubbed.
 printf '#!/bin/bash\necho REAL_UPGRADE_SHOULD_NOT_RUN\nexit 99\n' \
   >"${HTTP_ROOT}/client/${SCRIPT}"
 chmod 0755 "${HTTP_ROOT}/client/${SCRIPT}"
@@ -59,6 +61,15 @@ MIRROR_HTTP_URL=http://127.0.0.1
 PREPARATION_MODE=FULL
 EOF
 chmod 0644 "${HTTP_ROOT}/client/client-set.env"
+
+# Publish authenticated command-runner
+install -m 0755 "${ROOT}/client/dp-client-command-runner.sh" \
+  "${HTTP_ROOT}/client/dp-client-command-runner.sh"
+if ! local_signing_stage_command_runner \
+  "${HTTP_ROOT}/client" "${ROOT}/client/dp-client-command-runner.sh"
+then
+  fail "failed to stage command runner into fixture"
+fi
 
 write_manifest() {
   local sha="${1:-$SCRIPT_SHA}"
@@ -78,7 +89,6 @@ PY
 }
 write_manifest
 
-# Local HTTP server on an ephemeral free port
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 python3 - "$HTTP_ROOT" "$PORT" <<'PY' >/dev/null 2>"${WORKDIR}/http.log" &
 import http.server, os, sys
@@ -90,7 +100,6 @@ HTTP_PID=$!
 sleep 0.3
 MIRROR="http://127.0.0.1:${PORT}"
 
-# Source command generator
 LIB="${WORKDIR}/installer-lib.sh"
 awk -v sd="${ROOT}/scripts" '
   /^SCRIPT_DIR=/ { print "SCRIPT_DIR=\"" sd "\""; next }
@@ -100,51 +109,67 @@ awk -v sd="${ROOT}/scripts" '
 # shellcheck disable=SC1090
 source "$LIB"
 
-line="$(gui_client_hop_command_line "$MIRROR" "$SCRIPT" "$FPR")"
-[[ "$(printf '%s\n' "$line" | wc -l | tr -d ' ')" == "1" ]] \
-  && pass "generator emits one physical line" \
-  || fail "generator not one physical line"
-printf '%s\n' "$line" >"${WORKDIR}/cmd.sh"
+block="$(gui_client_hop_command_line "$MIRROR" "$SCRIPT" "$FPR")"
+[[ "$(printf '%s\n' "$block" | wc -l | tr -d ' ')" == "3" ]] \
+  && pass "generator emits three physical lines" \
+  || fail "generator not three physical lines"
+printf '%s\n' "$block" >"${WORKDIR}/cmd.sh"
 grep -q "EXPECTED_FPR='${FPR}'" "${WORKDIR}/cmd.sh" \
   && pass "fingerprint pinned in command" \
   || fail "fingerprint missing from command"
-grep -q 'rm -f "\$SCRIPT"' "${WORKDIR}/cmd.sh" \
-  && fail "command still deletes files before HTTP" \
-  || pass "no pre-HTTP rm of existing files"
 grep -q 'mktemp -d' "${WORKDIR}/cmd.sh" \
   && pass "isolated workdir present" \
   || fail "isolated workdir missing"
+grep -q 'dp-client-command-runner.sh' "${WORKDIR}/cmd.sh" \
+  && pass "command references runner" \
+  || fail "runner missing from command"
 
-# Workdir for DP-side execution (replaces /home/aella)
 DP_HOME="${WORKDIR}/dp-home"
 mkdir -p "$DP_HOME"
-# Pre-existing operator evidence that must survive HTTP failure.
 printf 'keep-me\n' >"${DP_HOME}/precious.txt"
 
-# Stubs: sudo and gpgv stay real; sudo bash runs stub client counter
 STUB_RUNS="${WORKDIR}/stub.runs"
 : >"$STUB_RUNS"
 STUB_BIN="${WORKDIR}/bin"
 mkdir -p "$STUB_BIN"
 cat >"${STUB_BIN}/sudo" <<EOF
 #!/usr/bin/env bash
-# Count upgrade-client invocations only.
 if [[ "\${1:-}" == "bash" && "\${2:-}" == "./${SCRIPT}" ]]; then
   echo "\$@" >>"${STUB_RUNS}"
   exit 0
 fi
-# Allow other sudo uses if any
 exec /usr/bin/sudo "\$@"
 EOF
 chmod +x "${STUB_BIN}/sudo"
 
-# Rewrite cd target in the command for the test home
-sed "s|cd /home/aella|cd '${DP_HOME}'|; s|/home/aella/.dp-upgrade-|${DP_HOME}/.dp-upgrade-|g" \
+sed "s|cd /home/aella|cd '${DP_HOME}'|g" \
   "${WORKDIR}/cmd.sh" >"${WORKDIR}/cmd.run.sh"
 
 run_cmd() {
   env PATH="${STUB_BIN}:/usr/bin:/bin" bash "${WORKDIR}/cmd.run.sh"
 }
+
+# --- incomplete copy protection ---
+head -1 "${WORKDIR}/cmd.run.sh" >"${WORKDIR}/partial1.sh"
+set +e
+# Feed a newline then exit via timeout so Bash continuation does not hang forever.
+timeout 2 bash -c 'env PATH="'"${STUB_BIN}"':/usr/bin:/bin" bash "'"${WORKDIR}/partial1.sh"'"' \
+  </dev/null >/dev/null 2>&1
+p1_rc=$?
+set -e
+[[ "$(wc -l <"$STUB_RUNS" | tr -d ' ')" == "0" ]] \
+  && pass "line1 alone never runs client" \
+  || fail "line1 alone executed client"
+: >"$STUB_RUNS"
+head -2 "${WORKDIR}/cmd.run.sh" >"${WORKDIR}/partial2.sh"
+set +e
+timeout 2 bash -c 'env PATH="'"${STUB_BIN}"':/usr/bin:/bin" bash "'"${WORKDIR}/partial2.sh"'"' \
+  </dev/null >/dev/null 2>&1
+p2_rc=$?
+set -e
+[[ "$(wc -l <"$STUB_RUNS" | tr -d ' ')" == "0" ]] \
+  && pass "lines1-2 alone never run client" \
+  || fail "lines1-2 alone executed client"
 
 # --- 1) Happy path ---
 : >"$STUB_RUNS"
@@ -152,8 +177,8 @@ set +e
 run_cmd >"${WORKDIR}/happy.out" 2>"${WORKDIR}/happy.err"
 rc=$?
 set -e
-[[ "$rc" -eq 0 ]] && pass "full one-line command execution rc=0" || {
-  fail "full one-line command execution rc=${rc}"
+[[ "$rc" -eq 0 ]] && pass "full three-line command execution rc=0" || {
+  fail "full three-line command execution rc=${rc}"
   cat "${WORKDIR}/happy.err" || true
 }
 [[ "$(wc -l <"$STUB_RUNS" | tr -d ' ')" == "1" ]] \
@@ -161,9 +186,6 @@ set -e
   || fail "stub runs=$(wc -l <"$STUB_RUNS")"
 [[ -f "${DP_HOME}/precious.txt" ]] && pass "pre-existing home files preserved" \
   || fail "precious.txt deleted"
-grep -q "MIRROR='${MIRROR}'" "${WORKDIR}/cmd.sh" \
-  && pass "mirror URL matches configured value" \
-  || fail "mirror URL mismatch"
 
 # --- 2) Bad SHA256 (manifest) → 0 stub runs ---
 write_manifest "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
@@ -182,7 +204,6 @@ write_manifest
 printf '{"hop":"%s","script":"%s","script_sha256":"%s","tampered":true}\n' \
   "$HOP" "$SCRIPT" "$SCRIPT_SHA" \
   >"${HTTP_ROOT}/client/${HOP}/client-manifest.json"
-# leave old .asc → mismatch
 : >"$STUB_RUNS"
 set +e
 run_cmd >"${WORKDIR}/badsig.out" 2>"${WORKDIR}/badsig.err"
@@ -196,9 +217,9 @@ write_manifest
 
 # --- 4) Fingerprint mismatch → 0 runs ---
 : >"$STUB_RUNS"
-bad_line="$(gui_client_hop_command_line "$MIRROR" "$SCRIPT" "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")"
-sed "s|cd /home/aella|cd '${DP_HOME}'|; s|/home/aella/.dp-upgrade-|${DP_HOME}/.dp-upgrade-|g" \
-  <<<"$bad_line" >"${WORKDIR}/cmd.badfpr.sh"
+bad_block="$(gui_client_hop_command_line "$MIRROR" "$SCRIPT" "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")"
+sed "s|cd /home/aella|cd '${DP_HOME}'|g" \
+  <<<"$bad_block" >"${WORKDIR}/cmd.badfpr.sh"
 set +e
 env PATH="${STUB_BIN}:/usr/bin:/bin" bash "${WORKDIR}/cmd.badfpr.sh" >/dev/null 2>&1
 fpr_rc=$?
@@ -221,7 +242,7 @@ set -e
   || fail "stub ran with corrupt keyring"
 cp "$KR" "${HTTP_ROOT}/client/public-keyring.gpg"
 
-# --- 6) HTTP 404 → 0 runs; precious file survives ---
+# --- 6) HTTP 404 → 0 runs ---
 rm -f "${HTTP_ROOT}/client/${SCRIPT}"
 : >"$STUB_RUNS"
 set +e
@@ -235,27 +256,14 @@ set -e
 [[ -f "${DP_HOME}/precious.txt" ]] && pass "HTTP failure does not delete home evidence" \
   || fail "precious.txt removed on HTTP failure"
 
-# --- 7) Trailing GUI/status garbage on the same physical line → safe failure ---
+# restore script for remaining checks
 printf '#!/bin/bash\necho REAL\n' >"${HTTP_ROOT}/client/${SCRIPT}"
 chmod 0755 "${HTTP_ROOT}/client/${SCRIPT}"
 SCRIPT_SHA="$(sha256sum "${HTTP_ROOT}/client/${SCRIPT}" | awk '{print $1}')"
 ( cd "${HTTP_ROOT}/client" && sha256sum "$SCRIPT" >"${SCRIPT}.sha256" )
 write_manifest
-: >"$STUB_RUNS"
-# Reproduce less/status contamination: trailer glued onto the executable line.
-sed 's|$| /var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt|' \
-  "${WORKDIR}/cmd.run.sh" >"${WORKDIR}/cmd.trailer.sh"
-set +e
-env PATH="${STUB_BIN}:/usr/bin:/bin" bash "${WORKDIR}/cmd.trailer.sh" >/dev/null 2>&1
-trail_rc=$?
-set -e
-[[ "$trail_rc" -ne 0 ]] && pass "trailing GUI status text fails safely" \
-  || fail "trailing status should not execute cleanly"
-[[ "$(wc -l <"$STUB_RUNS" | tr -d ' ')" == "0" ]] \
-  && pass "TRAILING_STATUS_PREVENTS_UPGRADE_EXECUTION=YES" \
-  || fail "stub ran with trailing status text"
 
-# --- 8) Missing public-keyring artifact → fail closed ---
+# --- 7) Missing public-keyring → fail closed ---
 rm -f "${HTTP_ROOT}/client/public-keyring.gpg"
 : >"$STUB_RUNS"
 set +e
@@ -268,9 +276,44 @@ set -e
   && pass "missing keyring prevents upgrade" \
   || fail "stub ran without keyring"
 
+# --- 8) Malformed block validation ---
+# shellcheck source=../scripts/lib/mirror_workflow_state.sh
+source "${ROOT}/scripts/lib/mirror_workflow_state.sh"
+mal="${WORKDIR}/malformed.txt"
+{
+  echo "STEP 0 — SNAPSHOT"
+  head -2 "${WORKDIR}/cmd.sh"
+  # missing third line of hop block — next section
+  echo "STEP 1 — PAUSE"
+} >"$mal"
+# Use a minimal FULL-looking file that fails hop-block validation
+if mm_wf_validate_os_hop_block_at "${WORKDIR}/cmd.sh" 1 240 >/dev/null; then
+  pass "valid three-line hop block accepted"
+else
+  fail "valid hop block rejected"
+fi
+# Missing final line: only two lines
+head -2 "${WORKDIR}/cmd.sh" >"${WORKDIR}/two_lines.sh"
+if mm_wf_validate_os_hop_block_at "${WORKDIR}/two_lines.sh" 1 240 >/dev/null 2>&1; then
+  fail "missing final line should fail validation"
+else
+  pass "missing final line fails validation"
+fi
+# Extra fourth continuation
+{
+  cat "${WORKDIR}/cmd.sh"
+  echo "  echo extra && \\"
+} >"${WORKDIR}/four_lines.sh"
+# validate starting at line 1 — fourth line after block is continuation
+if mm_wf_validate_os_hop_block_at "${WORKDIR}/four_lines.sh" 1 240 >/dev/null 2>&1; then
+  fail "extra fourth continuation should fail"
+else
+  pass "extra fourth line fails validation"
+fi
+
 if [[ "$FAIL" -eq 0 ]]; then
   echo "=== test_dp_client_command_execution PASS ==="
-  echo "GENERATED_ONE_LINE_EXECUTION_TEST=PASS"
+  echo "GENERATED_THREE_LINE_EXECUTION_TEST=PASS"
   exit 0
 fi
 echo "=== test_dp_client_command_execution FAIL ==="

@@ -153,6 +153,15 @@ PY
   gpg --homedir "$GPG_HOME" --batch --yes --armor --detach-sign \
     -o "$STAGE/$hop/client-manifest.json.asc" "$STAGE/$hop/client-manifest.json"
 done
+# Phase 2 stage helper + authenticated Menu 7 command-runner.
+printf '#!/usr/bin/env bash\nprintf "fixture stage\\n"\n' >"$STAGE/stage-dp-phase2.sh"
+chmod 0755 "$STAGE/stage-dp-phase2.sh"
+( cd "$STAGE" && sha256sum stage-dp-phase2.sh >stage-dp-phase2.sh.sha256 )
+LOCAL_SIGNING_PRIVATE_KEY="$LOCAL_CLIENT_SIGNING_DIR/private.gpg"
+LOCAL_SIGNING_PUBLIC_KEY="$LOCAL_CLIENT_SIGNING_DIR/public.gpg"
+LOCAL_KEY_FINGERPRINT="$FPR"
+expect "command runner staged" \
+  local_signing_stage_command_runner "$STAGE" "$ROOT/client/dp-client-command-runner.sh"
 local_signing_stage_http_public_artifacts \
   "$STAGE" "$LOCAL_CLIENT_SIGNING_DIR/public.gpg" "$FPR"
 CLIENT_GEN="client-fixture-1"
@@ -193,14 +202,13 @@ COMMAND_LIVE="$MM_LOG_DIR/dp-client-upgrade-commands.txt"
 gui_build_client_commands "$MIRROR_HTTP_URL" single "" >"$COMMAND_TMP"
 expect "FULL command structure validates" \
   mm_wf_validate_command_file_content "$COMMAND_TMP" FULL
-FULL_HOP_COUNT=$(awk '/HOP=/{count++} END{print count+0}' "$COMMAND_TMP")
+FULL_HOP_COUNT=$(grep -cE "^cd /home/aella && .*HOP=" "$COMMAND_TMP" || true)
 expect "FULL command has four hops" test "$FULL_HOP_COUNT" = 4
 expect "FULL commands pin EXPECTED_FPR" grep -q "EXPECTED_FPR='${FPR}'" "$COMMAND_TMP"
-if grep -qE '\\[[:space:]]*$' "$COMMAND_TMP"; then
-  fail "generated command contains a continuation"
-else
-  pass "all generated executable commands are physical lines"
-fi
+expect "FULL hop blocks use controlled continuations" \
+  grep -qE '\\[[:space:]]*$' "$COMMAND_TMP"
+expect "FULL hop blocks are three-line" \
+  test "$(gui_client_hop_command_line "$MIRROR_HTTP_URL" dp-offline-upgrade-xenial-to-bionic.sh "$FPR" | wc -l)" = 3
 READY_GEN="$(mm_wf_get READINESS_VERIFIED_GENERATION_ID)"
 mm_wf_atomic_publish_command_file "$COMMAND_TMP" "$COMMAND_LIVE" FULL "$READY_GEN" >/dev/null
 expect "state COMMANDS_GENERATED" test "$(mm_wf_state)" = COMMANDS_GENERATED
@@ -242,7 +250,7 @@ done
 LOCAL_MIRROR="http://127.0.0.1:$PORT"
 STEP2=$(gui_client_hop_command_line "$LOCAL_MIRROR" \
   dp-offline-upgrade-xenial-to-bionic.sh "$FPR")
-expect "Step 2 generator emits one line" test "$(printf '%s\n' "$STEP2" | wc -l)" = 1
+expect "Step 2 generator emits three lines" test "$(printf '%s\n' "$STEP2" | wc -l)" = 3
 DP_HOME="$TMP/home/aella"
 STUB_BIN="$TMP/stub-bin"
 RUNS="$TMP/sudo-runs"
@@ -255,7 +263,7 @@ exit 0
 EOF
 chmod 0755 "$STUB_BIN/sudo"
 rewrite_command() {
-  sed "s|cd /home/aella|cd '$DP_HOME'|; s|/home/aella/.dp-upgrade-|$DP_HOME/.dp-upgrade-|g"
+  sed "s|cd /home/aella|cd '$DP_HOME'|g"
 }
 printf '%s\n' "$STEP2" | rewrite_command >"$TMP/step2.sh"
 env PATH="$STUB_BIN:/usr/bin:/bin" bash "$TMP/step2.sh"

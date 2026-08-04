@@ -185,9 +185,16 @@ fi
 [[ "$cmd_a" == *"public-keyring.gpg"* ]] \
   && pass "GUI hop command downloads binary public keyring" \
   || fail "GUI hop command missing public-keyring.gpg download"
-[[ "$cmd_a" == *"gpgv"* && "$cmd_a" == *"--keyring ./public-keyring.gpg"* ]] \
-  && pass "GUI hop command verifies signature with binary keyring" \
-  || fail "GUI hop command missing gpgv --keyring public-keyring.gpg"
+# Accept literal --keyring ./public-keyring.gpg or K=public-keyring.gpg with ./$K.
+if [[ "$cmd_a" == *"gpgv"* ]] && {
+     [[ "$cmd_a" == *"--keyring ./public-keyring.gpg"* ]] \
+     || { [[ "$cmd_a" == *"K=public-keyring.gpg"* ]] && [[ "$cmd_a" == *'gpgv --keyring ./$K'* ]]; }
+   }
+then
+  pass "GUI hop command verifies signature with binary keyring"
+else
+  fail "GUI hop command missing gpgv --keyring public-keyring.gpg"
+fi
 [[ "$cmd_a" != *"--keyring ./public.gpg"* ]] \
   && pass "GUI hop command does not use armored public.gpg as keyring" \
   || fail "GUI hop command still uses public.gpg as gpgv keyring"

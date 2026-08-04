@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tests/test_dp_client_command_single_lines.sh
-# Validate DP hop/stage/bringup commands are copyable single physical lines.
+# Validate DP hop commands are controlled three-line blocks; stage is 2–3 lines.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -35,9 +35,10 @@ awk -v sd="${ROOT}/scripts" '
 # shellcheck disable=SC1090
 source "$LIB"
 
-echo "=== test_dp_client_command_single_lines ==="
+echo "=== test_dp_client_command_three_line_blocks ==="
 
 MIRROR="http://192.0.2.55"
+MAX_LEN=240
 HOPS=(
   "dp-offline-upgrade-xenial-to-bionic.sh"
   "dp-offline-upgrade-bionic-to-focal.sh"
@@ -45,119 +46,130 @@ HOPS=(
   "dp-offline-upgrade-jammy-to-noble.sh"
 )
 
-assert_one_physical_line() {
+assert_three_line_hop_block() {
   local label="$1" text="$2"
-  local lines
-  lines="$(printf '%s\n' "$text" | wc -l | tr -d ' ')"
-  if [[ "$lines" == "1" ]]; then
-    pass "${label}: exactly one physical line"
+  local lines l1 l2 l3
+  mapfile -t lines < <(printf '%s\n' "$text")
+  if [[ "${#lines[@]}" -eq 3 ]]; then
+    pass "${label}: exactly three physical lines"
   else
-    fail "${label}: expected 1 physical line, got ${lines}"
+    fail "${label}: expected 3 physical lines, got ${#lines[@]}"
+    return
   fi
-  if printf '%s' "$text" | grep -qE '\\[[:space:]]*$'; then
-    fail "${label}: backslash continuation present"
+  l1="${lines[0]}"
+  l2="${lines[1]}"
+  l3="${lines[2]}"
+  [[ "$l1" == cd\ /home/aella\ \&\&* ]] \
+    && pass "${label}: line1 cd prefix" || fail "${label}: line1 cd prefix"
+  [[ "$l1" =~ \\[[:space:]]*$ ]] \
+    && pass "${label}: line1 trailing backslash" || fail "${label}: line1 backslash"
+  [[ "$l2" =~ \\[[:space:]]*$ ]] \
+    && pass "${label}: line2 trailing backslash" || fail "${label}: line2 backslash"
+  if [[ "$l3" =~ \\[[:space:]]*$ ]]; then
+    fail "${label}: line3 must not end with backslash"
   else
-    pass "${label}: no backslash continuation"
+    pass "${label}: line3 no trailing backslash"
   fi
+  for i in 0 1 2; do
+    if [[ ${#lines[$i]} -gt "$MAX_LEN" ]]; then
+      fail "${label}: line$((i + 1)) length ${#lines[$i]} > ${MAX_LEN}"
+    else
+      pass "${label}: line$((i + 1)) length ${#lines[$i]} <= ${MAX_LEN}"
+    fi
+  done
   if printf '%s\n' "$text" | grep -qE 'BEGIN STEP|END STEP|BEGIN PHASE|END PHASE'; then
     fail "${label}: BEGIN/END markers present"
   else
     pass "${label}: no BEGIN/END markers"
-  fi
-  if printf '%s\n' "$text" | grep -qE '^\('; then
-    fail "${label}: parenthesized multi-line block"
-  else
-    pass "${label}: no parenthesized block"
   fi
 }
 
 for script in "${HOPS[@]}"; do
   hop="${script#dp-offline-upgrade-}"
   hop="${hop%.sh}"
-  line="$(gui_client_hop_command_line "$MIRROR" "$script")"
-  printf '%s\n' "$line" >"${TMP}/line-${hop}.sh"
-  assert_one_physical_line "$hop" "$line"
+  block="$(gui_client_hop_command_line "$MIRROR" "$script")"
+  printf '%s\n' "$block" >"${TMP}/block-${hop}.sh"
+  assert_three_line_hop_block "$hop" "$block"
 
-  grep -q "MIRROR='${MIRROR}'" "${TMP}/line-${hop}.sh" \
+  grep -q "MIRROR='${MIRROR}'" "${TMP}/block-${hop}.sh" \
     && pass "${hop}: configured mirror" || fail "${hop}: mirror"
-  grep -q "HOP='${hop}'" "${TMP}/line-${hop}.sh" \
+  grep -q "HOP='${hop}'" "${TMP}/block-${hop}.sh" \
     && pass "${hop}: HOP var" || fail "${hop}: HOP var"
-  grep -q '^cd /home/aella &&' "${TMP}/line-${hop}.sh" \
+  grep -q '^cd /home/aella &&' "${TMP}/block-${hop}.sh" \
     && pass "${hop}: starts with cd /home/aella" || fail "${hop}: cd prefix"
 
-  if bash -n "${TMP}/line-${hop}.sh"; then
+  if bash -n "${TMP}/block-${hop}.sh"; then
     pass "${hop}: bash -n PASS"
   else
     fail "${hop}: bash -n FAIL"
   fi
 
-  if grep -Eq 'curl -fsSLO([[:space:]]|$)' "${TMP}/line-${hop}.sh"; then
-    fail "${hop}: naked curl -fsSLO"
-  else
-    pass "${hop}: no naked curl -fsSLO"
-  fi
-  grep -q 'curl -fsSLo' "${TMP}/line-${hop}.sh" \
+  grep -q 'curl -fsSLo' "${TMP}/block-${hop}.sh" \
     && pass "${hop}: curl -fsSLo" || fail "${hop}: curl -fsSLo"
-  grep -q 'public-keyring.gpg' "${TMP}/line-${hop}.sh" \
+  grep -q 'public-keyring.gpg' "${TMP}/block-${hop}.sh" \
     && pass "${hop}: downloads public-keyring.gpg" || fail "${hop}: keyring download"
-  grep -q -- '--keyring ./public-keyring.gpg' "${TMP}/line-${hop}.sh" \
-    && pass "${hop}: gpgv uses public-keyring.gpg" || fail "${hop}: gpgv keyring"
-  if grep -q -- '--keyring ./public.gpg' "${TMP}/line-${hop}.sh"; then
-    fail "${hop}: still uses public.gpg as keyring"
-  else
-    pass "${hop}: no public.gpg keyring"
-  fi
-  if grep -qE '221\.139\.249\.(111|112)' "${TMP}/line-${hop}.sh"; then
+  grep -q 'dp-client-command-runner.sh' "${TMP}/block-${hop}.sh" \
+    && pass "${hop}: runner helper" || fail "${hop}: runner helper"
+  grep -q 'gpgv --keyring' "${TMP}/block-${hop}.sh" \
+    && pass "${hop}: gpgv present" || fail "${hop}: gpgv"
+  grep -q 'EXPECTED_FPR=' "${TMP}/block-${hop}.sh" \
+    && pass "${hop}: EXPECTED_FPR pin" || fail "${hop}: missing EXPECTED_FPR"
+  grep -q 'mktemp -d' "${TMP}/block-${hop}.sh" \
+    && pass "${hop}: isolated workdir" || fail "${hop}: missing workdir"
+  grep -q 'rm -f "\$SCRIPT"' "${TMP}/block-${hop}.sh" \
+    && fail "${hop}: pre-HTTP rm still present" || pass "${hop}: no pre-HTTP rm"
+  if grep -qE '221\.139\.249\.(111|112)' "${TMP}/block-${hop}.sh"; then
     fail "${hop}: hardcoded test server IP"
   else
     pass "${hop}: no hardcoded 221.139.249.111/112"
   fi
 
-  # Order: fingerprint pin → gpgv → manifest/sidecar SHA → sudo bash
-  fpr_pos="$(grep -ob 'EXPECTED_FPR=' "${TMP}/line-${hop}.sh" | head -1 | cut -d: -f1)"
-  gpg_pos="$(grep -ob 'gpgv --keyring' "${TMP}/line-${hop}.sh" | head -1 | cut -d: -f1)"
-  sudo_pos="$(grep -ob 'sudo bash' "${TMP}/line-${hop}.sh" | head -1 | cut -d: -f1)"
-  calc_pos="$(grep -ob 'sha256sum' "${TMP}/line-${hop}.sh" | head -1 | cut -d: -f1)"
-  if [[ -n "$fpr_pos" && -n "$gpg_pos" && -n "$sudo_pos" && -n "$calc_pos" \
-        && "$fpr_pos" -lt "$gpg_pos" && "$gpg_pos" -lt "$sudo_pos" \
-        && "$calc_pos" -lt "$sudo_pos" ]]; then
-    pass "${hop}: fingerprint/gpgv/sha → sudo order"
-  else
-    fail "${hop}: verify/sudo order wrong (fpr=${fpr_pos} gpg=${gpg_pos} calc=${calc_pos} sudo=${sudo_pos})"
-  fi
-  grep -q 'EXPECTED_FPR=' "${TMP}/line-${hop}.sh" \
-    && pass "${hop}: EXPECTED_FPR pin" || fail "${hop}: missing EXPECTED_FPR"
-  grep -q 'mktemp -d' "${TMP}/line-${hop}.sh" \
-    && pass "${hop}: isolated workdir" || fail "${hop}: missing workdir"
-  grep -q 'rm -f "\$SCRIPT"' "${TMP}/line-${hop}.sh" \
-    && fail "${hop}: pre-HTTP rm still present" || pass "${hop}: no pre-HTTP rm"
-  grep -q ' && ' "${TMP}/line-${hop}.sh" \
-    && pass "${hop}: && fail-closed chain" || fail "${hop}: missing && chain"
+  # Incomplete copy: line 1 alone / lines 1-2 alone must not be a complete command
+  # (trailing backslash → Bash waits for continuation; never reaches runner).
+  head -1 "${TMP}/block-${hop}.sh" >"${TMP}/partial1-${hop}.sh"
+  head -2 "${TMP}/block-${hop}.sh" >"${TMP}/partial2-${hop}.sh"
+  grep -qE '\\[[:space:]]*$' "${TMP}/partial1-${hop}.sh" \
+    && pass "${hop}: line1 alone ends with continuation" \
+    || fail "${hop}: line1 alone not continued"
+  grep -qE '\\[[:space:]]*$' <(tail -1 "${TMP}/partial2-${hop}.sh") \
+    && pass "${hop}: lines1-2 end with continuation" \
+    || fail "${hop}: lines1-2 not continued"
+  # Reconstructed full block must invoke runner once (no sudo bash of hop in block).
+  recon="$(sed -E 's/\\[[:space:]]*$//;s/^[[:space:]]+//' "${TMP}/block-${hop}.sh" | tr -d '\n')"
+  printf '%s\n' "$recon" | grep -q 'bash \$R ' \
+    && pass "${hop}: reconstructed invokes runner" || fail "${hop}: runner invoke"
 done
 
 stage="$(gui_phase2_stage_command_line "$MIRROR" "6.5.0")"
-assert_one_physical_line "phase2-stage" "$stage"
+mapfile -t stage_lines < <(printf '%s\n' "$stage")
+[[ "${#stage_lines[@]}" -ge 2 && "${#stage_lines[@]}" -le 3 ]] \
+  && pass "phase2-stage: ${#stage_lines[@]} physical lines" \
+  || fail "phase2-stage: unexpected line count ${#stage_lines[@]}"
 printf '%s\n' "$stage" >"${TMP}/stage.sh"
 grep -q 'stage-dp-phase2.sh' "${TMP}/stage.sh" \
   && pass "stage: script name" || fail "stage: script name"
 grep -q "MIRROR='${MIRROR}'" "${TMP}/stage.sh" \
   && pass "stage: configured mirror" || fail "stage: mirror"
-grep -q '^cd /home/aella &&' "${TMP}/stage.sh" \
-  && pass "stage: cd prefix" || fail "stage: cd prefix"
 bash -n "${TMP}/stage.sh" && pass "stage: bash -n" || fail "stage: bash -n"
+[[ "${stage_lines[0]}" =~ \\[[:space:]]*$ ]] \
+  && pass "stage: non-final line has backslash" || fail "stage: missing continuation"
 
 OUT="$TMP/full.txt"
 gui_build_client_commands "$MIRROR" "single" "" >"$OUT"
 bringup="$(grep -E 'bringup_py3_dp_after_os_upgrade\.sh' "$OUT" | head -1)"
-assert_one_physical_line "bringup" "$bringup"
-[[ "$(grep -cE 'curl -fsSLo .*public-keyring\.gpg' "$OUT" || true)" -ge 4 ]] \
-  || fail "public-keyring.gpg under-downloaded in full doc"
+[[ "$(printf '%s\n' "$bringup" | wc -l | tr -d ' ')" == "1" ]] \
+  && pass "bringup: one physical line" || fail "bringup: not one line"
+[[ "$(grep -cE 'curl -fsSLo .*public-keyring\.gpg|K=public-keyring\.gpg' "$OUT" || true)" -ge 4 ]] \
+  || fail "public-keyring.gpg under-referenced in full doc"
 grep -q 'BEGIN STEP\|END STEP' "$OUT" && fail "BEGIN/END in full doc" || true
-grep -qE '\\[[:space:]]*$' "$OUT" && fail "backslash in full doc" || true
-grep -Eq 'curl -fsSLO([[:space:]]|$)' "$OUT" && fail "naked curl in full doc" || true
-pass "full document single-line contract"
+grep -q 'exactly one physical line' "$OUT" && fail "obsolete one-line guidance" || true
+grep -q 'Visual wrapping does not insert a newline' "$OUT" && fail "obsolete wrap guidance" || true
+grep -q 'three physical lines' "$OUT" \
+  && pass "three-line copy guidance" || fail "missing three-line guidance"
+grep -q 'Do not copy only one or two lines' "$OUT" \
+  && pass "partial-copy warning" || fail "missing partial-copy warning"
+pass "full document three-line contract"
 
-# Source generators themselves must emit one printf line (no embedded newlines in string).
 if declare -F gui_client_hop_command_line >/dev/null; then
   pass "gui_client_hop_command_line defined"
 else
@@ -170,9 +182,10 @@ else
 fi
 
 if [[ "$FAIL" -eq 0 ]]; then
-  echo "=== test_dp_client_command_single_lines PASS ==="
-  echo "EACH_EXECUTABLE_COMMAND_ONE_PHYSICAL_LINE=YES"
+  echo "=== test_dp_client_command_three_line_blocks PASS ==="
+  echo "OS_HOP_BLOCK_LINES=3"
+  echo "EACH_EXECUTABLE_OS_HOP_THREE_PHYSICAL_LINES=YES"
   exit 0
 fi
-echo "=== test_dp_client_command_single_lines FAIL ==="
+echo "=== test_dp_client_command_three_line_blocks FAIL ==="
 exit 1

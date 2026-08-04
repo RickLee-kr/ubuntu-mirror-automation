@@ -477,12 +477,108 @@ mm_wf_commands_preflight() {
 # ---------------------------------------------------------------------------
 # Command file validation + atomic publish
 # ---------------------------------------------------------------------------
+# Reconstruct a controlled backslash-continued command block for inspection
+# (does not execute). Removes only: trailing \ + newline + continuation indent.
+mm_wf_reconstruct_command_block() {
+  local block="$1"
+  printf '%s\n' "$block" | sed -E 's/\\[[:space:]]*$//' | sed -E 's/^[[:space:]]+//' | tr -d '\n'
+  printf '\n'
+}
+
+# Validate one OS-hop three-line block starting at file line number.
+# Prints evidence; returns 0 on PASS.
+mm_wf_validate_os_hop_block_at() {
+  local file="$1" start_line="$2"
+  local max_len="${3:-240}"
+  local l1 l2 l3 l4 recon
+
+  l1="$(sed -n "${start_line}p" "$file")"
+  l2="$(sed -n "$((start_line + 1))p" "$file")"
+  l3="$(sed -n "$((start_line + 2))p" "$file")"
+  l4="$(sed -n "$((start_line + 3))p" "$file" || true)"
+
+  [[ -n "$l1" && -n "$l2" && -n "$l3" ]] || {
+    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_HOP_BLOCK_INCOMPLETE=YES\n'
+    return 1
+  }
+  [[ "$l1" == cd\ /home/aella\ \&\&* ]] || {
+    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_HOP_BLOCK_PREFIX=FAIL\n'
+    return 1
+  }
+  [[ "$l1" =~ \\[[:space:]]*$ ]] || {
+    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_HOP_BLOCK_LINE1_BACKSLASH=FAIL\n'
+    return 1
+  }
+  [[ "$l2" =~ \\[[:space:]]*$ ]] || {
+    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_HOP_BLOCK_LINE2_BACKSLASH=FAIL\n'
+    return 1
+  }
+  if [[ "$l3" =~ \\[[:space:]]*$ ]]; then
+    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_HOP_BLOCK_FINAL_BACKSLASH=YES\n'
+    return 1
+  fi
+  # No blank line inside the block.
+  if [[ -z "${l1// /}" || -z "${l2// /}" || -z "${l3// /}" ]]; then
+    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_HOP_BLOCK_BLANK=YES\n'
+    return 1
+  fi
+  # No fourth continuation line (another trailing-\ line immediately after).
+  if [[ -n "$l4" && "$l4" =~ \\[[:space:]]*$ ]]; then
+    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_HOP_BLOCK_EXTRA_CONTINUATION=YES\n'
+    return 1
+  fi
+  if [[ ${#l1} -gt "$max_len" || ${#l2} -gt "$max_len" || ${#l3} -gt "$max_len" ]]; then
+    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_PHYSICAL_LINE_TOO_LONG=YES\n'
+    return 1
+  fi
+
+  recon="$(mm_wf_reconstruct_command_block "$(printf '%s\n%s\n%s\n' "$l1" "$l2" "$l3")")"
+  [[ -n "${recon// /}" ]] || {
+    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_HOP_BLOCK_EMPTY=YES\n'
+    return 1
+  }
+  printf '%s\n' "$recon" | grep -q "EXPECTED_FPR=" || {
+    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_FINGERPRINT_PIN=MISSING\n'
+    return 1
+  }
+  printf '%s\n' "$recon" | grep -q "gpgv --keyring" || {
+    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_GPGV=MISSING\n'
+    return 1
+  }
+  printf '%s\n' "$recon" | grep -qE 'bash \$R |bash \./\$R |dp-client-command-runner\.sh' || {
+    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_RUNNER_INVOKE=MISSING\n'
+    return 1
+  }
+  # Reject a second command glued after the runner invocation.
+  if printf '%s\n' "$recon" | grep -qE 'bash \$R .*(&&|;[[:space:]])'; then
+    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_TRAILING_COMMAND=YES\n'
+    return 1
+  fi
+  return 0
+}
+
 mm_wf_validate_command_file_content() {
   # Args: file mode(FULL|PHASE2_ONLY)
   # Prints COMMAND_FILE_* evidence lines; returns 0 only when structure is valid.
   local file="$1" mode="$2"
   local lines exec_count hop_count stage_count bringup_count
   local xenial bionic focal jammy
+  local max_phys=240 max_block_lines=0 block_count=0 hop_block_count=0
+  local lineno line cont_ok=1
+  local -a hop_starts=()
 
   if [[ ! -f "$file" || ! -s "$file" ]]; then
     printf 'COMMAND_FILE_BUILD=FAIL\n'
@@ -491,28 +587,37 @@ mm_wf_validate_command_file_content() {
   fi
 
   lines="$(wc -l <"$file" | tr -d ' ')"
+  # Count executable command blocks (start lines), not continuation lines.
   exec_count="$(grep -cE '^cd /home/aella && ' "$file" || true)"
-  hop_count="$(grep -cE "HOP='(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)'" "$file" || true)"
-  stage_count="$(grep -cE "SCRIPT='stage-dp-phase2\.sh'|stage-dp-phase2\.sh" "$file" || true)"
-  # Count stage one-liners specifically
+  hop_count="$(grep -cE "^cd /home/aella && .*HOP='(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)'" "$file" || true)"
   stage_count="$(grep -cE "^cd /home/aella && .*SCRIPT='stage-dp-phase2\.sh'" "$file" || true)"
   bringup_count="$(grep -cE 'bringup_py3_dp_after_os_upgrade\.sh' "$file" || true)"
-  xenial="$(grep -cE "HOP='xenial-to-bionic'" "$file" || true)"
-  bionic="$(grep -cE "HOP='bionic-to-focal'" "$file" || true)"
-  focal="$(grep -cE "HOP='focal-to-jammy'" "$file" || true)"
-  jammy="$(grep -cE "HOP='jammy-to-noble'" "$file" || true)"
+  xenial="$(grep -cE "^cd /home/aella && .*HOP='xenial-to-bionic'" "$file" || true)"
+  bionic="$(grep -cE "^cd /home/aella && .*HOP='bionic-to-focal'" "$file" || true)"
+  focal="$(grep -cE "^cd /home/aella && .*HOP='focal-to-jammy'" "$file" || true)"
+  jammy="$(grep -cE "^cd /home/aella && .*HOP='jammy-to-noble'" "$file" || true)"
+
+  block_count="$exec_count"
+  hop_block_count="$hop_count"
+
+  max_phys=0
+  lineno=0
+  hop_starts=()
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    lineno=$((lineno + 1))
+    [[ ${#line} -gt "$max_phys" ]] && max_phys=${#line}
+    if [[ "$line" == cd\ /home/aella\ \&\&* && "$line" == *HOP=* ]]; then
+      hop_starts+=("$lineno")
+    fi
+  done <"$file"
 
   printf 'COMMAND_FILE_MODE=%s\n' "$mode"
   printf 'COMMAND_FILE_LINE_COUNT=%s\n' "$lines"
   printf 'COMMAND_FILE_EXECUTABLE_COUNT=%s\n' "$exec_count"
+  printf 'COMMAND_FILE_COMMAND_BLOCK_COUNT=%s\n' "$block_count"
   printf 'COMMAND_FILE_OS_HOP_COUNT=%s\n' "$hop_count"
-
-  # Every executable command must be one physical line (no trailing \).
-  if grep -qE '\\[[:space:]]*$' "$file"; then
-    printf 'COMMAND_FILE_BUILD=FAIL\n'
-    printf 'COMMAND_FILE_MULTILINE=YES\n'
-    return 1
-  fi
+  printf 'COMMAND_FILE_OS_HOP_BLOCK_COUNT=%s\n' "$hop_block_count"
+  printf 'COMMAND_FILE_MAX_PHYSICAL_LINE_LENGTH=%s\n' "$max_phys"
 
   case "$mode" in
     FULL)
@@ -526,6 +631,7 @@ mm_wf_validate_command_file_content() {
       if [[ "$hop_count" -ne 4 ]]; then
         printf 'COMMAND_FILE_BUILD=FAIL\n'
         printf 'COMMAND_FILE_OS_HOP_COUNT=%s\n' "$hop_count"
+        printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
         return 1
       fi
       [[ "$xenial" -eq 1 && "$bionic" -eq 1 && "$focal" -eq 1 && "$jammy" -eq 1 ]] || {
@@ -558,11 +664,53 @@ mm_wf_validate_command_file_content() {
         printf 'COMMAND_FILE_GPGV=MISSING\n'
         return 1
       }
+      # Hop blocks invoke the verified runner; Phase 2 stage still has sudo bash.
+      grep -q "dp-client-command-runner.sh\|bash \$R " "$file" || {
+        printf 'COMMAND_FILE_BUILD=FAIL\n'
+        printf 'COMMAND_FILE_RUNNER_INVOKE=MISSING\n'
+        return 1
+      }
       grep -q "sudo bash" "$file" || {
         printf 'COMMAND_FILE_BUILD=FAIL\n'
         printf 'COMMAND_FILE_SUDO_BASH=MISSING\n'
         return 1
       }
+
+      max_block_lines=3
+      for lineno in "${hop_starts[@]}"; do
+        if ! mm_wf_validate_os_hop_block_at "$file" "$lineno" 240; then
+          printf 'COMMAND_FILE_BUILD=FAIL\n'
+          return 1
+        fi
+      done
+      # Reject trailing backslashes outside hop/stage command blocks.
+      local stage_start="" ok_cont hs
+      stage_start="$(grep -nE "^cd /home/aella && .*SCRIPT='stage-dp-phase2\.sh'" "$file" | head -1 | cut -d: -f1 || true)"
+      lineno=0
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        lineno=$((lineno + 1))
+        if [[ "$line" =~ \\[[:space:]]*$ ]]; then
+          ok_cont=0
+          for hs in "${hop_starts[@]}"; do
+            if [[ "$lineno" -eq "$hs" || "$lineno" -eq $((hs + 1)) ]]; then
+              ok_cont=1
+              break
+            fi
+          done
+          if [[ "$ok_cont" -eq 0 && -n "$stage_start" ]] \
+            && { [[ "$lineno" -eq "$stage_start" ]] || [[ "$lineno" -eq $((stage_start + 1)) ]]; }
+          then
+            ok_cont=1
+          fi
+          if [[ "$ok_cont" -eq 0 ]]; then
+            printf 'COMMAND_FILE_BUILD=FAIL\n'
+            printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+            printf 'COMMAND_FILE_ARBITRARY_BACKSLASH=YES\n'
+            printf 'COMMAND_FILE_ARBITRARY_BACKSLASH_LINE=%s\n' "$lineno"
+            return 1
+          fi
+        fi
+      done <"$file"
       ;;
     PHASE2_ONLY)
       if [[ "$hop_count" -ne 0 ]]; then
@@ -585,6 +733,36 @@ mm_wf_validate_command_file_content() {
         printf 'COMMAND_FILE_BRINGUP_COUNT=%s\n' "$bringup_count"
         return 1
       }
+      max_block_lines=3
+      # Validate phase2 stage continuation if present.
+      local stage_start
+      stage_start="$(grep -nE "^cd /home/aella && .*SCRIPT='stage-dp-phase2\.sh'" "$file" | head -1 | cut -d: -f1 || true)"
+      if [[ -n "$stage_start" ]]; then
+        local s1 s2 s3
+        s1="$(sed -n "${stage_start}p" "$file")"
+        s2="$(sed -n "$((stage_start + 1))p" "$file")"
+        s3="$(sed -n "$((stage_start + 2))p" "$file")"
+        [[ "$s1" =~ \\[[:space:]]*$ ]] || {
+          printf 'COMMAND_FILE_BUILD=FAIL\n'
+          printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+          return 1
+        }
+        [[ "$s2" =~ \\[[:space:]]*$ ]] || {
+          printf 'COMMAND_FILE_BUILD=FAIL\n'
+          printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+          return 1
+        }
+        if [[ "$s3" =~ \\[[:space:]]*$ ]]; then
+          printf 'COMMAND_FILE_BUILD=FAIL\n'
+          printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+          return 1
+        fi
+        grep -q "sudo bash" <<<"$s3" || {
+          printf 'COMMAND_FILE_BUILD=FAIL\n'
+          printf 'COMMAND_FILE_SUDO_BASH=MISSING\n'
+          return 1
+        }
+      fi
       ;;
     *)
       printf 'COMMAND_FILE_BUILD=FAIL\n'
@@ -593,6 +771,8 @@ mm_wf_validate_command_file_content() {
       ;;
   esac
 
+  printf 'COMMAND_FILE_MAX_BLOCK_LINES=%s\n' "$max_block_lines"
+  printf 'COMMAND_FILE_CONTINUATION_VALIDATION=PASS\n'
   printf 'COMMAND_FILE_BUILD=PASS\n'
   return 0
 }
@@ -621,7 +801,8 @@ mm_wf_atomic_publish_command_file() {
   printf 'COMMAND_FILE_ATOMIC_PUBLISH=PASS\n'
   printf 'COMMAND_FILE_VALID_FOR_READINESS_GENERATION=%s\n' "$ready_gen"
   # Re-emit counts from evidence
-  grep -E '^COMMAND_FILE_(LINE|EXECUTABLE|OS_HOP)_COUNT=' "$evidence" || true
+  grep -E '^COMMAND_FILE_(LINE|EXECUTABLE|OS_HOP|COMMAND_BLOCK|OS_HOP_BLOCK)_COUNT=' "$evidence" || true
+  grep -E '^COMMAND_FILE_(MAX_BLOCK_LINES|MAX_PHYSICAL_LINE_LENGTH|CONTINUATION_VALIDATION)=' "$evidence" || true
   rm -f "$evidence"
   return 0
 }

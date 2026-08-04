@@ -181,10 +181,15 @@ Menu **7 Show DP Client Upgrade Commands**.
 
 **Expected:**
 
-- one scrollable TUI viewer (dialog/whiptail), not `less`, not a terminal reprint
+- one scrollable TUI viewer (`dialog --no-mouse --textbox`), not `less`, not a terminal reprint
+- mouse click/drag selects text via the SSH terminal (dialog mouse handling is disabled)
+- keyboard navigation (Up/Down, PageUp/PageDown, Home/End) moves through the viewer
+- ESC, `q`, or Exit closes only the viewer and returns to the Mirror Manager main menu
+- only main-menu option **0** exits Mirror Manager
 - FULL mode Steps 0–9 in one view
-- each executable command is exactly one physical line
-- each hop line contains `EXPECTED_FPR='...'`, `public-keyring.gpg`, and `gpgv`
+- each OS-hop executable block is exactly three physical lines (trailing `\` on the first two)
+- each hop block contains `EXPECTED_FPR='...'`, `public-keyring.gpg`, `gpgv`, and the verified command runner
+- no horizontal scrolling should be required for the hop block
 - file written atomically to `/var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt`
 
 If blocked:
@@ -204,7 +209,7 @@ REQUIRED_ACTION=...
 ## 11. Full command file generation verification
 
 ```bash
-sudo grep -E "HOP='(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)'" \
+sudo grep -E "^cd /home/aella && .*HOP='(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)'" \
   /var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt | wc -l
 sudo grep -c "EXPECTED_FPR=" \
   /var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt
@@ -212,7 +217,7 @@ sudo test -s /var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt \
   && stat -c '%a' /var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt
 ```
 
-**Expected:** hop count `4`, `EXPECTED_FPR` present, non-empty file mode `644`.
+**Expected:** hop block count `4`, `EXPECTED_FPR` present, non-empty file mode `644`.
 
 **Failure:** empty file or hop count 0 in FULL mode → do not use the file; regenerate via Menu 7 after readiness.
 
@@ -222,10 +227,16 @@ sudo test -s /var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt \
 
 ## 12. DP Step 2 execution
 
-On the DP (after hypervisor snapshot), copy the **entire** Step 2 physical line from the viewer
-(`cd /home/aella` through the final argument). Visual wrapping is not a newline.
+On the DP (after hypervisor snapshot), copy the **complete three-line Step 2 block** from the viewer
+(`cd /home/aella` through the final runner arguments). Include the trailing backslashes on the
+first two lines. Paste all three lines into the DP terminal once. Do not copy only one or two
+lines. Do not manually join the lines or remove characters.
 
-**Expected:** downloads into an isolated temp workdir, fingerprint pin PASS, gpgv PASS, script SHA bindings PASS, then the hop client starts.
+Mouse selection is terminal-controlled because Menu 7 disables dialog mouse handling.
+Use keyboard navigation to move through the viewer.
+
+**Expected:** downloads into an isolated temp workdir, fingerprint pin PASS, gpgv PASS, runner
+and hop script SHA bindings PASS, then the hop client starts.
 
 **Failure interpretation:**
 
@@ -257,7 +268,7 @@ Proceed to the next OS hop only when:
 
 1. current hop completed successfully
 2. Mirror HTTP + readiness generations are still current
-3. the next hop one-line command is copied complete from Menu 7
+3. the next hop three-line command block is copied complete from Menu 7
 
 Do not reuse a command file generated under a different Mirror IP, mode, or client generation.
 
@@ -269,7 +280,7 @@ Retest PASS only when:
 
 - install reported HTTP state clearly
 - FULL prepare → HTTP enable → readiness PASS for one generation
-- Menu 7 emitted four one-line hop commands with `EXPECTED_FPR`
+- Menu 7 emitted four three-line hop command blocks with `EXPECTED_FPR`
 - DP Step 2 verified downloads without deleting prior `/home/aella` evidence on HTTP failure
 - safe resume / exit 29 behavior matches policy
 - no forbidden manual repairs were used

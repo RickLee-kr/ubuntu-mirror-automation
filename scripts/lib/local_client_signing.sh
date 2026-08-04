@@ -280,6 +280,62 @@ local_signing_stage_http_public_artifacts() {
   return 0
 }
 
+# Detach-sign a payload with the local private key (armored .asc).
+local_signing_detach_sign() {
+  local payload="${1:-}"
+  local sig_path="${2:-}"
+  local priv="${3:-${LOCAL_SIGNING_PRIVATE_KEY:-}}"
+  local homedir
+
+  [[ -f "$payload" && -s "$payload" ]] || return 1
+  [[ -n "$sig_path" ]] || return 1
+  [[ -f "$priv" && -s "$priv" ]] || return 1
+
+  homedir="$(mktemp -d "${TMPDIR:-/tmp}/local-sign-XXXXXX")"
+  chmod 700 "$homedir"
+  if ! gpg --homedir "$homedir" --batch --import "$priv" >/dev/null 2>&1; then
+    rm -rf "$homedir"
+    return 1
+  fi
+  rm -f "$sig_path"
+  if ! gpg --homedir "$homedir" --batch --yes --armor --detach-sign \
+    -o "$sig_path" "$payload" >/dev/null 2>&1
+  then
+    rm -rf "$homedir"
+    return 1
+  fi
+  rm -rf "$homedir"
+  [[ -s "$sig_path" ]] || return 1
+  chmod 0644 "$sig_path"
+  return 0
+}
+
+# Stage the Menu 7 command-runner helper + signed checksum manifest + sidecar.
+local_signing_stage_command_runner() {
+  local stage_dir="${1:-}"
+  local src_runner="${2:-}"
+  local runner_name="dp-client-command-runner.sh"
+  local manifest_name="runner-manifest"
+
+  [[ -n "$stage_dir" && -d "$stage_dir" ]] || return 1
+  [[ -f "$src_runner" && -s "$src_runner" ]] || return 1
+
+  install -m 0755 "$src_runner" "${stage_dir}/${runner_name}"
+  ( cd "$stage_dir" && sha256sum "$runner_name" >"${runner_name}.sha256" )
+  # Signed checksum manifest (sha256sum format) binds the runner bytes.
+  install -m 0644 "${stage_dir}/${runner_name}.sha256" "${stage_dir}/${manifest_name}"
+  if ! local_signing_detach_sign \
+    "${stage_dir}/${manifest_name}" \
+    "${stage_dir}/${manifest_name}.asc"
+  then
+    local_signing_err "RUNNER_MANIFEST_SIGN=FAIL"
+    return 1
+  fi
+  local_signing_log "RUNNER_MANIFEST_SIGN=PASS"
+  local_signing_log "COMMAND_RUNNER_PUBLISH=PASS"
+  return 0
+}
+
 # gpgv-verify each hop's detached client-manifest against the binary keyring.
 # hops: remaining args (default four production hops).
 local_signing_verify_staged_manifest_gpgv() {

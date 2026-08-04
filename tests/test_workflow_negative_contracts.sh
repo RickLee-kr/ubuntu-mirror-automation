@@ -199,6 +199,14 @@ BINARY_KEY="$HTTP_ROOT/client/public-keyring.gpg"
 local_signing_build_binary_keyring "$ASCII_KEY" "$BINARY_KEY"
 cp "$ASCII_KEY" "$HTTP_ROOT/client/public.gpg"
 printf 'CLIENT_SET_GENERATION_ID=h-fixture\n' >"$HTTP_ROOT/client/client-set.env"
+LOCAL_SIGNING_PRIVATE_KEY="$GPG_HOME/../unused"
+# Export private for runner staging
+gpg --homedir "$GPG_HOME" --batch --export-secret-keys --armor >"$TMP/neg-private.gpg"
+LOCAL_SIGNING_PRIVATE_KEY="$TMP/neg-private.gpg"
+LOCAL_SIGNING_PUBLIC_KEY="$ASCII_KEY"
+LOCAL_KEY_FINGERPRINT="$(local_signing_fingerprint_of "$ASCII_KEY")"
+local_signing_stage_command_runner "$HTTP_ROOT/client" \
+  "$ROOT/client/dp-client-command-runner.sh"
 python3 - "$HOP" "$SCRIPT" "$REAL_SHA" "$HTTP_ROOT/client/$HOP/client-manifest.json" <<'PY'
 import json, sys
 hop, script, digest, path = sys.argv[1:]
@@ -236,7 +244,7 @@ exit 0
 EOF
 chmod 0755 "$STUB/sudo"
 printf '%s\n' "$H_CMD" | sed \
-  "s|cd /home/aella|cd '$DP_HOME'|; s|/home/aella/.dp-upgrade-|$DP_HOME/.dp-upgrade-|g" \
+  "s|cd /home/aella|cd '$DP_HOME'|g" \
   >"$TMP/h-command.sh"
 set +e
 env PATH="$STUB:/usr/bin:/bin" bash "$TMP/h-command.sh" >/dev/null 2>&1

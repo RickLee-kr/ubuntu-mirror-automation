@@ -356,6 +356,15 @@ for f in stage-dp-phase2.sh stage-dp-phase2-6.5.0.sh; do
     ( cd "$STAGE_DIR" && sha256sum "$f" >"${f}.sha256" )
   fi
 done
+# Menu 7 command-runner: signed checksum manifest + SHA256 sidecar.
+if [[ -f "${ROOT}/client/dp-client-command-runner.sh" ]]; then
+  if ! local_signing_stage_command_runner \
+    "$STAGE_DIR" "${ROOT}/client/dp-client-command-runner.sh"
+  then
+    fail_build "" "command_runner_stage" "COMMAND_RUNNER_PUBLISH=FAIL" 1
+  fi
+  evidence_echo "COMMAND_RUNNER_PUBLISH=PASS"
+fi
 if [[ -d "${ROOT}/client/lib" ]]; then
   mkdir -p "${STAGE_DIR}/lib"
   chmod 0755 "${STAGE_DIR}/lib"

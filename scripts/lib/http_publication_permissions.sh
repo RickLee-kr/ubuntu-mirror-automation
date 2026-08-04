@@ -97,7 +97,7 @@ mm_http_expected_file_mode() {
     *.sh) printf '0755\n' ;;
     *.sha256|*.sha1|*.gpg|*.asc|*.env|*.list|*.txt|READY|FROZEN)
       printf '0644\n' ;;
-    fingerprint|signing-key-fingerprint|release.env|meta-release|meta-release-lts)
+    fingerprint|signing-key-fingerprint|release.env|meta-release|meta-release-lts|runner-manifest)
       printf '0644\n' ;;
     public-keyring.gpg|public.gpg|public.asc|offline-client-manifest.gpg)
       printf '0644\n' ;;

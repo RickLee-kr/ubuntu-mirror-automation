@@ -91,6 +91,7 @@ UM_RUNTIME_CLIENT_FILES=(
   dp-postboot-readiness-policy.sh.inc
   stage-dp-phase2.sh
   stage-dp-phase2-6.5.0.sh
+  dp-client-command-runner.sh
 )
 
 UM_RUNTIME_CLIENT_LIB_FILES=(
@@ -122,6 +123,7 @@ UM_RUNTIME_REQUIRED_RELATIVE_PATHS=(
   scripts/lib/build_client_jammy_to_noble.py
   client/lib/dp-offline-destructive-confirmation.sh
   client/lib/dp-offline-release-upgrade-reconciliation.sh
+  client/dp-client-command-runner.sh
   vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh
   vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1
   templates/nginx.conf

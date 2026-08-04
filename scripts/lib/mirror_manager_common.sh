@@ -1549,6 +1549,10 @@ MM_CLIENT_REQUIRED_FILES=(
   dp-offline-upgrade-jammy-to-noble.sh.sha256
   stage-dp-phase2.sh
   stage-dp-phase2.sh.sha256
+  dp-client-command-runner.sh
+  dp-client-command-runner.sh.sha256
+  runner-manifest
+  runner-manifest.asc
   public-keyring.gpg
 )
 
@@ -1580,10 +1584,14 @@ mm_client_files_ready() {
     dp-offline-upgrade-bionic-to-focal.sh \
     dp-offline-upgrade-focal-to-jammy.sh \
     dp-offline-upgrade-jammy-to-noble.sh \
-    stage-dp-phase2.sh
+    stage-dp-phase2.sh \
+    dp-client-command-runner.sh
   do
     (cd "$root" && sha256sum -c "${f}.sha256" >/dev/null 2>&1) || return 1
   done
+  # Signed runner checksum manifest must match the sidecar.
+  [[ -f "${root}/runner-manifest" && -f "${root}/runner-manifest.asc" ]] || return 1
+  cmp -s "${root}/runner-manifest" "${root}/dp-client-command-runner.sh.sha256" || return 1
   return 0
 }
 

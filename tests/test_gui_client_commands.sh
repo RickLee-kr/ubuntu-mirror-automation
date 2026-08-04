@@ -110,7 +110,10 @@ grep -q 'Supported Starting DP Versions: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0' "$OUT" \
 grep -q 'Phase 2 Target: 6.5.0' "$OUT" || fail "missing phase2 target header"
 grep -q 'OS Upgrade: Ubuntu 16.04 → Ubuntu 24.04' "$OUT" || fail "missing OS upgrade header"
 grep -q 'Commands saved to:' "$OUT" || fail "missing Commands saved to"
-grep -q 'exactly one physical line' "$OUT" || fail "missing one-line copy guidance"
+grep -q 'three physical lines' "$OUT" || fail "missing three-line copy guidance"
+grep -q 'Do not copy only one or two lines' "$OUT" || fail "missing partial-copy warning"
+grep -q 'exactly one physical line' "$OUT" && fail "obsolete one-line guidance still present" || true
+grep -q 'Visual wrapping does not insert a newline' "$OUT" && fail "obsolete wrap guidance still present" || true
 grep -qE 'STEP 0 — SNAPSHOT|Step 0 —' "$OUT" || fail "missing step 0"
 grep -qE 'STEP 1 — PAUSE|Step 1 — Pause' "$OUT" || fail "missing pause"
 grep -qE 'STEP 2 — UBUNTU 16.04 TO 18.04|Step 2 — Ubuntu 16.04 to 18.04' "$OUT" \
@@ -135,30 +138,33 @@ grep -q 'Show complete instructions' "$OUT" && fail "Show complete instructions 
 grep -q 'Show Step 2 command block' "$OUT" && fail "Show Step submenu still present" || true
 grep -q 'BEGIN STEP' "$OUT" && fail "BEGIN STEP markers must be removed" || true
 grep -q 'END STEP' "$OUT" && fail "END STEP markers must be removed" || true
-grep -qE '\\[[:space:]]*$' "$OUT" && fail "backslash continuations must be removed" || true
+grep -qE '\\[[:space:]]*$' "$OUT" || fail "expected controlled backslash continuations"
 grep -q 'public-keyring.gpg' "$OUT" || fail "missing public-keyring.gpg in commands"
-grep -q -- '--keyring ./public-keyring.gpg' "$OUT" || fail "gpgv must use public-keyring.gpg"
+grep -q 'gpgv --keyring' "$OUT" || fail "gpgv must be present"
 grep -q -- '--keyring ./public.gpg' "$OUT" && fail "gpgv must not use armored public.gpg" || true
 grep -q "EXPECTED_FPR=" "$OUT" || fail "missing EXPECTED_FPR trust pin"
-grep -q 'mktemp -d /home/aella/.dp-upgrade-' "$OUT" || fail "missing isolated workdir"
+grep -q 'mktemp -d' "$OUT" || fail "missing isolated workdir"
+grep -q 'dp-client-command-runner.sh' "$OUT" || fail "missing command runner"
 grep -q 'rm -f "\$SCRIPT"' "$OUT" && fail "must not rm existing files before HTTP" || true
 grep -Eq 'curl -fsSLO([[:space:]]|$)' "$OUT" && fail "naked curl -fsSLO present" || true
 grep -q 'less -S' "$OUT" && fail "less pager guidance must be removed" || true
-grep -q 'Visual wrapping does not insert a newline' "$OUT" || fail "missing visual-wrap guidance"
 # Full mode must still cover steps 0..9
 for n in 0 1 2 3 4 5 6 7 8 9; do
   grep -qE "Step ${n} —|STEP ${n} —" "$OUT" || fail "missing step ${n}"
 done
 for script in \
-  dp-offline-upgrade-xenial-to-bionic.sh \
-  dp-offline-upgrade-bionic-to-focal.sh \
-  dp-offline-upgrade-focal-to-jammy.sh \
-  dp-offline-upgrade-jammy-to-noble.sh \
   stage-dp-phase2.sh \
   bringup_py3_dp_after_os_upgrade.sh
 do
   grep -Fq "$script" "$OUT" || fail "missing script name: $script"
 done
+for hop in xenial-to-bionic bionic-to-focal focal-to-jammy jammy-to-noble; do
+  grep -q "HOP='${hop}'" "$OUT" || fail "missing HOP=${hop}"
+done
+grep -q 'dp-offline-upgrade-${HOP}.sh\|dp-offline-upgrade-\${HOP}.sh' "$OUT" \
+  || grep -qF 'dp-offline-upgrade-${HOP}.sh' "$OUT" \
+  || fail "missing SCRIPT derivation from HOP"
+grep -q 'dp-client-command-runner.sh' "$OUT" || fail "missing command runner name"
 grep -Fq -- '--source-dp-version' "$OUT" && fail "FULL command has --source-dp-version" || true
 grep -Fq -- '--target-version' "$OUT" || fail "target version missing"
 grep -Fq -- '--same-version-recovery' "$OUT" || fail "same-version-recovery missing"
@@ -166,14 +172,14 @@ hop_count="$(grep -cE "HOP='(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jam
 [[ "$hop_count" -eq 4 ]] || fail "expected four hop HOP= assignments, got ${hop_count}"
 mirror_count="$(grep -c "MIRROR='http://192.0.2.10'" "$OUT" || true)"
 [[ "$mirror_count" -ge 4 ]] || fail "expected MIRROR pin in hop lines, got ${mirror_count}"
-grep -q -- '--mirror-base "\$MIRROR"' "$OUT" || fail "hop command lacks --mirror-base"
+grep -qF 'bash $R "$MIRROR"' "$OUT" || fail "hop command lacks runner mirror arg"
 second_cmd="$(gui_client_hop_command_line "http://192.0.2.20" "dp-offline-upgrade-xenial-to-bionic.sh")"
-[[ "$(printf '%s\n' "$second_cmd" | wc -l | tr -d ' ')" == "1" ]] \
-  || fail "hop command_line must be one physical line"
+[[ "$(printf '%s\n' "$second_cmd" | wc -l | tr -d ' ')" == "3" ]] \
+  || fail "hop command_line must be three physical lines"
 [[ "$second_cmd" == *"MIRROR='http://192.0.2.20'"* ]] \
   || fail "second fixture URL missing from hop command"
-[[ "$second_cmd" == *"--mirror-base \"\$MIRROR\""* ]] \
-  || fail "second fixture missing --mirror-base \$MIRROR"
+printf '%s\n' "$second_cmd" | grep -qF 'bash $R "$MIRROR"' \
+  || fail "second fixture missing runner mirror arg"
 grep -q 'License is valid' "$OUT" || fail "license check missing"
 pass "FULL mode client commands"
 
@@ -355,16 +361,28 @@ for n in 0 1 2 3 4 5 6 7 8 9; do
 done
 grep -q 'BEGIN STEP' "$(mm_client_commands_file)" && fail "menu7 still has BEGIN STEP" || true
 grep -q 'public-keyring.gpg' "$(mm_client_commands_file)" || fail "menu7 missing public-keyring.gpg"
-grep -q 'gpgv --keyring ./public-keyring.gpg' "$(mm_client_commands_file)" \
-  || fail "menu7 missing gpgv public-keyring"
+grep -q 'gpgv --keyring' "$(mm_client_commands_file)" \
+  || fail "menu7 missing gpgv"
 grep -q "EXPECTED_FPR=" "$(mm_client_commands_file)" || fail "menu7 missing fingerprint pin"
-# Saved file and generators must agree (same one-line hop/stage content).
+grep -q 'dp-client-command-runner.sh' "$(mm_client_commands_file)" \
+  || fail "menu7 missing command runner"
+# Saved file and generators must agree (same three-line hop/stage content).
 gen_hop="$(gui_client_hop_command_line "http://192.0.2.10" "dp-offline-upgrade-xenial-to-bionic.sh" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")"
 grep -Fq "$gen_hop" "$(mm_client_commands_file)" \
-  || fail "saved file hop line differs from gui_client_hop_command_line"
+  || fail "saved file hop block differs from gui_client_hop_command_line"
 gen_stage="$(gui_phase2_stage_command_line "http://192.0.2.10" "6.5.0")"
 grep -Fq "$gen_stage" "$(mm_client_commands_file)" \
-  || fail "saved file stage line differs from gui_phase2_stage_command_line"
+  || fail "saved file stage block differs from gui_phase2_stage_command_line"
+# Menu 7 production viewer must disable dialog mouse handling.
+grep -qE -- '--no-mouse' "$INSTALLER" \
+  && grep -A25 '^mm_menu7_textbox()' "$INSTALLER" | grep -q -- '--textbox' \
+  || fail "mm_menu7_textbox missing dialog --no-mouse/--textbox"
+grep -A30 '^mm_menu7_textbox()' "$INSTALLER" | grep -q 'mm_whiptail_textbox' \
+  && fail "Menu 7 still has whiptail textbox fallback" || true
+grep -A30 '^mm_menu7_textbox()' "$INSTALLER" | grep -q 'MENU7_VIEWER_REASON=dialog_missing' \
+  || fail "Menu 7 missing dialog_missing error path"
+grep -q 'less -S\|less ' <<<"$(grep -A30 '^mm_menu7_textbox()' "$INSTALLER")" \
+  && fail "Menu 7 textbox invokes less" || true
 pass "menu7 shows full instructions directly; no secondary viewer"
 
 # Artifact: only 6.5.0 versioned names in ACPS/phase2 helpers
