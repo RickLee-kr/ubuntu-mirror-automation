@@ -38,7 +38,7 @@ source "$LIB"
 echo "=== test_dp_client_command_three_line_blocks ==="
 
 MIRROR="http://192.0.2.55"
-MAX_LEN=240
+MAX_LEN=360
 HOPS=(
   "dp-offline-upgrade-xenial-to-bionic.sh"
   "dp-offline-upgrade-bionic-to-focal.sh"
@@ -59,8 +59,14 @@ assert_three_line_hop_block() {
   l1="${lines[0]}"
   l2="${lines[1]}"
   l3="${lines[2]}"
-  [[ "$l1" == cd\ /home/aella\ \&\&* || "$l1" == \(\ cd\ /home/aella\ \&\&* ]] \
-    && pass "${label}: line1 cd prefix" || fail "${label}: line1 cd prefix"
+  [[ "$l1" == '('* ]] \
+    && pass "${label}: line1 opens with (" || fail "${label}: line1 opens with ("
+  printf '%s\n' "$l1" | grep -qE 'BASH_SUBSHELL' \
+    && pass "${label}: subshell guard" || fail "${label}: subshell guard"
+  printf '%s\n' "$l1" | grep -q 'DP_COMMAND_SUBSHELL_REQUIRED=YES' \
+    && pass "${label}: DP_COMMAND_SUBSHELL_REQUIRED" || fail "${label}: missing required marker"
+  printf '%s\n' "$l1" | grep -qE 'cd /home/aella &&' \
+    && pass "${label}: line1 cd /home/aella" || fail "${label}: line1 cd prefix"
   [[ "$l1" =~ \\[[:space:]]*$ ]] \
     && pass "${label}: line1 trailing backslash" || fail "${label}: line1 backslash"
   [[ "$l2" =~ \\[[:space:]]*$ ]] \
@@ -95,8 +101,12 @@ for script in "${HOPS[@]}"; do
     && pass "${hop}: configured mirror" || fail "${hop}: mirror"
   grep -q "HOP='${hop}'" "${TMP}/block-${hop}.sh" \
     && pass "${hop}: HOP var" || fail "${hop}: HOP var"
-  grep -qE '^\( cd /home/aella &&|^cd /home/aella &&' "${TMP}/block-${hop}.sh" \
-    && pass "${hop}: starts with cd /home/aella" || fail "${hop}: cd prefix"
+  grep -qE '^\( ' "${TMP}/block-${hop}.sh" \
+    && pass "${hop}: starts with (" || fail "${hop}: missing ("
+  grep -qE 'BASH_SUBSHELL' "${TMP}/block-${hop}.sh" \
+    && pass "${hop}: BASH_SUBSHELL guard" || fail "${hop}: missing BASH_SUBSHELL"
+  grep -qE 'cd /home/aella &&' "${TMP}/block-${hop}.sh" \
+    && pass "${hop}: contains cd /home/aella" || fail "${hop}: cd prefix"
   grep -q 'GNUPGHOME=' "${TMP}/block-${hop}.sh" \
     && pass "${hop}: ephemeral GNUPGHOME" || fail "${hop}: missing GNUPGHOME"
   grep -qE '^\(' "${TMP}/block-${hop}.sh" \
@@ -155,6 +165,10 @@ grep -q 'stage-dp-phase2.sh' "${TMP}/stage.sh" \
 grep -q "MIRROR='${MIRROR}'" "${TMP}/stage.sh" \
   && pass "stage: configured mirror" || fail "stage: mirror"
 bash -n "${TMP}/stage.sh" && pass "stage: bash -n" || fail "stage: bash -n"
+grep -qE 'BASH_SUBSHELL' "${TMP}/stage.sh" \
+  && pass "stage: BASH_SUBSHELL guard" || fail "stage: missing BASH_SUBSHELL"
+grep -qE '^\( ' "${TMP}/stage.sh" \
+  && pass "stage: opens with (" || fail "stage: missing ("
 [[ "${stage_lines[0]}" =~ \\[[:space:]]*$ ]] \
   && pass "stage: non-final line has backslash" || fail "stage: missing continuation"
 
@@ -168,10 +182,18 @@ bringup="$(grep -E 'bringup_py3_dp_after_os_upgrade\.sh' "$OUT" | head -1)"
 grep -q 'BEGIN STEP\|END STEP' "$OUT" && fail "BEGIN/END in full doc" || true
 grep -q 'exactly one physical line' "$OUT" && fail "obsolete one-line guidance" || true
 grep -q 'Visual wrapping does not insert a newline' "$OUT" && fail "obsolete wrap guidance" || true
-grep -q 'three physical lines' "$OUT" \
+grep -qE 'Copy the complete three-line block|three physical lines|DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2' "$OUT" \
   && pass "three-line copy guidance" || fail "missing three-line guidance"
+grep -qE 'opening parenthesis|begins with an opening parenthesis' "$OUT" \
+  && pass "opening parenthesis instruction" || fail "missing opening parenthesis instruction"
+grep -qE 'closing parenthesis|ends with a closing' "$OUT" \
+  && pass "closing parenthesis instruction" || fail "missing closing parenthesis instruction"
+grep -q 'first two lines must end with backslash' "$OUT" \
+  && pass "backslash instruction" || fail "missing backslash instruction"
 grep -q 'Do not copy only one or two lines' "$OUT" \
   && pass "partial-copy warning" || fail "missing partial-copy warning"
+grep -q 'DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2' "$OUT" \
+  && pass "DP_COMMAND_BLOCK_VERSION in doc" || fail "missing block version"
 pass "full document three-line contract"
 
 if declare -F gui_client_hop_command_line >/dev/null; then

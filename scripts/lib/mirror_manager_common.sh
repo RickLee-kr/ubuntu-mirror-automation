@@ -884,16 +884,29 @@ mm_client_commands_file() {
 }
 
 mm_client_commands_stale() {
-  local f mode_saved ready cmd_gen
+  local f mode_saved ready cmd_gen ver
   f="$(mm_client_commands_file)"
   [[ -f "$f" && -s "$f" ]] || return 0
+  # Legacy / non-SUBSHELL_V2 command files are always stale.
+  if ! grep -qE '^DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2$' "$f"; then
+    return 0
+  fi
+  if ! grep -qE 'BASH_SUBSHELL' "$f" || ! grep -qE 'DP_COMMAND_SUBSHELL_REQUIRED=YES' "$f"; then
+    return 0
+  fi
+  # Legacy non-subshell blocks (bare "cd /home/aella") are stale.
+  if grep -qE '^cd /home/aella && ' "$f"; then
+    return 0
+  fi
   mm_normalize_preparation_mode
   mode_saved="$(mm_status_get CLIENT_COMMANDS_MODE)"
   [[ "$mode_saved" == "${PREPARATION_MODE}" ]] || return 0
   if declare -F mm_wf_get >/dev/null 2>&1; then
     ready="$(mm_wf_get READINESS_VERIFIED_GENERATION_ID)"
     cmd_gen="$(mm_wf_get COMMAND_FILE_GENERATION_ID)"
+    ver="$(mm_wf_get DP_COMMAND_BLOCK_VERSION)"
     [[ -n "$ready" && -n "$cmd_gen" && "$ready" == "$cmd_gen" ]] || return 0
+    [[ "$ver" == "SUBSHELL_V2" ]] || return 0
     mm_wf_config_matches_current || return 0
   fi
   return 1

@@ -957,13 +957,16 @@ gui_expected_signing_fingerprint() {
   printf '%s\n' "$fpr"
 }
 
+# DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2
 # Three physical-line OS-hop command block (one Bash logical command):
 #   Entire operation runs in a subshell so caller cwd / EXIT trap are unchanged.
-#   line 1: subshell + cd, mirror, EXPECTED_FPR, HOP/SCRIPT, isolated workdir + trap
+#   First command inside the block requires BASH_SUBSHELL>0 (exit 97 otherwise)
+#   so a paste that omits the opening "(" fails closed before cd/trap/GNUPGHOME.
+#   line 1: subshell guard + cd, mirror, EXPECTED_FPR, HOP/SCRIPT, workdir + trap
 #   line 2: ephemeral GNUPGHOME + download keyring/runner/manifest
 #   line 3: fingerprint pin, gpgv manifest, SHA bindings, then bash runner
-# Max intended physical-line length: 240. Trailing \ on lines 1–2 only.
-# Fail-closed: partial copy of line 1 or lines 1–2 waits for continuation.
+# Max intended physical-line length: 360 (guard adds ~100 chars on line 1).
+# Trailing \ on lines 1–2 only. Fail-closed: partial copy waits for continuation.
 gui_client_hop_command_line() {
   local mirror="$1" script="$2"
   local hop="${script#dp-offline-upgrade-}"
@@ -976,7 +979,7 @@ gui_client_hop_command_line() {
     fpr="MISSING_SIGNING_FINGERPRINT"
   fi
   printf '%s\n' \
-    "( cd /home/aella && MIRROR='${mirror}' && EXPECTED_FPR='${fpr}' && HOP='${hop}' && SCRIPT=\"dp-offline-upgrade-\${HOP}.sh\" && W=\$(mktemp -d)&&trap 'rm -rf \"\$W\"' EXIT&&cd \"\$W\" && \\" \
+    "( [[ \${BASH_SUBSHELL:-0} -gt 0 ]] || { printf '%s\\n' 'DP_COMMAND_SUBSHELL_REQUIRED=YES' >&2; exit 97; }; cd /home/aella && MIRROR='${mirror}' && EXPECTED_FPR='${fpr}' && HOP='${hop}' && SCRIPT=\"dp-offline-upgrade-\${HOP}.sh\" && W=\$(mktemp -d)&&trap 'rm -rf \"\$W\"' EXIT&&cd \"\$W\" && \\" \
     "  export GNUPGHOME=\"\$W/gnupg\"&&mkdir -m700 \"\$GNUPGHOME\"&&R=dp-client-command-runner.sh M=runner-manifest K=public-keyring.gpg&&for f in \$K \$R \$R.sha256 \$M \$M.asc;do curl -fsSLo \"\$f\" \"\$MIRROR/client/\$f\"&&test -s \"\$f\"||exit 1;done && \\" \
     "  gpg --batch --no-default-keyring --keyring ./\$K --with-colons --fingerprint|grep -q :\$EXPECTED_FPR:&&gpgv --keyring ./\$K \$M.asc \$M&&sha256sum -c \$M&&sha256sum -c \$R.sha256&&bash \$R \"\$MIRROR\" \"\$HOP\" \"\$SCRIPT\" \"\$EXPECTED_FPR\")"
 }
@@ -990,11 +993,11 @@ gui_client_hop_command() {
   gui_client_hop_command_line "$@"
 }
 
-# Phase 2 staging: two or three physical lines, one Bash logical command (subshell).
+# Phase 2 staging: three physical lines, one Bash logical command (SUBSHELL_V2).
 gui_phase2_stage_command_line() {
   local mirror="$1" ver="$2"
   printf '%s\n' \
-    "( cd /home/aella && MIRROR='${mirror}' && VER='${ver}' && SCRIPT='stage-dp-phase2.sh' && W=\$(mktemp -d)&&trap 'rm -rf \"\$W\"' EXIT&&cd \"\$W\" && \\" \
+    "( [[ \${BASH_SUBSHELL:-0} -gt 0 ]] || { printf '%s\\n' 'DP_COMMAND_SUBSHELL_REQUIRED=YES' >&2; exit 97; }; cd /home/aella && MIRROR='${mirror}' && VER='${ver}' && SCRIPT='stage-dp-phase2.sh' && W=\$(mktemp -d)&&trap 'rm -rf \"\$W\"' EXIT&&cd \"\$W\" && \\" \
     "  curl -fsSLo \"\$SCRIPT\" \"\$MIRROR/client/\$SCRIPT\" && curl -fsSLo \"\$SCRIPT.sha256\" \"\$MIRROR/client/\$SCRIPT.sha256\" && test -s \"\$SCRIPT\" && test -s \"\$SCRIPT.sha256\" && \\" \
     "  sha256sum -c \"\$SCRIPT.sha256\" && { sudo bash \"./\$SCRIPT\" --target-version \"\$VER\" --same-version-recovery --mirror-url \"\$MIRROR\"; })"
 }
@@ -1031,10 +1034,16 @@ gui_build_client_commands() {
   fi
   prereq_cmd="set -euo pipefail; . /etc/os-release; test \"\$ID\" = ubuntu; test \"\$VERSION_ID\" = 24.04; test \"\$VERSION_CODENAME\" = noble; getent passwd aella root | awk -F: '\$7!=\"/bin/bash\"{exit 1}'; avail_root=\$(df -BG --output=avail / | awk 'NR==2{gsub(/G/,\"\"); print}'); avail_data=\$(df -BG --output=avail /opt/aelladata 2>/dev/null | awk 'NR==2{gsub(/G/,\"\"); print}'); test \"\${avail_root:-0}\" -ge 20; test \"\${avail_data:-0}\" -ge 70; ! pgrep -fa 'apt-get|dpkg|do-release-upgrade|dp-offline-upgrade' >/dev/null"
 
-  copy_block_guide='Each executable block below is one logical Bash command shown on three physical lines.
+  copy_block_guide='Copy the complete three-line block.
 
-Copy all three lines together, including the trailing backslashes on the
-first two lines, and paste them into the DP terminal once.
+The block begins with an opening parenthesis "(" and ends with a closing
+parenthesis ")".
+
+Verify both parentheses are present before pressing Enter.
+
+The first two lines must end with backslash.
+
+Each executable block below is one logical Bash command (DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2).
 
 Do not copy only one or two lines.
 Do not include borders, status text, or the next section heading.'
@@ -1043,6 +1052,8 @@ Do not include borders, status text, or the next section heading.'
     cat <<EOF
 DP Phase 2 Upgrade Commands
 ===========================
+
+DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2
 
 Supported Starting DP Versions: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0
 Phase 2 Target: ${ver}
@@ -1144,6 +1155,8 @@ EOF
     cat <<EOF
 DP Client Upgrade Commands
 ==========================
+
+DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2
 
 Supported Starting DP Versions: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0
 Phase 2 Target: ${ver}

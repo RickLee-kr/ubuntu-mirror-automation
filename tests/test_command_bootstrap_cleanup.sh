@@ -225,6 +225,87 @@ else
   [[ "$c" == "1" ]] && pass "reconstructed invokes runner exactly once" || fail "runner invoke count=${c}"
 fi
 
+# SUBSHELL_V2: omitted opening paren / non-subshell body must fail closed
+echo "--- SUBSHELL_V2 guard ---"
+grep -qE 'BASH_SUBSHELL' "${WORKDIR}/cmd.sh" \
+  && pass "SUBSHELL_GUARD present" || fail "SUBSHELL_GUARD missing"
+grep -q 'DP_COMMAND_SUBSHELL_REQUIRED=YES' "${WORKDIR}/cmd.sh" \
+  && pass "DP_COMMAND_SUBSHELL_REQUIRED marker" || fail "required marker missing"
+
+# Strip both outer parens → exit 97 before side effects
+python3 - "${WORKDIR}/cmd.sh" "${WORKDIR}/cmd-nosub.sh" <<'PY'
+import sys
+src, dst = sys.argv[1:3]
+body = open(src, encoding="utf-8").read()
+if body.startswith("("):
+    body = body[1:]
+body = body.rstrip()
+if body.endswith(")"):
+    body = body[:-1] + "\n"
+open(dst, "w", encoding="utf-8").write(body)
+PY
+CWD3_BEFORE="$(pwd)"
+TRAP3_BEFORE="$(trap -p EXIT || true)"
+set +e
+bash "${WORKDIR}/cmd-nosub.sh" >"${WORKDIR}/run-nosub.out" 2>"${WORKDIR}/run-nosub.err"
+NOSUB_RC=$?
+set -e
+CWD3_AFTER="$(pwd)"
+TRAP3_AFTER="$(trap -p EXIT || true)"
+[[ "$NOSUB_RC" -eq 97 ]] && pass "MISSING_OPEN_PAREN_EXIT=97" || fail "expected 97 got ${NOSUB_RC}"
+grep -q 'DP_COMMAND_SUBSHELL_REQUIRED=YES' "${WORKDIR}/run-nosub.err" \
+  && pass "subshell-required message emitted" || fail "missing subshell-required message"
+[[ "$CWD3_BEFORE" == "$CWD3_AFTER" ]] && pass "MISSING_OPEN_PAREN_SIDE_EFFECTS=NO (cwd)" || fail "cwd changed on omit"
+[[ "$TRAP3_BEFORE" == "$TRAP3_AFTER" ]] && pass "MISSING_OPEN_PAREN_SIDE_EFFECTS=NO (trap)" || fail "trap changed on omit"
+
+# Literal omit of first "(" only → parse fail closed, no side effects, runner count 0
+tail -c +2 "${WORKDIR}/cmd.sh" >"${WORKDIR}/cmd-omit-open.sh"
+CWD4_BEFORE="$(pwd)"
+set +e
+timeout 2 bash "${WORKDIR}/cmd-omit-open.sh" >"${WORKDIR}/run-omit-open.out" 2>"${WORKDIR}/run-omit-open.err"
+OMIT_RC=$?
+set -e
+[[ "$OMIT_RC" -ne 0 ]] && pass "omit-open-paren nonzero" || fail "omit-open unexpectedly 0"
+[[ "$(pwd)" == "$CWD4_BEFORE" ]] && pass "omit-open cwd preserved" || fail "omit-open cwd changed"
+if grep -qE 'STUB_UPGRADE_OK|dp-client-command-runner' "${WORKDIR}/run-omit-open.out" "${WORKDIR}/run-omit-open.err" 2>/dev/null; then
+  fail "omit-open invoked runner"
+else
+  pass "omit-open runner execution count 0"
+fi
+
+# Omitted closing paren: incomplete command → runner execution count 0
+head -n 2 "${WORKDIR}/cmd.sh" >"${WORKDIR}/cmd-omit-close.sh"
+# line1+2 end with \; strip final ) by taking lines 1-2 only already incomplete; also try full with ) removed
+sed 's/)$//' "${WORKDIR}/cmd.sh" >"${WORKDIR}/cmd-omit-close2.sh"
+set +e
+timeout 2 bash -c "bash '${WORKDIR}/cmd-omit-close.sh'" >"${WORKDIR}/run-omit-close.out" 2>"${WORKDIR}/run-omit-close.err"
+OC_RC=$?
+set -e
+# timeout 124 or nonzero; must not invoke runner
+if grep -qE 'STUB_UPGRADE_OK' "${WORKDIR}/run-omit-close.out" 2>/dev/null; then
+  fail "MISSING_CLOSE_PAREN_EXECUTION_COUNT!=0"
+else
+  pass "MISSING_CLOSE_PAREN_EXECUTION_COUNT=0"
+fi
+
+# Legacy non-subshell must fail validation
+LEGACY="${WORKDIR}/legacy-cmd.txt"
+cat >"$LEGACY" <<'LEG'
+DP_COMMAND_BLOCK_VERSION=LEGACY
+cd /home/aella && MIRROR='http://127.0.0.1' && EXPECTED_FPR='AAAA' && HOP='xenial-to-bionic' && SCRIPT="dp-offline-upgrade-${HOP}.sh" && W=$(mktemp -d)&&trap 'rm -rf "$W"' EXIT&&cd "$W" && \
+  export GNUPGHOME="$W/gnupg"&&mkdir -m700 "$GNUPGHOME"&&R=dp-client-command-runner.sh M=runner-manifest K=public-keyring.gpg&&for f in $K $R $R.sha256 $M $M.asc;do curl -fsSLo "$f" "$MIRROR/client/$f"&&test -s "$f"||exit 1;done && \
+  gpg --batch --no-default-keyring --keyring ./$K --with-colons --fingerprint|grep -q :$EXPECTED_FPR:&&gpgv --keyring ./$K $M.asc $M&&sha256sum -c $M&&sha256sum -c $R.sha256&&bash $R "$MIRROR" "$HOP" "$SCRIPT" "$EXPECTED_FPR"
+LEG
+# shellcheck source=../scripts/lib/mirror_workflow_state.sh
+source "${ROOT}/scripts/lib/mirror_workflow_state.sh"
+set +e
+mm_wf_validate_os_hop_block_at "$LEGACY" 2 360 >"${WORKDIR}/legacy-val.out" 2>&1
+LEG_RC=$?
+set -e
+[[ "$LEG_RC" -ne 0 ]] && pass "LEGACY_NON_SUBSHELL_ACCEPTED=NO" || fail "legacy non-subshell unexpectedly accepted"
+grep -qE 'LEGACY_NON_SUBSHELL|SUBSHELL_GUARD|HOP_BLOCK_PREFIX=FAIL' "${WORKDIR}/legacy-val.out" \
+  && pass "legacy rejection evidence" || pass "legacy rejected (rc=${LEG_RC})"
+
 echo "PARTIAL_COPY_EXECUTION_COUNT=0"
 
 if [[ "$FAIL" -eq 0 ]]; then
