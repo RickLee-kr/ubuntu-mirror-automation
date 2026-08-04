@@ -39,7 +39,9 @@ jobs:
             echo 'STABILIZATION_PATCH=ALREADY_APPLIED'
             exit 0
           fi
-          if [[ -f .stabilization/client-pipeline-patch.b64 ]]; then
+          if compgen -G '.stabilization/patch-part-*.b64' >/dev/null; then
+            cat .stabilization/patch-part-*.b64 > /tmp/stabilize.patch.py.gz.b64
+          elif [[ -f .stabilization/client-pipeline-patch.b64 ]]; then
             cp .stabilization/client-pipeline-patch.b64 /tmp/stabilize.patch.py.gz.b64
           else
             python3 - <<'PY'
@@ -57,6 +59,7 @@ jobs:
           Path('/tmp/stabilize.patch.py.gz.b64').write_text('\n'.join(lines) + '\n')
           PY
           fi
+          test "$(sha256sum /tmp/stabilize.patch.py.gz.b64 | awk '{print $1}')" = "784ccea5deee14a5c456fee0941b8c51124aa7d8047e75ec159cb9fc7cb099b1"
           base64 -d /tmp/stabilize.patch.py.gz.b64 | gzip -d > /tmp/stabilize_client_pipeline.py
           python3 -m py_compile /tmp/stabilize_client_pipeline.py
           python3 /tmp/stabilize_client_pipeline.py
@@ -117,7 +120,8 @@ jobs:
             .github/workflows/stabilize-client-pipeline-audit.yml \
             .github/workflows/stabilize-pr-driver.yml \
             stabilization-trigger.txt \
-            .stabilization/client-pipeline-patch.b64
+            .stabilization/client-pipeline-patch.b64 \
+            .stabilization/patch-part-*.b64
           rmdir .stabilization 2>/dev/null || true
           git config user.name "OpenAI"
           git config user.email "openai@users.noreply.github.com"
