@@ -66,8 +66,9 @@ mm_term_size() {
     HEIGHT="$(tput lines 2>/dev/null || true)"
     WIDTH="$(tput cols 2>/dev/null || true)"
   fi
-  [[ -z "${HEIGHT:-}" ]] && HEIGHT=25
-  [[ -z "${WIDTH:-}" ]] && WIDTH=100
+  if [[ -z "${HEIGHT:-}" ]]; then HEIGHT=25; fi
+  if [[ -z "${WIDTH:-}" ]]; then WIDTH=100; fi
+  return 0
 }
 
 mm_calc_menu_size() {
@@ -244,26 +245,33 @@ mm_whiptail_textbox() {
   return 0
 }
 
-# Menu 7 only: prefer dialog --textbox for reliable vertical navigation.
-# Remains an ncurses TUI; never falls through to less or raw terminal pagers.
-# Exit/q closes the viewer and returns to the GUI (does not exit Mirror Manager).
+# Menu 7 only: dialog --textbox with mouse disabled so SSH terminals own
+# click/drag text selection. Never falls through to less, raw reprint, or
+# whiptail textbox. Exit/q/ESC closes only the viewer (not Mirror Manager).
 mm_menu7_textbox() {
   local title="$1" file="$2"
-  local h w
+  local h w dialog_bin=""
   mm_term_size
   h=$((HEIGHT - 4))
   w=$((WIDTH - 6))
-  [[ "$h" -lt 12 ]] && h=12
-  [[ "$w" -lt 60 ]] && w=60
-  if command -v dialog >/dev/null 2>&1; then
-    dialog --title "${title}" --textbox "$file" "$h" "$w" || true
+  if [[ "$h" -lt 12 ]]; then h=12; fi
+  if [[ "$w" -lt 60 ]]; then w=60; fi
+  dialog_bin="$(command -v dialog 2>/dev/null || true)"
+  if [[ -n "$dialog_bin" && -x "$dialog_bin" ]]; then
+    # --no-mouse must be on the argv (do not rely only on DIALOGOPTS).
+    "$dialog_bin" --no-mouse --title "${title}" --textbox "$file" "$h" "$w" || true
     clear 2>/dev/null || true
     return 0
   fi
-  # Fallback when dialog is unavailable (tests / minimal hosts).
-  mm_whiptail_textbox "$title" "$file"
-  return 0
+  mm_whiptail_msg "${title}" \
+    "MENU7_VIEWER=FAIL
+MENU7_VIEWER_REASON=dialog_missing
+
+dialog is required to view DP client upgrade commands.
+Install dialog and reopen Menu 7 from the main menu."
+  return 1
 }
+
 
 mm_has_dialog() {
   command -v dialog >/dev/null 2>&1
