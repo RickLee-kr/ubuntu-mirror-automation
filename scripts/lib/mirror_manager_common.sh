@@ -29,6 +29,9 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mirror_host_ip.sh"
 # HTTP public-tree permission contract (nginx-readable publish).
 # shellcheck source=http_publication_permissions.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/http_publication_permissions.sh"
+# Generation-bound workflow state machine.
+# shellcheck source=mirror_workflow_state.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mirror_workflow_state.sh"
 
 # Fixed ACPS endpoint (not user-editable). Credentials come from GUI config only.
 ACPS_BASE_URL_FIXED="${ACPS_BASE_URL_FIXED:-https://acps.stellarcyber.ai/provision/aelladeb_py3}"
@@ -694,6 +697,12 @@ mm_save_gui_config() {
     fi
     mm_status_set CLIENT_COMMANDS_MODE ""
   fi
+  # Generation-bound invalidation: any config identity change demotes workflow.
+  if declare -F mm_wf_invalidate_after_config_change >/dev/null 2>&1; then
+    mm_wf_invalidate_after_config_change
+  elif declare -F mm_wf_mark_configured >/dev/null 2>&1; then
+    mm_wf_mark_configured
+  fi
   mm_ok "CONFIGURATION_SAVED=PASS path=${MM_CONFIG_FILE} mode=${PREPARATION_MODE}"
 }
 
@@ -875,19 +884,32 @@ mm_client_commands_file() {
 }
 
 mm_client_commands_stale() {
-  local f mode_saved
+  local f mode_saved ready cmd_gen
   f="$(mm_client_commands_file)"
-  [[ -f "$f" ]] || return 0
+  [[ -f "$f" && -s "$f" ]] || return 0
   mm_normalize_preparation_mode
   mode_saved="$(mm_status_get CLIENT_COMMANDS_MODE)"
   [[ "$mode_saved" == "${PREPARATION_MODE}" ]] || return 0
+  if declare -F mm_wf_get >/dev/null 2>&1; then
+    ready="$(mm_wf_get READINESS_VERIFIED_GENERATION_ID)"
+    cmd_gen="$(mm_wf_get COMMAND_FILE_GENERATION_ID)"
+    [[ -n "$ready" && -n "$cmd_gen" && "$ready" == "$cmd_gen" ]] || return 0
+    mm_wf_config_matches_current || return 0
+  fi
   return 1
 }
 
 mm_mark_client_commands_fresh() {
+  local ready
   mm_normalize_preparation_mode
   mm_status_set CLIENT_COMMANDS_MODE "${PREPARATION_MODE}"
   mm_status_set CLIENT_COMMANDS_GENERATED_AT "$(mm_ts)"
+  if declare -F mm_wf_get >/dev/null 2>&1; then
+    ready="$(mm_wf_get READINESS_VERIFIED_GENERATION_ID)"
+    if [[ -n "$ready" ]] && declare -F mm_wf_mark_commands_generated >/dev/null 2>&1; then
+      mm_wf_mark_commands_generated "$ready"
+    fi
+  fi
 }
 
 mm_config_ready() {
@@ -1191,6 +1213,9 @@ mm_record_config_validated() {
   mm_status_set CONFIGURATION_READY PASS
   mm_status_set CONFIG_FINGERPRINT "$(mm_config_fingerprint)"
   mm_status_set CONFIG_VALIDATED_AT "$(mm_ts)"
+  if declare -F mm_wf_mark_configured >/dev/null 2>&1; then
+    mm_wf_mark_configured
+  fi
 }
 
 mm_record_download_validated() {
@@ -1208,6 +1233,9 @@ mm_record_download_validated() {
   mm_status_set READINESS_RESULT ""
   mm_status_set READINESS_ARTIFACT_FINGERPRINT ""
   mm_status_set UPGRADE_READINESS FAIL
+  if declare -F mm_wf_mark_prepared >/dev/null 2>&1; then
+    mm_wf_mark_prepared
+  fi
 }
 
 mm_record_http_validated() {
@@ -1215,6 +1243,9 @@ mm_record_http_validated() {
   mm_status_set HTTP_VALIDATED_AT "$(mm_ts)"
   mm_status_set HTTP_DISTRIBUTION ENABLED
   mm_status_set HTTP_CONFIGURATION_READY PASS
+  if declare -F mm_wf_mark_http_enabled >/dev/null 2>&1; then
+    mm_wf_mark_http_enabled
+  fi
 }
 
 mm_record_readiness_validated() {
@@ -1225,6 +1256,9 @@ mm_record_readiness_validated() {
   mm_status_set READINESS_ARTIFACT_FINGERPRINT "$fp"
   mm_status_set READINESS_CONFIG_FINGERPRINT "$(mm_config_fingerprint)"
   mm_status_set UPGRADE_READINESS PASS
+  if declare -F mm_wf_mark_readiness_verified >/dev/null 2>&1; then
+    mm_wf_mark_readiness_verified
+  fi
 }
 
 mm_state_init() {

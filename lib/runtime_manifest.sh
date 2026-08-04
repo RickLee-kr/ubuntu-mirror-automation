@@ -38,6 +38,7 @@ UM_RUNTIME_SCRIPT_ENTRYPOINTS=(
 UM_RUNTIME_SCRIPT_LIB_SHELL=(
   mirror_manager_common.sh
   mirror_install_engine.sh
+  mirror_workflow_state.sh
   r2_acquire.sh
   acps_acquire.sh
   dp-phase2-common.sh
@@ -94,6 +95,7 @@ UM_RUNTIME_CLIENT_FILES=(
 
 UM_RUNTIME_CLIENT_LIB_FILES=(
   dp-offline-destructive-confirmation.sh
+  dp-offline-release-upgrade-reconciliation.sh
 )
 
 # Relative paths under the installed runtime root that must exist after install.
@@ -103,6 +105,7 @@ UM_RUNTIME_REQUIRED_RELATIVE_PATHS=(
   scripts/rebuild-publish-clients.sh
   scripts/lib/mirror_manager_common.sh
   scripts/lib/mirror_install_engine.sh
+  scripts/lib/mirror_workflow_state.sh
   scripts/lib/r2_acquire.sh
   scripts/lib/acps_acquire.sh
   scripts/lib/dp-phase2-common.sh
@@ -117,6 +120,8 @@ UM_RUNTIME_REQUIRED_RELATIVE_PATHS=(
   scripts/lib/build_client_bionic_to_focal.py
   scripts/lib/build_client_focal_to_jammy.py
   scripts/lib/build_client_jammy_to_noble.py
+  client/lib/dp-offline-destructive-confirmation.sh
+  client/lib/dp-offline-release-upgrade-reconciliation.sh
   vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh
   vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1
   templates/nginx.conf

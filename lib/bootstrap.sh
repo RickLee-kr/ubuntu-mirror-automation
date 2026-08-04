@@ -19,6 +19,7 @@ UM_BOOTSTRAP_REQUIRED_PKGS=(
   curl
   ca-certificates
   whiptail
+  dialog
   python3
   tar
   coreutils
@@ -36,6 +37,7 @@ UM_BOOTSTRAP_REQUIRED_CMDS=(
   nginx
   curl
   whiptail
+  dialog
   python3
   tar
   sha256sum
@@ -811,8 +813,88 @@ Re-open GUI:
 EOF
 }
 
+um_bootstrap_detect_install_mode() {
+  local confdir="${INSTALL_CONF_DIR:-/etc/ubuntu-mirror}"
+  local runtime="${INSTALL_LIB_DIR:-/usr/local/lib/ubuntu-mirror}"
+  if [[ -f "${confdir}/dp-upgrade-mirror.conf" ]] \
+    || [[ -d "${confdir}/client-signing" ]] \
+    || [[ -e "${runtime}/scripts/install-dp-upgrade-mirror.sh" ]]; then
+    printf 'REINSTALL\n'
+  else
+    printf 'FRESH\n'
+  fi
+}
+
+um_bootstrap_report_install_outcome() {
+  local mode="${1:-FRESH}"
+  local confdir="${INSTALL_CONF_DIR:-/etc/ubuntu-mirror}"
+  local base="${BASE_PATH:-/var/spool/apt-mirror}"
+  local http_before="${2:-UNKNOWN}"
+  local http_after="${3:-DISABLED}"
+  local reenable="${4:-}"
+  local next_action config_p selective_p phase2_p signing_p client_p
+
+  config_p=NO
+  selective_p=NO
+  phase2_p=NO
+  signing_p=NO
+  client_p=NO
+  [[ -f "${confdir}/dp-upgrade-mirror.conf" ]] && config_p=YES
+  [[ -d "${base}/selective/ubuntu" || -f "${base}/selective/state/READY" ]] && selective_p=YES
+  [[ -d "${base}/dp-phase2/6.5.0" ]] && phase2_p=YES
+  [[ -f "${confdir}/client-signing/private.gpg" ]] && signing_p=YES
+  [[ -f "${base}/client/stage-dp-phase2.sh" \
+    || -f "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh" ]] && client_p=YES
+
+  if [[ "$mode" == "FRESH" ]]; then
+    next_action="CONFIGURATION_REQUIRED"
+  elif [[ "$http_after" != "ENABLED" ]]; then
+    reenable="${reenable:-YES}"
+    next_action="Enable HTTP Distribution"
+  else
+    next_action="Verify Upgrade Readiness"
+  fi
+
+  cat <<EOF
+INSTALL_MODE=${mode}
+CONFIG_PRESERVED=${config_p}
+SELECTIVE_PRESERVED=${selective_p}
+PHASE2_PRESERVED=${phase2_p}
+SIGNING_KEY_PRESERVED=${signing_p}
+CLIENT_SET_PRESERVED=${client_p}
+HTTP_STATE_BEFORE=${http_before}
+HTTP_STATE_AFTER=${http_after}
+HTTP_REENABLE_REQUIRED=${reenable:-NO}
+NEXT_REQUIRED_ACTION=${next_action}
+EOF
+}
+
+um_bootstrap_http_state_label() {
+  if um_bootstrap_systemctl is-active --quiet nginx 2>/dev/null; then
+    printf 'ENABLED\n'
+  else
+    printf 'DISABLED\n'
+  fi
+}
+
 um_bootstrap_run() {
   phase() { printf '\n==> %s\n' "$*"; }
+  local install_mode http_before http_after reenable=NO
+  local config_p=NO selective_p=NO phase2_p=NO signing_p=NO client_p=NO
+  local confdir="${INSTALL_CONF_DIR:-/etc/ubuntu-mirror}"
+  local base="${BASE_PATH:-/var/spool/apt-mirror}"
+
+  install_mode="$(um_bootstrap_detect_install_mode)"
+  http_before="$(um_bootstrap_http_state_label 2>/dev/null || printf 'UNKNOWN')"
+  [[ -f "${confdir}/dp-upgrade-mirror.conf" ]] && config_p=YES
+  [[ -d "${base}/selective/ubuntu" || -f "${base}/selective/state/READY" ]] && selective_p=YES
+  [[ -d "${base}/dp-phase2/6.5.0" ]] && phase2_p=YES
+  [[ -f "${confdir}/client-signing/private.gpg" ]] && signing_p=YES
+  [[ -f "${base}/client/stage-dp-phase2.sh" \
+    || -f "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh" ]] && client_p=YES
+
+  um_info "INSTALL_MODE=${install_mode}"
+  um_info "HTTP_STATE_BEFORE=${http_before}"
 
   phase "Host preflight (Ubuntu 24.04)"
   um_bootstrap_host_preflight
@@ -832,7 +914,51 @@ um_bootstrap_run() {
   phase "Install nginx base configuration"
   um_bootstrap_install_nginx_base
 
+  http_after="$(um_bootstrap_http_state_label 2>/dev/null || printf 'DISABLED')"
+  if [[ "$install_mode" == "FRESH" ]]; then
+    config_p=NO
+    selective_p=NO
+    phase2_p=NO
+    signing_p=NO
+    client_p=NO
+    reenable=NO
+  else
+    # Reinstall: report whether prior artifacts remain after runtime update.
+    config_p=NO; selective_p=NO; phase2_p=NO; signing_p=NO; client_p=NO
+    [[ -f "${confdir}/dp-upgrade-mirror.conf" ]] && config_p=YES
+    [[ -d "${base}/selective/ubuntu" || -f "${base}/selective/state/READY" ]] && selective_p=YES
+    [[ -d "${base}/dp-phase2/6.5.0" ]] && phase2_p=YES
+    [[ -f "${confdir}/client-signing/private.gpg" ]] && signing_p=YES
+    [[ -f "${base}/client/stage-dp-phase2.sh" \
+      || -f "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh" ]] && client_p=YES
+    if [[ "$http_before" == "ENABLED" && "$http_after" != "ENABLED" ]]; then
+      reenable=YES
+    elif [[ "$http_after" != "ENABLED" ]]; then
+      reenable=YES
+    fi
+  fi
+
   phase "Bootstrap summary"
+  local next_action
+  if [[ "$install_mode" == "FRESH" ]]; then
+    next_action="CONFIGURATION_REQUIRED"
+  elif [[ "$reenable" == "YES" || "$http_after" != "ENABLED" ]]; then
+    next_action="Enable HTTP Distribution"
+  else
+    next_action="Verify Upgrade Readiness"
+  fi
+  cat <<EOF
+INSTALL_MODE=${install_mode}
+CONFIG_PRESERVED=${config_p}
+SELECTIVE_PRESERVED=${selective_p}
+PHASE2_PRESERVED=${phase2_p}
+SIGNING_KEY_PRESERVED=${signing_p}
+CLIENT_SET_PRESERVED=${client_p}
+HTTP_STATE_BEFORE=${http_before}
+HTTP_STATE_AFTER=${http_after}
+HTTP_REENABLE_REQUIRED=${reenable}
+NEXT_REQUIRED_ACTION=${next_action}
+EOF
   um_bootstrap_summary
 
   um_bootstrap_maybe_start_gui

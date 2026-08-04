@@ -370,6 +370,17 @@ local_signing_assert_private_not_published "$STAGE_DIR" || {
 }
 evidence_echo "PRIVATE_KEY_HTTP_PUBLISHED=NO"
 
+# Generation metadata for Menu 7 / client trust binding (public, 0644).
+cat >"${STAGE_DIR}/client-set.env" <<EOF
+CLIENT_SET_GENERATION_ID=${CLIENT_BUILD_GENERATION_ID}
+CLIENT_SIGNING_FINGERPRINT=${LOCAL_KEY_FINGERPRINT}
+MIRROR_HTTP_URL=${MIRROR_BASE}
+PREPARATION_MODE=${PREPARATION_MODE:-FULL}
+PHASE2_TARGET_VERSION=${PHASE2_TARGET_VERSION:-6.5.0}
+CREATED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+chmod 0644 "${STAGE_DIR}/client-set.env"
+
 # Final verify on staged tree before cutover.
 for hop in "${HOPS[@]}"; do
   name="$(hop_script_name "$hop")"
@@ -454,6 +465,33 @@ echo "INSTALL_PUBLISHES_LOCAL_PUBLIC_KEY=YES"
 echo "PRIVATE_KEY_HTTP_PUBLISHED=NO"
 echo "ALL_FOUR_CLIENTS_ATOMICALLY_PUBLISHED=YES"
 echo "CLIENT_SET_ON_DISK_READY=PASS"
+
+# Persist generation metadata into the live client set + workflow state.
+if [[ -f "${ROOT}/scripts/lib/mirror_workflow_state.sh" ]]; then
+  # Prefer the signing confdir parent as the workflow state home when unset.
+  if [[ -z "${MM_WORKFLOW_FILE:-}" ]]; then
+    if [[ -n "${MM_CONFIG_DIR:-}" ]]; then
+      MM_WORKFLOW_FILE="${MM_CONFIG_DIR}/dp-upgrade-workflow.state"
+    elif [[ -n "${LOCAL_CLIENT_SIGNING_DIR:-}" ]]; then
+      MM_WORKFLOW_FILE="$(dirname "${LOCAL_CLIENT_SIGNING_DIR}")/dp-upgrade-workflow.state"
+    fi
+    export MM_WORKFLOW_FILE
+  fi
+  # shellcheck source=/dev/null
+  source "${ROOT}/scripts/lib/mirror_workflow_state.sh"
+  mm_wf_write_client_set_metadata \
+    "$CLIENT_HTTP_ROOT" \
+    "$CLIENT_BUILD_GENERATION_ID" \
+    "$LOCAL_KEY_FINGERPRINT" \
+    "$MIRROR_BASE" \
+    "${PREPARATION_MODE:-FULL}"
+  mm_wf_mark_client_set_published "$CLIENT_BUILD_GENERATION_ID" "$LOCAL_KEY_FINGERPRINT" \
+    || evidence_echo "WORKFLOW_STATE_UPDATE=SKIPPED"
+  evidence_echo "CLIENT_SET_GENERATION_ID=${CLIENT_BUILD_GENERATION_ID}"
+  evidence_echo "CLIENT_SIGNING_FINGERPRINT=${LOCAL_KEY_FINGERPRINT}"
+  echo "CLIENT_SET_GENERATION_ID=${CLIENT_BUILD_GENERATION_ID}"
+  echo "CLIENT_SIGNING_FINGERPRINT=${LOCAL_KEY_FINGERPRINT}"
+fi
 
 if [[ "$SKIP_HTTP_VERIFY" == "1" ]]; then
   evidence_echo "CLIENT_PUBLISH_HTTP_VERIFY=SKIPPED"
