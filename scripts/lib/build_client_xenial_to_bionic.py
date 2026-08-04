@@ -532,6 +532,19 @@ def render_script(template_path, replacements):
     with open(helper_path, "r", encoding="utf-8") as fh:
         helper_body = fh.read().rstrip("\n") + "\n"
     body = body.replace(helper_token, helper_body)
+    recon_token = "@@RELEASE_UPGRADE_RECONCILIATION_HELPER@@"
+    recon_path = os.path.join(
+        os.path.dirname(os.path.abspath(template_path)),
+        "lib",
+        "dp-offline-release-upgrade-reconciliation.sh",
+    )
+    if recon_token not in body:
+        raise BuildError("template missing token {}".format(recon_token))
+    if not os.path.isfile(recon_path):
+        raise BuildError("missing reconciliation helper: {}".format(recon_path))
+    with open(recon_path, "r", encoding="utf-8") as fh:
+        recon_body = fh.read().rstrip("\n") + "\n"
+    body = body.replace(recon_token, recon_body)
     for key, value in replacements.items():
         token = "@@{}@@".format(key)
         if token not in body:

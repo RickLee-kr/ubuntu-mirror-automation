@@ -339,6 +339,7 @@ Options:
   --mode os-only      Phase 1 OS-only mode (default; product gates skipped)
   --detach            Start under systemd and return immediately without
                       attaching the local progress monitor
+  --diagnose-state    Read-only state/evidence diagnosis (no mutations)
   --help              Show this help
 EOF
 }
@@ -1533,21 +1534,9 @@ load_release_upgrade_started_flag_for_current_hop() {
   fi
 }
 
-has_target_core_package_contamination() {
-  # Return 0 if any core package looks like the target (Bionic) release.
-  local pkg ivers
-  if [[ -n "$TEST_ROOT" ]]; then
-    [[ -f "$(hostpath ${STATE_ROOT}/force-target-core-packages)" ]] && return 0
-    return 1
-  fi
-  for pkg in base-files libc6 apt dpkg systemd systemd-sysv; do
-    ivers="$(pkg_installed_version "$pkg")"
-    if is_focal_version_for_pkg "$pkg" "$ivers"; then
-      return 0
-    fi
-  done
-  return 1
-}
+# Shared authoritative reconciliation / structured package-transition evidence.
+# Build-time inlined from client/lib/dp-offline-release-upgrade-reconciliation.sh
+@@RELEASE_UPGRADE_RECONCILIATION_HELPER@@
 
 source_suite_still_bionic() {
   local sl
@@ -1563,28 +1552,6 @@ source_suite_still_bionic() {
   fi
   # Our stellar offline list uses bionic suites during Phase 1 prep.
   if grep -qE 'stellar-offline|bionic' "$sl" 2>/dev/null; then
-    return 0
-  fi
-  return 1
-}
-
-has_upgrade_transaction_evidence() {
-  # Return 0 if dist-upgrade / apt history shows an upgrade transaction.
-  if [[ -n "$TEST_ROOT" ]]; then
-    [[ -f "$(hostpath ${STATE_ROOT}/force-upgrade-transaction-evidence)" ]] && return 0
-    return 1
-  fi
-  if [[ -f /var/log/dist-upgrade/apt.log ]] \
-    && grep -qiE '^(Install|Upgrade|Remove):' /var/log/dist-upgrade/apt.log 2>/dev/null; then
-    return 0
-  fi
-  if [[ -f /var/log/dist-upgrade/main.log ]] \
-    && grep -qiE 'apt.distupgrade|altering|Installing|upgrading packages' /var/log/dist-upgrade/main.log 2>/dev/null; then
-    return 0
-  fi
-  if [[ -f /var/log/apt/history.log ]] \
-    && grep -qiE 'Upgrade:|Install:.*focal|Commandline:.*do-release-upgrade' /var/log/apt/history.log 2>/dev/null \
-    && grep -qiE 'focal|20\.04' /var/log/apt/history.log 2>/dev/null; then
     return 0
   fi
   return 1
@@ -1610,162 +1577,6 @@ detect_meta_release_encoding_failure_signature() {
     fi
   fi
   return 1
-}
-
-package_transition_evidence_present() {
-  # Real package mutation only - not DistUpgrade PID/invocation.
-  # Mirrors runner policy: dpkg unpack/start, status DB change, install phase.
-  local ver status dpkglog mainlog aptlog offset
-  ver="$(read_os_field VERSION_ID)"
-  if [[ "$ver" != "$PIN_SOURCE_VERSION" ]]; then
-    return 0
-  fi
-  if has_target_core_package_contamination; then
-    return 0
-  fi
-  if has_upgrade_transaction_evidence; then
-    return 0
-  fi
-  if [[ -n "$TEST_ROOT" ]]; then
-    [[ -f "$(hostpath ${STATE_ROOT}/force-upgrade-transaction-evidence)" ]] && return 0
-    [[ -f "$(hostpath /tmp/dpkg-broken)" ]] && return 0
-    return 1
-  fi
-  dpkglog="$(hostpath /var/log/dpkg.log)"
-  offset="$(cat "$(critical_holds_dir)/dpkg_log_offset_before" 2>/dev/null || echo 0)"
-  if [[ -f "$dpkglog" ]]; then
-    if [[ "${offset:-0}" =~ ^[0-9]+$ ]] && [[ "$offset" -gt 0 ]]; then
-      if tail -c +"$((offset + 1))" "$dpkglog" 2>/dev/null \
-        | grep -q 'startup archives unpack'; then
-        return 0
-      fi
-    elif grep -q 'startup archives unpack' "$dpkglog" 2>/dev/null \
-      && grep -qiE 'status (half-installed|unpacked) .*(libc-bin|libc6|base-files).* (2\.27|10\.1ubuntu)' "$dpkglog" 2>/dev/null; then
-      return 0
-    fi
-  fi
-  if list_active_upgrade_processes | grep -qE '[[:space:]]dpkg([[:space:]]|$)'; then
-    return 0
-  fi
-  mainlog="$(hostpath /var/log/dist-upgrade/main.log)"
-  aptlog="$(hostpath /var/log/dist-upgrade/apt.log)"
-  if [[ -f "$mainlog" ]] \
-    && grep -qiE 'apt\.distupgrade\.(install|doTheInstall)|installing packages|about to install|DistUpgrade\.install' "$mainlog" 2>/dev/null; then
-    return 0
-  fi
-  if [[ -f "$aptlog" ]] \
-    && grep -qiE '^(Install|Upgrade|Remove):' "$aptlog" 2>/dev/null; then
-    return 0
-  fi
-  if dpkg --audit 2>/dev/null | grep -q .; then
-    return 0
-  fi
-  if ! apt-get check >/dev/null 2>&1; then
-    return 0
-  fi
-  return 1
-}
-
-classify_previous_release_upgrade_failure() {
-  # Sets RELEASE_UPGRADE_FAILURE_CLASS / PREVIOUS_FAILURE_CLASS.
-  RELEASE_UPGRADE_FAILURE_CLASS=""
-  PREVIOUS_FAILURE_CLASS=""
-  local ver
-  ver="$(read_os_field VERSION_ID)"
-
-  if package_transition_evidence_present; then
-    RELEASE_UPGRADE_FAILURE_CLASS="PARTIAL_OR_UNKNOWN_MUTATION"
-    PREVIOUS_FAILURE_CLASS="$RELEASE_UPGRADE_FAILURE_CLASS"
-    PARTIAL_RELEASE_TRANSITION="YES"
-    return 1
-  fi
-
-  if [[ "$ver" == "$PIN_SOURCE_VERSION" ]] \
-    && detect_meta_release_encoding_failure_signature; then
-    RELEASE_UPGRADE_FAILURE_CLASS="PRE_MUTATION_META_RELEASE_ENCODING"
-    PREVIOUS_FAILURE_CLASS="$RELEASE_UPGRADE_FAILURE_CLASS"
-    PARTIAL_RELEASE_TRANSITION="NO"
-    log INFO "RELEASE_UPGRADE_FAILURE_CLASS=PRE_MUTATION_CONFIG_PARSE"
-    log INFO "RELEASE_UPGRADE_FAILURE_CLASS=${RELEASE_UPGRADE_FAILURE_CLASS}"
-    log INFO "RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED=false"
-    return 0
-  fi
-
-  if [[ "$ver" == "$PIN_SOURCE_VERSION" ]] \
-    && ! has_upgrade_transaction_evidence \
-    && ! has_target_core_package_contamination; then
-    # Clean source OS without a known pre-mutation signature is NOT auto-resumable.
-    RELEASE_UPGRADE_FAILURE_CLASS="PRE_MUTATION_UNKNOWN"
-    PREVIOUS_FAILURE_CLASS="$RELEASE_UPGRADE_FAILURE_CLASS"
-    PARTIAL_RELEASE_TRANSITION="NO"
-    return 1
-  fi
-
-  RELEASE_UPGRADE_FAILURE_CLASS="UNCLASSIFIED"
-  PREVIOUS_FAILURE_CLASS="$RELEASE_UPGRADE_FAILURE_CLASS"
-  PARTIAL_RELEASE_TRANSITION="YES"
-  return 1
-}
-
-reconcile_legacy_release_upgrade_state() {
-  # Migrate legacy release_upgrade_started=true without assuming package mutation.
-  load_release_upgrade_started_flag
-  local dir legacy=0
-  dir="$(critical_holds_dir)"
-  [[ -f "$dir/release_upgrade_started" ]] && grep -qx 'true' "$dir/release_upgrade_started" && legacy=1
-
-  if [[ "$legacy" -eq 0 && "$RELEASE_UPGRADE_STARTED" != "true" ]]; then
-    return 0
-  fi
-
-  if package_transition_evidence_present; then
-    log ERROR "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
-    log ERROR "MANUAL_REVIEW_REQUIRED=YES"
-    log ERROR "REASON=legacy_flag_with_package_transition_evidence"
-    die "$EC_RESUME" "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
-  fi
-
-  if [[ "$LEGACY_STATE_RECONCILED" == "true" && -n "$RECONCILIATION_REASON" ]]; then
-    log INFO "legacy_state_reconciled=true"
-    log INFO "reconciliation_reason=${RECONCILIATION_REASON}"
-    return 0
-  fi
-
-  log INFO "legacy_release_upgrade_started=true"
-
-  if ! classify_previous_release_upgrade_failure; then
-    if [[ "$PREVIOUS_FAILURE_CLASS" != "PRE_MUTATION_META_RELEASE_ENCODING" \
-       && "$PREVIOUS_FAILURE_CLASS" != "PRE_MUTATION_CONFIG_PARSE" ]]; then
-      log ERROR "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
-      log ERROR "MANUAL_REVIEW_REQUIRED=YES"
-      log ERROR "PREVIOUS_FAILURE_CLASS=${PREVIOUS_FAILURE_CLASS}"
-      die "$EC_RESUME" "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
-    fi
-  fi
-
-  # Only reconcile to resumable state for known pre-mutation encoding/parse failures.
-  if [[ "$PREVIOUS_FAILURE_CLASS" != "PRE_MUTATION_META_RELEASE_ENCODING" \
-     && "$PREVIOUS_FAILURE_CLASS" != "PRE_MUTATION_CONFIG_PARSE" ]]; then
-    log ERROR "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
-    log ERROR "MANUAL_REVIEW_REQUIRED=YES"
-    die "$EC_RESUME" "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
-  fi
-
-  RELEASE_UPGRADE_INVOCATION_STARTED="true"
-  RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED="false"
-  RELEASE_UPGRADE_STARTED="true"
-  LEGACY_STATE_RECONCILED="true"
-  if [[ "$PREVIOUS_FAILURE_CLASS" == "PRE_MUTATION_META_RELEASE_ENCODING" ]]; then
-    RECONCILIATION_REASON="META_RELEASE_CONFIG_PARSE_BEFORE_TRANSACTION"
-  else
-    RECONCILIATION_REASON="PRE_MUTATION_FAILURE_BEFORE_TRANSACTION"
-  fi
-  persist_release_upgrade_flags
-  log INFO "release_upgrade_invocation_started=true"
-  log INFO "release_upgrade_package_transition_started=false"
-  log INFO "legacy_state_reconciled=true"
-  log INFO "reconciliation_reason=${RECONCILIATION_REASON}"
-  return 0
 }
 
 verify_prior_critical_hold_resume_consistency() {
@@ -1829,74 +1640,6 @@ log_idempotent_prep_states() {
       fi
     fi
   fi
-}
-
-assess_safe_resume_from_failed() {
-  # Return 0 when FAILED state is a safe pre-mutation resume candidate.
-  local ver st
-  ver="$(read_os_field VERSION_ID)"
-  st="$(read_state)"
-  PREVIOUS_FAILURE_DETECTED="YES"
-  load_release_upgrade_started_flag
-
-  if [[ "$ver" != "$PIN_SOURCE_VERSION" ]]; then
-    log ERROR "RESUME_SAFETY_VALIDATION=FAIL"
-    log ERROR "REASON=os_not_source_version"
-    return 1
-  fi
-
-  # Explicit pre-DRO / pre-package-transition terminal failures with no package
-  # mutation evidence are safe to re-confirm; never auto-start DRO.
-  # Invocation/process-spawn alone does NOT block resume.
-  # Plain FAILED without a known pre-mutation signature stays non-resumable
-  # (handled below via classify_previous_release_upgrade_failure).
-  if [[ "$st" == "FAILED_PRE_DRO" || "$st" == "FAILED_PRE_DRO_STALE" \
-     || "$st" == "FAILED_BEFORE_PACKAGE_TRANSITION" ]]; then
-    if [[ "$RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED" != "true" ]] \
-      && ! package_transition_evidence_present; then
-      PREVIOUS_FAILURE_CLASS="PRE_DRO_FAILURE_BEFORE_TRANSACTION"
-      PARTIAL_RELEASE_TRANSITION="NO"
-      RESUME_FROM="PRE_DRO_CONFIGURATION"
-      verify_prior_critical_hold_resume_consistency
-      log_idempotent_prep_states
-      log INFO "PREVIOUS_FAILURE_DETECTED=YES"
-      log INFO "PREVIOUS_FAILURE_CLASS=${PREVIOUS_FAILURE_CLASS}"
-      log INFO "PARTIAL_RELEASE_TRANSITION=NO"
-      log INFO "RESUME_SAFETY_VALIDATION=PASS"
-      log INFO "RESUME_FROM=${RESUME_FROM}"
-      return 0
-    fi
-  fi
-
-  reconcile_legacy_release_upgrade_state
-
-  if ! classify_previous_release_upgrade_failure; then
-    log ERROR "RESUME_SAFETY_VALIDATION=FAIL"
-    log ERROR "PARTIAL_RELEASE_TRANSITION=${PARTIAL_RELEASE_TRANSITION}"
-    log ERROR "PREVIOUS_FAILURE_CLASS=${PREVIOUS_FAILURE_CLASS:-UNCLASSIFIED}"
-    return 1
-  fi
-
-  case "$PREVIOUS_FAILURE_CLASS" in
-    PRE_MUTATION_META_RELEASE_ENCODING|PRE_MUTATION_CONFIG_PARSE) ;;
-    *)
-      log ERROR "RESUME_SAFETY_VALIDATION=FAIL"
-      log ERROR "REASON=failure_class_not_auto_resumable"
-      log ERROR "PREVIOUS_FAILURE_CLASS=${PREVIOUS_FAILURE_CLASS}"
-      return 1
-      ;;
-  esac
-
-  verify_prior_critical_hold_resume_consistency
-  log_idempotent_prep_states
-
-  RESUME_FROM="PRE_DRO_CONFIGURATION"
-  log INFO "PREVIOUS_FAILURE_DETECTED=YES"
-  log INFO "PREVIOUS_FAILURE_CLASS=${PREVIOUS_FAILURE_CLASS}"
-  log INFO "PARTIAL_RELEASE_TRANSITION=NO"
-  log INFO "RESUME_SAFETY_VALIDATION=PASS"
-  log INFO "RESUME_FROM=${RESUME_FROM}"
-  return 0
 }
 
 log_phase1_banner() {
@@ -10343,6 +10086,8 @@ main() {
         esac
         shift 2 || die "$EC_USAGE" "--mode requires value"
         ;;
+      --diagnose-state)
+        DIAGNOSE_STATE_ONLY=1; shift ;;
       --help|-h) usage; exit 0 ;;
       --detach)
         DETACH_AFTER_HANDOFF=1; shift ;;
@@ -10381,6 +10126,12 @@ main() {
 
   ensure_log_dir
   maybe_enable_control_flow_debug
+  if [[ "${DIAGNOSE_STATE_ONLY:-0}" -eq 1 ]]; then
+    load_current_hop_identity_vars || true
+    load_release_upgrade_started_flag_for_current_hop
+    diagnose_release_upgrade_state
+    exit 0
+  fi
   # Multi-hop: inspect/accept previous-hop terminal BEFORE loading transaction flags.
   # Loading xenial-to-bionic markers into b2f globals causes false CURRENT_HOP_MUTATION.
   handle_existing_state

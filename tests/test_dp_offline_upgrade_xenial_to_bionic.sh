@@ -1401,9 +1401,17 @@ EOS
     /^change_login_shells\(\)/ {exit}
     p
   ' "$SCRIPT_IN"
-  # Extract reconciliation / resume helpers + fine-grained state flags
+  # Fine-grained flag helpers that precede the shared inject token.
   awk '
     /^persist_release_upgrade_flags\(\)/ {p=1}
+    /^@@RELEASE_UPGRADE_RECONCILIATION_HELPER@@/ {exit}
+    p
+  ' "$SCRIPT_IN"
+  # Shared authoritative reconciliation helper (injected at client build time).
+  cat "${ROOT}/client/lib/dp-offline-release-upgrade-reconciliation.sh"
+  # Hop-local helpers retained after the inject token.
+  awk '
+    /^@@RELEASE_UPGRADE_RECONCILIATION_HELPER@@/ {p=1; next}
     /^log_phase1_banner\(\)/ {exit}
     p
   ' "$SCRIPT_IN"
