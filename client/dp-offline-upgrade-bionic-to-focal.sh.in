@@ -1538,6 +1538,10 @@ load_release_upgrade_started_flag_for_current_hop() {
 # Build-time inlined from client/lib/dp-offline-release-upgrade-reconciliation.sh
 @@RELEASE_UPGRADE_RECONCILIATION_HELPER@@
 
+# Shared temporary APT authentication preflight sandbox (_apt-accessible root).
+# Build-time inlined from client/lib/dp-offline-apt-preflight-sandbox.sh
+@@APT_PREFLIGHT_SANDBOX_HELPER@@
+
 source_suite_still_bionic() {
   local sl
   sl="$(hostpath /etc/apt/sources.list)"
@@ -1842,7 +1846,8 @@ verify_mirror_trust_chain() {
   local work="$1"
   local repo="${MIRROR_BASE}/hops/${PIN_HOP}/ubuntu"
   local tmp code
-  tmp="$(mktemp -d)"
+  # Root-private work dir for embedded-asset fetches (NOT the APT sandbox root).
+  tmp="$(mktemp -d /tmp/stellar-offline-private.XXXXXX)"
   # TCP/80
   code="$(http_code "${MIRROR_BASE}/")"
   # 200/403/404 acceptable for root; connection failure is 000
@@ -1888,64 +1893,12 @@ verify_mirror_trust_chain() {
   log INFO "APT_INRELEASE_SIGNATURE=PASS"
 
   # Temporary apt update using only local hop (no persistent changes).
-  # Use trusted.gpg.d + DistUpgrade-compatible lines (no signed-by=).
+  # Dedicated _apt-accessible APT root (shared helper); never nest under 0700 private tmp.
   if [[ -z "$TEST_ROOT" ]]; then
-    local aptroot="${tmp}/aptroot"
-    mkdir -p "${aptroot}/etc/apt/apt.conf.d" "${aptroot}/var/lib/apt/lists/partial" \
-      "${aptroot}/var/cache/apt/archives/partial" "${aptroot}/etc/apt/trusted.gpg.d"
-    cp -a "$work/stellar-offline-upgrade.gpg" "${aptroot}/etc/apt/trusted.gpg.d/stellar-offline-upgrade.gpg"
-    {
-      local s
-      for s in $PIN_SOURCE_SUITES; do
-        printf 'deb [arch=amd64] %s %s %s\n' "$repo" "$s" "$PIN_COMPONENTS"
-      done
-    } >"${aptroot}/etc/apt/sources.list"
-    # Bionic apt: Dir override + explicit empty Parts (never load host Stellar gate).
-    # Defense-in-depth: host Stellar hook must already be retired/repaired before this point.
-    local apt_rc=0
-    set +e
-    apt-get -o Dir="${aptroot}" \
-        -o Dir::Etc::Parts="${aptroot}/etc/apt/apt.conf.d" \
-        -o Dir::State::status="$(hostpath /var/lib/dpkg/status)" \
-        -o Acquire::Languages=none -o APT::Get::AllowUnauthenticated=false \
-        update >"${tmp}/apt-update.out" 2>"${tmp}/apt-update.err"
-    apt_rc=$?
-    set -e
-    if [[ "$apt_rc" -ne 0 ]]; then
-      # `_apt` unsandboxed warnings alone are not failure; require non-zero exit / E: lines.
-      persist_temp_apt_failure_evidence "$tmp" "$apt_rc" "temporary_local_apt_update" || true
-      log ERROR "APT_REPOSITORY_AUTHENTICATION=FAIL"
-      log INFO "APT_PREFLIGHT_EXIT_CODE=${apt_rc}"
-      die "$EC_MIRROR" "temporary local apt-get update failed (exit=${apt_rc}; evidence under ${STATE_ROOT}/evidence/preflight-apt/)"
-    fi
-    if grep -qiE '(archive|security|old-releases|changelogs)\.ubuntu\.com' "${tmp}/apt-update.err" \
-         "${aptroot}/var/lib/apt/lists/"* 2>/dev/null; then
-      persist_temp_apt_failure_evidence "$tmp" "external-host" "temporary_local_apt_external" || true
-      log ERROR "APT_REPOSITORY_AUTHENTICATION=FAIL"
-      log INFO "APT_EXTERNAL_SOURCE_REFERENCE_COUNT=1"
-      die "$EC_MIRROR" "temporary apt update referenced external Ubuntu hosts"
-    fi
-    # Structured repository authentication summary (Ign: alone is not failure).
-    apt_sig_warn=0
-    if grep -qiE "NO_PUBKEY|BADSIG|signatures couldn't be verified|is not signed|does not have a Release file|The repository is not signed"          "${tmp}/apt-update.err" "${tmp}/apt-update.out" 2>/dev/null; then
-      apt_sig_warn=1
-    fi
-    external_count=0
-    if grep -qiE '(archive|security|old-releases|changelogs)\.ubuntu\.com' "${tmp}/apt-update.err"          "${aptroot}/var/lib/apt/lists/"* 2>/dev/null; then
-      external_count=1
-    fi
-    log INFO "APT_PREFLIGHT_EXIT_CODE=${apt_rc:-0}"
-    if [[ "${apt_sig_warn}" -ne 0 || "${external_count}" -ne 0 ]]; then
-      log ERROR "APT_REPOSITORY_AUTHENTICATION=FAIL"
-      log INFO "APT_SIGNATURE_WARNING_COUNT=${apt_sig_warn}"
-      log INFO "APT_EXTERNAL_SOURCE_REFERENCE_COUNT=${external_count}"
-      die "$EC_MIRROR" "APT repository authentication failed during temporary local apt-get update"
-    fi
-    log INFO "APT_REPOSITORY_AUTHENTICATION=PASS"
-    log INFO "APT_EXTERNAL_SOURCE_REFERENCE_COUNT=0"
-    log INFO "APT_SIGNATURE_WARNING_COUNT=0"
-    log INFO "TEMPORARY_LOCAL_APT_UPDATE=PASS"
+    run_temporary_local_apt_authentication_preflight \
+      "$work/stellar-offline-upgrade.gpg" "$repo" "$PIN_SOURCE_SUITES" "$PIN_COMPONENTS"
   fi
+
 
   # Optional HTTP meta-release on /client/ - warn if absent (embedded copy is authoritative).
   # HTTP 404/non-200 is a normal fallback; must not exit/return the outer client.
@@ -9429,42 +9382,7 @@ build_temp_apt_conf_parts_without_stellar_gate() {
   return 0
 }
 
-persist_temp_apt_failure_evidence() {
-  local tmp="$1"
-  local exit_code="$2"
-  local label="${3:-apt-update}"
-  local dest stamp
-  stamp="$(date -u '+%Y%m%dT%H%M%SZ')"
-  dest="$(hostpath ${STATE_ROOT}/evidence/preflight-apt/${stamp})"
-  mkdir -p "$dest" "${dest}/sourceparts"
-  if [[ -f "${tmp}/apt-update.err" ]]; then
-    cp -a "${tmp}/apt-update.err" "${dest}/apt-update.stderr" 2>/dev/null || true
-  fi
-  if [[ -f "${tmp}/update.err" ]]; then
-    cp -a "${tmp}/update.err" "${dest}/apt-update.stderr" 2>/dev/null || true
-  fi
-  if [[ -f "${tmp}/apt-update.out" ]]; then
-    cp -a "${tmp}/apt-update.out" "${dest}/apt-update.stdout" 2>/dev/null || true
-  fi
-  _source_gate_dump_apt_config "${dest}/apt-config-dump.txt"
-  if [[ -f "${tmp}/aptroot/etc/apt/sources.list" ]]; then
-    cp -a "${tmp}/aptroot/etc/apt/sources.list" "${dest}/sources.list" 2>/dev/null || true
-  elif [[ -f "${tmp}/sources.list" ]]; then
-    cp -a "${tmp}/sources.list" "${dest}/sources.list" 2>/dev/null || true
-  fi
-  if [[ -d "${tmp}/aptroot/etc/apt/apt.conf.d" ]]; then
-    cp -a "${tmp}/aptroot/etc/apt/apt.conf.d/." "${dest}/sourceparts/" 2>/dev/null || true
-  fi
-  {
-    printf 'SOURCE_GATE_CLASS=%s\n' "${SOURCE_GATE_CLASS:-unknown}"
-    classify_effective_source_gate_bundle 2>/dev/null || true
-    printf 'SOURCE_GATE_CLASS_AFTER=%s\n' "${SOURCE_GATE_CLASS:-unknown}"
-  } >"${dest}/source-gate-classification.txt" 2>/dev/null || true
-  printf '%s\n' "$exit_code" >"${dest}/exit-code"
-  printf 'label=%s\n' "$label" >"${dest}/meta.txt"
-  log ERROR "TEMP_APT_FAILURE_EVIDENCE=${dest}"
-  printf '%s\n' "$dest"
-}
+# persist_temp_apt_failure_evidence provided by @@APT_PREFLIGHT_SANDBOX_HELPER@@
 
 install_effective_source_gate_bundle() {
   # Compatibility alias - install_effective_source_gate performs ordered bundle install.

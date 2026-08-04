@@ -42,6 +42,8 @@ cp "$BUILD_PY" "${PROJ}/scripts/lib/"
 cp "${ROOT}/scripts/lib/client_build_repository.py" "${PROJ}/scripts/lib/"
 cp "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh.in" "${PROJ}/client/"
 cp "${ROOT}/client/lib/dp-offline-destructive-confirmation.sh" "${PROJ}/client/lib/"
+cp "${ROOT}/client/lib/dp-offline-release-upgrade-reconciliation.sh" "${PROJ}/client/lib/"
+cp "${ROOT}/client/lib/dp-offline-apt-preflight-sandbox.sh" "${PROJ}/client/lib/"
 # Tracked client script fingerprint (must stay unchanged by builds)
 cp "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh" "${PROJ}/client/" 2>/dev/null || \
   printf '#!/bin/sh\necho stub\n' >"${PROJ}/client/dp-offline-upgrade-xenial-to-bionic.sh"
@@ -222,6 +224,8 @@ cp "$BUILD_PY" "${NOKEY_ROOT}/scripts/lib/"
 cp "${ROOT}/scripts/lib/client_build_repository.py" "${NOKEY_ROOT}/scripts/lib/"
 cp "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh.in" "${NOKEY_ROOT}/client/"
 cp "${ROOT}/client/lib/dp-offline-destructive-confirmation.sh" "${NOKEY_ROOT}/client/lib/"
+cp "${ROOT}/client/lib/dp-offline-release-upgrade-reconciliation.sh" "${NOKEY_ROOT}/client/lib/"
+cp "${ROOT}/client/lib/dp-offline-apt-preflight-sandbox.sh" "${NOKEY_ROOT}/client/lib/"
 set +e
 python3 "${NOKEY_ROOT}/scripts/lib/build_client_xenial_to_bionic.py" \
   --project-root "$NOKEY_ROOT" \

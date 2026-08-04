@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Render offline-upgrade .sh.in templates for fixture tests.
 
-Injects client/lib/dp-offline-destructive-confirmation.sh at
-@@DESTRUCTIVE_CONFIRMATION_HELPER@@ before leftover pin stubbing so stubs
-remain valid single-file bash scripts.
+Injects shared client/lib helpers at their template tokens before leftover pin
+stubbing so stubs remain valid single-file bash scripts.
 """
 from __future__ import print_function
 
@@ -13,24 +12,28 @@ import re
 import sys
 from pathlib import Path
 
-HELPER_TOKEN = "@@DESTRUCTIVE_CONFIRMATION_HELPER@@"
-HELPER_NAME = "dp-offline-destructive-confirmation.sh"
+HELPERS = (
+    ("@@DESTRUCTIVE_CONFIRMATION_HELPER@@", "dp-offline-destructive-confirmation.sh"),
+    ("@@RELEASE_UPGRADE_RECONCILIATION_HELPER@@", "dp-offline-release-upgrade-reconciliation.sh"),
+    ("@@APT_PREFLIGHT_SANDBOX_HELPER@@", "dp-offline-apt-preflight-sandbox.sh"),
+)
 
 
-def load_helper(template_path):
-    helper_path = template_path.resolve().parent / "lib" / HELPER_NAME
+def load_helper(template_path, helper_name):
+    helper_path = template_path.resolve().parent / "lib" / helper_name
     if not helper_path.is_file():
-        raise SystemExit("missing confirmation helper: {}".format(helper_path))
+        raise SystemExit("missing helper {}: {}".format(helper_name, helper_path))
     return helper_path.read_text(encoding="utf-8").rstrip("\n") + "\n"
 
 
 def render_template(template_path, pins, leftover="stub"):
     text = template_path.read_text(encoding="utf-8")
-    if HELPER_TOKEN not in text:
-        raise SystemExit(
-            "template missing {}: {}".format(HELPER_TOKEN, template_path)
-        )
-    text = text.replace(HELPER_TOKEN, load_helper(template_path))
+    for token, helper_name in HELPERS:
+        if token not in text:
+            raise SystemExit(
+                "template missing {}: {}".format(token, template_path)
+            )
+        text = text.replace(token, load_helper(template_path, helper_name))
     for key, val in pins.items():
         token = "@@{}@@".format(key)
         text = text.replace(token, val)

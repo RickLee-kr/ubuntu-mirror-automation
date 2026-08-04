@@ -48,12 +48,15 @@ for rel in \
   scripts/lib/client_build_repository.py \
   scripts/lib/atomic_dir_swap.py \
   scripts/lib/mirror_workflow_state.sh \
-  client/lib/dp-offline-release-upgrade-reconciliation.sh
+  client/lib/dp-offline-release-upgrade-reconciliation.sh \
+  client/lib/dp-offline-apt-preflight-sandbox.sh
 do
   expect "runtime contains $rel" test -f "$RUNTIME/$rel"
 done
 expect "reconciliation helper parses" \
   bash -n "$RUNTIME/client/lib/dp-offline-release-upgrade-reconciliation.sh"
+expect "APT preflight sandbox helper parses" \
+  bash -n "$RUNTIME/client/lib/dp-offline-apt-preflight-sandbox.sh"
 printf 'RUNTIME_INSTALL_METHOD=um_runtime_install_tree\n'
 printf 'RUNTIME_WILDCARD_PYTHON_COPY=NO\n'
 
@@ -202,7 +205,7 @@ COMMAND_LIVE="$MM_LOG_DIR/dp-client-upgrade-commands.txt"
 gui_build_client_commands "$MIRROR_HTTP_URL" single "" >"$COMMAND_TMP"
 expect "FULL command structure validates" \
   mm_wf_validate_command_file_content "$COMMAND_TMP" FULL
-FULL_HOP_COUNT=$(grep -cE "^cd /home/aella && .*HOP=" "$COMMAND_TMP" || true)
+FULL_HOP_COUNT=$(grep -cE "^\( cd /home/aella && .*HOP=|^cd /home/aella && .*HOP=" "$COMMAND_TMP" || true)
 expect "FULL command has four hops" test "$FULL_HOP_COUNT" = 4
 expect "FULL commands pin EXPECTED_FPR" grep -q "EXPECTED_FPR='${FPR}'" "$COMMAND_TMP"
 expect "FULL hop blocks use controlled continuations" \

@@ -88,8 +88,16 @@ for entry in "${HOPS[@]}"; do
   bash -n "$built" || fail "${hop}: bash -n failed"
   grep -q '@@RELEASE_UPGRADE_RECONCILIATION_HELPER@@' "$built" \
     && fail "${hop}: inject token still present" || true
+  grep -q '@@APT_PREFLIGHT_SANDBOX_HELPER@@' "$built" \
+    && fail "${hop}: APT sandbox inject token still present" || true
   grep -q 'collect_package_transition_evidence' "$built" \
     || fail "${hop}: shared reconciliation helper not embedded"
+  grep -q 'run_temporary_local_apt_authentication_preflight' "$built" \
+    || fail "${hop}: shared APT preflight sandbox helper not embedded"
+  grep -q 'apt_preflight_create_sandbox' "$built" \
+    || fail "${hop}: apt_preflight_create_sandbox missing"
+  grep -q 'stellar-apt-preflight' "$built" \
+    || fail "${hop}: dedicated APT temp root pattern missing"
   grep -q 'classify_package_transition_evidence' "$built" \
     || fail "${hop}: classify_package_transition_evidence missing"
   grep -q 'reconcile_legacy_release_upgrade_state' "$built" \

@@ -97,6 +97,7 @@ UM_RUNTIME_CLIENT_FILES=(
 UM_RUNTIME_CLIENT_LIB_FILES=(
   dp-offline-destructive-confirmation.sh
   dp-offline-release-upgrade-reconciliation.sh
+  dp-offline-apt-preflight-sandbox.sh
 )
 
 # Relative paths under the installed runtime root that must exist after install.
@@ -123,6 +124,7 @@ UM_RUNTIME_REQUIRED_RELATIVE_PATHS=(
   scripts/lib/build_client_jammy_to_noble.py
   client/lib/dp-offline-destructive-confirmation.sh
   client/lib/dp-offline-release-upgrade-reconciliation.sh
+  client/lib/dp-offline-apt-preflight-sandbox.sh
   client/dp-client-command-runner.sh
   vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh
   vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1

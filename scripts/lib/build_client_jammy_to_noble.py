@@ -621,6 +621,19 @@ def render_script(template_path, replacements):
     with open(recon_path, "r", encoding="utf-8") as fh:
         recon_body = fh.read().rstrip("\n") + "\n"
     body = body.replace(recon_token, recon_body)
+    apt_token = "@@APT_PREFLIGHT_SANDBOX_HELPER@@"
+    apt_path = os.path.join(
+        os.path.dirname(os.path.abspath(template_path)),
+        "lib",
+        "dp-offline-apt-preflight-sandbox.sh",
+    )
+    if apt_token not in body:
+        raise BuildError("template missing token {}".format(apt_token))
+    if not os.path.isfile(apt_path):
+        raise BuildError("missing APT preflight sandbox helper: {}".format(apt_path))
+    with open(apt_path, "r", encoding="utf-8") as fh:
+        apt_body = fh.read().rstrip("\n") + "\n"
+    body = body.replace(apt_token, apt_body)
     for key, value in replacements.items():
         token = "@@{}@@".format(key)
         if token not in body:

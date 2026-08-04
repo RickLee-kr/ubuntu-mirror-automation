@@ -2112,7 +2112,8 @@ grep -q 'HTTP_META_RELEASE=NOT_PUBLISHED' "$SCRIPT_IN" \
   && pass "optional meta-release 404 INFO marker" || fail "meta-release INFO marker missing"
 grep -q 'META_RELEASE_SOURCE=EMBEDDED_SIGNED_COPY' "$SCRIPT_IN" \
   && pass "embedded signed meta-release source marker" || fail "embedded meta source missing"
-grep -q 'APT_REPOSITORY_AUTHENTICATION=PASS' "$SCRIPT_IN" \
+grep -q 'APT_REPOSITORY_AUTHENTICATION=PASS' "/home/aella/ubuntu-mirror-automation/client/lib/dp-offline-apt-preflight-sandbox.sh" \
+  && grep -q 'run_temporary_local_apt_authentication_preflight' "$SCRIPT_IN" \
   && pass "APT repository authentication log marker" || fail "APT auth log marker missing"
 grep -q 'LOGIN_SHELL_AUTOMATION=PASS' "$SCRIPT_IN" \
   && pass "login shell automation marker" || fail "login shell automation marker missing"

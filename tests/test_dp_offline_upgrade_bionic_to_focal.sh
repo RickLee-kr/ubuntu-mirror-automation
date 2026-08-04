@@ -5548,7 +5548,9 @@ grep -q 'repair_dangling_previous_source_gate_hook()' "$SCRIPT_IN" \
   && pass "repair_dangling_previous_source_gate_hook present" || fail "repair helper missing"
 grep -q 'ensure_source_gate_safe_for_preflight()' "$SCRIPT_IN" \
   && pass "ensure_source_gate_safe_for_preflight present" || fail "ensure helper missing"
-grep -q 'persist_temp_apt_failure_evidence()' "$SCRIPT_IN" \
+APT_HELPER="/home/aella/ubuntu-mirror-automation/client/lib/dp-offline-apt-preflight-sandbox.sh"
+grep -q 'persist_temp_apt_failure_evidence()' "$APT_HELPER" \
+  && grep -q '@@APT_PREFLIGHT_SANDBOX_HELPER@@' "$SCRIPT_IN" \
   && pass "persist_temp_apt_failure_evidence present" || fail "persist apt evidence missing"
 grep -q 'build_temp_apt_conf_parts_without_stellar_gate()' "$SCRIPT_IN" \
   && pass "temp apt conf isolation helper present" || fail "temp apt isolation missing"
@@ -5886,7 +5888,9 @@ grep -q 'retire-incomplete.txt\|SOURCE_GATE_RETIRE_COMPLETE' "$SCRIPT_IN" \
   || fail "17.AL retire interruption markers missing"
 
 # 17.AM temporary apt update isolation
-grep -q 'Dir::Etc::Parts' "$SCRIPT_IN" \
+APT_HELPER="/home/aella/ubuntu-mirror-automation/client/lib/dp-offline-apt-preflight-sandbox.sh"
+grep -q 'Dir::Etc::Parts' "$APT_HELPER" \
+  && grep -q 'Dir::Etc::sourceparts' "$APT_HELPER" \
   && grep -q 'build_temp_apt_conf_parts_without_stellar_gate' "$SCRIPT_IN" \
   && pass "17.AM temporary apt isolation present" \
   || fail "17.AM temporary apt isolation missing"
@@ -5897,10 +5901,14 @@ grep -q 'exclude only the Stellar source-gate\|excluding only the Stellar source
   && pass "17.AN non-Stellar hook preservation helper" \
   || fail "17.AN non-Stellar preservation missing"
 
-# 17.AO apt warning handling - exit code based, not warning-only
-grep -q 'unsandboxed warnings alone are not failure' "$SCRIPT_IN" \
-  && pass "17.AO apt warning vs exit-code policy" \
-  || fail "17.AO apt warning policy missing"
+# 17.AO apt authentication fail-closed + _apt sandbox gates (shared helper)
+APT_HELPER="/home/aella/ubuntu-mirror-automation/client/lib/dp-offline-apt-preflight-sandbox.sh"
+grep -q 'run_temporary_local_apt_authentication_preflight' "$SCRIPT_IN" \
+  && grep -q 'APT_SANDBOX_TRAVERSAL' "$APT_HELPER" \
+  && grep -q 'APT_REPOSITORY_AUTHENTICATION=PASS' "$APT_HELPER" \
+  && grep -q 'APT_SIGNATURE_WARNING_COUNT' "$APT_HELPER" \
+  && pass "17.AO apt sandbox/auth fail-closed policy" \
+  || fail "17.AO apt sandbox/auth policy missing"
 
 # 17.AP x2b regression: source-gate install/validation still present
 X2B_IN="${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh.in"
