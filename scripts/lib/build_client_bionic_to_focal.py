@@ -879,6 +879,22 @@ def main(argv=None):
     with open(sha_path, "w", encoding="utf-8") as fh:
         fh.write("{}  {}\n".format(script_sha, script_name))
 
+    # Bind published hop manifest to the exact script filename + SHA256.
+    # The embedded MANIFEST_B64 (already rendered into the script) remains the
+    # pre-binding snapshot used for in-script pin checks; the HTTP-published
+    # hop/client-manifest.json is authoritative for download-time verification.
+    manifest["script"] = script_name
+    manifest["script_sha256"] = script_sha
+    with open(manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2, sort_keys=False)
+        fh.write("\n")
+    if not args.skip_sign and sign_priv is not None:
+        gpg_detach_sign(sign_priv, manifest_path, sig_path)
+        gpgv_verify(manifest_key_bin, open(sig_path, "rb").read(), open(manifest_path, "rb").read())
+        print("CLIENT_MANIFEST_SCRIPT_BINDING=PASS script={} sha256={}".format(script_name, script_sha))
+    elif args.skip_sign:
+        print("CLIENT_MANIFEST_SCRIPT_BINDING=UNSIGNED_TEST script={}".format(script_name))
+
     if not args.skip_sign:
         # Fail-closed production gates on the final artifact.
         verify_info = verify_client_artifact_signature(
