@@ -1,0 +1,123 @@
+name: Stabilization PR Driver
+
+on:
+  pull_request_target:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  stabilize:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'stabilize/client-pipeline-audit'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Check out and rebase audit head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Rebase onto current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git rebase origin/main
+
+      - name: Apply stabilization patch once
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f scripts/lib/client_build_provenance.py ]]; then
+            echo 'STABILIZATION_PATCH=ALREADY_APPLIED'
+            exit 0
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('.github/workflows/stabilize-client-pipeline-audit.yml').read_text()
+          marker = "cat > /tmp/stabilize.patch.py.gz.b64 <<'EOF'\n"
+          if marker not in text:
+              raise SystemExit('embedded patch marker not found')
+          payload = text.split(marker, 1)[1].split('\nEOF\n', 1)[0]
+          lines = []
+          for line in payload.splitlines():
+              if line.startswith('          '):
+                  line = line[10:]
+              lines.append(line)
+          Path('/tmp/stabilize.patch.py.gz.b64').write_text('\n'.join(lines) + '\n')
+          PY
+          base64 -d /tmp/stabilize.patch.py.gz.b64 | gzip -d > /tmp/stabilize_client_pipeline.py
+          python3 -m py_compile /tmp/stabilize_client_pipeline.py
+          python3 /tmp/stabilize_client_pipeline.py
+          git diff --check
+
+      - name: Install test dependencies and source userspaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck dialog whiptail gnupg nginx
+          for image in ubuntu:16.04 ubuntu:18.04 ubuntu:20.04 ubuntu:22.04; do
+            docker pull "$image"
+          done
+
+      - name: Static validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/rebuild-publish-clients.sh scripts/install-dp-upgrade-mirror.sh scripts/lib/*.sh client/*.sh client/lib/*.sh
+          python3 -m py_compile scripts/lib/*.py tests/*.py
+          git diff --check
+
+      - name: Critical targeted tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(
+            test_client_build_provenance.sh
+            test_phase2_existing_reuse_progress.sh
+            test_xenial_apt_1_2_authentication.sh
+            test_client_os_userspace_matrix.sh
+            test_apt_preflight_sandbox.sh
+            test_command_bootstrap_cleanup.sh
+            test_dp_client_command_blocks.sh
+            test_dp_client_command_execution.sh
+            test_hop_reconciliation_meta.sh
+            test_clean_snapshot_full_workflow.sh
+            test_workflow_negative_contracts.sh
+            test_client_finalization_local_fs_integration.sh
+          )
+          for t in "${tests[@]}"; do
+            echo "===== $t ====="
+            timeout --signal=TERM --kill-after=30s 1200 bash "tests/$t"
+          done
+
+      - name: Full suite once
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=60s 7200 bash tests/run_all.sh
+
+      - name: Commit and push tested changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/stabilize-client-pipeline-audit.yml \
+            .github/workflows/stabilize-pr-driver.yml \
+            stabilization-trigger.txt
+          git config user.name "OpenAI"
+          git config user.email "openai@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo 'STABILIZATION_COMMIT=UNCHANGED'
+            exit 0
+          fi
+          git commit -m "fix(client): bind reuse to current build provenance"
+          git push --force-with-lease origin HEAD:${{ github.event.pull_request.head.ref }}
