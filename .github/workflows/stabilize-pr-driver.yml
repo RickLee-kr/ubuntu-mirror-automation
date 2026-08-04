@@ -61,6 +61,31 @@ jobs:
           fi
           test "$(sha256sum /tmp/stabilize.patch.py.gz.b64 | awk '{print $1}')" = "784ccea5deee14a5c456fee0941b8c51124aa7d8047e75ec159cb9fc7cb099b1"
           base64 -d /tmp/stabilize.patch.py.gz.b64 | gzip -d > /tmp/stabilize_client_pipeline.py
+          python3 - <<'PY'
+          from pathlib import Path
+          import io
+          import re
+          import tokenize
+
+          path = Path('/tmp/stabilize_client_pipeline.py')
+          source = path.read_text()
+          tokens = []
+          for token in tokenize.generate_tokens(io.StringIO(source).readline):
+              if token.type == tokenize.STRING:
+                  text = token.string
+                  positions = [p for p in (text.find("'''"), text.find('"""')) if p >= 0]
+                  quote_pos = min(positions) if positions else -1
+                  prefix = text[:quote_pos].lower() if quote_pos >= 0 else ''
+                  if quote_pos >= 0 and 'r' in prefix:
+                      line_runs = [len(match.group(1)) for match in re.finditer(r'(\\+)\r?\n', text)]
+                      if line_runs and all(run % 2 == 0 for run in line_runs):
+                          raw_pos = next((i for i, char in enumerate(text[:quote_pos]) if char.lower() == 'r'), None)
+                          if raw_pos is not None:
+                              text = text[:raw_pos] + text[raw_pos + 1:]
+                              token = tokenize.TokenInfo(token.type, text, token.start, token.end, token.line)
+              tokens.append(token)
+          path.write_text(tokenize.untokenize(tokens))
+          PY
           python3 -m py_compile /tmp/stabilize_client_pipeline.py
           python3 /tmp/stabilize_client_pipeline.py
           git diff --check
