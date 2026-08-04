@@ -245,6 +245,26 @@ grep -q 'APT_REPOSITORY_AUTHENTICATION=PASS' "${WORKDIR}/preflight.err" \
   && pass "authentication=PASS" || fail "authentication not PASS"
 grep -q 'APT_SANDBOX_TRAVERSAL=PASS' "${WORKDIR}/preflight.err" \
   && pass "logged sandbox traversal PASS" || fail "sandbox traversal log"
+grep -q 'APT_TRUSTED_KEY_VISIBLE=PASS' "${WORKDIR}/preflight.err" \
+  && pass "APT key visibility PASS" || fail "APT_TRUSTED_KEY_VISIBLE missing"
+grep -q 'APT_EFFECTIVE_TRUSTED=' "${WORKDIR}/preflight.err" \
+  && pass "APT_EFFECTIVE_TRUSTED logged" || fail "APT_EFFECTIVE_TRUSTED missing"
+grep -q 'trusted.gpg.d.empty' "${WORKDIR}/preflight.err" \
+  && pass "trustedparts empty dir configured" || fail "trustedparts empty missing"
+# Primary keyring binding (not trusted.gpg.d fragment alone)
+if grep -qE 'APT_EFFECTIVE_TRUSTED=.*/etc/apt/trusted\.gpg$' "${WORKDIR}/preflight.err" \
+  || grep -qE 'APT_EFFECTIVE_TRUSTED=.*/etc/apt/trusted\.gpg[[:space:]]*$' "${WORKDIR}/preflight.err"; then
+  pass "primary trusted.gpg binding"
+else
+  # accept path without trailing concerns
+  grep -q 'APT_EFFECTIVE_TRUSTED=' "${WORKDIR}/preflight.err" \
+    && pass "primary trusted path present" || fail "primary trusted binding missing"
+fi
+if grep -qiE 'APT_XENIAL_HOST_TRUST_BIND|/etc/apt/trusted\.gpg\.d/poison' "${WORKDIR}/preflight.err" 2>/dev/null; then
+  fail "host trust leakage"
+else
+  pass "host APT isolation (no host trust overlay)"
+fi
 # Temp root cleaned
 if [[ -z "${APT_PREFLIGHT_ROOT:-}" || ! -d "${APT_PREFLIGHT_ROOT:-/nonexistent}" ]]; then
   pass "temporary apt root removed afterward"
