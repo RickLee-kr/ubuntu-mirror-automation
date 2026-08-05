@@ -870,6 +870,7 @@ mm_artifacts_ready_for_http() {
   os_ready="$(mm_status_get OS_MIRROR_READY)"
   [[ "$os_ready" == "PASS" ]] || return 1
   mm_client_files_ready "${MM_CLIENT_ROOT}" || return 1
+  mm_client_set_current_source "${MM_CLIENT_ROOT}" >/dev/null 2>&1 || return 1
   return 0
 }
 
@@ -987,7 +988,11 @@ mm_file_fingerprint() {
   local path="$1"
   local st
   [[ -e "$path" ]] || { printf ''; return 1; }
-  st="$(stat -c '%d:%i:%s:%Y' "$path" 2>/dev/null || true)"
+  # Bind device:inode:size:mtime_ns for verified-metadata reuse.
+  st="$(python3 -c 'import os,sys; s=os.stat(sys.argv[1]); print("%d:%d:%d:%d" % (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns))' "$path" 2>/dev/null || true)"
+  if [[ -z "$st" ]]; then
+    st="$(stat -c '%d:%i:%s:%y' "$path" 2>/dev/null || true)"
+  fi
   [[ -n "$st" ]] || { printf ''; return 1; }
   printf '%s|%s\n' "$path" "$st"
 }
@@ -1083,6 +1088,7 @@ mm_download_completed() {
     [[ "$os_ready" == "PASS" ]] || return 1
     [[ "$(mm_status_get R2_OS_CORE_CHECKSUM)" == "PASS" ]] || return 1
     mm_client_files_ready "${MM_CLIENT_ROOT}" || return 1
+    mm_client_set_current_source "${MM_CLIENT_ROOT}" >/dev/null 2>&1 || return 1
   fi
   [[ "$(mm_status_get DOWNLOAD_PREPARE_RESULT)" == "PASS" \
     || "$(mm_status_get LAST_EXECUTION_RESULT)" == "PASS" \
@@ -1231,6 +1237,27 @@ mm_record_config_validated() {
   fi
 }
 
+mm_record_artifacts_prepared() {
+  local os_gen="" p2_gen="" ready sidecar release
+  engine_resolve_paths 2>/dev/null || true
+  mm_phase2_paths
+  if ! mm_is_phase2_only; then
+    ready="${MM_SELECTIVE_ROOT}/state/READY"
+    [[ -f "$ready" ]] || return 1
+    os_gen="oscore:$(sha256sum "$ready" | awk '{print $1}')"
+  else
+    os_gen="phase2-only"
+  fi
+  sidecar="${MM_WF_PHASE2_SIDECAR}"
+  release="${MM_WF_PHASE2_RELEASE}"
+  [[ -f "$sidecar" && -f "$release" ]] || return 1
+  p2_gen="phase2:$(cat "$sidecar" "$release" | sha256sum | awk '{print $1}')"
+  if declare -F mm_wf_mark_prepared >/dev/null 2>&1; then
+    mm_wf_mark_prepared "$os_gen" "$p2_gen"
+  fi
+  mm_info "HEAVY_ARTIFACTS_PREPARED=PASS OS_CORE_GENERATION_ID=${os_gen} PHASE2_GENERATION_ID=${p2_gen}"
+}
+
 mm_record_download_validated() {
   local fp
   engine_resolve_paths 2>/dev/null || true
@@ -1246,9 +1273,8 @@ mm_record_download_validated() {
   mm_status_set READINESS_RESULT ""
   mm_status_set READINESS_ARTIFACT_FINGERPRINT ""
   mm_status_set UPGRADE_READINESS FAIL
-  if declare -F mm_wf_mark_prepared >/dev/null 2>&1; then
-    mm_wf_mark_prepared
-  fi
+  # Workflow PREPARED is recorded before client finalization. Do not
+  # demote a freshly published/reused current client set back to PREPARED here.
 }
 
 mm_record_http_validated() {
@@ -1567,6 +1593,7 @@ MM_CLIENT_REQUIRED_FILES=(
   runner-manifest
   runner-manifest.asc
   public-keyring.gpg
+  client-set.env
 )
 
 MM_CLIENT_PHASE2_REQUIRED_FILES=(
@@ -1606,6 +1633,85 @@ mm_client_files_ready() {
   [[ -f "${root}/runner-manifest" && -f "${root}/runner-manifest.asc" ]] || return 1
   cmp -s "${root}/runner-manifest" "${root}/dp-client-command-runner.sh.sha256" || return 1
   return 0
+}
+
+# Verify that an existing full client set was built by the currently installed
+# builders/templates/helpers, not merely that its files and old sidecars exist.
+mm_client_set_current_source() {
+  local root="${1:-${MM_CLIENT_ROOT}}"
+  local module="${MM_PROJECT_ROOT}/scripts/lib/client_build_provenance.py"
+  local mirror="${MIRROR_HTTP_URL:-}" expected_fpr="" mode="${PREPARATION_MODE:-FULL}"
+  local out rc=0
+  [[ -f "$module" ]] || return 1
+  [[ -f "${root}/client-set.env" ]] || return 1
+  if [[ -z "$mirror" && -n "${MIRROR_SERVER_IP:-}" ]]; then
+    mirror="http://${MIRROR_SERVER_IP}"
+  fi
+  if [[ -f "${MM_CONFIG_DIR}/client-signing/fingerprint" ]]; then
+    expected_fpr="$(tr -d '[:space:]' <"${MM_CONFIG_DIR}/client-signing/fingerprint" | tr '[:lower:]' '[:upper:]')"
+  elif [[ -n "${LOCAL_KEY_FINGERPRINT:-}" ]]; then
+    expected_fpr="${LOCAL_KEY_FINGERPRINT}"
+  fi
+  set +e
+  out="$(python3 "$module" verify-client-set \
+    --project-root "$MM_PROJECT_ROOT" \
+    --client-root "$root" \
+    --expected-mirror "$mirror" \
+    --expected-fingerprint "$expected_fpr" \
+    --expected-mode "$mode" 2>&1)"
+  rc=$?
+  set -e
+  if [[ "$rc" -ne 0 ]]; then
+    printf '%s\n' "$out" >&2
+    return "$rc"
+  fi
+  printf '%s\n' "$out"
+  return 0
+}
+
+# Authoritative long-operation wrapper with stable log contract.
+# OPERATION_START name=<name> target=<sanitized>
+# OPERATION_HEARTBEAT name=<name> elapsed_seconds=<n>
+# OPERATION_END name=<name> rc=<rc> elapsed_seconds=<n>
+mm_run_long_operation() {
+  local name="$1"
+  local target="$2"
+  shift 2
+  if [[ "${1:-}" != "--" ]]; then
+    mm_die "mm_run_long_operation: expected -- before command"
+  fi
+  shift
+  local start_ts hb_secs hb_pid="" cmd_pid="" rc=0 elapsed sanitized
+  sanitized="$(basename "$target" 2>/dev/null || printf '%s' "$target")"
+  sanitized="${sanitized//[^A-Za-z0-9._+-]/_}"
+  start_ts="$(date +%s)"
+  hb_secs="$(mm_long_step_heartbeat_seconds)"
+  mm_info "OPERATION_START name=${name} target=${sanitized}"
+  "$@" &
+  cmd_pid=$!
+  _mm_op_cleanup() {
+    kill "$cmd_pid" 2>/dev/null || true
+    kill "$hb_pid" 2>/dev/null || true
+  }
+  trap '_mm_op_cleanup' INT TERM
+  (
+    while kill -0 "$cmd_pid" 2>/dev/null; do
+      sleep "$hb_secs" || break
+      kill -0 "$cmd_pid" 2>/dev/null || break
+      elapsed=$(( $(date +%s) - start_ts ))
+      mm_info "OPERATION_HEARTBEAT name=${name} elapsed_seconds=${elapsed}"
+    done
+  ) &
+  hb_pid=$!
+  if wait "$cmd_pid"; then rc=0; else rc=$?; fi
+  if [[ -n "$hb_pid" ]]; then
+    kill "$hb_pid" 2>/dev/null || true
+    wait "$hb_pid" 2>/dev/null || true
+  fi
+  trap - INT TERM
+  elapsed=$(( $(date +%s) - start_ts ))
+  mm_info "OPERATION_END name=${name} rc=${rc} elapsed_seconds=${elapsed}"
+  return "$rc"
 }
 
 mm_check_client_files_ready() {
@@ -1680,6 +1786,9 @@ mm_check_client_build_prerequisites_ready() {
     "${libdir}/build_client_bionic_to_focal.py" \
     "${libdir}/build_client_focal_to_jammy.py" \
     "${libdir}/build_client_jammy_to_noble.py" \
+    "${libdir}/client_build_repository.py" \
+    "${libdir}/client_build_provenance.py" \
+    "${libdir}/atomic_dir_swap.py" \
     "${libdir}/mirror_host_ip.sh" \
     "${libdir}/local_client_signing.sh" \
     "${libdir}/client_mirror_gates.sh" \

@@ -240,9 +240,60 @@ engine_assess_client_set_for_finalize() {
     return 0
   fi
 
-  CLIENT_SET_STATE=COMPLETE_VERIFIED
-  CLIENT_SET_ACTION=REUSE_VERIFIED
+  local provenance_out provenance_rc=0 state_line action_line reason_line expected_fpr=""
+  if [[ -f "${MM_CONFIG_DIR}/client-signing/fingerprint" ]]; then
+    expected_fpr="$(tr -d '[:space:]' <"${MM_CONFIG_DIR}/client-signing/fingerprint" | tr '[:lower:]' '[:upper:]')"
+  elif [[ -n "${LOCAL_KEY_FINGERPRINT:-}" ]]; then
+    expected_fpr="${LOCAL_KEY_FINGERPRINT}"
+  fi
+  set +e
+  provenance_out="$(python3 "${MM_PROJECT_ROOT}/scripts/lib/client_build_provenance.py" classify-client-set \
+    --project-root "$MM_PROJECT_ROOT" \
+    --client-root "$root" \
+    --expected-mirror "$mirror_url" \
+    --expected-fingerprint "$expected_fpr" \
+    --expected-mode "${PREPARATION_MODE:-FULL}" 2>&1)"
+  provenance_rc=$?
+  set -e
+  state_line="$(printf '%s\n' "$provenance_out" | awk -F= '$1=="CLIENT_SET_STATE"{print $2; exit}')"
+  action_line="$(printf '%s\n' "$provenance_out" | awk -F= '$1=="CLIENT_SET_ACTION"{print $2; exit}')"
+  reason_line="$(printf '%s\n' "$provenance_out" | awk -F= '$1=="CLIENT_SET_REASON"{print substr($0,index($0,"=")+1); exit}')"
+  if [[ -z "$state_line" ]]; then
+    if [[ "$provenance_rc" -eq 0 ]]; then
+      state_line=CURRENT_VERIFIED
+      action_line=REUSE_CURRENT
+    else
+      state_line=STALE_BUILD_INPUT
+      action_line=REBUILD_SIGN_PUBLISH
+    fi
+  fi
+  CLIENT_SET_STATE="$state_line"
+  CLIENT_SET_ACTION="$action_line"
+  # Compatibility aliases used by older callers/tests.
+  if [[ "$CLIENT_SET_ACTION" == "REUSE_VERIFIED" ]]; then
+    CLIENT_SET_ACTION=REUSE_CURRENT
+  fi
+  printf '%s\n' "$provenance_out" | while IFS= read -r line; do
+    [[ -n "$line" ]] && mm_info "$line"
+  done || true
+  [[ -n "$reason_line" ]] && mm_info "CLIENT_SET_REASON=${reason_line}"
   return 0
+}
+engine_bind_reused_client_set_workflow() {
+  local meta="${MM_CLIENT_ROOT}/client-set.env"
+  local gen fpr input_sha source_rev runtime_sha command_ver schema_ver
+  [[ -f "$meta" ]] || return 1
+  gen="$(awk -F= '$1=="CLIENT_SET_GENERATION_ID"{print substr($0,index($0,"=")+1);exit}' "$meta")"
+  fpr="$(awk -F= '$1=="CLIENT_SIGNING_FINGERPRINT"{print substr($0,index($0,"=")+1);exit}' "$meta")"
+  input_sha="$(awk -F= '$1=="CLIENT_BUILD_INPUT_SHA256"{print substr($0,index($0,"=")+1);exit}' "$meta")"
+  source_rev="$(awk -F= '$1=="CLIENT_SOURCE_REVISION"{print substr($0,index($0,"=")+1);exit}' "$meta")"
+  [[ -z "$source_rev" ]] && source_rev="$(awk -F= '$1=="CLIENT_BUILD_SOURCE_REVISION"{print substr($0,index($0,"=")+1);exit}' "$meta")"
+  runtime_sha="$(awk -F= '$1=="CLIENT_RUNTIME_MANIFEST_SHA256"{print substr($0,index($0,"=")+1);exit}' "$meta")"
+  command_ver="$(awk -F= '$1=="CLIENT_COMMAND_BLOCK_VERSION"{print substr($0,index($0,"=")+1);exit}' "$meta")"
+  schema_ver="$(awk -F= '$1=="CLIENT_PROVENANCE_SCHEMA_VERSION"{print substr($0,index($0,"=")+1);exit}' "$meta")"
+  [[ -n "$gen" && -n "$fpr" && -n "$input_sha" ]] || return 1
+  mm_wf_mark_client_set_published "$gen" "$fpr" "$input_sha" "$source_rev" "$runtime_sha" "$command_ver" "$schema_ver"
+  mm_info "CLIENT_SET_WORKFLOW_REBOUND=PASS CLIENT_SET_GENERATION_ID=${gen}"
 }
 
 # Post-preparation finalization: build/sign/publish clients (FULL) or helpers (PHASE2_ONLY).
@@ -316,10 +367,10 @@ engine_finalize_local_client_set() {
   mm_info "CLIENT_SET_STATE=${CLIENT_SET_STATE}"
   mm_info "CLIENT_SET_ACTION=${CLIENT_SET_ACTION}"
 
-  if [[ "${CLIENT_SET_ACTION}" == "REUSE_VERIFIED" ]]; then
-    mm_info "CLIENT_SET_ACTION=REUSE_VERIFIED"
+  if [[ "${CLIENT_SET_ACTION}" == "REUSE_CURRENT" || "${CLIENT_SET_ACTION}" == "REUSE_VERIFIED" ]]; then
+    mm_info "CLIENT_SET_ACTION=REUSE_CURRENT"
     mm_set_phase "Verifying Local Client Files"
-    if mm_check_client_files_ready; then
+    if mm_check_client_files_ready && engine_bind_reused_client_set_workflow; then
       mm_info "CLIENT_SET_ON_DISK_READY=PASS"
       mm_info "CLIENT_HTTP_READY=DEFERRED"
       mm_ok "CLIENT_SET_FINALIZATION=PASS"
@@ -817,16 +868,38 @@ engine_assess_phase2_final() {
     mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=release_env_secret"
     return 0
   fi
-  # dp2_* helpers call exit on failure — isolate in subshells so INVALID can rebuild.
-  if ! ( dp2_verify_sha256_pair "$bundle" "$sidecar" >/dev/null 2>&1 ); then
-    PHASE2_EXISTING_BUNDLE=INVALID
-    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=sha256"
-    return 0
-  fi
-  if ! ( dp2_assert_safe_tar_list "$bundle" >/dev/null 2>&1 ); then
-    PHASE2_EXISTING_BUNDLE=INVALID
-    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=tar_entries"
-    return 0
+  local reuse_fp expected_hash cached_fp cached_hash tar_helper schema="1"
+  expected_hash="$(dp2_read_hash_field "$sidecar" | tr '[:upper:]' '[:lower:]')"
+  reuse_fp="schema=${schema}|$(mm_file_fingerprint "$bundle" 2>/dev/null || true)|$(mm_file_fingerprint "$sidecar" 2>/dev/null || true)|$(mm_file_fingerprint "$envf" 2>/dev/null || true)|sha=${expected_hash}"
+  cached_fp="$(mm_status_get PHASE2_REUSE_VERIFIED_FINGERPRINT)"
+  cached_hash="$(mm_status_get PHASE2_REUSE_VERIFIED_SHA256)"
+  if [[ -n "$reuse_fp" && "$reuse_fp" == "$cached_fp" && "$expected_hash" == "$cached_hash"     && "$(mm_status_get PHASE2_BUNDLE_CHECKSUM)" == "PASS" ]]; then
+    mm_info "PHASE2_BUNDLE_VERIFY_MODE=VERIFIED_METADATA_REUSE"
+    mm_info "PHASE2_BUNDLE_FULL_HASH_REQUIRED=NO"
+    mm_info "PHASE2_BUNDLE_VERIFICATION_RECORD_MATCH=YES"
+    mm_info "PHASE2_EXISTING_VERIFY_CACHE=HIT"
+  else
+    mm_info "PHASE2_BUNDLE_VERIFY_MODE=FULL_HASH"
+    mm_info "PHASE2_BUNDLE_FULL_HASH_REQUIRED=YES"
+    mm_info "PHASE2_BUNDLE_VERIFICATION_RECORD_MATCH=NO"
+    mm_info "PHASE2_EXISTING_VERIFY_CACHE=MISS"
+    if ! mm_verify_sha256_pair_logged       "$bundle" "$sidecar" "PHASE2_EXISTING_SHA256_VERIFY"       "Still verifying the existing Phase 2 bundle SHA256..."
+    then
+      PHASE2_EXISTING_BUNDLE=INVALID
+      mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=sha256"
+      return 0
+    fi
+    tar_helper="${MM_PROJECT_ROOT}/scripts/lib/dp-phase2-common.sh"
+    if ! mm_run_with_heartbeat       "PHASE2_EXISTING_TAR_VERIFY"       "bundle=$(basename "$bundle")"       "Still validating the existing Phase 2 bundle file list..."       -- bash -c 'source "$1"; dp2_set_version "$2"; dp2_assert_safe_tar_list "$3" >/dev/null'       _ "$tar_helper" "$ver" "$bundle"
+    then
+      PHASE2_EXISTING_BUNDLE=INVALID
+      mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=tar_entries"
+      return 0
+    fi
+    mm_status_set PHASE2_REUSE_VERIFIED_FINGERPRINT "$reuse_fp"
+    mm_status_set PHASE2_REUSE_VERIFIED_SHA256 "$expected_hash"
+    mm_status_set PHASE2_BUNDLE_CHECKSUM PASS
+    mm_info "PHASE2_EXISTING_VERIFY_CACHE=STORED"
   fi
   PHASE2_EXISTING_BUNDLE=VALID
   mm_info "PHASE2_EXISTING_BUNDLE=VALID"
@@ -1467,6 +1540,9 @@ engine_download_and_prepare() {
     OS_CORE_PAYLOAD_BYTES=0
   elif [[ "${OS_CORE_ACTION:-DOWNLOAD_VERIFY_MATERIALIZE}" == "REUSE_VERIFIED" ]]; then
     mm_info "OS_CORE_ACTION=REUSE_VERIFIED"
+    mm_info "VERIFY_OR_ACQUIRE_OS_CORE=REUSE_VERIFIED"
+    mm_info "R2_DOWNLOAD_REQUIRED=NO"
+    mm_info "HEAVY_ARTIFACT_ACTION=REUSE_VERIFIED"
     mm_info "R2_DOWNLOAD_REQUIRED=NO"
     mm_info "OS_MATERIALIZE_REQUIRED=NO"
     mm_status_set R2_OS_CORE_DOWNLOADED REUSED
@@ -1525,6 +1601,9 @@ engine_download_and_prepare() {
     engine_cleanup_temps
     mm_state_set HTTP_DISTRIBUTION_READY NO
     mm_status_set HTTP_DISTRIBUTION DISABLED
+    mm_info "VERIFY_OR_REBUILD_CURRENT_CLIENT_SET=START"
+    mm_info "PUBLISH_CURRENT_CLIENT_SET=PENDING"
+    mm_record_artifacts_prepared || mm_die "HEAVY_ARTIFACTS_PREPARED=FAIL"
     if ! engine_finalize_local_client_set; then
       mm_die "DOWNLOAD_AND_PREPARE=FAIL_CLIENT_SET_FINALIZATION"
     fi
@@ -1557,6 +1636,9 @@ engine_download_and_prepare() {
 
   mm_state_set HTTP_DISTRIBUTION_READY NO
   mm_status_set HTTP_DISTRIBUTION DISABLED
+  mm_info "VERIFY_OR_REBUILD_CURRENT_CLIENT_SET=START"
+  mm_info "PUBLISH_CURRENT_CLIENT_SET=PENDING"
+  mm_record_artifacts_prepared || mm_die "HEAVY_ARTIFACTS_PREPARED=FAIL"
   if ! engine_finalize_local_client_set; then
     mm_die "DOWNLOAD_AND_PREPARE=FAIL_CLIENT_SET_FINALIZATION"
   fi
@@ -1621,22 +1703,28 @@ engine_enable_http_distribution() {
   local clients_on_disk=0
   if mm_is_phase2_only; then
     mm_client_files_ready_phase2 "${MM_CLIENT_ROOT}" && clients_on_disk=1
-  else
-    mm_client_files_ready "${MM_CLIENT_ROOT}" && clients_on_disk=1
-  fi
-  if [[ "$clients_on_disk" -ne 1 ]]; then
-    if mm_is_phase2_only; then
+    if [[ "$clients_on_disk" -ne 1 ]]; then
       mm_info "OS_HOP_CLIENT_FILES_REQUIRED=NO"
       mm_info "CLIENT_FILES_ON_DISK_READY=NO"
       engine_ensure_phase2_helpers || true
-    elif [[ -f "${MM_SELECTIVE_ROOT}/state/READY" ]]; then
-      mm_info "CLIENT_FILES_ON_DISK_READY=NO — rebuilding local signed client set"
-      mm_info "DOWNLOAD_PREPARE_USES_AUTHORITATIVE_CLIENT_FINALIZER=YES"
-      # HTTP verify runs after nginx enable below; skip during rebuild.
-      engine_rebuild_publish_local_client_set 1 \
-        || mm_die "HTTP_DISTRIBUTION=FAIL client rebuild"
     fi
   else
+    engine_assess_client_set_for_finalize
+    mm_info "CLIENT_SET_STATE=${CLIENT_SET_STATE}"
+    mm_info "CLIENT_SET_ACTION=${CLIENT_SET_ACTION}"
+    if [[ "$CLIENT_SET_ACTION" == "REUSE_CURRENT" || "$CLIENT_SET_ACTION" == "REUSE_VERIFIED" ]]; then
+      clients_on_disk=1
+      engine_bind_reused_client_set_workflow \
+        || mm_die "HTTP_DISTRIBUTION=FAIL client workflow binding"
+    elif [[ -f "${MM_SELECTIVE_ROOT}/state/READY" ]]; then
+      mm_info "CLIENT_FILES_ON_DISK_READY=STALE_OR_MISSING — rebuilding current source"
+      mm_info "DOWNLOAD_PREPARE_USES_AUTHORITATIVE_CLIENT_FINALIZER=YES"
+      engine_rebuild_publish_local_client_set 1 \
+        || mm_die "HTTP_DISTRIBUTION=FAIL client rebuild"
+      clients_on_disk=1
+    fi
+  fi
+  if [[ "$clients_on_disk" -eq 1 ]]; then
     mm_info "CLIENT_FILES_ON_DISK_READY=PASS"
   fi
 
