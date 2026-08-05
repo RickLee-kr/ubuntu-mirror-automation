@@ -45,6 +45,7 @@ TEST_LIST=(
   test_ntp_dns_postboot_policy.sh
   test_dns_time_readiness_policy.sh
   test_dp_offline_upgrade_xenial_to_bionic.sh
+  test_durable_write_and_lxd_coldstart.sh
   test_dp_offline_upgrade_bionic_to_focal.sh
   test_dp_offline_upgrade_focal_to_jammy.sh
   test_dp_offline_upgrade_jammy_to_noble.sh
@@ -167,11 +168,14 @@ run_one() {
   set +e
   # Default timeout places the command in its own process group so TERM/KILL
   # apply to the whole tree (children included).
+  # Drop stale fixture env so handoff/runner matching and monitor policy stay isolated.
   if [[ "$t" == *.py ]]; then
-    timeout --signal=TERM --kill-after=30s "$timeout_secs" python3 "$t"
+    env -u STELLAR_OFFLINE_TEST_ROOT -u DP_OFFLINE_TEST_HANDOFF -u DETACH_AFTER_HANDOFF \
+      timeout --signal=TERM --kill-after=30s "$timeout_secs" python3 "$t"
     rc=$?
   else
-    timeout --signal=TERM --kill-after=30s "$timeout_secs" bash "$t"
+    env -u STELLAR_OFFLINE_TEST_ROOT -u DP_OFFLINE_TEST_HANDOFF -u DETACH_AFTER_HANDOFF \
+      timeout --signal=TERM --kill-after=30s "$timeout_secs" bash "$t"
     rc=$?
   fi
   set -e

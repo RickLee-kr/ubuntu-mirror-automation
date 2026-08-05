@@ -128,6 +128,67 @@ Expected states: `PREPARING_BIONIC` → `UPGRADING_BIONIC_TO_FOCAL` → `REBOOTI
 |-------|---------|--------|
 | `FAILED_BEFORE_PACKAGE_TRANSITION` | `ROLLBACK_ELIGIBLE=YES` | Temporary sources/holds/policy restored; may retry after fix |
 | `FAILED_AFTER_PACKAGE_TRANSITION` | `ROLLBACK_ELIGIBLE=NO` | Preserve evidence; restore snapshot or new VM — never reuse |
+| Exit `36` / `FAILURE_STAGE=LXD_PREFLIGHT` | LXD in-use or inventory ambiguous | Fail-closed; see LXD section |
+
+## LXD offline transition (deb → Snap risk)
+
+Focal's transitional `lxd` deb contacts `api.snapcraft.io`. Offline Bionic→Focal
+must never enter that path.
+
+Policy:
+
+- `LXD_NOT_INSTALLED` → PASS (skip)
+- `LXD_INSTALLED_UNUSED` → PASS preflight; after confirmation, remove allowlisted
+  deb packages (`lxd`, `lxd-client`) only, then pin against reselection
+- `LXD_IN_USE` or `LXD_AMBIGUOUS` → fail-closed (exit 36)
+
+Inventory is cold-start aware:
+
+- Records initial `lxd.service` / `lxd.socket` active/enabled state
+- May start runtime only for inventory; never changes enable/disable
+- Runs `lxd waitready` (default 120s) with external `timeout` dual protection
+- Retries once on cold-start / timeout failures (command timeout default 30s)
+- Classifies `LXD_INSTALLED_UNUSED` only when API inventory commands succeed completely
+- Filesystem under `/var/lib/lxd` is corroboration only — never alone proves unused
+- Restores previously inactive runtime after inventory (including on error/EXIT)
+
+Evidence:
+
+`/opt/aelladata/os-upgrade/offline/evidence/lxd-inventory/<timestamp>/`
+
+Includes `summary.env`, `packages.txt`, `service-before.txt`, `service-after.txt`,
+`waitready-attempt-*.{stdout,stderr,rc}`, instances/images/storage artifacts,
+`filesystem.txt`, `durations.env`, `final-classification.env`.
+
+### Exit 36 and retry safety
+
+Preflight LXD failures log:
+
+- `FAILURE_STAGE=LXD_PREFLIGHT`
+- `FAILURE_RETRY_SAFE=YES|NO`
+- `PACKAGE_TRANSITION_STARTED=false|true`
+- `CURRENT_OS=…`
+- `RERUN_ALLOWED=YES|NO`
+- `RERUN_BLOCK_REASON=…`
+
+When `PACKAGE_TRANSITION_STARTED=false` and state remains `PREFLIGHT` / no package
+mutation, the same signed client may be re-run (`RERUN_ALLOWED=YES`). Do **not**
+manually apt/remove/reboot during preflight.
+
+Confirm transition flag:
+
+```bash
+grep PACKAGE_TRANSITION_STARTED /opt/aelladata/os-upgrade/offline/current-hop.env
+# or holds marker:
+cat /opt/aelladata/os-upgrade/offline/critical-holds/release_upgrade_package_transition_started
+```
+
+## Durable state writes (no global `sync`)
+
+Control-plane state (upgrade `state`, runner PID, hop identity, markers) uses
+targeted durable writes: temp file in the same directory → `fsync` → atomic
+`rename` → parent-directory `fsync`. Unbounded global `sync` is not used in
+preflight/control flow (it can block for tens of minutes under heavy DP I/O).
 
 ## Evidence paths
 
@@ -135,3 +196,4 @@ Expected states: `PREPARING_BIONIC` → `UPGRADING_BIONIC_TO_FOCAL` → `REBOOTI
 - Effective source gate: `/var/log/aella/distupgrade_effective_source_gate.log`
 - DistUpgrade: `/var/log/dist-upgrade/`
 - State/markers: `/opt/aelladata/os-upgrade/offline/`
+- LXD inventory: `/opt/aelladata/os-upgrade/offline/evidence/lxd-inventory/`

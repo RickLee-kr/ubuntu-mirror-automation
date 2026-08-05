@@ -138,7 +138,7 @@ LAST_DISTUPGRADE_SOURCE_ERROR=""
 LXD_PREFLIGHT_CLASS=""
 LXD_OFFLINE_UPGRADE_POLICY=""
 LXD_INVENTORY_EVIDENCE=""
-LXD_INVENTORY_TIMEOUT_SECS="${DP_OFFLINE_LXD_INVENTORY_TIMEOUT_SECS:-20}"
+LXD_INVENTORY_TIMEOUT_SECS="${DP_OFFLINE_LXD_COMMAND_TIMEOUT_SECS:-${DP_OFFLINE_LXD_INVENTORY_TIMEOUT_SECS:-30}}"
 # Packages that may be removed when unused; anything else in apt -s Remv is unexpected.
 LXD_REMOVAL_ALLOWLIST="lxd lxd-client lxd-tools"
 LXD_REMOVAL_TARGETS="lxd lxd-client"
@@ -985,6 +985,8 @@ is_critical_os_hold_package() {
   return 1
 }
 
+@@DURABLE_WRITE_HELPER@@
+
 critical_holds_dir() {
   hostpath "${STATE_ROOT}/critical-holds"
 }
@@ -1020,13 +1022,6 @@ json_string_array_from_words() {
   printf ']'
 }
 
-atomic_write_file() {
-  local dest="$1"
-  local tmp
-  tmp="${dest}.tmp.$$"
-  cat >"$tmp"
-  mv -f "$tmp" "$dest"
-}
 
 list_held_packages() {
   # Print currently held package names, one per line (or space-joined via caller).
@@ -1767,9 +1762,13 @@ avail_bytes() {
 
 write_state() {
   local st="$1"
-  mkdir -p "$(dirname "$(hostpath "$STATE_FILE")")"
-  printf '%s\n' "$st" >"$(hostpath "$STATE_FILE")"
-  sync
+  local dest
+  dest="$(hostpath "$STATE_FILE")"
+  mkdir -p "$(dirname "$dest")"
+  printf '%s\n' "$st" | durable_atomic_write "write_state" "$dest" || {
+    log ERROR "DURABLE_WRITE_RESULT=FAIL logical=write_state path=${dest}"
+    return 1
+  }
 }
 
 read_state() {
@@ -2325,817 +2324,7 @@ check_cross_release_candidates() {
   return 0
 }
 
-# --- Offline LXD inventory / removal / target-transition guard -----------------
-# Focal's transitional lxd deb contacts api.snapcraft.io. Offline upgrades must
-# never enter that path. Inventory runs before confirmation; unused removal runs
-# only after confirmation and only when usage is proven empty.
-
-lxd_pkg_installed_p() {
-  local pkg="$1" status st
-  # TEST_ROOT fixtures: honor planted dpkg status, not the host.
-  if [[ -n "${TEST_ROOT:-}" ]]; then
-    st="$(hostpath /var/lib/dpkg/status)"
-    if [[ -f "$st" ]] && awk -v pkg="$pkg" '
-      $1 == "Package:" && $2 == pkg { inpkg=1; next }
-      inpkg && $1 == "Package:" { exit }
-      inpkg && $1 == "Status:" {
-        for (i = 2; i <= NF; i++) printf "%s%s", $i, (i < NF ? " " : "")
-        printf "\n"
-        exit
-      }
-    ' "$st" | grep -q 'install ok installed'; then
-      return 0
-    fi
-    return 1
-  fi
-  status="$(dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null || true)"
-  [[ "$status" == *"install ok installed"* ]]
-}
-
-lxd_write_inventory_evidence() {
-  local evid_dir="$1"
-  shift
-  mkdir -p "$evid_dir"
-  {
-    printf 'UTC=%s\n' "$(utc_now)"
-    printf 'HOST=%s\n' "$(hostname 2>/dev/null || echo unknown)"
-    printf 'CLASS_HINT=%s\n' "${1:-}"
-    printf '%s\n' '---'
-    cat
-  } >"${evid_dir}/inventory.txt"
-  LXD_INVENTORY_EVIDENCE="${evid_dir}/inventory.txt"
-  log INFO "LXD_INVENTORY_EVIDENCE=${LXD_INVENTORY_EVIDENCE}"
-  return 0
-}
-
-lxd_run_timed() {
-  # Run command with timeout; stdout+stderr to file. Return: 0 ok, 124 timeout, else cmd rc.
-  local out="$1"; shift
-  local t="${LXD_INVENTORY_TIMEOUT_SECS:-20}"
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$t" "$@" >"$out" 2>&1
-    return $?
-  fi
-  "$@" >"$out" 2>&1
-}
-
-lxd_trim() {
-  local s="$1"
-  s="${s#"${s%%[![:space:]]*}"}"
-  s="${s%"${s##*[![:space:]]}"}"
-  printf '%s' "$s"
-  return 0
-}
-
-lxd_is_first_run_banner_line() {
-  # Known LXD 3.0.x first-run help lines (not inventory records).
-  local line="$1"
-  case "$line" in
-    "If this is your first time running LXD on this machine, you should also run: lxd init")
-      return 0
-      ;;
-    "To start your first container, try: lxc launch "*)
-      return 0
-      ;;
-  esac
-  return 1
-}
-
-lxd_dir_has_entries_p() {
-  local d="$1"
-  [[ -d "$d" ]] || return 1
-  if find "$d" -mindepth 1 -maxdepth 1 2>/dev/null | grep -q .; then
-    return 0
-  fi
-  return 1
-}
-
-lxd_classify_container_csv_file() {
-  # Parse lxc list --format csv -c ns into flags file:
-  #   RUNNING=<0|1> STOPPED=<0|1> UNEXPECTED=<0|1>
-  # Empty / first-run-banner-only → all zero. Non-CSV surprises → UNEXPECTED=1.
-  local f="$1" out="$2"
-  local line name state
-  local running=0 stopped=0 unexpected=0
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -n "$line" ]] || continue
-    if lxd_is_first_run_banner_line "$line"; then
-      continue
-    fi
-    # Require at least name,state (one comma, both fields non-empty).
-    if [[ "$line" != *","* ]]; then
-      unexpected=1
-      continue
-    fi
-    name="$(lxd_trim "${line%%,*}")"
-    state="$(lxd_trim "${line#*,}")"
-    state="$(lxd_trim "${state%%,*}")"
-    state="$(printf '%s' "$state" | tr '[:lower:]' '[:upper:]')"
-    if [[ -z "$name" || -z "$state" ]]; then
-      unexpected=1
-      continue
-    fi
-    case "$state" in
-      RUNNING|STARTING) running=1 ;;
-      STOPPED|FROZEN|ERROR|ABORTING|STOPPING) stopped=1 ;;
-      *)
-        # Named CSV instance with unknown state → treat as in-use.
-        stopped=1
-        ;;
-    esac
-  done <"$f"
-
-  printf 'RUNNING=%s\nSTOPPED=%s\nUNEXPECTED=%s\n' "$running" "$stopped" "$unexpected" >"$out"
-  return 0
-}
-
-lxd_image_list_nonempty_p() {
-  # Image aliases CSV (-c l): nonempty after skipping first-run banner.
-  local f="$1"
-  local line
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -n "$line" ]] || continue
-    if lxd_is_first_run_banner_line "$line"; then
-      continue
-    fi
-    return 0
-  done <"$f"
-  return 1
-}
-
-lxd_extract_storage_pool_names() {
-  # Parse `lxc storage list` default table (LXD 3.0.x has no reliable --format).
-  # Writes pool names to $1. Return 0 parse-ok, 1 unparseable.
-  local out_names="$1"
-  local src="$2"
-  local line field
-  : >"$out_names"
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -n "$line" ]] || continue
-    if lxd_is_first_run_banner_line "$line"; then
-      continue
-    fi
-    case "$line" in
-      "+"*)
-        continue
-        ;;
-      "|"*)
-        field="$(lxd_trim "${line#|}")"
-        field="$(lxd_trim "${field%%|*}")"
-        if [[ -z "$field" || "$field" == "NAME" ]]; then
-          continue
-        fi
-        printf '%s\n' "$field" >>"$out_names"
-        ;;
-      *)
-        return 1
-        ;;
-    esac
-  done <"$src"
-  return 0
-}
-
-lxd_storage_volume_table_indicates_use_p() {
-  # Return 0 if table data shows custom/container/image/virtual-machine volumes.
-  local f="$1"
-  local line field
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -n "$line" ]] || continue
-    if lxd_is_first_run_banner_line "$line"; then
-      continue
-    fi
-    case "$line" in
-      "+"*) continue ;;
-      "|"*)
-        field="$(lxd_trim "${line#|}")"
-        field="$(lxd_trim "${field%%|*}")"
-        field="$(printf '%s' "$field" | tr '[:upper:]' '[:lower:]')"
-        case "$field" in
-          type) continue ;;
-          custom|container|image|virtual-machine)
-            return 0
-            ;;
-        esac
-        ;;
-      *)
-        # Unrecognized line - caller treats whole file as ambiguous separately.
-        return 2
-        ;;
-    esac
-  done <"$f"
-  return 1
-}
-
-lxd_storage_volume_table_parseable_p() {
-  local f="$1"
-  local line
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -n "$line" ]] || continue
-    if lxd_is_first_run_banner_line "$line"; then
-      continue
-    fi
-    case "$line" in
-      "+"*|"|"*) continue ;;
-      *) return 1 ;;
-    esac
-  done <"$f"
-  return 0
-}
-
-collect_and_classify_lxd_inventory() {
-  # Sets LXD_PREFLIGHT_CLASS / LXD_OFFLINE_UPGRADE_POLICY / LXD_INVENTORY_EVIDENCE.
-  local stamp evid buf rc=0
-  local installed=0 has_running=0 has_stopped=0 has_image=0 has_storage=0
-  local ambiguous=0
-  local pools_file pool vol_buf flags_file
-  local cdir idir sdir snap_cdir
-  local flag_running flag_stopped flag_unexpected
-
-  stamp="$(date -u '+%Y%m%dT%H%M%SZ')"
-  evid="$(hostpath ${STATE_ROOT}/evidence/lxd-inventory/${stamp})"
-  mkdir -p "$evid"
-  buf="$(mktemp "${evid}/buf.XXXXXX")"
-  pools_file="$(mktemp "${evid}/pools.XXXXXX")"
-  vol_buf="$(mktemp "${evid}/vol.XXXXXX")"
-  flags_file="$(mktemp "${evid}/flags.XXXXXX")"
-
-  # Explicit fixture override (unit / integration tests).
-  if [[ -n "${DP_OFFLINE_FAKE_LXD_CLASS:-}" ]]; then
-    LXD_PREFLIGHT_CLASS="$DP_OFFLINE_FAKE_LXD_CLASS"
-    case "$LXD_PREFLIGHT_CLASS" in
-      LXD_NOT_INSTALLED)
-        LXD_OFFLINE_UPGRADE_POLICY="SKIP_NO_DEB_LXD"
-        ;;
-      LXD_INSTALLED_UNUSED)
-        LXD_OFFLINE_UPGRADE_POLICY="REMOVE_UNUSED_DEB_LXD_BEFORE_DRO"
-        ;;
-      LXD_IN_USE)
-        LXD_OFFLINE_UPGRADE_POLICY="FAIL_CLOSED"
-        ;;
-      LXD_AMBIGUOUS)
-        LXD_OFFLINE_UPGRADE_POLICY="FAIL_CLOSED"
-        ;;
-      *)
-        LXD_PREFLIGHT_CLASS="LXD_AMBIGUOUS"
-        LXD_OFFLINE_UPGRADE_POLICY="FAIL_CLOSED"
-        ;;
-    esac
-    {
-      printf 'FAKE_CLASS=%s\n' "$LXD_PREFLIGHT_CLASS"
-      printf 'FAKE_CONTAINERS=%s\n' "${DP_OFFLINE_FAKE_LXD_CONTAINERS:-}"
-      printf 'FAKE_IMAGES=%s\n' "${DP_OFFLINE_FAKE_LXD_IMAGES:-}"
-      printf 'FAKE_STORAGE=%s\n' "${DP_OFFLINE_FAKE_LXD_STORAGE:-}"
-    } | lxd_write_inventory_evidence "$evid" "$LXD_PREFLIGHT_CLASS"
-    rm -f "$buf" "$pools_file" "$vol_buf" "$flags_file"
-    log INFO "LXD_PREFLIGHT_CLASS=${LXD_PREFLIGHT_CLASS}"
-    log INFO "LXD_OFFLINE_UPGRADE_POLICY=${LXD_OFFLINE_UPGRADE_POLICY}"
-    return 0
-  fi
-
-  # Default TEST_ROOT fixtures: no LXD unless planted under the fake root.
-  if [[ -n "${TEST_ROOT:-}" ]]; then
-    if [[ -f "$(hostpath /var/lib/dpkg/status)" ]] \
-      && grep -qE '^Package:[[:space:]]*(lxd|lxd-client)$' "$(hostpath /var/lib/dpkg/status)" 2>/dev/null; then
-      :
-    else
-      LXD_PREFLIGHT_CLASS="LXD_NOT_INSTALLED"
-      LXD_OFFLINE_UPGRADE_POLICY="SKIP_NO_DEB_LXD"
-      printf 'TEST_ROOT_DEFAULT=LXD_NOT_INSTALLED\n' \
-        | lxd_write_inventory_evidence "$evid" "$LXD_PREFLIGHT_CLASS"
-      rm -f "$buf" "$pools_file" "$vol_buf" "$flags_file"
-      log INFO "LXD_PREFLIGHT_CLASS=${LXD_PREFLIGHT_CLASS}"
-      log INFO "LXD_OFFLINE_UPGRADE_POLICY=${LXD_OFFLINE_UPGRADE_POLICY}"
-      return 0
-    fi
-  fi
-
-  {
-    printf 'DPKG_LXD=\n'
-    if [[ -n "${TEST_ROOT:-}" && -f "$(hostpath /var/lib/dpkg/status)" ]]; then
-      awk '
-        $1 == "Package:" && ($2 == "lxd" || $2 == "lxd-client") {
-          pkg=$2; ver=""; st=""; inpkg=1; next
-        }
-        inpkg && $1 == "Package:" {
-          if (pkg != "") printf "%s\t%s\t%s\n", pkg, st, ver
-          pkg=""; inpkg=0
-        }
-        inpkg && $1 == "Status:" {
-          st=$2; for (i=3;i<=NF;i++) st=st" "$i
-        }
-        inpkg && $1 == "Version:" { ver=$2 }
-        END { if (inpkg && pkg != "") printf "%s\t%s\t%s\n", pkg, st, ver }
-      ' "$(hostpath /var/lib/dpkg/status)" || true
-    else
-      dpkg-query -W -f='${Package}\t${Status}\t${Version}\n' lxd lxd-client 2>/dev/null || true
-    fi
-    printf 'DPKG_END\n'
-  } >"${evid}/dpkg.txt"
-
-  if lxd_pkg_installed_p lxd || lxd_pkg_installed_p lxd-client; then
-    installed=1
-  fi
-
-  if [[ "$installed" -eq 0 ]]; then
-    LXD_PREFLIGHT_CLASS="LXD_NOT_INSTALLED"
-    LXD_OFFLINE_UPGRADE_POLICY="SKIP_NO_DEB_LXD"
-    cat "${evid}/dpkg.txt" | lxd_write_inventory_evidence "$evid" "$LXD_PREFLIGHT_CLASS"
-    rm -f "$buf" "$pools_file" "$vol_buf" "$flags_file"
-    log INFO "LXD_PREFLIGHT_CLASS=${LXD_PREFLIGHT_CLASS}"
-    log INFO "LXD_OFFLINE_UPGRADE_POLICY=${LXD_OFFLINE_UPGRADE_POLICY}"
-    return 0
-  fi
-
-  # Force-ambiguous fixture / injected timeout.
-  if [[ "${DP_OFFLINE_FAKE_LXD_TIMEOUT:-0}" == "1" ]]; then
-    ambiguous=1
-  fi
-
-  cdir="$(hostpath /var/lib/lxd/containers)"
-  idir="$(hostpath /var/lib/lxd/images)"
-  sdir="$(hostpath /var/lib/lxd/storage-pools)"
-  snap_cdir="$(hostpath /var/snap/lxd/common/lxd/containers)"
-
-  # On-disk storage-pools entries are auxiliary evidence of configured use.
-  if lxd_dir_has_entries_p "$sdir"; then
-    has_storage=1
-  fi
-
-  # Container inventory via lxc list CSV (never treat first-run banner as records).
-  if [[ "$ambiguous" -eq 0 ]] && command -v lxc >/dev/null 2>&1; then
-    set +e
-    lxd_run_timed "$buf" lxc list --format csv -c ns
-    rc=$?
-    set -e
-    cp -f "$buf" "${evid}/lxc-list.txt" 2>/dev/null || true
-    if [[ "$rc" -eq 124 ]]; then
-      ambiguous=1
-      printf 'TIMEOUT=lxc list\n' >>"${evid}/errors.txt"
-    elif [[ "$rc" -ne 0 ]]; then
-      ambiguous=1
-      printf 'FAIL=lxc list rc=%s\n' "$rc" >>"${evid}/errors.txt"
-    else
-      lxd_classify_container_csv_file "$buf" "$flags_file"
-      flag_running="$(awk -F= '$1=="RUNNING"{print $2; exit}' "$flags_file")"
-      flag_stopped="$(awk -F= '$1=="STOPPED"{print $2; exit}' "$flags_file")"
-      flag_unexpected="$(awk -F= '$1=="UNEXPECTED"{print $2; exit}' "$flags_file")"
-      flag_running="${flag_running:-0}"
-      flag_stopped="${flag_stopped:-0}"
-      flag_unexpected="${flag_unexpected:-0}"
-      if [[ "$flag_running" -eq 1 ]]; then
-        has_running=1
-      fi
-      if [[ "$flag_stopped" -eq 1 ]]; then
-        has_stopped=1
-      fi
-      if [[ "$flag_unexpected" -eq 1 ]]; then
-        ambiguous=1
-        printf 'UNEXPECTED_LXC_LIST_OUTPUT=1\n' >>"${evid}/errors.txt"
-      fi
-    fi
-
-    set +e
-    lxd_run_timed "$buf" lxc image list --format csv -c l
-    rc=$?
-    set -e
-    cp -f "$buf" "${evid}/lxc-image-list.txt" 2>/dev/null || true
-    if [[ "$rc" -eq 124 ]]; then
-      ambiguous=1
-      printf 'TIMEOUT=lxc image list\n' >>"${evid}/errors.txt"
-    elif [[ "$rc" -eq 0 ]]; then
-      if lxd_image_list_nonempty_p "$buf"; then
-        has_image=1
-      fi
-    else
-      # image list failure with installed lxd → cannot prove unused
-      ambiguous=1
-      printf 'FAIL=lxc image list rc=%s\n' "$rc" >>"${evid}/errors.txt"
-    fi
-
-    # LXD 3.0.3: no --format on storage; volume list requires a pool argument.
-    set +e
-    lxd_run_timed "$buf" lxc storage list
-    rc=$?
-    set -e
-    cp -f "$buf" "${evid}/lxc-storage-list.txt" 2>/dev/null || true
-    if [[ "$rc" -eq 124 ]]; then
-      ambiguous=1
-      printf 'TIMEOUT=lxc storage list\n' >>"${evid}/errors.txt"
-    elif [[ "$rc" -ne 0 ]]; then
-      ambiguous=1
-      printf 'FAIL=lxc storage list rc=%s\n' "$rc" >>"${evid}/errors.txt"
-    elif ! lxd_extract_storage_pool_names "$pools_file" "$buf"; then
-      ambiguous=1
-      printf 'UNPARSEABLE=lxc storage list\n' >>"${evid}/errors.txt"
-    else
-      if [[ -s "$pools_file" ]]; then
-        has_storage=1
-        cp -f "$pools_file" "${evid}/lxc-storage-pools.txt" 2>/dev/null || true
-        while IFS= read -r pool || [[ -n "$pool" ]]; do
-          [[ -n "$pool" ]] || continue
-          set +e
-          lxd_run_timed "$vol_buf" lxc storage volume list "$pool"
-          rc=$?
-          set -e
-          {
-            printf 'POOL=%s rc=%s\n' "$pool" "$rc"
-            cat "$vol_buf" 2>/dev/null || true
-            printf '\n'
-          } >>"${evid}/lxc-storage-volume-list.txt"
-          if [[ "$rc" -eq 124 ]]; then
-            ambiguous=1
-            printf 'TIMEOUT=lxc storage volume list pool=%s\n' "$pool" >>"${evid}/errors.txt"
-          elif [[ "$rc" -ne 0 ]]; then
-            ambiguous=1
-            printf 'FAIL=lxc storage volume list pool=%s rc=%s\n' "$pool" "$rc" >>"${evid}/errors.txt"
-          elif ! lxd_storage_volume_table_parseable_p "$vol_buf"; then
-            ambiguous=1
-            printf 'UNPARSEABLE=lxc storage volume list pool=%s\n' "$pool" >>"${evid}/errors.txt"
-          else
-            set +e
-            lxd_storage_volume_table_indicates_use_p "$vol_buf"
-            rc=$?
-            set -e
-            if [[ "$rc" -eq 0 || "$rc" -eq 2 ]]; then
-              has_storage=1
-              if [[ "$rc" -eq 2 ]]; then
-                ambiguous=1
-                printf 'UNPARSEABLE=lxc storage volume list pool=%s\n' "$pool" >>"${evid}/errors.txt"
-              fi
-            fi
-          fi
-        done <"$pools_file"
-      fi
-      # Zero pools: do not run volume list; has_storage may still be set from on-disk.
-    fi
-  elif [[ "$ambiguous" -eq 0 ]]; then
-    # lxd installed but no lxc client → inspect on-disk markers; if present, in-use/ambiguous.
-    if lxd_dir_has_entries_p "$cdir"; then
-      has_stopped=1
-    elif lxd_dir_has_entries_p "$idir"; then
-      has_image=1
-    elif lxd_dir_has_entries_p "$snap_cdir"; then
-      has_stopped=1
-    else
-      # No client and no clear markers - fail-closed (cannot prove unused).
-      ambiguous=1
-      printf 'NO_LXC_CLIENT=1\n' >>"${evid}/errors.txt"
-    fi
-  fi
-
-  # Also treat populated container/image dirs as in-use when client path ran.
-  if lxd_dir_has_entries_p "$cdir"; then
-    has_stopped=1
-  fi
-  if lxd_dir_has_entries_p "$idir"; then
-    has_image=1
-  fi
-
-  # Fixture hooks for container/image/storage without real lxd daemon.
-  case "${DP_OFFLINE_FAKE_LXD_CONTAINERS:-}" in
-    running) has_running=1 ;;
-    stopped) has_stopped=1 ;;
-    none|"") ;;
-  esac
-  case "${DP_OFFLINE_FAKE_LXD_IMAGES:-}" in
-    yes|1) has_image=1 ;;
-  esac
-  case "${DP_OFFLINE_FAKE_LXD_STORAGE:-}" in
-    yes|1) has_storage=1 ;;
-  esac
-
-  {
-    cat "${evid}/dpkg.txt" 2>/dev/null || true
-    printf 'HAS_RUNNING=%s HAS_STOPPED=%s HAS_IMAGE=%s HAS_STORAGE=%s AMBIGUOUS=%s\n' \
-      "$has_running" "$has_stopped" "$has_image" "$has_storage" "$ambiguous"
-    # Absent errors.txt is normal; must not make this pipeline non-zero under pipefail.
-    if [[ -f "${evid}/errors.txt" ]]; then
-      cat "${evid}/errors.txt"
-    fi
-  } | lxd_write_inventory_evidence "$evid" ""
-
-  rm -f "$buf" "$pools_file" "$vol_buf" "$flags_file"
-
-  if [[ "$ambiguous" -eq 1 ]]; then
-    LXD_PREFLIGHT_CLASS="LXD_AMBIGUOUS"
-    LXD_OFFLINE_UPGRADE_POLICY="FAIL_CLOSED"
-  elif [[ "$has_running" -eq 1 || "$has_stopped" -eq 1 || "$has_image" -eq 1 || "$has_storage" -eq 1 ]]; then
-    LXD_PREFLIGHT_CLASS="LXD_IN_USE"
-    LXD_OFFLINE_UPGRADE_POLICY="FAIL_CLOSED"
-  else
-    LXD_PREFLIGHT_CLASS="LXD_INSTALLED_UNUSED"
-    LXD_OFFLINE_UPGRADE_POLICY="REMOVE_UNUSED_DEB_LXD_BEFORE_DRO"
-  fi
-
-  log INFO "LXD_PREFLIGHT_CLASS=${LXD_PREFLIGHT_CLASS}"
-  log INFO "LXD_OFFLINE_UPGRADE_POLICY=${LXD_OFFLINE_UPGRADE_POLICY}"
-  return 0
-}
-
-lxd_preflight_gate() {
-  # Confirmation-blocking gate. Must not mutate packages.
-  collect_and_classify_lxd_inventory
-  case "$LXD_PREFLIGHT_CLASS" in
-    LXD_NOT_INSTALLED|LXD_INSTALLED_UNUSED)
-      log INFO "LXD_PREFLIGHT_GATE=PASS"
-      return 0
-      ;;
-    LXD_IN_USE)
-      log ERROR "FAIL_LXD_IN_USE_OFFLINE_UPGRADE_UNSUPPORTED"
-      log ERROR "LXD_PREFLIGHT_CLASS=${LXD_PREFLIGHT_CLASS}"
-      log ERROR "LXD_OFFLINE_UPGRADE_POLICY=${LXD_OFFLINE_UPGRADE_POLICY}"
-      die "$EC_LXD" "FAIL_LXD_IN_USE_OFFLINE_UPGRADE_UNSUPPORTED"
-      ;;
-    LXD_AMBIGUOUS|*)
-      log ERROR "FAIL_LXD_USAGE_CANNOT_BE_PROVEN_SAFE"
-      log ERROR "LXD_PREFLIGHT_CLASS=${LXD_PREFLIGHT_CLASS:-LXD_AMBIGUOUS}"
-      log ERROR "LXD_OFFLINE_UPGRADE_POLICY=FAIL_CLOSED"
-      die "$EC_LXD" "FAIL_LXD_USAGE_CANNOT_BE_PROVEN_SAFE"
-      ;;
-  esac
-}
-
-lxd_is_allowlisted_removal_pkg() {
-  local pkg="$1" a
-  for a in $LXD_REMOVAL_ALLOWLIST; do
-    [[ "$pkg" == "$a" ]] && return 0
-  done
-  return 1
-}
-
-lxd_is_critical_removal_pkg() {
-  local pkg="$1" c
-  for c in $CRITICAL_HOLD_PACKAGES; do
-    [[ "$pkg" == "$c" ]] && return 0
-  done
-  case "$pkg" in
-    linux-image-*|linux-headers-*|linux-modules-*|linux-generic*|linux-virtual*)
-      return 0
-      ;;
-  esac
-  return 1
-}
-
-simulate_unused_lxd_removal() {
-  # apt-get -s remove; populate evid. Return 0 only when safe.
-  local evid="$1"
-  local sim="${evid}/removal-simulation.txt"
-  local unexpected=0 critical_hit=0
-  local line pkg
-
-  mkdir -p "$evid"
-  if [[ -n "${DP_OFFLINE_FAKE_LXD_REMOVAL_SIM:-}" ]]; then
-    printf '%s\n' "$DP_OFFLINE_FAKE_LXD_REMOVAL_SIM" >"$sim"
-  else
-    set +e
-    DEBIAN_FRONTEND=noninteractive apt-get -s -y remove $LXD_REMOVAL_TARGETS \
-      >"$sim" 2>"${evid}/removal-simulation.err"
-    set -e
-  fi
-
-  # Parse Remv lines: "Remv pkg [ver]" or "Remv pkg*"
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    case "$line" in
-      Remv\ *)
-        pkg="$(printf '%s\n' "$line" | awk '{print $2}' | tr -d '*')"
-        [[ -n "$pkg" ]] || continue
-        if lxd_is_critical_removal_pkg "$pkg"; then
-          critical_hit=1
-          log ERROR "LXD_REMOVAL_CRITICAL_PACKAGE=${pkg}"
-        fi
-        if ! lxd_is_allowlisted_removal_pkg "$pkg"; then
-          unexpected=$((unexpected + 1))
-          log ERROR "LXD_REMOVAL_UNEXPECTED_PACKAGE=${pkg}"
-        fi
-        ;;
-    esac
-  done <"$sim"
-
-  log INFO "LXD_REMOVAL_UNEXPECTED_PACKAGE_COUNT=${unexpected}"
-  if [[ "$critical_hit" -ne 0 ]]; then
-    log ERROR "LXD_REMOVAL_SIMULATION=FAIL"
-    log ERROR "FAIL_LXD_REMOVAL_WOULD_TOUCH_CRITICAL_PACKAGE"
-    return 1
-  fi
-  if [[ "$unexpected" -ne 0 ]]; then
-    log ERROR "LXD_REMOVAL_SIMULATION=FAIL"
-    log ERROR "FAIL_LXD_REMOVAL_UNEXPECTED_PACKAGES"
-    return 1
-  fi
-  log INFO "LXD_REMOVAL_SIMULATION=PASS"
-  return 0
-}
-
-apply_lxd_noinstall_pin() {
-  # Prevent Focal transitional lxd from being reselected after removal.
-  local pin
-  pin="$(hostpath /etc/apt/preferences.d/99-stellar-offline-no-lxd-transition)"
-  mkdir -p "$(dirname "$pin")"
-  cat >"$pin" <<'EOF'
-Package: lxd lxd-client lxd-tools
-Pin: release *
-Pin-Priority: -1
-EOF
-  log INFO "LXD_NOINSTALL_PIN=INSTALLED path=${pin}"
-}
-
-scan_package_maintainer_network_risk() {
-  # Fail if staged/candidate lxd maintainer scripts reference Snap Store.
-  local evid="$1"
-  local hit=0
-  local f
-
-  mkdir -p "$evid"
-  : >"${evid}/network-risk-scan.txt"
-  for f in \
-    /var/lib/dpkg/info/lxd.preinst \
-    /var/lib/dpkg/info/lxd.postinst \
-    /var/lib/dpkg/info/lxd.prerm \
-    /var/lib/dpkg/info/lxd.postrm \
-    /var/lib/dpkg/info/lxd-client.preinst \
-    /var/lib/dpkg/info/lxd-client.postinst; do
-    if [[ -n "${TEST_ROOT:-}" ]]; then
-      f="$(hostpath "$f")"
-    fi
-    [[ -f "$f" ]] || continue
-    if grep -qiE 'api\.snapcraft\.io|snapcraft\.io|snap[[:space:]]+install|from the .* track' "$f" 2>/dev/null; then
-      printf 'HIT=%s\n' "$f" >>"${evid}/network-risk-scan.txt"
-      hit=1
-    fi
-  done
-
-  # Also scan apt-cache show for remaining candidate descriptions (informational),
-  # but only fail when an installed/candidate preinst would still run.
-  if [[ "${DP_OFFLINE_FAKE_LXD_NETWORK_RISK:-}" == "1" ]]; then
-    hit=1
-    printf 'HIT=FAKE_NETWORK_RISK\n' >>"${evid}/network-risk-scan.txt"
-  fi
-
-  if [[ "$hit" -ne 0 ]]; then
-    # After unused removal + pin, residual scripts on disk for purged packages are OK
-    # only if packages are not selected. Selection is checked separately.
-    if [[ "${LXD_TARGET_TRANSITION_SELECTED:-}" == "YES" ]]; then
-      log ERROR "PACKAGE_MAINTAINER_NETWORK_RISK_SCAN=FAIL"
-      return 1
-    fi
-  fi
-  log INFO "PACKAGE_MAINTAINER_NETWORK_RISK_SCAN=PASS"
-  return 0
-}
-
-guard_lxd_target_transition() {
-  # Verify target plan will not select Focal transitional lxd.
-  local evid="$1"
-  local sim="${evid}/target-plan-sim.txt"
-  local selected=0
-  local force_selected="${DP_OFFLINE_FAKE_LXD_TARGET_SELECTED:-}"
-
-  mkdir -p "$evid"
-  if [[ -n "$force_selected" ]]; then
-    if [[ "$force_selected" == "YES" ]]; then
-      selected=1
-      printf 'FAKE_SELECTED=YES\n' >"$sim"
-    else
-      printf 'FAKE_SELECTED=NO\n' >"$sim"
-    fi
-  elif [[ -n "${TEST_ROOT:-}" ]]; then
-    # Fixtures without explicit force: assume not selected after pin.
-    printf 'TEST_ROOT_DEFAULT_SELECTED=NO\n' >"$sim"
-  else
-    set +e
-    DEBIAN_FRONTEND=noninteractive apt-get -s -y dist-upgrade >"$sim" 2>"${evid}/target-plan-sim.err"
-    set -e
-    if grep -qiE '^Inst lxd |^Inst lxd-client |^Conf lxd |^Conf lxd-client ' "$sim" 2>/dev/null; then
-      selected=1
-    fi
-    _lxd_pol="$(apt-cache policy lxd 2>/dev/null || true)"
-    _lxd_cand="$(cross_release_candidate_from_policy "${_lxd_pol}")"
-    if printf '%s\n' "${_lxd_cand}" | grep -qiE '1:0\.|transitional'; then
-      # Candidate exists but pin should make it non-installable; Inst line is authoritative.
-      :
-    fi
-  fi
-
-  if [[ "$selected" -eq 1 ]]; then
-    LXD_TARGET_TRANSITION_SELECTED="YES"
-    LXD_TARGET_TRANSITION_GUARD="FAIL"
-    log ERROR "LXD_TARGET_TRANSITION_SELECTED=YES"
-    log ERROR "LXD_TARGET_TRANSITION_GUARD=FAIL"
-    log ERROR "FAIL_LXD_TARGET_TRANSITION_RESELECTED"
-    return 1
-  fi
-  LXD_TARGET_TRANSITION_SELECTED="NO"
-  LXD_TARGET_TRANSITION_GUARD="PASS"
-  log INFO "LXD_TARGET_TRANSITION_SELECTED=NO"
-  log INFO "LXD_TARGET_TRANSITION_GUARD=PASS"
-  return 0
-}
-
-remove_unused_lxd_before_dro() {
-  # Post-confirmation, pre-package-mutation. Only for LXD_INSTALLED_UNUSED.
-  local stamp evid rc=0
-
-  if [[ "$LXD_PREFLIGHT_CLASS" != "LXD_INSTALLED_UNUSED" ]]; then
-    log INFO "LXD_REMOVAL_RESULT=SKIPPED class=${LXD_PREFLIGHT_CLASS:-unset}"
-    # Still pin + guard when not installed so transitional package cannot appear.
-    stamp="$(date -u '+%Y%m%dT%H%M%SZ')"
-    evid="$(hostpath ${STATE_ROOT}/evidence/lxd-removal/${stamp})"
-    mkdir -p "$evid"
-    apply_lxd_noinstall_pin
-    guard_lxd_target_transition "$evid" || die "$EC_LXD" "FAIL_LXD_TARGET_TRANSITION_RESELECTED"
-    LXD_TARGET_TRANSITION_SELECTED="${LXD_TARGET_TRANSITION_SELECTED:-NO}"
-    scan_package_maintainer_network_risk "$evid" || die "$EC_LXD" "FAIL_PACKAGE_MAINTAINER_NETWORK_RISK"
-    return 0
-  fi
-
-  stamp="$(date -u '+%Y%m%dT%H%M%SZ')"
-  evid="$(hostpath ${STATE_ROOT}/evidence/lxd-removal/${stamp})"
-  mkdir -p "$evid"
-
-  if ! simulate_unused_lxd_removal "$evid"; then
-    die "$EC_LXD" "FAIL_LXD_REMOVAL_SIMULATION"
-  fi
-
-  if [[ -n "${TEST_ROOT:-}" && -z "${DP_OFFLINE_FAKE_LXD_DO_REMOVE:-}" ]]; then
-    # Fixture path: record simulated success without mutating host.
-    log INFO "LXD_REMOVAL_RESULT=PASS"
-    log INFO "LXD_POST_REMOVAL_DPKG_AUDIT=PASS"
-    log INFO "LXD_POST_REMOVAL_APT_CHECK=PASS"
-    apply_lxd_noinstall_pin
-    guard_lxd_target_transition "$evid" || die "$EC_LXD" "FAIL_LXD_TARGET_TRANSITION_RESELECTED"
-    scan_package_maintainer_network_risk "$evid" || die "$EC_LXD" "FAIL_PACKAGE_MAINTAINER_NETWORK_RISK"
-    return 0
-  fi
-
-  set +e
-  DEBIAN_FRONTEND=noninteractive apt-get -y remove $LXD_REMOVAL_TARGETS \
-    >"${evid}/removal.out" 2>"${evid}/removal.err"
-  rc=$?
-  set -e
-  if [[ "$rc" -ne 0 ]]; then
-    log ERROR "LXD_REMOVAL_RESULT=FAIL"
-    die "$EC_LXD" "FAIL_LXD_REMOVAL_EXEC"
-  fi
-  log INFO "LXD_REMOVAL_RESULT=PASS"
-  log INFO "LXD_REMOVAL_PACKAGE=lxd"
-  log INFO "LXD_REMOVAL_PACKAGE=lxd-client"
-
-  set +e
-  dpkg --audit >"${evid}/dpkg-audit.txt" 2>&1
-  rc=$?
-  set -e
-  if [[ "$rc" -ne 0 ]]; then
-    log ERROR "LXD_POST_REMOVAL_DPKG_AUDIT=FAIL"
-    die "$EC_LXD" "FAIL_LXD_POST_REMOVAL_DPKG_AUDIT"
-  fi
-  log INFO "LXD_POST_REMOVAL_DPKG_AUDIT=PASS"
-
-  set +e
-  apt-get check >"${evid}/apt-check.txt" 2>&1
-  rc=$?
-  set -e
-  if [[ "$rc" -ne 0 ]]; then
-    log ERROR "LXD_POST_REMOVAL_APT_CHECK=FAIL"
-    die "$EC_LXD" "FAIL_LXD_POST_REMOVAL_APT_CHECK"
-  fi
-  log INFO "LXD_POST_REMOVAL_APT_CHECK=PASS"
-
-  apply_lxd_noinstall_pin
-  guard_lxd_target_transition "$evid" || die "$EC_LXD" "FAIL_LXD_TARGET_TRANSITION_RESELECTED"
-  scan_package_maintainer_network_risk "$evid" || die "$EC_LXD" "FAIL_PACKAGE_MAINTAINER_NETWORK_RISK"
-  return 0
-}
-
-classify_lxd_snap_transition_failure() {
-  # Return 0 if logs show Focal transitional lxd → Snap Store failure.
-  local mainlog aptlog dpkglog
-  mainlog="$(_hp /var/log/dist-upgrade/main.log)"
-  aptlog="$(_hp /var/log/dist-upgrade/apt.log)"
-  dpkglog="$(_hp /var/log/dpkg.log)"
-  if grep -qiE 'api\.snapcraft\.io|Installing the LXD snap|cannot install "lxd"|snap store' \
-      "$LOG_FILE" "$mainlog" "$aptlog" "$dpkglog" 2>/dev/null; then
-    return 0
-  fi
-  if grep -qiE 'lxd.*pre-installation script|new lxd package pre-installation' \
-      "$LOG_FILE" "$dpkglog" 2>/dev/null \
-    && grep -qiE 'snap' "$LOG_FILE" "$dpkglog" 2>/dev/null; then
-    return 0
-  fi
-  return 1
-}
-
-emit_lxd_snap_failure_fields() {
-  FAILURE_CLASS="OFFLINE_LXD_SNAP_TRANSITION"
-  log ERROR "FAILURE_CLASS=OFFLINE_LXD_SNAP_TRANSITION"
-  log ERROR "FAILURE_PACKAGE=lxd,lxd-client"
-  log ERROR "FAILURE_EXTERNAL_ENDPOINT=api.snapcraft.io"
-  log ERROR "FAILURE_STAGE=PACKAGE_TRANSACTION"
-  log ERROR "FAILURE_RETRY_SAFE=NO"
-  log ERROR "FAILURE_RESTORE_REQUIRED=YES"
-}
+@@LXD_INVENTORY_HELPER@@
 
 run_os_preflight() {
   local work="$1"
@@ -4396,14 +3585,12 @@ EOF
     log ERROR "SOURCE_GATE_REJECT_REASON=BINARIES_NOT_READY_BEFORE_HOOK"
     die "$EC_INTERNAL" "FAIL_SOURCE_GATE_INSTALL_ORDER"
   fi
-  if command -v sync >/dev/null 2>&1; then
-    sync "$bin_path" "${bin_path}.wrap" "${bin_path}.env" 2>/dev/null || sync 2>/dev/null || true
-  fi
+  durable_fsync_path "$bin_path" 2>/dev/null || true
+  durable_fsync_path "${bin_path}.wrap" 2>/dev/null || true
+  durable_fsync_path "${bin_path}.env" 2>/dev/null || true
   mv -f "${apt_path}.new" "$apt_path"
   chmod 0644 "$apt_path"
-  if command -v sync >/dev/null 2>&1; then
-    sync "$apt_path" 2>/dev/null || true
-  fi
+  durable_fsync_path "$apt_path" 2>/dev/null || true
   log INFO "SOURCE_GATE_EXECUTABLE_INSTALLED=YES"
   log INFO "SOURCE_GATE_ENV_INSTALLED=YES"
   log INFO "SOURCE_GATE_WRAPPER_INSTALLED=YES"
@@ -5088,6 +4275,7 @@ install_runner_and_units() {
 # stellar-offline-os-upgrade-runner - Bionic→Focal detached upgrade
 # Bash 4.3 compatible. Does not inherit client shell env; loads EnvironmentFile.
 set -eo pipefail
+@@DURABLE_WRITE_HELPER@@
 
 # Optional fake-root prefix for fixture tests only (never set by production unit).
 _TEST_PREFIX="${STELLAR_OFFLINE_TEST_ROOT:-}"
@@ -5144,7 +4332,9 @@ RELEASE_UPGRADE_COMPLETED="false"
 mkdir -p "$(dirname "$LOG_FILE")" "$STATE_ROOT" 2>/dev/null || true
 exec >>"$LOG_FILE" 2>&1
 log() { printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" "$2"; }
-write_state() { printf '%s\n' "$1" >"$STATE_FILE"; sync; }
+write_state() {
+  printf '%s\n' "$1" | durable_atomic_write "write_state" "$STATE_FILE" || return 1
+}
 set_stage() {
   STAGE="$1"
   log INFO "STAGE=${STAGE}"
@@ -5604,7 +4794,6 @@ persist_current_hop_package_transition_started() {
     rm -f "$tmp" 2>/dev/null || true
     return 1
   fi
-  sync 2>/dev/null || true
   log INFO "PERSISTED_PACKAGE_TRANSITION_STARTED=true"
   return 0
 }
@@ -5644,9 +4833,7 @@ mark_package_transition_detected() {
   RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED="true"
   tmp="${marker}.tmp.$$"
   printf 'true\n' >"$tmp"
-  sync 2>/dev/null || true
   mv -f "$tmp" "$marker"
-  sync 2>/dev/null || true
   # Hop ownership companion (multi-hop isolation).
   {
     printf 'VALUE=true\n'
@@ -5668,7 +4855,6 @@ mark_package_transition_detected() {
     printf 'PACKAGE_TRANSITION_DETECTION_EVIDENCE=%s\n' "$PACKAGE_TRANSITION_DETECTION_EVIDENCE"
     printf 'PACKAGE_TRANSITION_DETECTION_LATENCY_SECONDS=%s\n' "$latency"
   } >"$meta_tmp"
-  sync 2>/dev/null || true
   mv -f "$meta_tmp" "$donef"
   chmod 0600 "$donef" 2>/dev/null || true
   STAGE="PACKAGE_TRANSACTION"
@@ -5756,8 +4942,7 @@ clear_runner_pid() {
 }
 write_runner_pid() {
   mkdir -p "$(dirname "$RUNNER_PID_FILE")" 2>/dev/null || true
-  printf '%s\n' "$$" >"$RUNNER_PID_FILE"
-  sync
+  printf '%s\n' "$$" | durable_atomic_write "write_runner_pid" "$RUNNER_PID_FILE" 0600 || return 1
 }
 
 persist_flags() {
@@ -6619,7 +5804,6 @@ runner_collect_pre_dro_evidence() {
 
 reboot_if_success() {
   write_state REBOOT_PENDING
-  sync
   log INFO "CRITICAL_OS_HOLDS_REMAIN_UNHELD_THROUGH_OS_UPGRADE=YES"
   log INFO "CRITICAL_OS_HOLDS_RESTORED_ON_PRE_TRANSITION_FAILURE=YES"
   log INFO "CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO"
@@ -6627,7 +5811,6 @@ reboot_if_success() {
     log INFO "ORIGINAL_CRITICAL_OS_HOLDS=$(tr '\n' ' ' <"${HOLDS_DIR}/critical-holds-removed.txt" | sed 's/[[:space:]]*$//')"
   fi
   write_state REBOOTING
-  sync
   log INFO "requesting reboot"
   if [[ -n "$_TEST_PREFIX" ]]; then
     log INFO "TEST_ROOT: reboot recorded, not executed"
@@ -6809,6 +5992,7 @@ main "$@"
 RUNNER
 
   install -m 0755 /dev/stdin "$(hostpath "$POSTBOOT_PATH")" <<'POSTBOOT'
+@@DURABLE_WRITE_HELPER@@
 #!/usr/bin/env bash
 set -euo pipefail
 STATE_ROOT="/opt/aelladata/os-upgrade/offline"
@@ -6818,7 +6002,9 @@ LOG_FILE="/var/log/aella/offline_os_upgrade.log"
 MOTD="/etc/motd.d/99-stellar-offline-upgrade"
 exec >>"$LOG_FILE" 2>&1
 log() { printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" "$2"; }
-write_state() { printf '%s\n' "$1" >"$STATE_FILE"; sync; }
+write_state() {
+  printf '%s\n' "$1" | durable_atomic_write "write_state" "$STATE_FILE" || return 1
+}
 
 main() {
   write_state POST_BOOT_VERIFY
@@ -7121,6 +6307,17 @@ proc_cmdline() {
   printf '%s' "$raw"
 }
 
+fixture_test_root_prefix() {
+  # Handoff fixtures set TEST_ROOT + DP_OFFLINE_TEST_HANDOFF=1. Prefer those so a
+  # stale STELLAR_OFFLINE_TEST_ROOT from the parent environment cannot poison
+  # runner cmdline matching. Runner-only fixtures still use STELLAR_*.
+  if [[ "${DP_OFFLINE_TEST_HANDOFF:-}" == "1" ]]; then
+    printf '%s' "${TEST_ROOT:-${DP_OFFLINE_TEST_ROOT:-}}"
+    return 0
+  fi
+  printf '%s' "${STELLAR_OFFLINE_TEST_ROOT:-${TEST_ROOT:-${DP_OFFLINE_TEST_ROOT:-}}}"
+}
+
 runner_cmdline_matches() {
   local pid="$1"
   local cmd prefix
@@ -7128,7 +6325,7 @@ runner_cmdline_matches() {
   [[ -n "$cmd" ]] || return 1
   printf '%s' "$cmd" | grep -q 'stellar-offline-os-upgrade-runner' || return 1
   # Fixture tests: only match runners under the active fake-root prefix.
-  prefix="${STELLAR_OFFLINE_TEST_ROOT:-${TEST_ROOT:-${DP_OFFLINE_TEST_ROOT:-}}}"
+  prefix="$(fixture_test_root_prefix)"
   if [[ -n "$prefix" ]]; then
     printf '%s' "$cmd" | grep -qF "$prefix" || return 1
   fi
@@ -7138,7 +6335,7 @@ runner_cmdline_matches() {
 find_runner_pid_via_ps() {
   # Prefer ps (fast) over full /proc walk.
   local pid prefix
-  prefix="${STELLAR_OFFLINE_TEST_ROOT:-${TEST_ROOT:-${DP_OFFLINE_TEST_ROOT:-}}}"
+  prefix="$(fixture_test_root_prefix)"
   if [[ -n "$prefix" ]]; then
     pid="$(ps -eo pid=,args= 2>/dev/null | awk -v p="$prefix" '
       index($0, "stellar-offline-os-upgrade-runner") && index($0, p) && $0 !~ /awk/ {
@@ -8289,34 +7486,12 @@ HOP_HANDOFF_BACKUP_PATH=""
 PREVIOUS_HOP_PIN_NAME="xenial-to-bionic"
 
 write_state_atomic() {
-  # Atomic state transition: temp → fsync → rename. Preserves mode/owner when possible.
+  # Atomic durable state transition via file+dir fsync (no global sync).
   local st="$1"
-  local dest tmp dir
+  local dest
   dest="$(hostpath "$STATE_FILE")"
-  dir="$(dirname "$dest")"
-  mkdir -p "$dir"
-  tmp="${dest}.tmp.$$.$RANDOM"
-  # Reject partial writes: write full line then rename.
-  printf '%s\n' "$st" >"$tmp" || {
-    rm -f "$tmp"
-    return 1
-  }
-  if [[ -f "$dest" ]]; then
-    chmod --reference="$dest" "$tmp" 2>/dev/null || chmod 0644 "$tmp" 2>/dev/null || true
-    chown --reference="$dest" "$tmp" 2>/dev/null || true
-  else
-    chmod 0644 "$tmp" 2>/dev/null || true
-  fi
-  if command -v sync >/dev/null 2>&1; then
-    sync "$tmp" 2>/dev/null || true
-  fi
-  mv -f "$tmp" "$dest" || {
-    rm -f "$tmp"
-    return 1
-  }
-  if command -v sync >/dev/null 2>&1; then
-    sync "$dir" 2>/dev/null || sync 2>/dev/null || true
-  fi
+  mkdir -p "$(dirname "$dest")"
+  printf '%s\n' "$st" | durable_atomic_write "write_state_atomic" "$dest" || return 1
   return 0
 }
 
@@ -8630,18 +7805,14 @@ initialize_current_hop_identity() {
     return 1
   }
   chmod 0600 "$tmp" 2>/dev/null || true
-  if command -v sync >/dev/null 2>&1; then
-    sync "$tmp" 2>/dev/null || true
-  fi
+  durable_fsync_path "$tmp" 2>/dev/null || true
   if ! mv -f "$tmp" "$dest"; then
     log ERROR "CURRENT_HOP_IDENTITY_INITIALIZED=NO"
     log ERROR "CURRENT_HOP_IDENTITY_REPLACE=FAIL"
     rm -f "$tmp" 2>/dev/null || true
     return 1
   fi
-  if command -v sync >/dev/null 2>&1; then
-    sync "$dir" 2>/dev/null || sync 2>/dev/null || true
-  fi
+  durable_fsync_path "$dir" 2>/dev/null || true
   # Re-read persisted file - never claim success from pins alone.
   # All 8 contract fields must exact-match; any failure blocks INITIALIZED/ACCEPTED.
   PERSISTED_CURRENT_HOP="$(read_current_hop_field CURRENT_HOP)"
@@ -8819,9 +7990,7 @@ _source_gate_archive_has_previous_wrap() {
 
 _source_gate_fsync_path() {
   local p="$1"
-  if command -v sync >/dev/null 2>&1; then
-    sync "$p" 2>/dev/null || sync 2>/dev/null || true
-  fi
+  durable_fsync_path "$p" 2>/dev/null || true
 }
 
 classify_effective_source_gate_bundle() {
@@ -9464,9 +8633,7 @@ backup_previous_hop_handoff_evidence() {
       systemctl show -p ActiveState -p SubState "$UNIT_NAME" 2>/dev/null || true
     } >"$dest/service-status.txt" || true
   fi
-  if command -v sync >/dev/null 2>&1; then
-    sync "$dest" 2>/dev/null || sync 2>/dev/null || true
-  fi
+  durable_fsync_path "$dest" 2>/dev/null || true
   HOP_HANDOFF_BACKUP_PATH="$dest"
   printf '%s\n' "$dest"
 }
@@ -9554,9 +8721,7 @@ retire_previous_hop_runtime_evidence() {
   done
 
   printf 'retired_count=%s\nSOURCE_GATE_RETIRE_COMPLETE=YES\n' "$retired" >"$dest/retire-manifest.txt"
-  if command -v sync >/dev/null 2>&1; then
-    sync "$dest" 2>/dev/null || sync 2>/dev/null || true
-  fi
+  durable_fsync_path "$dest" 2>/dev/null || true
   log INFO "PREVIOUS_HOP_VOLATILE_STATE=RETIRED"
   log INFO "PREVIOUS_HOP_RUNTIME_EVIDENCE=ARCHIVED"
   return 0
@@ -9768,10 +8933,8 @@ accept_previous_hop_terminal_state() {
   fi
 
   printf 'ok\n' >"${backup}/handoff-complete.ok"
-  if command -v sync >/dev/null 2>&1; then
-    sync "${backup}/handoff-complete.ok" 2>/dev/null || true
-    sync "${backup}/handoff-event.txt" 2>/dev/null || true
-  fi
+  durable_fsync_path "${backup}/handoff-complete.ok" 2>/dev/null || true
+  durable_fsync_path "${backup}/handoff-event.txt" 2>/dev/null || true
 
   log INFO "PREVIOUS_HOP_RUNTIME_OWNER=${PREVIOUS_HOP_RUNTIME_OWNER:-$PREVIOUS_HOP_PIN_NAME}"
   log INFO "PINNED_CURRENT_HOP=${PIN_HOP}"

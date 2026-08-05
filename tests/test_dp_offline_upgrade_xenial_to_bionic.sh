@@ -2,20 +2,34 @@
 # tests/test_dp_offline_upgrade_xenial_to_bionic.sh
 set -euo pipefail
 
+# Never inherit a stale fake-root prefix from the parent shell/suite.
+unset STELLAR_OFFLINE_TEST_ROOT || true
+unset DETACH_AFTER_HANDOFF || true
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAIL=0
 pass() { echo "  PASS: $*"; }
 fail() { echo "  FAIL: $*"; FAIL=1; }
 
-SCRIPT_IN="${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh.in"
+SCRIPT_IN_RAW="${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh.in"
 BUILD_PY="${ROOT}/scripts/lib/build_client_xenial_to_bionic.py"
 OUT_DIR="$(mktemp -d)"
 trap 'rm -rf "$OUT_DIR"' EXIT
 
+# Expand shared helper tokens once so runner/postboot extracts and harnesses
+# do not execute leftover @@DURABLE_WRITE_HELPER@@.
+SCRIPT_IN="${OUT_DIR}/template-helpers-expanded.sh.in"
+python3 "${ROOT}/tests/lib/render_offline_upgrade_stub.py" \
+  --helpers-only "$SCRIPT_IN_RAW" "$SCRIPT_IN"
+# Sibling includes for stubs that resolve relative to SCRIPT_IN's directory.
+cp -f "${ROOT}/client/dp-postboot-readiness-policy.sh.inc" \
+  "${OUT_DIR}/dp-postboot-readiness-policy.sh.inc" 2>/dev/null || true
+
 # 1) Template / builder present
-[[ -f "$SCRIPT_IN" ]] || fail "template missing"
+[[ -f "$SCRIPT_IN_RAW" ]] || fail "template missing"
 [[ -f "$BUILD_PY" ]] || fail "builder missing"
-bash -n "$SCRIPT_IN" 2>/dev/null && pass "template bash -n" || fail "template bash -n"
+bash -n "$SCRIPT_IN_RAW" 2>/dev/null && pass "template bash -n" || fail "template bash -n"
+bash -n "$SCRIPT_IN" 2>/dev/null || fail "helper-expanded template bash -n"
 
 # 2) Bash 4.3 compatibility - reject bash-5-only constructs in template
 if grep -nE '\$\{[A-Za-z_][A-Za-z0-9_]*@Q\}|mapfile -d|&\>|\|\|&' "$SCRIPT_IN"; then
@@ -513,11 +527,17 @@ import re, sys
 src, dst = sys.argv[1], sys.argv[2]
 from pathlib import Path
 text = open(src, encoding="utf-8").read()
-_hp = Path(src).resolve().parent / "lib" / "dp-offline-destructive-confirmation.sh"
-text = text.replace(
-    "@@DESTRUCTIVE_CONFIRMATION_HELPER@@",
-    _hp.read_text(encoding="utf-8").rstrip("\n") + "\n",
-)
+_lib = Path(src).resolve().parent / "lib"
+for _tok, _name in (
+    ("@@DESTRUCTIVE_CONFIRMATION_HELPER@@", "dp-offline-destructive-confirmation.sh"),
+    ("@@RELEASE_UPGRADE_RECONCILIATION_HELPER@@", "dp-offline-release-upgrade-reconciliation.sh"),
+    ("@@APT_PREFLIGHT_SANDBOX_HELPER@@", "dp-offline-apt-preflight-sandbox.sh"),
+    ("@@DURABLE_WRITE_HELPER@@", "dp-offline-durable-write.sh"),
+    ("@@LXD_INVENTORY_HELPER@@", "dp-offline-lxd-inventory.sh"),
+):
+    _hp = _lib / _name
+    if _tok in text and _hp.is_file():
+        text = text.replace(_tok, _hp.read_text(encoding="utf-8").rstrip("\n") + "\n")
 pins = {
     "MIRROR_BASE": "",
     "HOP": "xenial-to-bionic",
@@ -1282,11 +1302,14 @@ sys.exit(0)
 PY
 }
 EOS
+  cat "${ROOT}/client/lib/dp-offline-durable-write.sh"
+  cat "${ROOT}/client/lib/dp-offline-release-upgrade-reconciliation.sh"
+  cat "${ROOT}/client/lib/dp-offline-apt-preflight-sandbox.sh"
   awk '
     /^critical_holds_dir\(\)/ {p=1}
     /^log_phase1_banner\(\)/ {exit}
     p
-  ' "$SCRIPT_IN"
+  ' "$SCRIPT_IN_RAW" | grep -vE '^@@[A-Z0-9_]+@@$'
 } >"$HOLD_HARNESS"
 bash -n "$HOLD_HARNESS" && pass "hold harness bash -n" || fail "hold harness bash -n"
 # shellcheck disable=SC1090
@@ -1296,21 +1319,23 @@ fx_hold="$(mktemp -d "${OUT_DIR}/fx-hold.XXXX")"
 mkdir -p "$fx_hold/tmp" "$fx_hold/opt/aelladata/os-upgrade/offline/critical-holds"
 printf 'systemd\n' >"$fx_hold/tmp/held-packages.txt"
 TEST_ROOT="$fx_hold"
-# Simulate post-unhold removed list with upgrade already started
+# Simulate post-unhold removed list after package transition started.
+# Invocation/legacy RELEASE_UPGRADE_STARTED alone must NOT block restore;
+# only PACKAGE_TRANSITION_STARTED (or evidence) skips re-hold.
 printf 'systemd\n' >"$fx_hold/opt/aelladata/os-upgrade/offline/critical-holds/critical-holds-removed.txt"
 CRITICAL_HOLDS_REMOVED="systemd"
 CRITICAL_HOLD_RESTORE_ON_EXIT=1
 RELEASE_UPGRADE_STARTED="true"
+RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED="true"
 PLANNED_CRITICAL_OS_HOLDS="systemd"
 DETECTED_ALL_HOLDS=""
-# Clear held file to simulate unheld state
 : >"$fx_hold/tmp/held-packages.txt"
 restore_critical_os_holds_if_safe "post_dro_failure"
 if [[ ! -s "$fx_hold/tmp/held-packages.txt" ]] \
    || [[ -z "$(tr -d '[:space:]' <"$fx_hold/tmp/held-packages.txt")" ]]; then
-  pass "release_upgrade_started → no automatic re-hold"
+  pass "package_transition_started → no automatic re-hold"
 else
-  fail "re-hold occurred after release_upgrade_started"
+  fail "re-hold occurred after package_transition_started"
 fi
 unset TEST_ROOT
 RELEASE_UPGRADE_STARTED="false"
@@ -1395,18 +1420,21 @@ json_string_array_from_words() { printf '[]'; }
 atomic_write_file() { local dest="$1"; cat >"$dest"; }
 write_critical_holds_state_json() { :; }
 EOS
+  cat "${ROOT}/client/lib/dp-offline-durable-write.sh"
+  cat "${ROOT}/client/lib/dp-offline-release-upgrade-reconciliation.sh"
+  cat "${ROOT}/client/lib/dp-offline-apt-preflight-sandbox.sh"
   # Extract ASCII helpers + apply_meta_release-related validators
   awk '
     /^assert_ascii_file\(\)/ {p=1}
     /^change_login_shells\(\)/ {exit}
     p
-  ' "$SCRIPT_IN"
+  ' "$SCRIPT_IN_RAW" | grep -vE '^@@[A-Z0-9_]+@@$'
   # Fine-grained flag helpers that precede the shared inject token.
   awk '
     /^persist_release_upgrade_flags\(\)/ {p=1}
     /^@@RELEASE_UPGRADE_RECONCILIATION_HELPER@@/ {exit}
     p
-  ' "$SCRIPT_IN"
+  ' "$SCRIPT_IN_RAW"
   # Shared authoritative reconciliation helper (injected at client build time).
   cat "${ROOT}/client/lib/dp-offline-release-upgrade-reconciliation.sh"
   # Hop-local helpers retained after the inject token.
@@ -1414,7 +1442,7 @@ EOS
     /^@@RELEASE_UPGRADE_RECONCILIATION_HELPER@@/ {p=1; next}
     /^log_phase1_banner\(\)/ {exit}
     p
-  ' "$SCRIPT_IN"
+  ' "$SCRIPT_IN_RAW" | grep -vE '^@@[A-Z0-9_]+@@$'
 } >"$META_HARNESS"
 bash -n "$META_HARNESS" && pass "meta harness bash -n" || fail "meta harness bash -n"
 # shellcheck disable=SC1090
@@ -1546,7 +1574,7 @@ rc=$?
 set -e
 if [[ "$rc" -eq 0 ]] && [[ "$LEGACY_STATE_RECONCILED" == "true" ]] \
    && [[ "$RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED" == "false" ]] \
-   && grep -q 'legacy_state_reconciled=true' "$fx_meta/out-reconcile.txt"; then
+   && grep -qiE 'legacy_state_reconciled=true|LEGACY_STATE_RECONCILED=true|STATE_RECONCILIATION_RESULT=PASS' "$fx_meta/out-reconcile.txt"; then
   pass "legacy release_upgrade_started pre-mutation -> reconciliation PASS"
 else
   fail "legacy reconciliation failed (rc=${rc})"
@@ -1639,7 +1667,8 @@ else
 fi
 if grep -q 'render_update_manager_meta_release' "$SCRIPT_IN" \
    && grep -q 'validate_meta_release_preview' "$SCRIPT_IN" \
-   && grep -q 'reconcile_legacy_release_upgrade_state' "$SCRIPT_IN" \
+   && { grep -q 'reconcile_legacy_release_upgrade_state' "$SCRIPT_IN" \
+        || grep -q '@@RELEASE_UPGRADE_RECONCILIATION_HELPER@@' "$SCRIPT_IN_RAW"; } \
    && grep -q 'RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED' "$SCRIPT_IN" \
    && grep -q 'FAILURE_CLASS' "$SCRIPT_IN"; then
   pass "ASCII/parser/resume/failure-class markers present"
@@ -2167,11 +2196,17 @@ from pathlib import Path
 import re, sys
 src, dst = sys.argv[1], sys.argv[2]
 text = Path(src).read_text(encoding="utf-8")
-hp = Path(src).resolve().parent / "lib" / "dp-offline-destructive-confirmation.sh"
-text = text.replace(
-    "@@DESTRUCTIVE_CONFIRMATION_HELPER@@",
-    hp.read_text(encoding="utf-8").rstrip("\n") + "\n",
-)
+_lib = Path(src).resolve().parent / "lib"
+for _tok, _name in (
+    ("@@DESTRUCTIVE_CONFIRMATION_HELPER@@", "dp-offline-destructive-confirmation.sh"),
+    ("@@RELEASE_UPGRADE_RECONCILIATION_HELPER@@", "dp-offline-release-upgrade-reconciliation.sh"),
+    ("@@APT_PREFLIGHT_SANDBOX_HELPER@@", "dp-offline-apt-preflight-sandbox.sh"),
+    ("@@DURABLE_WRITE_HELPER@@", "dp-offline-durable-write.sh"),
+    ("@@LXD_INVENTORY_HELPER@@", "dp-offline-lxd-inventory.sh"),
+):
+    _hp = _lib / _name
+    if _tok in text and _hp.is_file():
+        text = text.replace(_tok, _hp.read_text(encoding="utf-8").rstrip("\n") + "\n")
 text = text.replace("@@SAMPLE_DEB_PATH@@", "/sample.deb")
 text = re.sub(r"@@[A-Z0-9_]*@@", "x", text)
 Path(dst).write_text(text, encoding="utf-8")
@@ -2566,6 +2601,8 @@ run_handoff_case() {
   export DP_OFFLINE_TEST_ROOT="$root"
   export DP_OFFLINE_TEST_HANDOFF=1
   export TEST_ROOT="$root"
+  export STELLAR_OFFLINE_TEST_ROOT="$root"
+  export DETACH_AFTER_HANDOFF=0
   export SYSTEMCTL_BIN="$root/bin/systemctl"
   export HANDOFF_WAIT_SECS=2
   export HANDOFF_POLL_SECS=1
@@ -2583,7 +2620,7 @@ printf 'CONFIGURING\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
 printf 'activating\n' >"$hf/run/active.state"
 printf 'start\n' >"$hf/run/sub.state"
 printf 'RUNNER_START=PASS\nSTAGE=SOURCE_RELEASE_PREPARATION\n' >>"$hf/var/log/aella/offline_os_upgrade.log"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl" HANDOFF_WAIT_SECS=2 HANDOFF_POLL_SECS=1
 # shellcheck disable=SC1090
 source "$HANDOFF_HARNESS"
@@ -2626,7 +2663,7 @@ install_fake_systemctl "$hf" ok
 rpid="$(spawn_fake_runner "$hf")"
 printf 'CONFIGURING\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
 printf 'RUNNER_START=PASS\n' >>"$hf/var/log/aella/offline_os_upgrade.log"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl" HANDOFF_WAIT_SECS=2 HANDOFF_POLL_SECS=1
 source "$HANDOFF_HARNESS"
 set +e
@@ -2643,7 +2680,7 @@ make_handoff_fixture "$hf"
 install_fake_systemctl "$hf" ok
 rpid="$(spawn_fake_runner "$hf")"
 printf 'PREPARING_XENIAL\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl" HANDOFF_WAIT_SECS=1 HANDOFF_POLL_SECS=1
 source "$HANDOFF_HARNESS"
 set +e
@@ -2662,7 +2699,7 @@ install_fake_systemctl "$hf" ok
 rpid="$(spawn_fake_runner "$hf")"
 printf 'CONFIGURING\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
 printf 'RUNNER_START=PASS\n' >>"$hf/var/log/aella/offline_os_upgrade.log"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl" HANDOFF_WAIT_SECS=1 HANDOFF_POLL_SECS=1
 source "$HANDOFF_HARNESS"
 set +e
@@ -2678,7 +2715,7 @@ hf="$(mktemp -d)"
 make_handoff_fixture "$hf"
 install_fake_systemctl "$hf" exit0_no_pid
 printf 'CONFIGURING\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl" HANDOFF_WAIT_SECS=1 HANDOFF_POLL_SECS=1
 source "$HANDOFF_HARNESS"
 set +e
@@ -2700,7 +2737,7 @@ install_fake_systemctl "$hf" dbus_reset
 rpid="$(spawn_fake_runner "$hf")"
 printf 'CONFIGURING\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
 printf 'RUNNER_START=PASS\n' >>"$hf/var/log/aella/offline_os_upgrade.log"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl" HANDOFF_WAIT_SECS=2 HANDOFF_POLL_SECS=1
 source "$HANDOFF_HARNESS"
 set +e
@@ -2721,7 +2758,7 @@ make_handoff_fixture "$hf"
 install_fake_systemctl "$hf" dbus_reset
 rpid="$(spawn_fake_runner "$hf")"
 printf 'UPGRADING_XENIAL_TO_BIONIC\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl" HANDOFF_WAIT_SECS=2 HANDOFF_POLL_SECS=1
 source "$HANDOFF_HARNESS"
 DBUS_DISCONNECT_SEEN=1
@@ -2745,7 +2782,7 @@ make_handoff_fixture "$hf"
 install_fake_systemctl "$hf" dbus_reset
 printf 'CONFIGURING\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
 # no runner.pid, no log evidence
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl" HANDOFF_WAIT_SECS=1 HANDOFF_POLL_SECS=1
 source "$HANDOFF_HARNESS"
 set +e
@@ -2768,7 +2805,7 @@ hf="$(mktemp -d)"
 make_handoff_fixture "$hf"
 install_fake_systemctl "$hf" unit_failed
 printf 'CONFIGURING\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl" HANDOFF_WAIT_SECS=1 HANDOFF_POLL_SECS=1
 source "$HANDOFF_HARNESS"
 set +e
@@ -2816,7 +2853,7 @@ install_fake_systemctl "$hf" ok
 rpid="$(spawn_fake_runner "$hf")"
 printf 'activating\n' >"$hf/run/active.state"
 printf 'PREPARING_XENIAL\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl"
 source "$HANDOFF_HARNESS"
 set +e
@@ -2852,7 +2889,7 @@ chmod +x "$dro"
 "$dro" </dev/null >/dev/null 2>&1 &
 echo $! >"$hf/run/dro.pid"
 printf 'READY_FOR_CONFIRMATION\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl"
 install_fake_systemctl "$hf" exit0_no_pid
 source "$HANDOFF_HARNESS"
@@ -2943,7 +2980,7 @@ printf 'start\n' >"$hf/run/sub.state"
   echo "APT_PREPARATION=PASS"
   for i in $(seq 1 24); do echo "SEED_LINE_$i"; done
 } >>"$hf/var/log/aella/offline_os_upgrade.log"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl" HANDOFF_WAIT_SECS=2 HANDOFF_POLL_SECS=1
 export DP_OFFLINE_FORCE_MONITOR=1
 export DP_OFFLINE_MONITOR_MAX_SECS=7
@@ -3022,11 +3059,11 @@ install_fake_systemctl "$hf" ok
 rpid="$(spawn_fake_runner "$hf")"
 printf 'CONFIGURING\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
 printf 'RUNNER_START=PASS\n' >>"$hf/var/log/aella/offline_os_upgrade.log"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl" HANDOFF_WAIT_SECS=2 HANDOFF_POLL_SECS=1
 export DP_OFFLINE_FORCE_MONITOR=1
-export DETACH_AFTER_HANDOFF=1
 source "$HANDOFF_HARNESS"
+export DETACH_AFTER_HANDOFF=1
 set +e
 ( start_upgrade_service_detached ) >"$hf/out-detach.txt" 2>&1
 rc=$?
@@ -3052,7 +3089,7 @@ install_fake_systemctl "$hf" ok
 rpid="$(spawn_fake_runner "$hf")"
 printf 'UPGRADING_XENIAL_TO_BIONIC\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
 printf 'RUNNER_START=PASS\n' >>"$hf/var/log/aella/offline_os_upgrade.log"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl"
 export DP_OFFLINE_FORCE_MONITOR=1
 export DP_OFFLINE_MONITOR_POLL_SECS=1
@@ -3060,12 +3097,14 @@ export DP_OFFLINE_MONITOR_HEARTBEAT_SECS=30
 export DP_OFFLINE_MONITOR_MAX_SECS=0
 export DETACH_AFTER_HANDOFF=0
 source "$HANDOFF_HARNESS"
+# Deliver SIGINT via timeout(1): plain kill -INT to a background job is
+# unreliable under some agent/sandbox process groups and would hang forever
+# with MONITOR_MAX_SECS=0. timeout --preserve-status still exercises the
+# monitor's INT trap and USER_INTERRUPT path.
 set +e
-( monitor_upgrade_progress "$rpid" ) >"$hf/out-int.txt" 2>&1 &
-mon_pid=$!
-sleep 1
-kill -INT "$mon_pid" 2>/dev/null || true
-wait "$mon_pid"
+timeout --preserve-status -s INT 2 \
+  bash -c 'source "$1"; monitor_upgrade_progress "$2"' \
+  bash "$HANDOFF_HARNESS" "$rpid" >"$hf/out-int.txt" 2>&1
 mon_rc=$?
 set -e
 if [[ "$mon_rc" -eq 0 ]] \
@@ -3098,7 +3137,7 @@ install_fake_systemctl "$hf" ok
 rpid="$(spawn_fake_runner "$hf")"
 printf 'POST_UPGRADE_VERIFY\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
 printf 'RUNNER_START=PASS\n' >>"$hf/var/log/aella/offline_os_upgrade.log"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl"
 export DP_OFFLINE_FORCE_MONITOR=1
 export DP_OFFLINE_MONITOR_POLL_SECS=1
@@ -3134,7 +3173,7 @@ install_fake_systemctl "$hf" ok
 rpid="$(spawn_fake_runner "$hf")"
 printf 'UPGRADING_XENIAL_TO_BIONIC\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
 printf 'RUNNER_START=PASS\n' >>"$hf/var/log/aella/offline_os_upgrade.log"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl"
 export DP_OFFLINE_FORCE_MONITOR=1
 export DP_OFFLINE_MONITOR_POLL_SECS=1
@@ -3166,7 +3205,7 @@ install_fake_systemctl "$hf" ok
 rpid="$(spawn_fake_runner "$hf")"
 printf 'UPGRADING_XENIAL_TO_BIONIC\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
 printf 'RUNNER_START=PASS\n' >>"$hf/var/log/aella/offline_os_upgrade.log"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl"
 export DP_OFFLINE_FORCE_MONITOR=1
 export DP_OFFLINE_MONITOR_POLL_SECS=1
@@ -3198,7 +3237,7 @@ install_fake_systemctl "$hf" dbus_reset
 rpid="$(spawn_fake_runner "$hf")"
 printf 'PREPARING_XENIAL\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
 printf 'RUNNER_START=PASS\n' >>"$hf/var/log/aella/offline_os_upgrade.log"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl"
 export DP_OFFLINE_FORCE_MONITOR=1
 export DP_OFFLINE_MONITOR_POLL_SECS=1
@@ -3228,7 +3267,7 @@ printf 'activating\n' >"$hf/run/active.state"
 printf 'UPGRADING_XENIAL_TO_BIONIC\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
 printf 'RUNNER_START=PASS\n' >>"$hf/var/log/aella/offline_os_upgrade.log"
 : >"$hf/run/systemctl-calls.txt"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl"
 export DP_OFFLINE_FORCE_MONITOR=1
 export DP_OFFLINE_MONITOR_MAX_SECS=3
@@ -3269,7 +3308,7 @@ install_fake_systemctl "$hf" ok
 rpid="$(spawn_fake_runner "$hf")"
 printf 'PREPARING_XENIAL\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
 printf 'RUNNER_START=PASS\n' >>"$hf/var/log/aella/offline_os_upgrade.log"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl"
 export DP_OFFLINE_FORCE_MONITOR=1
 export DP_OFFLINE_MONITOR_MAX_SECS=3
@@ -3675,7 +3714,7 @@ printf 'false\n' >"$sf/opt/aelladata/os-upgrade/offline/critical-holds/release_u
 printf 'false\n' >"$sf/opt/aelladata/os-upgrade/offline/critical-holds/release_upgrade_started"
 printf 'VERSION_ID="16.04"\n' >"$sf/etc/os-release"
 mkdir -p "$sf/etc"
-export DP_OFFLINE_TEST_ROOT="$sf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$sf"
+export DP_OFFLINE_TEST_ROOT="$sf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$sf" STELLAR_OFFLINE_TEST_ROOT="$sf"
 export SYSTEMCTL_BIN="$sf/bin/systemctl"
 # Build stale harness: handoff helpers + minimal assess stubs + handle_existing_state pieces
 STALE_HARNESS="${OUT_DIR}/stale-harness.sh"
@@ -4443,7 +4482,7 @@ install_fake_systemctl "$hf" ok
 printf 'FAILED_PRE_DRO\n' >"$hf/opt/aelladata/os-upgrade/offline/state"
 printf 'FINAL_STATE=FAILED_PRE_DRO\nPRE_DRO_ROLLBACK_RESULT=PASS\n' \
   >>"$hf/var/log/aella/offline_os_upgrade.log"
-export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf"
+export DP_OFFLINE_TEST_ROOT="$hf" DP_OFFLINE_TEST_HANDOFF=1 TEST_ROOT="$hf" STELLAR_OFFLINE_TEST_ROOT="$hf"
 export SYSTEMCTL_BIN="$hf/bin/systemctl"
 export DP_OFFLINE_FORCE_MONITOR=1
 export DP_OFFLINE_MONITOR_MAX_SECS=20

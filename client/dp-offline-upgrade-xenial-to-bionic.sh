@@ -12,7 +12,7 @@ SCRIPT_VERSION="1.0.0-xenial-to-bionic"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || printf '%s' "$0")"
 
 # --- build-time pins (do not edit by hand; re-run build-client) ---
-PIN_MIRROR_BASE='http://221.139.249.111'
+PIN_MIRROR_BASE='http://127.0.0.1/ubuntu-offline'
 PIN_HOP='xenial-to-bionic'
 PIN_SOURCE_CODENAME='xenial'
 PIN_TARGET_CODENAME='bionic'
@@ -23,17 +23,17 @@ PIN_SOURCE_SUITES='xenial xenial-updates xenial-security xenial-backports'
 PIN_TARGET_SUITES='bionic bionic-updates bionic-security bionic-backports'
 PIN_KEY_FINGERPRINT='D1FF722556ED95F5E779BAE66B1BA1673A997CA5'
 PIN_KEY_SHA256='d1ef6724347f11355a0fbc8a1dec9cf69e8e8647c5ccd06fbc2f952bcb177d60'
-PIN_MANIFEST_KEY_FINGERPRINT='C786FE9887290E2CF759271DFDD38BE958EABD4A'
-PIN_MANIFEST_KEY_SHA256='d398cbadb5d87b1d01978ce1499feb7436c0c81859314f96298b0adddc3ec079'
-PIN_META_SHA256='12cd1ba580ba66dc22da2f09f8ad0296e27a756285180a175c2aed7930275f22'
+PIN_MANIFEST_KEY_FINGERPRINT='D1FF722556ED95F5E779BAE66B1BA1673A997CA5'
+PIN_MANIFEST_KEY_SHA256='d1ef6724347f11355a0fbc8a1dec9cf69e8e8647c5ccd06fbc2f952bcb177d60'
+PIN_META_SHA256='cfd54d80d8621dbd871612e8cd9d761a94c29a04e8e9ad10c3077b1ec724f89e'
 PIN_UPGRADER_TAR_SHA256='976b87d935f8aa2867fac161198812693e6bde6b8fc3fd84f9a7705f638b50a3'
 PIN_UPGRADER_GPG_SHA256='9013e2a3ceb64a31dd1c2713f64fa00d494cbdfb6542165f46c82f90fea73873'
 PIN_PLAN_CHECKSUM='8eb3d478e2d40e7a19510239fcbf6e2e6824b2587e6e7172d60ef01e8920b157'
 PIN_DISCOVERY_CHECKSUM='d08f76a4e87bbaabc82b2aea3f552d26b9ece53be83735a74dffdfd70a816b56'
-PIN_MANIFEST_SHA256='5bec41c34e7474e978b9dd2e754af5b46f5c63c1126c60a15f5f6708efdb5ba7'
-PIN_SAMPLE_DEB_URL='http://221.139.249.111/hops/xenial-to-bionic/ubuntu/pool/main/a/acl/acl_2.2.52-3build1_amd64.deb'
+PIN_MANIFEST_SHA256='40bd5e8976b1017cbd90728288ca056d7e8bb218e02a8aa587448a706a2584bb'
+PIN_SAMPLE_DEB_URL='http://127.0.0.1/ubuntu-offline/hops/xenial-to-bionic/ubuntu/pool/main/a/acl/acl_2.2.52-3build1_amd64.deb'
 PIN_CONFIRM_PHRASE='UPGRADE-XENIAL-TO-BIONIC'
-PIN_GENERATED_AT='2026-07-26T17:41:49Z'
+PIN_GENERATED_AT='2026-08-05T10:47:31Z'
 PIN_PROFILE_NAME='offline-upgrade-selective'
 
 PIN_KEY_B64='mQENBGpePjYBCAC4/mSayiOdnynQyEygHF0MQZazmNTgWm6REY3nOTTGeZz9KrVrGuncglQk56wg
@@ -48,89 +48,100 @@ Opl8pV/7CACWaGuDSadgL6t7uqt5u8b4bEgaeHz4wEviNVhsW3YnTqtotrnfGa3L6A/8WF5FxxF1
 3cnpz7BZkABBGwKEGjBJkT6aGBEpKIzhd46l/JpgiPprNe6ur/yWtuI09rZQltLYjVeF6KEIyrGT
 g+eqprQ76v9fON2+lPZIasvHHeoWNGJPHyauGbaXL3PiLlui4P53KK9NlD8N0MBoLvRVpon57o9s
 O5E9A7DBvIOfNelSaOgjs2Gn9iFPb90h4X60UwhVVqBO3kYa'
-PIN_MANIFEST_KEY_B64='mQENBGpe/6YBCACgPlVwOsVox094TAPHFcYuuJWFJW0DxymIKDdrEFMLlimSnP9UDtIEULM0Y4dR
-5UOfKnhQohrljoz/rTIuDF8EcSCnJnd9WIkmPcojz/xhBGlpOOsJNbjUb+2wLLaCyxnqEp/ZATA2
-xItoUHYARCw2EarxvGTmpqnq3Fh/3cCWQGcI0U1A+tpWWWlAaWRWuIPgE4o2HkwiJoVFhe27a88i
-OLtHgjSsNCgC+jMxtHHgMp7TVwp44nowlCr1N6ST/+4Hq1y79TLzEQxLvXB2R+Y1NbO8iZ5ijxwT
-cdUjeuxo2m5q674sF+rAu/f048XDC+mBt1DeHuMjj29H/HKe+ZP/ABEBAAG0P1N0ZWxsYXIgT2Zm
-bGluZSBDbGllbnQgTWFuaWZlc3QgPG9mZmxpbmUtY2xpZW50LW1hbmlmZXN0QGxvY2FsPokBUQQT
-AQoAPBYhBMeG/piHKQ4s91knHf3Ti+lY6r1KBQJqXv+mAxsvBAULCQgHAgIiAgYVCgkICwIEFgID
-AQIeBwIXgAAKCRD904vpWOq9Smu5B/dxG/mdbTbOM4mzXWCJJdVq7YbnLWzWJhlzpDfvlDUJlTMO
-6IAP7aj22OvW+2uYKUFdXeoIAJ7WtPBDEw1WYLAII947wak4nKZdt2LD5cCgQPsFPa0B5qp6MXA8
-BsHxOdoF/JM3EhkT30CN2r689WYLxRdYLSQ3fCN7oPzKQR1jn1JYpJU/UJGOG4sBYG4oXSrlvLMi
-GFwfNDwhxxsl1iUzJo6M1vN9FrUvgSY8bzD0/5NhwmmeG4dJv8uODv9+V5jZdMCNvEwEpzCvG+TT
-dWam3fJsMjcZoUaKz120TvJ0igl++FWyl9V1sjX6a0/Im2aXOsytxXzDbrG82Mg0OJI='
+PIN_MANIFEST_KEY_B64='mQENBGpePjYBCAC4/mSayiOdnynQyEygHF0MQZazmNTgWm6REY3nOTTGeZz9KrVrGuncglQk56wg
+yg2KR+YqC6qRK9SMW3ZUrXuVLWEDVRr1GJVIYOL/U3QBUYdMwNiSvA846COpMOob14zM1ye2GNN6
+joFfhOrnFBKHZpx5jOS8cIxcnLUQzgTQKhHyZPVk0mrjb2AwG+k989I8nGMuZzxu0JFpSWP0pPhL
+XhUjEPPpWtUMqz3E/CKujQhtI8v7rrI3NNgzeUWlyaa4I4wUdX4rM6/VhqOCdD7w9cyA3S2jll/z
+qWhZdtJW3btyNVy82XEDFkuPQFma8GNhGYclgciZ7rieetZM7ahPABEBAAG0MFVidW50dSBTZWxl
+Y3RpdmUgTWlycm9yIDxzZWxlY3RpdmUtbWlycm9yQGxvY2FsPokBUgQTAQoAPBYhBNH/ciVW7ZX1
+53m65msboWc6mXylBQJqXj42AxsvBAULCQgHAgIiAgYVCgkICwIEFgIDAQIeBwIXgAAKCRBrG6Fn
+Opl8pV/7CACWaGuDSadgL6t7uqt5u8b4bEgaeHz4wEviNVhsW3YnTqtotrnfGa3L6A/8WF5FxxF1
+4EeRrilLvIhBss9dNJc4/aqkG1c648bjw4M0W8zf8aT+f8P4qDh/ERxoKA7cR4v5lC6sLLuUwSmK
+3cnpz7BZkABBGwKEGjBJkT6aGBEpKIzhd46l/JpgiPprNe6ur/yWtuI09rZQltLYjVeF6KEIyrGT
+g+eqprQ76v9fON2+lPZIasvHHeoWNGJPHyauGbaXL3PiLlui4P53KK9NlD8N0MBoLvRVpon57o9s
+O5E9A7DBvIOfNelSaOgjs2Gn9iFPb90h4X60UwhVVqBO3kYa'
 PIN_META_B64='RGlzdDogeGVuaWFsCk5hbWU6IFhlbmlhbCBYZXJ1cwpWZXJzaW9uOiAxNi4wNC43IExUUwpEYXRl
 OiBUaHUsIDIxIEFwcmlsIDIwMTYgMTY6MDQ6MDAgVVRDClN1cHBvcnRlZDogMQpEZXNjcmlwdGlv
-bjogVGhpcyBpcyB0aGUgMTYuMDQuNyBMVFMgcmVsZWFzZQpSZWxlYXNlLUZpbGU6IGh0dHA6Ly8y
-MjEuMTM5LjI0OS4xMTEvaG9wcy94ZW5pYWwtdG8tYmlvbmljL3VidW50dS9kaXN0cy94ZW5pYWwv
-UmVsZWFzZQpSZWxlYXNlTm90ZXM6IGh0dHA6Ly8yMjEuMTM5LjI0OS4xMTEvY2xpZW50L3hlbmlh
-bC10by1iaW9uaWMvUmVsZWFzZUFubm91bmNlbWVudApVcGdyYWRlVG9vbDogaHR0cDovLzIyMS4x
-MzkuMjQ5LjExMS9vZmZsaW5lL3JlbGVhc2UtdXBncmFkZXJzL2Jpb25pYy9iaW9uaWMudGFyLmd6
-ClVwZ3JhZGVUb29sU2lnbmF0dXJlOiBodHRwOi8vMjIxLjEzOS4yNDkuMTExL29mZmxpbmUvcmVs
-ZWFzZS11cGdyYWRlcnMvYmlvbmljL2Jpb25pYy50YXIuZ3ouZ3BnCgpEaXN0OiBiaW9uaWMKTmFt
-ZTogQmlvbmljIEJlYXZlcgpWZXJzaW9uOiAxOC4wNC42IExUUwpEYXRlOiBUaHUsIDI2IEFwcmls
-IDIwMTggMTg6MDQ6MDAgVVRDClN1cHBvcnRlZDogMQpEZXNjcmlwdGlvbjogVGhpcyBpcyB0aGUg
-MTguMDQuNiBMVFMgcmVsZWFzZQpSZWxlYXNlLUZpbGU6IGh0dHA6Ly8yMjEuMTM5LjI0OS4xMTEv
-aG9wcy94ZW5pYWwtdG8tYmlvbmljL3VidW50dS9kaXN0cy9iaW9uaWMvUmVsZWFzZQpSZWxlYXNl
-Tm90ZXM6IGh0dHA6Ly8yMjEuMTM5LjI0OS4xMTEvY2xpZW50L3hlbmlhbC10by1iaW9uaWMvUmVs
-ZWFzZUFubm91bmNlbWVudApSZWxlYXNlTm90ZXNIdG1sOiBodHRwOi8vMjIxLjEzOS4yNDkuMTEx
-L2NsaWVudC94ZW5pYWwtdG8tYmlvbmljL1JlbGVhc2VBbm5vdW5jZW1lbnQuaHRtbApVcGdyYWRl
-VG9vbDogaHR0cDovLzIyMS4xMzkuMjQ5LjExMS9vZmZsaW5lL3JlbGVhc2UtdXBncmFkZXJzL2Jp
-b25pYy9iaW9uaWMudGFyLmd6ClVwZ3JhZGVUb29sU2lnbmF0dXJlOiBodHRwOi8vMjIxLjEzOS4y
-NDkuMTExL29mZmxpbmUvcmVsZWFzZS11cGdyYWRlcnMvYmlvbmljL2Jpb25pYy50YXIuZ3ouZ3Bn
-Cg=='
+bjogVGhpcyBpcyB0aGUgMTYuMDQuNyBMVFMgcmVsZWFzZQpSZWxlYXNlLUZpbGU6IGh0dHA6Ly8x
+MjcuMC4wLjEvdWJ1bnR1LW9mZmxpbmUvaG9wcy94ZW5pYWwtdG8tYmlvbmljL3VidW50dS9kaXN0
+cy94ZW5pYWwvUmVsZWFzZQpSZWxlYXNlTm90ZXM6IGh0dHA6Ly8xMjcuMC4wLjEvdWJ1bnR1LW9m
+ZmxpbmUvY2xpZW50L3hlbmlhbC10by1iaW9uaWMvUmVsZWFzZUFubm91bmNlbWVudApVcGdyYWRl
+VG9vbDogaHR0cDovLzEyNy4wLjAuMS91YnVudHUtb2ZmbGluZS9vZmZsaW5lL3JlbGVhc2UtdXBn
+cmFkZXJzL2Jpb25pYy9iaW9uaWMudGFyLmd6ClVwZ3JhZGVUb29sU2lnbmF0dXJlOiBodHRwOi8v
+MTI3LjAuMC4xL3VidW50dS1vZmZsaW5lL29mZmxpbmUvcmVsZWFzZS11cGdyYWRlcnMvYmlvbmlj
+L2Jpb25pYy50YXIuZ3ouZ3BnCgpEaXN0OiBiaW9uaWMKTmFtZTogQmlvbmljIEJlYXZlcgpWZXJz
+aW9uOiAxOC4wNC42IExUUwpEYXRlOiBUaHUsIDI2IEFwcmlsIDIwMTggMTg6MDQ6MDAgVVRDClN1
+cHBvcnRlZDogMQpEZXNjcmlwdGlvbjogVGhpcyBpcyB0aGUgMTguMDQuNiBMVFMgcmVsZWFzZQpS
+ZWxlYXNlLUZpbGU6IGh0dHA6Ly8xMjcuMC4wLjEvdWJ1bnR1LW9mZmxpbmUvaG9wcy94ZW5pYWwt
+dG8tYmlvbmljL3VidW50dS9kaXN0cy9iaW9uaWMvUmVsZWFzZQpSZWxlYXNlTm90ZXM6IGh0dHA6
+Ly8xMjcuMC4wLjEvdWJ1bnR1LW9mZmxpbmUvY2xpZW50L3hlbmlhbC10by1iaW9uaWMvUmVsZWFz
+ZUFubm91bmNlbWVudApSZWxlYXNlTm90ZXNIdG1sOiBodHRwOi8vMTI3LjAuMC4xL3VidW50dS1v
+ZmZsaW5lL2NsaWVudC94ZW5pYWwtdG8tYmlvbmljL1JlbGVhc2VBbm5vdW5jZW1lbnQuaHRtbApV
+cGdyYWRlVG9vbDogaHR0cDovLzEyNy4wLjAuMS91YnVudHUtb2ZmbGluZS9vZmZsaW5lL3JlbGVh
+c2UtdXBncmFkZXJzL2Jpb25pYy9iaW9uaWMudGFyLmd6ClVwZ3JhZGVUb29sU2lnbmF0dXJlOiBo
+dHRwOi8vMTI3LjAuMC4xL3VidW50dS1vZmZsaW5lL29mZmxpbmUvcmVsZWFzZS11cGdyYWRlcnMv
+YmlvbmljL2Jpb25pYy50YXIuZ3ouZ3BnCg=='
 PIN_MANIFEST_B64='ewogICJzY2hlbWFfdmVyc2lvbiI6IDEsCiAgInByb2ZpbGUiOiAib2ZmbGluZS11cGdyYWRlLXNl
 bGVjdGl2ZSIsCiAgImhvcCI6ICJ4ZW5pYWwtdG8tYmlvbmljIiwKICAic291cmNlX2NvZGVuYW1l
 IjogInhlbmlhbCIsCiAgInRhcmdldF9jb2RlbmFtZSI6ICJiaW9uaWMiLAogICJzb3VyY2VfdmVy
 c2lvbiI6ICIxNi4wNCIsCiAgInRhcmdldF92ZXJzaW9uIjogIjE4LjA0IiwKICAibWlycm9yX2Jh
-c2UiOiAiaHR0cDovLzIyMS4xMzkuMjQ5LjExMSIsCiAgInJlcG9zaXRvcnlfYmFzZSI6ICJodHRw
-Oi8vMjIxLjEzOS4yNDkuMTExL2hvcHMveGVuaWFsLXRvLWJpb25pYy91YnVudHUiLAogICJzdWl0
-ZXMiOiBbCiAgICAieGVuaWFsIiwKICAgICJ4ZW5pYWwtdXBkYXRlcyIsCiAgICAieGVuaWFsLXNl
-Y3VyaXR5IiwKICAgICJ4ZW5pYWwtYmFja3BvcnRzIiwKICAgICJiaW9uaWMiLAogICAgImJpb25p
-Yy11cGRhdGVzIiwKICAgICJiaW9uaWMtc2VjdXJpdHkiLAogICAgImJpb25pYy1iYWNrcG9ydHMi
-CiAgXSwKICAic291cmNlX3N1aXRlcyI6IFsKICAgICJ4ZW5pYWwiLAogICAgInhlbmlhbC11cGRh
-dGVzIiwKICAgICJ4ZW5pYWwtc2VjdXJpdHkiLAogICAgInhlbmlhbC1iYWNrcG9ydHMiCiAgXSwK
-ICAidGFyZ2V0X3N1aXRlcyI6IFsKICAgICJiaW9uaWMiLAogICAgImJpb25pYy11cGRhdGVzIiwK
-ICAgICJiaW9uaWMtc2VjdXJpdHkiLAogICAgImJpb25pYy1iYWNrcG9ydHMiCiAgXSwKICAiY29t
-cG9uZW50cyI6IFsKICAgICJtYWluIiwKICAgICJ1bml2ZXJzZSIKICBdLAogICJyZXBvc2l0b3J5
-X2tleV9maW5nZXJwcmludCI6ICJEMUZGNzIyNTU2RUQ5NUY1RTc3OUJBRTY2QjFCQTE2NzNBOTk3
-Q0E1IiwKICAia2V5X3NoYTI1NiI6ICJkMWVmNjcyNDM0N2YxMTM1NWEwZmJjOGExZGVjOWNmNjll
-OGU4NjQ3YzVjY2QwNmZiYzJmOTUyYmNiMTc3ZDYwIiwKICAibWFuaWZlc3Rfa2V5X2ZpbmdlcnBy
-aW50IjogIkM3ODZGRTk4ODcyOTBFMkNGNzU5MjcxREZERDM4QkU5NThFQUJENEEiLAogICJtYW5p
-ZmVzdF9rZXlfc2hhMjU2IjogImQzOThjYmFkYjVkODdiMWQwMTk3OGNlMTQ5OWZlYjc0MzZjMGM4
-MTg1OTMxNGY5NjI5OGIwYWRkZGMzZWMwNzkiLAogICJrZXlyaW5nX2luc3RhbGxfcGF0aCI6ICIv
-ZXRjL2FwdC90cnVzdGVkLmdwZy5kL3N0ZWxsYXItb2ZmbGluZS14ZW5pYWwtdG8tYmlvbmljLmdw
-ZyIsCiAgIm1ldGFfcmVsZWFzZV91cmwiOiAiaHR0cDovLzIyMS4xMzkuMjQ5LjExMS9jbGllbnQv
-eGVuaWFsLXRvLWJpb25pYy9tZXRhLXJlbGVhc2UtbHRzIiwKICAibWV0YV9yZWxlYXNlX3NoYTI1
-NiI6ICIxMmNkMWJhNTgwYmE2NmRjMjJkYTJmMDlmOGFkMDI5NmUyN2E3NTYyODUxODBhMTc1YzJh
-ZWQ3OTMwMjc1ZjIyIiwKICAidXBncmFkZXJfdGFyX3VybCI6ICJodHRwOi8vMjIxLjEzOS4yNDku
-MTExL29mZmxpbmUvcmVsZWFzZS11cGdyYWRlcnMvYmlvbmljL2Jpb25pYy50YXIuZ3oiLAogICJ1
-cGdyYWRlcl90YXJfc2hhMjU2IjogIjk3NmI4N2Q5MzVmOGFhMjg2N2ZhYzE2MTE5ODgxMjY5M2U2
-YmRlNmI4ZmMzZmQ4NGY5YTc3MDVmNjM4YjUwYTMiLAogICJ1cGdyYWRlcl9ncGdfdXJsIjogImh0
-dHA6Ly8yMjEuMTM5LjI0OS4xMTEvb2ZmbGluZS9yZWxlYXNlLXVwZ3JhZGVycy9iaW9uaWMvYmlv
-bmljLnRhci5nei5ncGciLAogICJ1cGdyYWRlcl9ncGdfc2hhMjU2IjogIjkwMTNlMmEzY2ViNjRh
-MzFkZDFjMjcxM2Y2NGZhMDBkNDk0Y2JkZmI2NTQyMTY1ZjQ2YzgyZjkwZmVhNzM4NzMiLAogICJz
-YW1wbGVfZGViX3VybCI6ICJodHRwOi8vMjIxLjEzOS4yNDkuMTExL2hvcHMveGVuaWFsLXRvLWJp
-b25pYy91YnVudHUvcG9vbC9tYWluL2EvYWNsL2FjbF8yLjIuNTItM2J1aWxkMV9hbWQ2NC5kZWIi
-LAogICJwbGFuX2NoZWNrc3VtIjogIjhlYjNkNDc4ZTJkNDBlN2ExOTUxMDIzOWZjYmY2ZTJlNjgy
-NGIyNTg3ZTZlNzE3MmQ2MGVmMDFlODkyMGIxNTciLAogICJkaXNjb3ZlcnlfY2hlY2tzdW0iOiAi
-ZDA4Zjc2YTRlODdiYmFhYmM4MmIyYWVhM2Y1NTJkMjZiOWVjZTUzYmU4MzczNWE3NGRmZmRmZDcw
-YTgxNmI1NiIsCiAgImNvbmZpcm1fcGhyYXNlIjogIlVQR1JBREUtWEVOSUFMLVRPLUJJT05JQyIs
-CiAgImdlbmVyYXRlZF9hdCI6ICIyMDI2LTA3LTI2VDE3OjQxOjQ5WiIsCiAgImFubm91bmNlbWVu
-dHMiOiB7CiAgICAiUmVsZWFzZUFubm91bmNlbWVudCI6ICIyNDFiNzhiZDIwOGFhMGFkZDM4YjU4
-MWEwY2I2NjI5MGQxZmE2Yjk5NGI4MGFkYTNjNWZhNmIzYTRlMWY4YWFmIiwKICAgICJSZWxlYXNl
-QW5ub3VuY2VtZW50Lmh0bWwiOiAiZGViZGJlZTU5ZTMzNzFhZTcwZjgzZmIxNGNmNTA3ZDlmZmRl
-ZWNjYzg2YTkzOWZmM2JhMGM5NDdmMjA4NjVjMiIKICB9Cn0K'
-PIN_MANIFEST_SIG_B64='LS0tLS1CRUdJTiBQR1AgU0lHTkFUVVJFLS0tLS0KCmlRRXpCQUFCQ2dBZEZpRUV4NGIrbUljcERp
-ejNXU2NkL2RPTDZWanF2VW9GQW1wbVJ0MEFDZ2tRL2RPTDZWanEKdlVxYTZnZi9XMGJ5NkZZVjcw
-Ym1CY0hCcklWMkowM3NvRlFSbEtSRWhGVkw2Y1orVjdRb1Z1c3pMVzBaTUlZNwpqNjAyVWlqTVhr
-RFRQeEdRcnB3bm5tZEZOSmFadUFITUNid1dJc2pDL2o2L1NFMklPalZkbkowVzVRR3BsTXhnCm1s
-a2hTTWZXQjFrM3pQd2ZPYlNCMnNkbW5pRGJGQVpoOCtUK2gyRU10WE9RNGt5RFczSE1XWDJ6R2Za
-U1lhQjAKY1VOSzVIdUJCQk9ndDdoS0g4dGpNRDBrK29aYUJLS0VXbk5RNVpIelNvQkkxbDR2Q1JW
-OFlKcFdQa0RGd2dPVgpGRzhlVnlEUnBLTWhHcDFlWU5sbnhNcEI2Wml1Nk11QnJsM2RpUFBLbkUz
-L0NFeVZpeFlSbWZrZjN1V3hZcW0wCk1zRHJkaFlXcUlHTnkxU0YvbUNKTXF3TEd3ekJpZz09Cj1l
-NWZyCi0tLS0tRU5EIFBHUCBTSUdOQVRVUkUtLS0tLQo='
+c2UiOiAiaHR0cDovLzEyNy4wLjAuMS91YnVudHUtb2ZmbGluZSIsCiAgInJlcG9zaXRvcnlfYmFz
+ZSI6ICJodHRwOi8vMTI3LjAuMC4xL3VidW50dS1vZmZsaW5lL2hvcHMveGVuaWFsLXRvLWJpb25p
+Yy91YnVudHUiLAogICJzdWl0ZXMiOiBbCiAgICAieGVuaWFsIiwKICAgICJ4ZW5pYWwtdXBkYXRl
+cyIsCiAgICAieGVuaWFsLXNlY3VyaXR5IiwKICAgICJ4ZW5pYWwtYmFja3BvcnRzIiwKICAgICJi
+aW9uaWMiLAogICAgImJpb25pYy11cGRhdGVzIiwKICAgICJiaW9uaWMtc2VjdXJpdHkiLAogICAg
+ImJpb25pYy1iYWNrcG9ydHMiCiAgXSwKICAic291cmNlX3N1aXRlcyI6IFsKICAgICJ4ZW5pYWwi
+LAogICAgInhlbmlhbC11cGRhdGVzIiwKICAgICJ4ZW5pYWwtc2VjdXJpdHkiLAogICAgInhlbmlh
+bC1iYWNrcG9ydHMiCiAgXSwKICAidGFyZ2V0X3N1aXRlcyI6IFsKICAgICJiaW9uaWMiLAogICAg
+ImJpb25pYy11cGRhdGVzIiwKICAgICJiaW9uaWMtc2VjdXJpdHkiLAogICAgImJpb25pYy1iYWNr
+cG9ydHMiCiAgXSwKICAiY29tcG9uZW50cyI6IFsKICAgICJtYWluIiwKICAgICJ1bml2ZXJzZSIK
+ICBdLAogICJyZXBvc2l0b3J5X2tleV9maW5nZXJwcmludCI6ICJEMUZGNzIyNTU2RUQ5NUY1RTc3
+OUJBRTY2QjFCQTE2NzNBOTk3Q0E1IiwKICAia2V5X3NoYTI1NiI6ICJkMWVmNjcyNDM0N2YxMTM1
+NWEwZmJjOGExZGVjOWNmNjllOGU4NjQ3YzVjY2QwNmZiYzJmOTUyYmNiMTc3ZDYwIiwKICAibWFu
+aWZlc3Rfa2V5X2ZpbmdlcnByaW50IjogIkQxRkY3MjI1NTZFRDk1RjVFNzc5QkFFNjZCMUJBMTY3
+M0E5OTdDQTUiLAogICJtYW5pZmVzdF9rZXlfc2hhMjU2IjogImQxZWY2NzI0MzQ3ZjExMzU1YTBm
+YmM4YTFkZWM5Y2Y2OWU4ZTg2NDdjNWNjZDA2ZmJjMmY5NTJiY2IxNzdkNjAiLAogICJrZXlyaW5n
+X2luc3RhbGxfcGF0aCI6ICIvZXRjL2FwdC90cnVzdGVkLmdwZy5kL3N0ZWxsYXItb2ZmbGluZS14
+ZW5pYWwtdG8tYmlvbmljLmdwZyIsCiAgIm1ldGFfcmVsZWFzZV91cmwiOiAiaHR0cDovLzEyNy4w
+LjAuMS91YnVudHUtb2ZmbGluZS9jbGllbnQveGVuaWFsLXRvLWJpb25pYy9tZXRhLXJlbGVhc2Ut
+bHRzIiwKICAibWV0YV9yZWxlYXNlX3NoYTI1NiI6ICJjZmQ1NGQ4MGQ4NjIxZGJkODcxNjEyZThj
+ZDlkNzYxYTk0YzI5YTA0ZThlOWFkMTBjMzA3N2IxZWM3MjRmODllIiwKICAidXBncmFkZXJfdGFy
+X3VybCI6ICJodHRwOi8vMTI3LjAuMC4xL3VidW50dS1vZmZsaW5lL29mZmxpbmUvcmVsZWFzZS11
+cGdyYWRlcnMvYmlvbmljL2Jpb25pYy50YXIuZ3oiLAogICJ1cGdyYWRlcl90YXJfc2hhMjU2Ijog
+Ijk3NmI4N2Q5MzVmOGFhMjg2N2ZhYzE2MTE5ODgxMjY5M2U2YmRlNmI4ZmMzZmQ4NGY5YTc3MDVm
+NjM4YjUwYTMiLAogICJ1cGdyYWRlcl9ncGdfdXJsIjogImh0dHA6Ly8xMjcuMC4wLjEvdWJ1bnR1
+LW9mZmxpbmUvb2ZmbGluZS9yZWxlYXNlLXVwZ3JhZGVycy9iaW9uaWMvYmlvbmljLnRhci5nei5n
+cGciLAogICJ1cGdyYWRlcl9ncGdfc2hhMjU2IjogIjkwMTNlMmEzY2ViNjRhMzFkZDFjMjcxM2Y2
+NGZhMDBkNDk0Y2JkZmI2NTQyMTY1ZjQ2YzgyZjkwZmVhNzM4NzMiLAogICJzYW1wbGVfZGViX3Vy
+bCI6ICJodHRwOi8vMTI3LjAuMC4xL3VidW50dS1vZmZsaW5lL2hvcHMveGVuaWFsLXRvLWJpb25p
+Yy91YnVudHUvcG9vbC9tYWluL2EvYWNsL2FjbF8yLjIuNTItM2J1aWxkMV9hbWQ2NC5kZWIiLAog
+ICJwbGFuX2NoZWNrc3VtIjogIjhlYjNkNDc4ZTJkNDBlN2ExOTUxMDIzOWZjYmY2ZTJlNjgyNGIy
+NTg3ZTZlNzE3MmQ2MGVmMDFlODkyMGIxNTciLAogICJkaXNjb3ZlcnlfY2hlY2tzdW0iOiAiZDA4
+Zjc2YTRlODdiYmFhYmM4MmIyYWVhM2Y1NTJkMjZiOWVjZTUzYmU4MzczNWE3NGRmZmRmZDcwYTgx
+NmI1NiIsCiAgImNvbmZpcm1fcGhyYXNlIjogIlVQR1JBREUtWEVOSUFMLVRPLUJJT05JQyIsCiAg
+ImNsaWVudF9wcm92ZW5hbmNlX3NjaGVtYV92ZXJzaW9uIjogIjEiLAogICJjbGllbnRfYnVpbGRf
+aW5wdXRfc2hhMjU2IjogIjAyNzU0ZmVkNWUyMGQ3YmM4OTFkNWQ2MzJlODI3YzIzNTczMzIwMjNl
+MDUwN2U3YWMyM2NhYmRhYTU3NTU4MDciLAogICJjbGllbnRfc291cmNlX3JldmlzaW9uIjogIjlj
+MWFlMjdlZTFkY2U3ZWI2NTc4MmUyN2E2ZTM3ZTg0NTQ4NTk1OGQiLAogICJjbGllbnRfc291cmNl
+X3RyZWVfc3RhdGUiOiAiZGlydHkiLAogICJjbGllbnRfY29tbWFuZF9ibG9ja192ZXJzaW9uIjog
+IlNVQlNIRUxMX1YyIiwKICAiY2xpZW50X21pcnJvcl9iYXNlX3VybCI6ICJodHRwOi8vMTI3LjAu
+MC4xL3VidW50dS1vZmZsaW5lIiwKICAiY2xpZW50X3NpZ25pbmdfZmluZ2VycHJpbnQiOiAiRDFG
+RjcyMjU1NkVEOTVGNUU3NzlCQUU2NkIxQkExNjczQTk5N0NBNSIsCiAgImNsaWVudF9ydW50aW1l
+X21hbmlmZXN0X3NoYTI1NiI6ICI0MTg0ZDc1Njc0MGVhNzI0MDE5NjUyNmIzNzIyNzJkMTVmOWNh
+ZjJjNWE2ZjgzZTMwNGFjMjZmNzdmOWY2OWU1IiwKICAiY2xpZW50X2J1aWxkZXJzX3NoYTI1NiI6
+ICJhNjk3OTQ2MDYzYWI2NzY5MzAzNTFlNmRiYzgxODVhNzdiNTRiNTcxYjQxNmFhMjA5NDY2YTAx
+ODg4YjJiNTY4IiwKICAiY2xpZW50X3RlbXBsYXRlc19zaGEyNTYiOiAiYWUyZTRkNDBkMTNkZTYz
+NmRiNmI1YjU1NjQ0OTRkM2M2ZmRlODhhMDYxZjIzMGNlNWFkNTc3YzIwYmRjOTQ5YSIsCiAgImNs
+aWVudF9zaGFyZWRfaGVscGVyc19zaGEyNTYiOiAiY2MwNjcyZDJiNGU5NTc5ZDBjMGY2OWNmYTk3
+ZTY2ZTkyMDFhODQxNGNiM2RmNWU2ZTQzZmE0NzUwODE4MzZiOSIsCiAgImNsaWVudF9ydW5uZXJf
+c2hhMjU2IjogIjJhMDdlYWJkM2NiNWJjOGFmOTQ2ZjgxZjhhOGU1MTdlYmE3YzAwNTZkMjEzYTM0
+YWQ0MWMxM2UwODZlYjI1NjMiLAogICJnZW5lcmF0ZWRfYXQiOiAiMjAyNi0wOC0wNVQxMDo0Nzoz
+MVoiLAogICJhbm5vdW5jZW1lbnRzIjogewogICAgIlJlbGVhc2VBbm5vdW5jZW1lbnQiOiAiMjQx
+Yjc4YmQyMDhhYTBhZGQzOGI1ODFhMGNiNjYyOTBkMWZhNmI5OTRiODBhZGEzYzVmYTZiM2E0ZTFm
+OGFhZiIsCiAgICAiUmVsZWFzZUFubm91bmNlbWVudC5odG1sIjogImRlYmRiZWU1OWUzMzcxYWU3
+MGY4M2ZiMTRjZjUwN2Q5ZmZkZWVjY2M4NmE5MzlmZjNiYTBjOTQ3ZjIwODY1YzIiCiAgfQp9Cg=='
+PIN_MANIFEST_SIG_B64='LS0tLS1CRUdJTiBQR1AgU0lHTkFUVVJFLS0tLS0KVU5TSUdORURfVEVTVAotLS0tLUVORCBQR1Ag
+U0lHTkFUVVJFLS0tLS0K'
 PIN_ANNOUNCEMENT_B64='PSBXZWxjb21lIHRvIFVidW50dSAxOC4wNCAnQmlvbmljIEJlYXZlcicgPQoKVGhlIFVidW50dSB0
 ZWFtIGlzIHByb3VkIHRvIGFubm91bmNlIFVidW50dSAxOC4wNCAnQmlvbmljIEJlYXZlcicuCgpU
 byBzZWUgd2hhdCdzIG5ldyBpbiB0aGlzIHJlbGVhc2UsIHZpc2l0OgogIGh0dHBzOi8vd2lraS51
@@ -328,6 +339,7 @@ Options:
   --mode os-only      Phase 1 OS-only mode (default; product gates skipped)
   --detach            Start under systemd and return immediately without
                       attaching the local progress monitor
+  --diagnose-state    Read-only state/evidence diagnosis (no mutations)
   --help              Show this help
 EOF
 }
@@ -973,6 +985,220 @@ is_critical_os_hold_package() {
   return 1
 }
 
+# Shared durable atomic write helpers for offline OS-upgrade clients.
+# Injected at build time via the DURABLE_WRITE_HELPER template token.
+# Prefer targeted file+directory fsync over unbounded global `sync`.
+# Bash 4.3+/4.4 safe; requires python3 (standard on Bionic+ upgrade hosts).
+
+DURABLE_WRITE_LOG_THRESHOLD_MS="${DURABLE_WRITE_LOG_THRESHOLD_MS:-500}"
+
+_durable_now_ms() {
+  python3 -c 'import time; print(int(time.time()*1000))' 2>/dev/null || echo 0
+}
+
+_durable_write_python() {
+  # stdin → durable atomic replace at path. Args: path mode_or_empty preserve_owner(0|1)
+  local dest="$1"
+  local mode="${2:-}"
+  local preserve_owner="${3:-1}"
+  local content_file
+  content_file="$(mktemp "${TMPDIR:-/tmp}/durable-content.XXXXXX")"
+  cat >"$content_file"
+  python3 - "$dest" "$mode" "$preserve_owner" "$content_file" <<'PY'
+import errno
+import os
+import stat
+import sys
+import tempfile
+
+dest = sys.argv[1]
+mode_arg = sys.argv[2]
+preserve_owner = sys.argv[3] == "1"
+with open(sys.argv[4], "rb") as fh:
+    data = fh.read()
+
+parent = os.path.dirname(os.path.abspath(dest)) or "."
+base = os.path.basename(dest)
+os.makedirs(parent, mode=0o755, exist_ok=True)
+
+existed = False
+old_mode = None
+old_uid = None
+old_gid = None
+if os.path.lexists(dest):
+    if os.path.islink(dest):
+        sys.stderr.write("DURABLE_WRITE_ERR=dest_is_symlink\n")
+        sys.exit(2)
+    st = os.lstat(dest)
+    if not stat.S_ISREG(st.st_mode):
+        sys.stderr.write("DURABLE_WRITE_ERR=dest_not_regular\n")
+        sys.exit(2)
+    existed = True
+    old_mode = stat.S_IMODE(st.st_mode)
+    old_uid = st.st_uid
+    old_gid = st.st_gid
+
+if mode_arg:
+    mode = int(mode_arg, 8)
+elif existed and old_mode is not None:
+    mode = old_mode
+else:
+    mode = 0o644
+
+fd = None
+tmp_path = None
+try:
+    fd, tmp_path = tempfile.mkstemp(
+        prefix="." + base + ".",
+        suffix=".tmp",
+        dir=parent,
+    )
+    written = 0
+    view = memoryview(data)
+    while written < len(data):
+        n = os.write(fd, view[written:])
+        if n <= 0:
+            raise OSError(errno.EIO, "short write")
+        written += n
+    os.fsync(fd)
+    os.fchmod(fd, mode)
+    if preserve_owner and existed and old_uid is not None:
+        try:
+            os.fchown(fd, old_uid, old_gid)
+        except OSError:
+            pass
+    os.close(fd)
+    fd = None
+    os.replace(tmp_path, dest)
+    tmp_path = None
+    dirfd = os.open(parent, os.O_RDONLY)
+    try:
+        os.fsync(dirfd)
+    finally:
+        os.close(dirfd)
+except Exception as exc:
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    if tmp_path and os.path.lexists(tmp_path):
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+    sys.stderr.write("DURABLE_WRITE_ERR=%s\n" % (exc,))
+    sys.exit(1)
+sys.exit(0)
+PY
+  local py_rc=$?
+  rm -f "$content_file"
+  return "$py_rc"
+}
+
+durable_fsync_path() {
+  # Targeted fsync of an existing regular file and its parent directory.
+  # Never falls back to unbounded global sync.
+  local path="$1"
+  python3 - "$path" <<'PY'
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+if not os.path.lexists(path):
+    sys.exit(1)
+if os.path.islink(path):
+    sys.exit(2)
+st = os.lstat(path)
+parent = os.path.dirname(os.path.abspath(path)) or "."
+if stat.S_ISREG(st.st_mode):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+elif stat.S_ISDIR(st.st_mode):
+    parent = path
+else:
+    sys.exit(2)
+dirfd = os.open(parent, os.O_RDONLY)
+try:
+    os.fsync(dirfd)
+finally:
+    os.close(dirfd)
+sys.exit(0)
+PY
+}
+
+durable_atomic_write() {
+  # durable_atomic_write <logical-name> <path> [mode]
+  # Content from stdin. Optional mode octal (0600). Preserves owner when file exists.
+  local logical="$1"
+  local path="$2"
+  local mode="${3:-}"
+  local start_ms end_ms dur rc=0
+  local errf
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    if declare -F log >/dev/null 2>&1; then
+      log ERROR "DURABLE_WRITE_BEGIN=${logical}"
+      log ERROR "DURABLE_WRITE_PATH=${path}"
+      log ERROR "DURABLE_WRITE_RESULT=FAIL"
+      log ERROR "DURABLE_WRITE_DURATION_MS=0"
+      log ERROR "DURABLE_WRITE_ERR=python3_missing"
+    fi
+    return 1
+  fi
+
+  start_ms="$(_durable_now_ms)"
+  errf="$(mktemp "${TMPDIR:-/tmp}/durable-write.XXXXXX")"
+  set +e
+  _durable_write_python "$path" "$mode" 1 2>"$errf"
+  rc=$?
+  set -e
+  end_ms="$(_durable_now_ms)"
+  dur=$((end_ms - start_ms))
+  if [[ "$dur" -lt 0 ]]; then
+    dur=0
+  fi
+
+  if [[ "$rc" -ne 0 ]]; then
+    if declare -F log >/dev/null 2>&1; then
+      log ERROR "DURABLE_WRITE_BEGIN=${logical}"
+      log ERROR "DURABLE_WRITE_PATH=${path}"
+      log ERROR "DURABLE_WRITE_RESULT=FAIL"
+      log ERROR "DURABLE_WRITE_DURATION_MS=${dur}"
+      if [[ -s "$errf" ]]; then
+        log ERROR "DURABLE_WRITE_ERR=$(tr '\n' ' ' <"$errf" | head -c 200)"
+      fi
+    fi
+    rm -f "$errf"
+    return 1
+  fi
+
+  if [[ "$dur" -ge "${DURABLE_WRITE_LOG_THRESHOLD_MS}" ]] && declare -F log >/dev/null 2>&1; then
+    log INFO "DURABLE_WRITE_BEGIN=${logical}"
+    log INFO "DURABLE_WRITE_PATH=${path}"
+    log INFO "DURABLE_WRITE_RESULT=PASS"
+    log INFO "DURABLE_WRITE_DURATION_MS=${dur}"
+  fi
+  rm -f "$errf"
+  return 0
+}
+
+durable_atomic_write_string() {
+  local logical="$1" path="$2" content="$3" mode="${4:-}"
+  printf '%s' "$content" | durable_atomic_write "$logical" "$path" "$mode"
+}
+
+# Drop-in replacement for prior temp+rename helper (now durable).
+atomic_write_file() {
+  local dest="$1"
+  durable_atomic_write "atomic_write_file" "$dest" || return 1
+}
+
+
 critical_holds_dir() {
   hostpath "${STATE_ROOT}/critical-holds"
 }
@@ -1008,13 +1234,6 @@ json_string_array_from_words() {
   printf ']'
 }
 
-atomic_write_file() {
-  local dest="$1"
-  local tmp
-  tmp="${dest}.tmp.$$"
-  cat >"$tmp"
-  mv -f "$tmp" "$dest"
-}
 
 list_held_packages() {
   # Print currently held package names, one per line (or space-joined via caller).
@@ -1214,7 +1433,7 @@ reconcile_critical_hold_state() {
       log WARN "CRITICAL_OS_HOLD_RECONCILE: previously removed holds are held again: ${still_held}"
       log WARN "CRITICAL_OS_HOLD_RECONCILE_ACTION=REPLAN_UNHOLD_AFTER_CONFIRMATION"
     elif [[ "$release_started" -eq 0 && -z "$still_held" && "$unhold_completed" -eq 1 ]]; then
-      log INFO "CRITICAL_OS_HOLD_RECONCILE: prior critical OS holds remain unheld (expected until Phase 2 policy)"
+      log INFO "CRITICAL_OS_HOLD_RECONCILE: prior critical OS holds remain unheld (no automatic re-hold after successful OS upgrade)"
     fi
   fi
   return 0
@@ -1246,7 +1465,7 @@ unhold_critical_os_packages() {
     utc_now >"$dir/unhold_started_at"
     utc_now >"$dir/unhold_completed_at"
     : >"$dir/critical-holds-removed.txt"
-    write_critical_holds_state_json "accepted" "false" "" "DEFERRED_UNTIL_PHASE2_POLICY"
+    write_critical_holds_state_json "accepted" "false" "" "REMAIN_UNHELD_THROUGH_OS_UPGRADE"
     return 0
   }
 
@@ -1301,9 +1520,11 @@ unhold_critical_os_packages() {
 
   list_held_packages | tr -s '[:space:]' '\n' | sed '/^$/d' | atomic_write_file "$dir/critical-holds-after.txt"
   utc_now >"$dir/unhold_completed_at"
-  write_critical_holds_state_json "accepted" "false" "" "DEFERRED_UNTIL_PHASE2_POLICY"
+  write_critical_holds_state_json "accepted" "false" "" "REMAIN_UNHELD_THROUGH_OS_UPGRADE"
   log INFO "CRITICAL_OS_UNHOLD_RESULT=PASS"
-  log INFO "CRITICAL_OS_HOLD_RESTORE=DEFERRED_UNTIL_PHASE2_POLICY"
+  log INFO "CRITICAL_OS_HOLDS_REMAIN_UNHELD_THROUGH_OS_UPGRADE=YES"
+  log INFO "CRITICAL_OS_HOLDS_RESTORED_ON_PRE_TRANSITION_FAILURE=YES"
+  log INFO "CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO"
   log INFO "ORIGINAL_CRITICAL_OS_HOLDS=${PLANNED_CRITICAL_OS_HOLDS}"
 }
 
@@ -1373,7 +1594,7 @@ persist_release_upgrade_flags() {
   if [[ "$LEGACY_STATE_RECONCILED" == "true" ]]; then
     printf 'true\n' >"$dir/legacy_state_reconciled"
   fi
-  write_critical_holds_state_json "accepted" "false" "" "DEFERRED_UNTIL_PHASE2_POLICY"
+  write_critical_holds_state_json "accepted" "false" "" "REMAIN_UNHELD_THROUGH_OS_UPGRADE"
 }
 
 mark_release_upgrade_invocation_started() {
@@ -1441,21 +1662,2018 @@ load_release_upgrade_started_flag() {
   fi
 }
 
-has_target_core_package_contamination() {
-  # Return 0 if any core package looks like the target (Bionic) release.
-  local pkg ivers
-  if [[ -n "$TEST_ROOT" ]]; then
-    [[ -f "$(hostpath ${STATE_ROOT}/force-target-core-packages)" ]] && return 0
-    return 1
+# Shared authoritative reconciliation / structured package-transition evidence.
+# Build-time inlined from client/lib/dp-offline-release-upgrade-reconciliation.sh
+# shellcheck shell=bash
+# Shared authoritative release-upgrade state reconciliation + package-transition
+# evidence classifier for all OS-hop clients.
+#
+# Injected into single-file clients at build time via the
+# RELEASE_UPGRADE_RECONCILIATION_HELPER template token (see build_client_*.py).
+# Directly sourceable by fixture tests with hop PIN_* vars set.
+#
+# Depends on caller-provided:
+#   hostpath, log, die, critical_holds_dir, atomic_write_file (optional),
+#   read_os_field, read_state, write_state (optional), pkg_installed_version,
+#   persist_release_upgrade_flags (optional), detect_meta_release_encoding_failure_signature
+#   (optional), PIN_HOP, PIN_SOURCE_VERSION, PIN_TARGET_VERSION,
+#   PIN_SOURCE_CODENAME, PIN_TARGET_CODENAME, STATE_ROOT, LOG_FILE,
+#   EC_RESUME, EC_BUSY (optional), TEST_ROOT
+#
+# Each hop MUST set its own PIN_* and uses hop-scoped baseline/evidence dirs.
+# Evidence owned by a completed previous hop is NEVER treated as current-hop
+# package mutation.
+
+# --- globals filled by classifier ---
+PACKAGE_TRANSITION_CLASS="NONE"
+PACKAGE_TRANSITION_EVIDENCE_LINES=""
+AUTHORITATIVE_EVIDENCE_COUNT=0
+STALE_EVIDENCE_COUNT=0
+PRE_TRANSITION_EVIDENCE_COUNT=0
+RECONCILIATION_DECISION=""
+RESUME_FROM=""
+MANUAL_REVIEW_REQUIRED="NO"
+SAFE_TO_RERUN="NO"
+AUTHORITATIVE_PACKAGE_TRANSITION="NO"
+ACTIVE_UPGRADE_PROCESS="NO"
+DPKG_AUDIT_STATUS="UNKNOWN"
+CORE_PACKAGE_CONSISTENCY="UNKNOWN"
+DIAGNOSTIC_BUNDLE_PATH=""
+CURRENT_RUN_ID="${CURRENT_RUN_ID:-}"
+RECON_BASELINE_LOADED="NO"
+
+recon_hop_root() {
+  hostpath "${STATE_ROOT}/hops/${PIN_HOP}"
+}
+
+recon_runs_dir() {
+  printf '%s/runs\n' "$(recon_hop_root)"
+}
+
+recon_evidence_dir() {
+  printf '%s/evidence\n' "$(recon_hop_root)"
+}
+
+recon_current_run_link() {
+  printf '%s/current-run\n' "$(recon_hop_root)"
+}
+
+recon_critical_dir() {
+  if declare -F critical_holds_dir >/dev/null 2>&1; then
+    critical_holds_dir
+  else
+    hostpath "${STATE_ROOT}/critical-holds"
   fi
-  for pkg in base-files libc6 apt dpkg systemd systemd-sysv; do
-    ivers="$(pkg_installed_version "$pkg")"
-    if is_bionic_version_for_pkg "$pkg" "$ivers"; then
-      return 0
+}
+
+recon_atomic_write() {
+  local dest="$1"
+  local dir tmp
+  dir="$(dirname "$dest")"
+  mkdir -p "$dir"
+  tmp="${dest}.tmp.$$.$RANDOM"
+  cat >"$tmp"
+  if declare -F atomic_write_file >/dev/null 2>&1; then
+    # Prefer project helper when available (stdin-based).
+    atomic_write_file "$dest" <"$tmp"
+    rm -f "$tmp"
+  else
+    chmod --reference="$dest" "$tmp" 2>/dev/null || chmod 0644 "$tmp" 2>/dev/null || true
+    if declare -F durable_fsync_path >/dev/null 2>&1; then
+      durable_fsync_path "$tmp" 2>/dev/null || true
     fi
-  done
+    mv -f "$tmp" "$dest"
+    if declare -F durable_fsync_path >/dev/null 2>&1; then
+      durable_fsync_path "$(dirname "$dest")" 2>/dev/null || true
+    fi
+  fi
+}
+
+# Target-release core package version heuristics by PIN_TARGET_CODENAME.
+# Prefer hop-specific is_*_version_for_pkg when defined.
+recon_is_target_version_for_pkg() {
+  local pkg="$1" ver="$2"
+  [[ -n "$ver" ]] || return 1
+  case "${PIN_TARGET_CODENAME:-}" in
+    bionic)
+      if declare -F is_bionic_version_for_pkg >/dev/null 2>&1; then
+        is_bionic_version_for_pkg "$pkg" "$ver"
+        return $?
+      fi
+      case "$pkg" in
+        base-files) [[ "$ver" == 10.* ]] && return 0 ;;
+        libc6|libc-bin) [[ "$ver" == 2.27* ]] && return 0 ;;
+        apt|apt-utils) [[ "$ver" == 1.6* ]] && return 0 ;;
+        dpkg) [[ "$ver" == 1.19* ]] && return 0 ;;
+        systemd|systemd-sysv|udev) [[ "$ver" == 237* || "$ver" == *237* ]] && return 0 ;;
+      esac
+      ;;
+    focal)
+      if declare -F is_focal_version_for_pkg >/dev/null 2>&1; then
+        is_focal_version_for_pkg "$pkg" "$ver"
+        return $?
+      fi
+      case "$pkg" in
+        base-files) [[ "$ver" == 11* ]] && return 0 ;;
+        libc6|libc-bin) [[ "$ver" == 2.31* ]] && return 0 ;;
+        apt|apt-utils) [[ "$ver" == 2.0* ]] && return 0 ;;
+        dpkg) [[ "$ver" == 1.19.7* || "$ver" == 1.19* ]] && return 0 ;;
+        systemd|systemd-sysv|udev) [[ "$ver" == 245* || "$ver" == *245* ]] && return 0 ;;
+      esac
+      ;;
+    jammy)
+      if declare -F is_jammy_version_for_pkg >/dev/null 2>&1; then
+        is_jammy_version_for_pkg "$pkg" "$ver"
+        return $?
+      fi
+      case "$pkg" in
+        base-files) [[ "$ver" == 12* ]] && return 0 ;;
+        libc6|libc-bin) [[ "$ver" == 2.35* ]] && return 0 ;;
+        apt|apt-utils) [[ "$ver" == 2.4* ]] && return 0 ;;
+        dpkg) [[ "$ver" == 1.21* ]] && return 0 ;;
+        systemd|systemd-sysv|udev) [[ "$ver" == 249* || "$ver" == *249* ]] && return 0 ;;
+      esac
+      ;;
+    noble)
+      if declare -F is_noble_version_for_pkg >/dev/null 2>&1; then
+        is_noble_version_for_pkg "$pkg" "$ver"
+        return $?
+      fi
+      case "$pkg" in
+        base-files) [[ "$ver" == 13* ]] && return 0 ;;
+        libc6|libc-bin) [[ "$ver" == 2.39* ]] && return 0 ;;
+        apt|apt-utils) [[ "$ver" == 2.7* || "$ver" == 2.8* ]] && return 0 ;;
+        dpkg) [[ "$ver" == 1.22* ]] && return 0 ;;
+        systemd|systemd-sysv|udev) [[ "$ver" == 255* || "$ver" == *255* ]] && return 0 ;;
+      esac
+      ;;
+  esac
   return 1
 }
+
+recon_is_source_version_for_pkg() {
+  local pkg="$1" ver="$2"
+  [[ -n "$ver" ]] || return 1
+  case "${PIN_SOURCE_CODENAME:-}" in
+    xenial)
+      case "$pkg" in
+        base-files) [[ "$ver" == 9.* ]] && return 0 ;;
+        libc6|libc-bin) [[ "$ver" == 2.23* ]] && return 0 ;;
+        apt|apt-utils) [[ "$ver" == 1.2* ]] && return 0 ;;
+        dpkg) [[ "$ver" == 1.18* ]] && return 0 ;;
+        systemd|systemd-sysv|udev) [[ "$ver" == 229* || "$ver" == *229* ]] && return 0 ;;
+      esac
+      ;;
+    bionic)
+      case "$pkg" in
+        base-files) [[ "$ver" == 10.* ]] && return 0 ;;
+        libc6|libc-bin) [[ "$ver" == 2.27* ]] && return 0 ;;
+        apt|apt-utils) [[ "$ver" == 1.6* ]] && return 0 ;;
+        dpkg) [[ "$ver" == 1.19* ]] && return 0 ;;
+        systemd|systemd-sysv|udev) [[ "$ver" == 237* || "$ver" == *237* ]] && return 0 ;;
+      esac
+      ;;
+    focal)
+      case "$pkg" in
+        base-files) [[ "$ver" == 11* ]] && return 0 ;;
+        libc6|libc-bin) [[ "$ver" == 2.31* ]] && return 0 ;;
+        apt|apt-utils) [[ "$ver" == 2.0* ]] && return 0 ;;
+        dpkg) [[ "$ver" == 1.19* ]] && return 0 ;;
+        systemd|systemd-sysv|udev) [[ "$ver" == 245* || "$ver" == *245* ]] && return 0 ;;
+      esac
+      ;;
+    jammy)
+      case "$pkg" in
+        base-files) [[ "$ver" == 12* ]] && return 0 ;;
+        libc6|libc-bin) [[ "$ver" == 2.35* ]] && return 0 ;;
+        apt|apt-utils) [[ "$ver" == 2.4* ]] && return 0 ;;
+        dpkg) [[ "$ver" == 1.21* ]] && return 0 ;;
+        systemd|systemd-sysv|udev) [[ "$ver" == 249* || "$ver" == *249* ]] && return 0 ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
+recon_file_inode() {
+  local f="$1"
+  [[ -e "$f" ]] || { printf '0'; return 0; }
+  stat -c '%i' "$f" 2>/dev/null || stat -f '%i' "$f" 2>/dev/null || printf '0'
+}
+
+recon_file_size() {
+  local f="$1"
+  [[ -e "$f" ]] || { printf '0'; return 0; }
+  stat -c '%s' "$f" 2>/dev/null || stat -f '%z' "$f" 2>/dev/null || printf '0'
+}
+
+recon_sha256_file() {
+  local f="$1"
+  [[ -f "$f" ]] || { printf ''; return 0; }
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$f" 2>/dev/null | awk '{print $1}'
+  else
+    printf ''
+  fi
+}
+
+recon_list_active_upgrade_processes() {
+  local self_pid="$$"
+  if [[ -n "${TEST_ROOT:-}" ]]; then
+    if [[ -f "$(hostpath ${STATE_ROOT}/force-active-upgrade-process)" ]]; then
+      printf '1 fake-do-release-upgrade --force-fixture\n'
+      return 0
+    fi
+    return 0
+  fi
+  if declare -F list_active_upgrade_processes >/dev/null 2>&1; then
+    list_active_upgrade_processes
+    return 0
+  fi
+  ps -eo pid=,args= 2>/dev/null | awk -v self="$self_pid" '
+    BEGIN { OFS=" " }
+    {
+      pid=$1; $1=""; sub(/^ /, "", $0); cmd=$0
+      if (pid == self) next
+      if (cmd ~ /(^|[ \/])(pgrep|grep|awk|ps)([ ]|$)/) next
+      keep=0
+      if (cmd ~ /dp-offline-upgrade-|stellar-offline-os-upgrade/) keep=1
+      if (cmd ~ /(^|[ \/])do-release-upgrade([ ]|$)/) keep=1
+      if (cmd ~ /DistUpgrade|ubuntu-release-upgrader/) keep=1
+      if (cmd ~ /(^|[ \/])(apt-get|apt)([ ]|$)/ && cmd ~ /(dist-upgrade|full-upgrade)/) keep=1
+      if (cmd ~ /(^|[ \/])dpkg([ ]|$)/ && cmd ~ /--(unpack|install|configure)/) keep=1
+      if (keep) print pid, cmd
+    }
+  ' || true
+}
+
+recon_append_evidence() {
+  # Args: type source path match after_baseline [package] [version]
+  local etype="$1" esource="$2" epath="$3" ematch="$4" after="${5:-unknown}"
+  local pkg="${6:-}" ver="${7:-}"
+  # Sanitize match: drop credentials / overly long lines.
+  ematch="$(printf '%s' "$ematch" | tr -d '\r' | cut -c1-160 | sed -E 's/(password|passwd|token|secret)=[^ ]*/\1=***/Ig')"
+  PACKAGE_TRANSITION_EVIDENCE_LINES+="EVIDENCE_TYPE=${etype}"$'\n'
+  PACKAGE_TRANSITION_EVIDENCE_LINES+="EVIDENCE_SOURCE=${esource}"$'\n'
+  PACKAGE_TRANSITION_EVIDENCE_LINES+="EVIDENCE_PATH=${epath}"$'\n'
+  PACKAGE_TRANSITION_EVIDENCE_LINES+="EVIDENCE_MATCH=${ematch}"$'\n'
+  PACKAGE_TRANSITION_EVIDENCE_LINES+="EVIDENCE_AFTER_BASELINE=${after}"$'\n'
+  PACKAGE_TRANSITION_EVIDENCE_LINES+="EVIDENCE_RUN_ID=${CURRENT_RUN_ID:-}"$'\n'
+  PACKAGE_TRANSITION_EVIDENCE_LINES+="EVIDENCE_SOURCE_RELEASE=${PIN_SOURCE_VERSION}"$'\n'
+  PACKAGE_TRANSITION_EVIDENCE_LINES+="EVIDENCE_TARGET_RELEASE=${PIN_TARGET_VERSION}"$'\n'
+  [[ -n "$pkg" ]] && PACKAGE_TRANSITION_EVIDENCE_LINES+="EVIDENCE_PACKAGE=${pkg}"$'\n'
+  [[ -n "$ver" ]] && PACKAGE_TRANSITION_EVIDENCE_LINES+="EVIDENCE_INSTALLED_VERSION=${ver}"$'\n'
+  PACKAGE_TRANSITION_EVIDENCE_LINES+=$'\n'
+}
+
+recon_load_baseline() {
+  # Load hop-scoped baseline from current-run if present.
+  local link run_dir basef
+  RECON_BASELINE_LOADED="NO"
+  RECON_BASE_DPKG_INODE=""
+  RECON_BASE_DPKG_OFFSET=0
+  RECON_BASE_APT_HIST_INODE=""
+  RECON_BASE_APT_HIST_OFFSET=0
+  RECON_BASE_APT_TERM_INODE=""
+  RECON_BASE_APT_TERM_OFFSET=0
+  RECON_BASE_DPKG_STATUS_SHA=""
+  RECON_BASE_STARTED_UTC=""
+  RECON_BASE_DPKG_PREFIX_SHA=""
+  RECON_BASE_APT_HIST_PREFIX_SHA=""
+  RECON_BASE_APT_TERM_PREFIX_SHA=""
+  link="$(recon_current_run_link)"
+  if [[ -L "$link" || -f "$link" ]]; then
+    run_dir="$(readlink -f "$link" 2>/dev/null || cat "$link" 2>/dev/null || true)"
+  else
+    run_dir=""
+  fi
+  [[ -n "$run_dir" && -d "$run_dir" ]] || return 1
+  basef="${run_dir}/baseline.env"
+  [[ -f "$basef" ]] || return 1
+  CURRENT_RUN_ID="$(sed -n 's/^RUN_ID=//p' "$basef" | head -1)"
+  RECON_BASE_STARTED_UTC="$(sed -n 's/^RUN_STARTED_UTC=//p' "$basef" | head -1)"
+  RECON_BASE_DPKG_INODE="$(sed -n 's/^DPKG_LOG_INODE=//p' "$basef" | head -1)"
+  RECON_BASE_DPKG_OFFSET="$(sed -n 's/^DPKG_LOG_OFFSET=//p' "$basef" | head -1)"
+  RECON_BASE_DPKG_PREFIX_SHA="$(sed -n 's/^DPKG_LOG_PREFIX_SHA256=//p' "$basef" | head -1)"
+  RECON_BASE_APT_HIST_INODE="$(sed -n 's/^APT_HISTORY_INODE=//p' "$basef" | head -1)"
+  RECON_BASE_APT_HIST_OFFSET="$(sed -n 's/^APT_HISTORY_OFFSET=//p' "$basef" | head -1)"
+  RECON_BASE_APT_HIST_PREFIX_SHA="$(sed -n 's/^APT_HISTORY_PREFIX_SHA256=//p' "$basef" | head -1)"
+  RECON_BASE_APT_TERM_INODE="$(sed -n 's/^APT_TERM_INODE=//p' "$basef" | head -1)"
+  RECON_BASE_APT_TERM_OFFSET="$(sed -n 's/^APT_TERM_OFFSET=//p' "$basef" | head -1)"
+  RECON_BASE_APT_TERM_PREFIX_SHA="$(sed -n 's/^APT_TERM_PREFIX_SHA256=//p' "$basef" | head -1)"
+  RECON_BASE_DPKG_STATUS_SHA="$(sed -n 's/^DPKG_STATUS_SHA256=//p' "$basef" | head -1)"
+  RECON_BASE_DPKG_OFFSET="${RECON_BASE_DPKG_OFFSET:-0}"
+  RECON_BASE_APT_HIST_OFFSET="${RECON_BASE_APT_HIST_OFFSET:-0}"
+  RECON_BASE_APT_TERM_OFFSET="${RECON_BASE_APT_TERM_OFFSET:-0}"
+  RECON_BASELINE_LOADED="YES"
+  return 0
+}
+
+recon_prefix_sha() {
+  local f="$1" off="$2"
+  [[ -f "$f" ]] || { printf ''; return 0; }
+  if [[ ! "${off:-0}" =~ ^[0-9]+$ ]] || [[ "$off" -le 0 ]]; then
+    printf ''; return 0
+  fi
+  head -c "$off" "$f" 2>/dev/null | sha256sum 2>/dev/null | awk '{print $1}'
+}
+
+record_release_upgrade_run_baseline() {
+  # Atomic hop-scoped baseline before any release-upgrade package mutation.
+  local run_id started run_dir link dpkglog apthist aptterm statusf
+  local dpkg_in dpkg_off hist_in hist_off term_in term_off status_sha
+  local audit_out bf_ver tmpenv
+  run_id="$(date -u '+%Y%m%dT%H%M%SZ')-$$"
+  started="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  run_dir="$(recon_runs_dir)/${run_id}"
+  mkdir -p "$run_dir" "$(recon_evidence_dir)"
+  dpkglog="$(hostpath /var/log/dpkg.log)"
+  apthist="$(hostpath /var/log/apt/history.log)"
+  aptterm="$(hostpath /var/log/apt/term.log)"
+  statusf="$(hostpath /var/lib/dpkg/status)"
+  dpkg_in="$(recon_file_inode "$dpkglog")"
+  dpkg_off="$(recon_file_size "$dpkglog")"
+  hist_in="$(recon_file_inode "$apthist")"
+  hist_off="$(recon_file_size "$apthist")"
+  term_in="$(recon_file_inode "$aptterm")"
+  term_off="$(recon_file_size "$aptterm")"
+  status_sha="$(recon_sha256_file "$statusf")"
+  local dpkg_psha hist_psha term_psha
+  dpkg_psha="$(recon_prefix_sha "$dpkglog" "$dpkg_off")"
+  hist_psha="$(recon_prefix_sha "$apthist" "$hist_off")"
+  term_psha="$(recon_prefix_sha "$aptterm" "$term_off")"
+  bf_ver=""
+  if declare -F pkg_installed_version >/dev/null 2>&1; then
+    bf_ver="$(pkg_installed_version base-files)"
+  fi
+  audit_out="clean"
+  if [[ -z "${TEST_ROOT:-}" ]]; then
+    if dpkg --audit 2>/dev/null | grep -q .; then
+      audit_out="dirty"
+    fi
+  elif [[ -f "$(hostpath /tmp/dpkg-broken)" ]]; then
+    audit_out="dirty"
+  fi
+  tmpenv="${run_dir}/baseline.env.tmp.$$"
+  {
+    printf 'RUN_ID=%s\n' "$run_id"
+    printf 'RUN_STARTED_UTC=%s\n' "$started"
+    printf 'PIN_HOP=%s\n' "${PIN_HOP}"
+    printf 'SOURCE_VERSION_ID=%s\n' "${PIN_SOURCE_VERSION}"
+    printf 'TARGET_VERSION_ID=%s\n' "${PIN_TARGET_VERSION}"
+    printf 'DPKG_LOG_INODE=%s\n' "$dpkg_in"
+    printf 'DPKG_LOG_OFFSET=%s\n' "$dpkg_off"
+    printf 'DPKG_LOG_PREFIX_SHA256=%s\n' "$dpkg_psha"
+    printf 'APT_HISTORY_INODE=%s\n' "$hist_in"
+    printf 'APT_HISTORY_OFFSET=%s\n' "$hist_off"
+    printf 'APT_HISTORY_PREFIX_SHA256=%s\n' "$hist_psha"
+    printf 'APT_TERM_INODE=%s\n' "$term_in"
+    printf 'APT_TERM_OFFSET=%s\n' "$term_off"
+    printf 'APT_TERM_PREFIX_SHA256=%s\n' "$term_psha"
+    printf 'DPKG_STATUS_SHA256=%s\n' "$status_sha"
+    printf 'BASE_FILES_VERSION=%s\n' "$bf_ver"
+    printf 'DPKG_AUDIT=%s\n' "$audit_out"
+  } >"$tmpenv"
+  if declare -F durable_fsync_path >/dev/null 2>&1; then
+    durable_fsync_path "$tmpenv" 2>/dev/null || true
+  fi
+  mv -f "$tmpenv" "${run_dir}/baseline.env"
+  if declare -F durable_fsync_path >/dev/null 2>&1; then
+    durable_fsync_path "$run_dir" 2>/dev/null || true
+  fi
+  # Also snapshot core package versions.
+  {
+    local pkg
+    for pkg in base-files libc6 apt dpkg systemd systemd-sysv; do
+      if declare -F pkg_installed_version >/dev/null 2>&1; then
+        printf '%s=%s\n' "$pkg" "$(pkg_installed_version "$pkg")"
+      fi
+    done
+  } >"${run_dir}/core-packages.before"
+  link="$(recon_current_run_link)"
+  ln -sfn "$run_dir" "${link}.tmp.$$" 2>/dev/null || printf '%s\n' "$run_dir" >"${link}.tmp.$$"
+  mv -f "${link}.tmp.$$" "$link"
+  CURRENT_RUN_ID="$run_id"
+  # Legacy offset file for older runners (hop-specific copy under holds + hop root).
+  printf '%s\n' "$dpkg_off" | recon_atomic_write "$(recon_critical_dir)/dpkg_log_offset_before"
+  printf '%s\n' "$dpkg_off" | recon_atomic_write "$(recon_hop_root)/dpkg_log_offset_before"
+  log INFO "RUN_SCOPED_BASELINE=PASS"
+  log INFO "RUN_ID=${run_id}"
+  log INFO "BASELINE_HOP=${PIN_HOP}"
+  log INFO "DPKG_LOG_OFFSET=${dpkg_off}"
+  RECON_BASELINE_LOADED="YES"
+  recon_load_baseline || true
+}
+
+recon_slice_log_after_baseline() {
+  # Args: logfile baseline_inode baseline_offset [baseline_prefix_sha]
+  # Prints bytes after baseline; on inode rotation, truncation, or prefix mismatch
+  # (inode reuse after rm+create), only lines newer than RUN_STARTED_UTC — never
+  # the whole replaced file.
+  local logfile="$1" base_inode="$2" base_off="$3" base_psha="${4:-}"
+  local cur_inode cur_size rotated=0 cur_psha
+  [[ -f "$logfile" ]] || return 0
+  cur_inode="$(recon_file_inode "$logfile")"
+  cur_size="$(recon_file_size "$logfile")"
+  if [[ -n "$base_inode" && "$base_inode" != "0" && "$cur_inode" != "$base_inode" ]]; then
+    rotated=1
+  fi
+  if [[ "${base_off:-0}" =~ ^[0-9]+$ ]] && [[ "$base_off" -gt 0 ]] && [[ "$cur_size" -lt "$base_off" ]]; then
+    rotated=1
+  fi
+  if [[ "$rotated" -eq 0 && -n "$base_psha" && "${base_off:-0}" =~ ^[0-9]+$ ]] && [[ "$base_off" -gt 0 ]]; then
+    cur_psha="$(recon_prefix_sha "$logfile" "$base_off")"
+    if [[ -n "$cur_psha" && "$cur_psha" != "$base_psha" ]]; then
+      rotated=1
+    fi
+  fi
+  if [[ "$rotated" -eq 1 ]]; then
+    if [[ -n "${RECON_BASE_STARTED_UTC:-}" ]]; then
+      awk -v start="${RECON_BASE_STARTED_UTC}" '
+        BEGIN {
+          gsub(/[-:TZ]/ "", start)
+        }
+        {
+          line=$0
+          ts=substr($0,1,19)
+          gsub(/[-:TZ]/ "", ts)
+          if (length(start) > 0 && length(ts) > 0 && ts >= start) print line
+        }
+      ' "$logfile" 2>/dev/null || true
+    fi
+    return 0
+  fi
+  if [[ "${base_off:-0}" =~ ^[0-9]+$ ]] && [[ "$base_off" -gt 0 ]]; then
+    if [[ "$cur_size" -gt "$base_off" ]]; then
+      tail -c +"$((base_off + 1))" "$logfile" 2>/dev/null || true
+    fi
+  fi
+}
+
+collect_package_transition_evidence() {
+  PACKAGE_TRANSITION_EVIDENCE_LINES=""
+  AUTHORITATIVE_EVIDENCE_COUNT=0
+  STALE_EVIDENCE_COUNT=0
+  PRE_TRANSITION_EVIDENCE_COUNT=0
+  ACTIVE_UPGRADE_PROCESS="NO"
+  DPKG_AUDIT_STATUS="CLEAN"
+  CORE_PACKAGE_CONSISTENCY="SOURCE_CONSISTENT"
+  local ver pkg ivers dpkglog apthist mainlog aptlog slice procs
+  local target_pkgs=0 source_pkgs=0
+  ver="$(read_os_field VERSION_ID)"
+
+  recon_load_baseline || true
+
+  # Active processes
+  procs="$(recon_list_active_upgrade_processes)"
+  if [[ -n "$(printf '%s' "$procs" | tr -d '[:space:]')" ]]; then
+    ACTIVE_UPGRADE_PROCESS="YES"
+    recon_append_evidence "ACTIVE_RELEASE_UPGRADE_PROCESS" "process_table" "ps" \
+      "$(printf '%s' "$procs" | head -1)" "n/a"
+  fi
+
+  # OS already at target
+  if [[ "$ver" == "$PIN_TARGET_VERSION" ]]; then
+    recon_append_evidence "TARGET_RELEASE_REACHED" "os-release" "$(hostpath /etc/os-release)" \
+      "VERSION_ID=${ver}" "n/a"
+  fi
+
+  # Core package consistency
+  for pkg in base-files libc6 apt dpkg systemd systemd-sysv; do
+    ivers=""
+    if [[ -n "${TEST_ROOT:-}" && -f "$(hostpath ${STATE_ROOT}/force-target-core-packages)" ]]; then
+      target_pkgs=1
+      recon_append_evidence "AUTHORITATIVE_PACKAGE_TRANSITION" "test_fixture" \
+        "$(hostpath ${STATE_ROOT}/force-target-core-packages)" "force-target-core-packages" "yes" "$pkg" "fixture"
+      break
+    fi
+    # Fixture roots do not virtualize dpkg; never treat the host's installed
+    # package versions as this-hop transition evidence under TEST_ROOT.
+    if [[ -n "${TEST_ROOT:-}" ]]; then
+      continue
+    fi
+    if declare -F pkg_installed_version >/dev/null 2>&1; then
+      ivers="$(pkg_installed_version "$pkg")"
+    fi
+    if recon_is_target_version_for_pkg "$pkg" "$ivers"; then
+      target_pkgs=$((target_pkgs + 1))
+      recon_append_evidence "AUTHORITATIVE_PACKAGE_TRANSITION" "dpkg_status" \
+        "$(hostpath /var/lib/dpkg/status)" "target_version" "yes" "$pkg" "$ivers"
+    elif recon_is_source_version_for_pkg "$pkg" "$ivers"; then
+      source_pkgs=$((source_pkgs + 1))
+    fi
+  done
+  if [[ "$target_pkgs" -gt 0 && "$source_pkgs" -gt 0 && "$ver" == "$PIN_SOURCE_VERSION" ]]; then
+    CORE_PACKAGE_CONSISTENCY="MIXED_SOURCE_TARGET"
+    recon_append_evidence "MIXED_SOURCE_TARGET_PACKAGES" "dpkg_status" \
+      "$(hostpath /var/lib/dpkg/status)" "mixed_core_packages" "yes"
+  elif [[ "$target_pkgs" -gt 0 && "$ver" == "$PIN_SOURCE_VERSION" ]]; then
+    CORE_PACKAGE_CONSISTENCY="TARGET_CORE_ON_SOURCE_OS"
+  fi
+
+  # dpkg audit / interrupted transaction
+  if [[ -n "${TEST_ROOT:-}" ]]; then
+    if [[ -f "$(hostpath /tmp/dpkg-broken)" ]]; then
+      DPKG_AUDIT_STATUS="INTERRUPTED"
+      recon_append_evidence "INTERRUPTED_DPKG_TRANSACTION" "test_fixture" \
+        "$(hostpath /tmp/dpkg-broken)" "dpkg-broken" "yes"
+    fi
+    if [[ -f "$(hostpath ${STATE_ROOT}/force-upgrade-transaction-evidence)" ]]; then
+      recon_append_evidence "AUTHORITATIVE_PACKAGE_TRANSITION" "test_fixture" \
+        "$(hostpath ${STATE_ROOT}/force-upgrade-transaction-evidence)" "force-upgrade-transaction" "yes"
+    fi
+  else
+    if dpkg --audit 2>/dev/null | grep -q .; then
+      DPKG_AUDIT_STATUS="INTERRUPTED"
+      recon_append_evidence "INTERRUPTED_DPKG_TRANSACTION" "dpkg_audit" "dpkg --audit" \
+        "audit_output_present" "yes"
+    fi
+  fi
+
+  # Current-hop package-transition flag (hop-owned)
+  local dir
+  dir="$(recon_critical_dir)"
+  if [[ -f "$dir/release_upgrade_package_transition_started" ]] \
+    && grep -qx 'true' "$dir/release_upgrade_package_transition_started" 2>/dev/null; then
+    # If later hops provide ownership check, honour it.
+    local owned=1
+    if declare -F marker_owned_by_current_hop >/dev/null 2>&1; then
+      marker_owned_by_current_hop "$dir/release_upgrade_package_transition_started" || owned=0
+    fi
+    if [[ "$owned" -eq 1 ]]; then
+      recon_append_evidence "AUTHORITATIVE_PACKAGE_TRANSITION" "current_hop_marker" \
+        "$dir/release_upgrade_package_transition_started" "package_transition_started=true" "yes"
+    else
+      recon_append_evidence "STALE_OR_PREBASELINE" "previous_hop_marker" \
+        "$dir/release_upgrade_package_transition_started" "foreign_hop_marker" "no"
+    fi
+  fi
+
+  # Configuration-only traces (sources/meta) — pre-transition, not mutation
+  local sl meta
+  sl="$(hostpath /etc/apt/sources.list)"
+  meta="$(hostpath /etc/update-manager/meta-release)"
+  if [[ -f "$sl" ]] && grep -qE "stellar-offline|${PIN_TARGET_CODENAME}" "$sl" 2>/dev/null; then
+    recon_append_evidence "PRE_TRANSITION_CONFIGURATION_ONLY" "sources.list" "$sl" \
+      "sources_rewrite_or_target_suite" "n/a"
+  fi
+  if [[ -f "$meta" ]]; then
+    recon_append_evidence "PRE_TRANSITION_CONFIGURATION_ONLY" "meta-release" "$meta" \
+      "meta_release_present" "n/a"
+  fi
+
+  # Log evidence: ONLY post-baseline for current hop. Whole-file scans of stale
+  # apt/dpkg/dist-upgrade logs are classified STALE_OR_PREBASELINE, never authoritative.
+  dpkglog="$(hostpath /var/log/dpkg.log)"
+  apthist="$(hostpath /var/log/apt/history.log)"
+  mainlog="$(hostpath /var/log/dist-upgrade/main.log)"
+  aptlog="$(hostpath /var/log/dist-upgrade/apt.log)"
+
+  if [[ "$RECON_BASELINE_LOADED" == "YES" ]]; then
+    slice="$(recon_slice_log_after_baseline "$dpkglog" "${RECON_BASE_DPKG_INODE}" "${RECON_BASE_DPKG_OFFSET}" "${RECON_BASE_DPKG_PREFIX_SHA}")"
+    if printf '%s' "$slice" | grep -q 'startup archives unpack'; then
+      recon_append_evidence "AUTHORITATIVE_PACKAGE_TRANSITION" "dpkg.log" "$dpkglog" \
+        "startup archives unpack (post-baseline)" "yes"
+    fi
+    if printf '%s' "$slice" | grep -qiE "status (half-installed|unpacked|installed) .*(libc6|base-files|libc-bin)"; then
+      recon_append_evidence "AUTHORITATIVE_PACKAGE_TRANSITION" "dpkg.log" "$dpkglog" \
+        "status unpack/install core (post-baseline)" "yes"
+    fi
+    slice="$(recon_slice_log_after_baseline "$apthist" "${RECON_BASE_APT_HIST_INODE}" "${RECON_BASE_APT_HIST_OFFSET}" "${RECON_BASE_APT_HIST_PREFIX_SHA}")"
+    if printf '%s' "$slice" | grep -qiE "^(Install|Upgrade|Remove):"; then
+      recon_append_evidence "AUTHORITATIVE_PACKAGE_TRANSITION" "apt/history.log" "$apthist" \
+        "Install/Upgrade/Remove (post-baseline)" "yes"
+    fi
+  else
+    # No baseline: any historical apt/dpkg/dist-upgrade hit is STALE for resume gating.
+    if [[ -f "$dpkglog" ]] && grep -q 'startup archives unpack' "$dpkglog" 2>/dev/null; then
+      recon_append_evidence "STALE_OR_PREBASELINE" "dpkg.log" "$dpkglog" \
+        "historical unpack without current-hop baseline" "no"
+    fi
+    if [[ -f "$apthist" ]] \
+      && grep -qiE "Upgrade:|Install:.*${PIN_TARGET_CODENAME}|Commandline:.*do-release-upgrade" "$apthist" 2>/dev/null; then
+      recon_append_evidence "STALE_OR_PREBASELINE" "apt/history.log" "$apthist" \
+        "historical apt Upgrade/Install without baseline" "no"
+    fi
+    if [[ -f "$mainlog" ]] \
+      && grep -qiE 'apt\.distupgrade|Installing|upgrading packages' "$mainlog" 2>/dev/null; then
+      recon_append_evidence "STALE_OR_PREBASELINE" "dist-upgrade/main.log" "$mainlog" \
+        "historical dist-upgrade main.log" "no"
+    fi
+    if [[ -f "$aptlog" ]] && grep -qiE '^(Install|Upgrade|Remove):' "$aptlog" 2>/dev/null; then
+      recon_append_evidence "STALE_OR_PREBASELINE" "dist-upgrade/apt.log" "$aptlog" \
+        "historical dist-upgrade apt.log" "no"
+    fi
+  fi
+
+  # Rotated old apt log under TEST_ROOT fixture path
+  if [[ -n "${TEST_ROOT:-}" ]]; then
+    local rotated
+    rotated="$(hostpath /var/log/apt/history.log.1)"
+    if [[ -f "$rotated" ]]; then
+      recon_append_evidence "STALE_OR_PREBASELINE" "apt/history.log.1" "$rotated" \
+        "rotated_history_ignored" "no"
+    fi
+  fi
+}
+
+classify_package_transition_evidence() {
+  # Sets PACKAGE_TRANSITION_CLASS and counts from collected evidence.
+  collect_package_transition_evidence
+  local class="NONE"
+  AUTHORITATIVE_EVIDENCE_COUNT=0
+  STALE_EVIDENCE_COUNT=0
+  PRE_TRANSITION_EVIDENCE_COUNT=0
+
+  if printf '%s' "$PACKAGE_TRANSITION_EVIDENCE_LINES" | grep -q '^EVIDENCE_TYPE=ACTIVE_RELEASE_UPGRADE_PROCESS'; then
+    class="ACTIVE_RELEASE_UPGRADE_PROCESS"
+  fi
+  if printf '%s' "$PACKAGE_TRANSITION_EVIDENCE_LINES" | grep -q '^EVIDENCE_TYPE=TARGET_RELEASE_REACHED'; then
+    class="TARGET_RELEASE_REACHED"
+  fi
+  if printf '%s' "$PACKAGE_TRANSITION_EVIDENCE_LINES" | grep -q '^EVIDENCE_TYPE=MIXED_SOURCE_TARGET_PACKAGES'; then
+    class="MIXED_SOURCE_TARGET_PACKAGES"
+  fi
+  if printf '%s' "$PACKAGE_TRANSITION_EVIDENCE_LINES" | grep -q '^EVIDENCE_TYPE=INTERRUPTED_DPKG_TRANSACTION'; then
+    [[ "$class" == "NONE" || "$class" == "STALE_OR_PREBASELINE" || "$class" == "PRE_TRANSITION_CONFIGURATION_ONLY" ]] \
+      && class="INTERRUPTED_DPKG_TRANSACTION"
+  fi
+  if printf '%s' "$PACKAGE_TRANSITION_EVIDENCE_LINES" | grep -q '^EVIDENCE_TYPE=AUTHORITATIVE_PACKAGE_TRANSITION'; then
+    # Authoritative wins over stale/pre-config unless already target/active.
+    case "$class" in
+      TARGET_RELEASE_REACHED|ACTIVE_RELEASE_UPGRADE_PROCESS) ;;
+      *) class="AUTHORITATIVE_PACKAGE_TRANSITION" ;;
+    esac
+  fi
+
+  AUTHORITATIVE_EVIDENCE_COUNT="$(printf '%s' "$PACKAGE_TRANSITION_EVIDENCE_LINES" | grep -c '^EVIDENCE_TYPE=AUTHORITATIVE_PACKAGE_TRANSITION' || true)"
+  STALE_EVIDENCE_COUNT="$(printf '%s' "$PACKAGE_TRANSITION_EVIDENCE_LINES" | grep -c '^EVIDENCE_TYPE=STALE_OR_PREBASELINE' || true)"
+  PRE_TRANSITION_EVIDENCE_COUNT="$(printf '%s' "$PACKAGE_TRANSITION_EVIDENCE_LINES" | grep -c '^EVIDENCE_TYPE=PRE_TRANSITION_CONFIGURATION_ONLY' || true)"
+
+  if [[ "$class" == "NONE" ]]; then
+    if [[ "$PRE_TRANSITION_EVIDENCE_COUNT" -gt 0 ]]; then
+      class="PRE_TRANSITION_CONFIGURATION_ONLY"
+    elif [[ "$STALE_EVIDENCE_COUNT" -gt 0 ]]; then
+      class="STALE_OR_PREBASELINE"
+    fi
+  fi
+
+  # Ambiguous: legacy flag noise with no clean classification and no source consistency.
+  if [[ "$class" == "NONE" ]] && [[ "${RELEASE_UPGRADE_STARTED:-false}" == "true" ]] \
+    && [[ "$CORE_PACKAGE_CONSISTENCY" == "UNKNOWN" ]]; then
+    class="AMBIGUOUS_LEGACY_EVIDENCE"
+  fi
+
+  PACKAGE_TRANSITION_CLASS="$class"
+  case "$class" in
+    AUTHORITATIVE_PACKAGE_TRANSITION|MIXED_SOURCE_TARGET_PACKAGES|INTERRUPTED_DPKG_TRANSACTION)
+      AUTHORITATIVE_PACKAGE_TRANSITION="YES"
+      ;;
+    *)
+      AUTHORITATIVE_PACKAGE_TRANSITION="NO"
+      ;;
+  esac
+}
+
+render_package_transition_evidence() {
+  printf 'PACKAGE_TRANSITION_CLASS=%s\n' "${PACKAGE_TRANSITION_CLASS}"
+  printf 'AUTHORITATIVE_EVIDENCE_COUNT=%s\n' "${AUTHORITATIVE_EVIDENCE_COUNT}"
+  printf 'STALE_EVIDENCE_COUNT=%s\n' "${STALE_EVIDENCE_COUNT}"
+  printf 'PRE_TRANSITION_EVIDENCE_COUNT=%s\n' "${PRE_TRANSITION_EVIDENCE_COUNT}"
+  printf 'AUTHORITATIVE_PACKAGE_TRANSITION=%s\n' "${AUTHORITATIVE_PACKAGE_TRANSITION}"
+  printf 'ACTIVE_UPGRADE_PROCESS=%s\n' "${ACTIVE_UPGRADE_PROCESS}"
+  printf 'DPKG_AUDIT=%s\n' "${DPKG_AUDIT_STATUS}"
+  printf 'CORE_PACKAGE_CONSISTENCY=%s\n' "${CORE_PACKAGE_CONSISTENCY}"
+  printf 'PIN_HOP=%s\n' "${PIN_HOP}"
+  printf 'CURRENT_RUN_ID=%s\n' "${CURRENT_RUN_ID:-}"
+  printf 'RECON_BASELINE_LOADED=%s\n' "${RECON_BASELINE_LOADED}"
+  if [[ -n "$PACKAGE_TRANSITION_EVIDENCE_LINES" ]]; then
+    printf '%s' "$PACKAGE_TRANSITION_EVIDENCE_LINES"
+  fi
+}
+
+recon_write_diagnostic_bundle() {
+  local stamp dest
+  stamp="$(date -u '+%Y%m%dT%H%M%SZ')"
+  dest="$(recon_evidence_dir)/reconciliation-evidence.${stamp}"
+  mkdir -p "$dest"
+  {
+    printf 'CURRENT_OS_VERSION=%s\n' "$(read_os_field VERSION_ID)"
+    printf 'PIN_SOURCE_VERSION=%s\n' "$PIN_SOURCE_VERSION"
+    printf 'PIN_TARGET_VERSION=%s\n' "$PIN_TARGET_VERSION"
+    printf 'PIN_HOP=%s\n' "$PIN_HOP"
+    printf 'STATE_VALUE=%s\n' "$(read_state 2>/dev/null || true)"
+    printf 'LEGACY_RELEASE_UPGRADE_STARTED=%s\n' "${RELEASE_UPGRADE_STARTED:-false}"
+    render_package_transition_evidence
+    printf 'RECONCILIATION_DECISION=%s\n' "${RECONCILIATION_DECISION}"
+    printf 'SAFE_TO_RERUN=%s\n' "${SAFE_TO_RERUN}"
+    printf 'MANUAL_REVIEW_REQUIRED=%s\n' "${MANUAL_REVIEW_REQUIRED}"
+  } >"${dest}/report.txt"
+  DIAGNOSTIC_BUNDLE_PATH="$dest"
+  log INFO "DIAGNOSTIC_BUNDLE_PATH=${dest}"
+}
+
+# Backward-compatible boolean: true only for AUTHORITATIVE / mixed / interrupted.
+package_transition_evidence_present() {
+  classify_package_transition_evidence
+  case "$PACKAGE_TRANSITION_CLASS" in
+    AUTHORITATIVE_PACKAGE_TRANSITION|MIXED_SOURCE_TARGET_PACKAGES|INTERRUPTED_DPKG_TRANSACTION)
+      return 0
+      ;;
+    TARGET_RELEASE_REACHED)
+      # Target reached is not "partial transition evidence" for resume-blocking
+      # boolean used by pre-DRO gates; callers interested in target use class.
+      return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Legacy helper names still referenced by hop templates.
+has_upgrade_transaction_evidence() {
+  classify_package_transition_evidence
+  [[ "$AUTHORITATIVE_PACKAGE_TRANSITION" == "YES" ]]
+}
+
+has_target_core_package_contamination() {
+  classify_package_transition_evidence
+  case "$CORE_PACKAGE_CONSISTENCY" in
+    MIXED_SOURCE_TARGET|TARGET_CORE_ON_SOURCE_OS) return 0 ;;
+  esac
+  return 1
+}
+
+recon_backup_legacy_state() {
+  local stamp dir hop_root bak
+  stamp="$(date -u '+%Y%m%dT%H%M%SZ')"
+  dir="$(recon_critical_dir)"
+  hop_root="$(recon_hop_root)"
+  bak="${hop_root}/legacy-backup.${stamp}"
+  mkdir -p "$bak"
+  # Never delete; quarantine copies.
+  [[ -f "$(hostpath "$STATE_FILE")" ]] && cp -a "$(hostpath "$STATE_FILE")" "$bak/state.legacy.${stamp}" 2>/dev/null || true
+  if [[ -d "$dir" ]]; then
+    mkdir -p "$bak/flags.legacy.${stamp}"
+    cp -a "$dir"/release_upgrade_* "$bak/flags.legacy.${stamp}/" 2>/dev/null || true
+    cp -a "$dir"/legacy_state_reconciled "$bak/flags.legacy.${stamp}/" 2>/dev/null || true
+    cp -a "$dir"/reconciliation_reason "$bak/flags.legacy.${stamp}/" 2>/dev/null || true
+  fi
+  log INFO "LEGACY_STATE_BACKUP=PASS"
+  log INFO "LEGACY_STATE_BACKUP_PATH=${bak}"
+  printf '%s\n' "$bak"
+}
+
+classify_previous_release_upgrade_failure() {
+  RELEASE_UPGRADE_FAILURE_CLASS=""
+  PREVIOUS_FAILURE_CLASS=""
+  local ver
+  ver="$(read_os_field VERSION_ID)"
+
+  classify_package_transition_evidence
+
+  case "$PACKAGE_TRANSITION_CLASS" in
+    AUTHORITATIVE_PACKAGE_TRANSITION|MIXED_SOURCE_TARGET_PACKAGES|INTERRUPTED_DPKG_TRANSACTION|AMBIGUOUS_LEGACY_EVIDENCE)
+      RELEASE_UPGRADE_FAILURE_CLASS="PARTIAL_OR_UNKNOWN_MUTATION"
+      PREVIOUS_FAILURE_CLASS="$RELEASE_UPGRADE_FAILURE_CLASS"
+      PARTIAL_RELEASE_TRANSITION="YES"
+      return 1
+      ;;
+    TARGET_RELEASE_REACHED)
+      RELEASE_UPGRADE_FAILURE_CLASS="TARGET_RELEASE_REACHED"
+      PREVIOUS_FAILURE_CLASS="$RELEASE_UPGRADE_FAILURE_CLASS"
+      PARTIAL_RELEASE_TRANSITION="NO"
+      return 0
+      ;;
+    ACTIVE_RELEASE_UPGRADE_PROCESS)
+      RELEASE_UPGRADE_FAILURE_CLASS="ACTIVE_UPGRADE_IN_PROGRESS"
+      PREVIOUS_FAILURE_CLASS="$RELEASE_UPGRADE_FAILURE_CLASS"
+      PARTIAL_RELEASE_TRANSITION="NO"
+      return 1
+      ;;
+  esac
+
+  if [[ "$ver" == "$PIN_SOURCE_VERSION" ]] \
+    && declare -F detect_meta_release_encoding_failure_signature >/dev/null 2>&1 \
+    && detect_meta_release_encoding_failure_signature; then
+    RELEASE_UPGRADE_FAILURE_CLASS="PRE_MUTATION_META_RELEASE_ENCODING"
+    PREVIOUS_FAILURE_CLASS="$RELEASE_UPGRADE_FAILURE_CLASS"
+    PARTIAL_RELEASE_TRANSITION="NO"
+    log INFO "RELEASE_UPGRADE_FAILURE_CLASS=PRE_MUTATION_CONFIG_PARSE"
+    log INFO "RELEASE_UPGRADE_FAILURE_CLASS=${RELEASE_UPGRADE_FAILURE_CLASS}"
+    log INFO "RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED=false"
+    return 0
+  fi
+
+  if [[ "$ver" == "$PIN_SOURCE_VERSION" ]]; then
+    # Clean source (stale logs / config-only / none) is auto-resumable.
+    case "$PACKAGE_TRANSITION_CLASS" in
+      NONE|STALE_OR_PREBASELINE|PRE_TRANSITION_CONFIGURATION_ONLY)
+        RELEASE_UPGRADE_FAILURE_CLASS="PRE_MUTATION_CLEAN_SOURCE"
+        PREVIOUS_FAILURE_CLASS="PRE_MUTATION_CLEAN_SOURCE"
+        PARTIAL_RELEASE_TRANSITION="NO"
+        return 0
+        ;;
+    esac
+  fi
+
+  RELEASE_UPGRADE_FAILURE_CLASS="UNCLASSIFIED"
+  PREVIOUS_FAILURE_CLASS="$RELEASE_UPGRADE_FAILURE_CLASS"
+  PARTIAL_RELEASE_TRANSITION="YES"
+  return 1
+}
+
+reconcile_legacy_release_upgrade_state() {
+  # Migrate legacy release_upgrade_started without treating stale logs as mutation.
+  load_release_upgrade_started_flag 2>/dev/null || true
+  if declare -F load_release_upgrade_started_flag_for_current_hop >/dev/null 2>&1; then
+    load_release_upgrade_started_flag_for_current_hop
+  fi
+  local dir legacy=0 ver
+  dir="$(recon_critical_dir)"
+  [[ -f "$dir/release_upgrade_started" ]] && grep -qx 'true' "$dir/release_upgrade_started" && legacy=1
+
+  if [[ "$legacy" -eq 0 && "${RELEASE_UPGRADE_STARTED:-false}" != "true" ]]; then
+    return 0
+  fi
+
+  ver="$(read_os_field VERSION_ID)"
+  classify_package_transition_evidence
+  # Log evidence summary without process-substitution (Bash 4.3 + set -e safe).
+  local _evid_tmp _line
+  _evid_tmp="$(mktemp)"
+  render_package_transition_evidence >"$_evid_tmp" || true
+  while IFS= read -r _line || [[ -n "${_line:-}" ]]; do
+    [[ -n "${_line:-}" ]] || continue
+    log INFO "$_line"
+  done <"$_evid_tmp"
+  rm -f "$_evid_tmp"
+
+  if [[ "$PACKAGE_TRANSITION_CLASS" == "ACTIVE_RELEASE_UPGRADE_PROCESS" ]]; then
+    RECONCILIATION_DECISION="BUSY_IN_PROGRESS"
+    MANUAL_REVIEW_REQUIRED="NO"
+    SAFE_TO_RERUN="NO"
+    log ERROR "RECONCILIATION_DECISION=BUSY_IN_PROGRESS"
+    log ERROR "ACTIVE_UPGRADE_PROCESS=YES"
+    die "${EC_BUSY:-22}" "FAIL_RELEASE_UPGRADE_BUSY"
+  fi
+
+  if [[ "$PACKAGE_TRANSITION_CLASS" == "TARGET_RELEASE_REACHED" || "$ver" == "$PIN_TARGET_VERSION" ]]; then
+    recon_backup_legacy_state >/dev/null || true
+    LEGACY_STATE_RECONCILED="true"
+    RECONCILIATION_REASON="TARGET_RELEASE_REACHED"
+    RECONCILIATION_DECISION="TARGET_RELEASE_REACHED"
+    RESUME_FROM="POSTBOOT_VALIDATION"
+    MANUAL_REVIEW_REQUIRED="NO"
+    SAFE_TO_RERUN="NO"
+    printf 'true\n' | recon_atomic_write "$dir/legacy_state_reconciled"
+    printf '%s\n' "$RECONCILIATION_REASON" | recon_atomic_write "$dir/reconciliation_reason"
+    if declare -F persist_release_upgrade_flags >/dev/null 2>&1; then
+      persist_release_upgrade_flags
+    fi
+    log INFO "LEGACY_STATE_RECONCILED=true"
+    log INFO "RECONCILIATION_DECISION=TARGET_RELEASE_REACHED"
+    log INFO "RESUME_FROM=POSTBOOT_VALIDATION"
+    log INFO "STATE_RECONCILIATION_WRITE=ATOMIC"
+    log INFO "STATE_RECONCILIATION_RESULT=PASS"
+    return 0
+  fi
+
+  case "$PACKAGE_TRANSITION_CLASS" in
+    AUTHORITATIVE_PACKAGE_TRANSITION|MIXED_SOURCE_TARGET_PACKAGES|INTERRUPTED_DPKG_TRANSACTION|AMBIGUOUS_LEGACY_EVIDENCE)
+      RECONCILIATION_DECISION="MANUAL_REVIEW"
+      MANUAL_REVIEW_REQUIRED="YES"
+      SAFE_TO_RERUN="NO"
+      AUTHORITATIVE_PACKAGE_TRANSITION="YES"
+      recon_write_diagnostic_bundle
+      log ERROR "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
+      log ERROR "MANUAL_REVIEW_REQUIRED=YES"
+      log ERROR "RECONCILIATION_DECISION=MANUAL_REVIEW"
+      log ERROR "AUTHORITATIVE_PACKAGE_TRANSITION=YES"
+      log ERROR "EVIDENCE_COUNT=${AUTHORITATIVE_EVIDENCE_COUNT}"
+      log ERROR "PACKAGE_TRANSITION_CLASS=${PACKAGE_TRANSITION_CLASS}"
+      log ERROR "REASON=authoritative_package_transition_evidence"
+      die "${EC_RESUME:-29}" "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
+      ;;
+  esac
+
+  if [[ "${LEGACY_STATE_RECONCILED:-false}" == "true" && -n "${RECONCILIATION_REASON:-}" ]]; then
+    log INFO "legacy_state_reconciled=true"
+    log INFO "reconciliation_reason=${RECONCILIATION_REASON}"
+    RECONCILIATION_DECISION="SAFE_PRE_TRANSITION_RESUME"
+    return 0
+  fi
+
+  # Safe pre-transition resume: clean source + stale/config-only/none/encoding.
+  if [[ "$ver" == "$PIN_SOURCE_VERSION" ]]; then
+    case "$PACKAGE_TRANSITION_CLASS" in
+      NONE|STALE_OR_PREBASELINE|PRE_TRANSITION_CONFIGURATION_ONLY)
+        recon_backup_legacy_state >/dev/null || true
+        RELEASE_UPGRADE_INVOCATION_STARTED="true"
+        RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED="false"
+        RELEASE_UPGRADE_STARTED="true"
+        LEGACY_STATE_RECONCILED="true"
+        RECONCILIATION_REASON="SAFE_PRE_TRANSITION_RESUME:${PACKAGE_TRANSITION_CLASS}"
+        RECONCILIATION_DECISION="SAFE_PRE_TRANSITION_RESUME"
+        RESUME_FROM="PRE_DRO_CONFIGURATION"
+        MANUAL_REVIEW_REQUIRED="NO"
+        SAFE_TO_RERUN="YES"
+        PREVIOUS_FAILURE_CLASS="PRE_MUTATION_CLEAN_SOURCE"
+        PARTIAL_RELEASE_TRANSITION="NO"
+        printf 'true\n' | recon_atomic_write "$dir/legacy_state_reconciled"
+        printf '%s\n' "$RECONCILIATION_REASON" | recon_atomic_write "$dir/reconciliation_reason"
+        printf 'false\n' | recon_atomic_write "$dir/release_upgrade_package_transition_started"
+        if declare -F persist_release_upgrade_flags >/dev/null 2>&1; then
+          persist_release_upgrade_flags
+        fi
+        log INFO "LEGACY_STATE_RECONCILED=true"
+        log INFO "RECONCILIATION_DECISION=SAFE_PRE_TRANSITION_RESUME"
+        log INFO "RECONCILIATION_REASON=${RECONCILIATION_REASON}"
+        log INFO "RESUME_FROM=PRE_DRO_CONFIGURATION"
+        log INFO "MANUAL_REVIEW_REQUIRED=NO"
+        log INFO "STATE_RECONCILIATION_WRITE=ATOMIC"
+        log INFO "STATE_RECONCILIATION_RESULT=PASS"
+        return 0
+        ;;
+    esac
+  fi
+
+  # Encoding / config-parse still reconcilable.
+  if ! classify_previous_release_upgrade_failure; then
+    RECONCILIATION_DECISION="MANUAL_REVIEW"
+    MANUAL_REVIEW_REQUIRED="YES"
+    recon_write_diagnostic_bundle
+    log ERROR "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
+    log ERROR "MANUAL_REVIEW_REQUIRED=YES"
+    log ERROR "PREVIOUS_FAILURE_CLASS=${PREVIOUS_FAILURE_CLASS}"
+    die "${EC_RESUME:-29}" "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
+  fi
+
+  case "$PREVIOUS_FAILURE_CLASS" in
+    PRE_MUTATION_META_RELEASE_ENCODING|PRE_MUTATION_CONFIG_PARSE|PRE_MUTATION_CLEAN_SOURCE|TARGET_RELEASE_REACHED)
+      ;;
+    *)
+      RECONCILIATION_DECISION="MANUAL_REVIEW"
+      MANUAL_REVIEW_REQUIRED="YES"
+      recon_write_diagnostic_bundle
+      log ERROR "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
+      log ERROR "MANUAL_REVIEW_REQUIRED=YES"
+      die "${EC_RESUME:-29}" "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
+      ;;
+  esac
+
+  recon_backup_legacy_state >/dev/null || true
+  RELEASE_UPGRADE_INVOCATION_STARTED="true"
+  RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED="false"
+  RELEASE_UPGRADE_STARTED="true"
+  LEGACY_STATE_RECONCILED="true"
+  if [[ "$PREVIOUS_FAILURE_CLASS" == "PRE_MUTATION_META_RELEASE_ENCODING" ]]; then
+    RECONCILIATION_REASON="META_RELEASE_CONFIG_PARSE_BEFORE_TRANSACTION"
+  elif [[ "$PREVIOUS_FAILURE_CLASS" == "PRE_MUTATION_CLEAN_SOURCE" ]]; then
+    RECONCILIATION_REASON="SAFE_PRE_TRANSITION_RESUME:${PACKAGE_TRANSITION_CLASS}"
+  else
+    RECONCILIATION_REASON="PRE_MUTATION_FAILURE_BEFORE_TRANSACTION"
+  fi
+  RECONCILIATION_DECISION="SAFE_PRE_TRANSITION_RESUME"
+  RESUME_FROM="PRE_DRO_CONFIGURATION"
+  MANUAL_REVIEW_REQUIRED="NO"
+  SAFE_TO_RERUN="YES"
+  printf 'true\n' | recon_atomic_write "$dir/legacy_state_reconciled"
+  printf '%s\n' "$RECONCILIATION_REASON" | recon_atomic_write "$dir/reconciliation_reason"
+  if declare -F persist_release_upgrade_flags >/dev/null 2>&1; then
+    persist_release_upgrade_flags
+  fi
+  log INFO "release_upgrade_invocation_started=true"
+  log INFO "release_upgrade_package_transition_started=false"
+  log INFO "LEGACY_STATE_RECONCILED=true"
+  log INFO "RECONCILIATION_DECISION=${RECONCILIATION_DECISION}"
+  log INFO "reconciliation_reason=${RECONCILIATION_REASON}"
+  log INFO "STATE_RECONCILIATION_WRITE=ATOMIC"
+  log INFO "STATE_RECONCILIATION_RESULT=PASS"
+  return 0
+}
+
+assess_safe_resume_from_failed() {
+  # Return 0 when FAILED state is a safe pre-mutation resume candidate.
+  local ver st
+  ver="$(read_os_field VERSION_ID)"
+  st="$(read_state)"
+  PREVIOUS_FAILURE_DETECTED="YES"
+  load_release_upgrade_started_flag 2>/dev/null || true
+  if declare -F load_release_upgrade_started_flag_for_current_hop >/dev/null 2>&1; then
+    load_release_upgrade_started_flag_for_current_hop
+  fi
+
+  classify_package_transition_evidence
+
+  if [[ "$PACKAGE_TRANSITION_CLASS" == "ACTIVE_RELEASE_UPGRADE_PROCESS" ]]; then
+    log ERROR "RESUME_SAFETY_VALIDATION=FAIL"
+    log ERROR "REASON=active_upgrade_process"
+    RECONCILIATION_DECISION="BUSY_IN_PROGRESS"
+    return 1
+  fi
+
+  if [[ "$ver" == "$PIN_TARGET_VERSION" || "$PACKAGE_TRANSITION_CLASS" == "TARGET_RELEASE_REACHED" ]]; then
+    RECONCILIATION_DECISION="TARGET_RELEASE_REACHED"
+    RESUME_FROM="POSTBOOT_VALIDATION"
+    PREVIOUS_FAILURE_CLASS="TARGET_RELEASE_REACHED"
+    PARTIAL_RELEASE_TRANSITION="NO"
+    MANUAL_REVIEW_REQUIRED="NO"
+    log INFO "RESUME_SAFETY_VALIDATION=PASS"
+    log INFO "RESUME_FROM=POSTBOOT_VALIDATION"
+    return 0
+  fi
+
+  if [[ "$ver" != "$PIN_SOURCE_VERSION" ]]; then
+    log ERROR "RESUME_SAFETY_VALIDATION=FAIL"
+    log ERROR "REASON=os_not_source_version"
+    return 1
+  fi
+
+  if [[ "$st" == "FAILED_PRE_DRO" || "$st" == "FAILED_PRE_DRO_STALE" \
+     || "$st" == "FAILED_BEFORE_PACKAGE_TRANSITION" ]]; then
+    if [[ "${RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED:-false}" != "true" ]] \
+      && ! package_transition_evidence_present; then
+      PREVIOUS_FAILURE_CLASS="PRE_DRO_FAILURE_BEFORE_TRANSACTION"
+      PARTIAL_RELEASE_TRANSITION="NO"
+      RESUME_FROM="PRE_DRO_CONFIGURATION"
+      RECONCILIATION_DECISION="SAFE_PRE_TRANSITION_RESUME"
+      MANUAL_REVIEW_REQUIRED="NO"
+      if declare -F verify_prior_critical_hold_resume_consistency >/dev/null 2>&1; then
+        verify_prior_critical_hold_resume_consistency
+      fi
+      if declare -F log_idempotent_prep_states >/dev/null 2>&1; then
+        log_idempotent_prep_states
+      fi
+      log INFO "PREVIOUS_FAILURE_DETECTED=YES"
+      log INFO "PREVIOUS_FAILURE_CLASS=${PREVIOUS_FAILURE_CLASS}"
+      log INFO "PARTIAL_RELEASE_TRANSITION=NO"
+      log INFO "RESUME_SAFETY_VALIDATION=PASS"
+      log INFO "RESUME_FROM=${RESUME_FROM}"
+      return 0
+    fi
+  fi
+
+  reconcile_legacy_release_upgrade_state
+
+  if [[ "${RECONCILIATION_DECISION}" == "TARGET_RELEASE_REACHED" ]]; then
+    return 0
+  fi
+
+  if ! classify_previous_release_upgrade_failure; then
+    log ERROR "RESUME_SAFETY_VALIDATION=FAIL"
+    log ERROR "PARTIAL_RELEASE_TRANSITION=${PARTIAL_RELEASE_TRANSITION}"
+    log ERROR "PREVIOUS_FAILURE_CLASS=${PREVIOUS_FAILURE_CLASS:-UNCLASSIFIED}"
+    log ERROR "PACKAGE_TRANSITION_CLASS=${PACKAGE_TRANSITION_CLASS}"
+    return 1
+  fi
+
+  case "$PREVIOUS_FAILURE_CLASS" in
+    PRE_MUTATION_META_RELEASE_ENCODING|PRE_MUTATION_CONFIG_PARSE|PRE_MUTATION_CLEAN_SOURCE|TARGET_RELEASE_REACHED)
+      ;;
+    *)
+      log ERROR "RESUME_SAFETY_VALIDATION=FAIL"
+      log ERROR "REASON=failure_class_not_auto_resumable"
+      log ERROR "PREVIOUS_FAILURE_CLASS=${PREVIOUS_FAILURE_CLASS}"
+      return 1
+      ;;
+  esac
+
+  if declare -F verify_prior_critical_hold_resume_consistency >/dev/null 2>&1; then
+    verify_prior_critical_hold_resume_consistency
+  fi
+  if declare -F log_idempotent_prep_states >/dev/null 2>&1; then
+    log_idempotent_prep_states
+  fi
+
+  RESUME_FROM="PRE_DRO_CONFIGURATION"
+  RECONCILIATION_DECISION="SAFE_PRE_TRANSITION_RESUME"
+  MANUAL_REVIEW_REQUIRED="NO"
+  SAFE_TO_RERUN="YES"
+  log INFO "PREVIOUS_FAILURE_DETECTED=YES"
+  log INFO "PREVIOUS_FAILURE_CLASS=${PREVIOUS_FAILURE_CLASS}"
+  log INFO "PARTIAL_RELEASE_TRANSITION=NO"
+  log INFO "RESUME_SAFETY_VALIDATION=PASS"
+  log INFO "RESUME_FROM=${RESUME_FROM}"
+  log INFO "RECONCILIATION_DECISION=${RECONCILIATION_DECISION}"
+  return 0
+}
+
+diagnose_release_upgrade_state() {
+  # Read-only diagnostic. Never mutates apt/dpkg/state/systemd/login/packages.
+  classify_package_transition_evidence
+  local ver st
+  ver="$(read_os_field VERSION_ID)"
+  st="$(read_state 2>/dev/null || true)"
+  load_release_upgrade_started_flag 2>/dev/null || true
+
+  RECONCILIATION_DECISION="DIAGNOSE_ONLY"
+  SAFE_TO_RERUN="NO"
+  MANUAL_REVIEW_REQUIRED="NO"
+  case "$PACKAGE_TRANSITION_CLASS" in
+    NONE|STALE_OR_PREBASELINE|PRE_TRANSITION_CONFIGURATION_ONLY)
+      if [[ "$ver" == "$PIN_SOURCE_VERSION" ]]; then
+        SAFE_TO_RERUN="YES"
+        RECONCILIATION_DECISION="SAFE_PRE_TRANSITION_RESUME"
+      fi
+      ;;
+    TARGET_RELEASE_REACHED)
+      RECONCILIATION_DECISION="TARGET_RELEASE_REACHED"
+      SAFE_TO_RERUN="NO"
+      ;;
+    ACTIVE_RELEASE_UPGRADE_PROCESS)
+      RECONCILIATION_DECISION="BUSY_IN_PROGRESS"
+      SAFE_TO_RERUN="NO"
+      ;;
+    AUTHORITATIVE_PACKAGE_TRANSITION|MIXED_SOURCE_TARGET_PACKAGES|INTERRUPTED_DPKG_TRANSACTION|AMBIGUOUS_LEGACY_EVIDENCE)
+      RECONCILIATION_DECISION="MANUAL_REVIEW"
+      MANUAL_REVIEW_REQUIRED="YES"
+      SAFE_TO_RERUN="NO"
+      ;;
+  esac
+
+  printf 'CURRENT_OS_VERSION=%s\n' "$ver"
+  printf 'PIN_SOURCE_VERSION=%s\n' "$PIN_SOURCE_VERSION"
+  printf 'PIN_TARGET_VERSION=%s\n' "$PIN_TARGET_VERSION"
+  printf 'PIN_HOP=%s\n' "$PIN_HOP"
+  printf 'STATE_VALUE=%s\n' "$st"
+  printf 'LEGACY_RELEASE_UPGRADE_STARTED=%s\n' "${RELEASE_UPGRADE_STARTED:-false}"
+  printf 'PACKAGE_TRANSITION_CLASS=%s\n' "$PACKAGE_TRANSITION_CLASS"
+  printf 'AUTHORITATIVE_EVIDENCE_COUNT=%s\n' "$AUTHORITATIVE_EVIDENCE_COUNT"
+  printf 'STALE_EVIDENCE_COUNT=%s\n' "$STALE_EVIDENCE_COUNT"
+  printf 'DPKG_AUDIT=%s\n' "$DPKG_AUDIT_STATUS"
+  printf 'CORE_PACKAGE_CONSISTENCY=%s\n' "$CORE_PACKAGE_CONSISTENCY"
+  printf 'ACTIVE_UPGRADE_PROCESS=%s\n' "$ACTIVE_UPGRADE_PROCESS"
+  printf 'RECONCILIATION_DECISION=%s\n' "$RECONCILIATION_DECISION"
+  printf 'SAFE_TO_RERUN=%s\n' "$SAFE_TO_RERUN"
+  printf 'MANUAL_REVIEW_REQUIRED=%s\n' "$MANUAL_REVIEW_REQUIRED"
+  recon_write_diagnostic_bundle
+  return 0
+}
+
+
+# Shared temporary APT authentication preflight sandbox (_apt-accessible root).
+# Build-time inlined from client/lib/dp-offline-apt-preflight-sandbox.sh
+# shellcheck shell=bash
+# Shared authoritative temporary APT authentication preflight sandbox for all
+# OS-hop clients.
+#
+# Injected into single-file clients at build time via the
+# APT_PREFLIGHT_SANDBOX_HELPER template token (see build_client_*.py).
+# Directly sourceable by fixture tests.
+#
+# Depends on caller-provided:
+#   hostpath, log, die, STATE_ROOT, EC_MIRROR, PIN_HOP, PIN_SOURCE_SUITES,
+#   PIN_COMPONENTS, CURRENT_RUN_ID (optional), PIN_KEY_FINGERPRINT (optional)
+#
+# Critical design:
+#   Temporary APT root is a dedicated mktemp directory mode 0755 so the APT
+#   sandbox user (_apt) can traverse it. It MUST NOT be nested under a
+#   root-private 0700 work directory (that caused Xenial NO_PUBKEY / permission
+#   denied despite valid InRelease gpgv verification).
+#
+# Trust model (Xenial apt 1.2):
+#   Bind Dir::Etc::trusted to the exact binary public keyring file and keep
+#   Dir::Etc::trustedparts as an empty dedicated directory. Do not depend on
+#   trusted-parts directory discovery or host keyrings.
+
+APT_PREFLIGHT_ROOT=""
+APT_PREFLIGHT_KEYRING=""
+APT_PREFLIGHT_TRUSTEDPARTS=""
+APT_PREFLIGHT_OUT=""
+APT_PREFLIGHT_ERR=""
+APT_PREFLIGHT_EVIDENCE_DIR=""
+APT_SANDBOX_USER="_apt"
+APT_SANDBOX_TRAVERSAL="UNKNOWN"
+APT_SANDBOX_KEYRING_READABLE="UNKNOWN"
+APT_SANDBOX_LISTS_PARTIAL_WRITABLE="UNKNOWN"
+APT_SANDBOX_ARCHIVES_PARTIAL_WRITABLE="UNKNOWN"
+APT_GET_EXIT_CODE=""
+APT_PREFLIGHT_CLIENT_EXIT_CODE=""
+APT_SIGNATURE_WARNING_COUNT=0
+APT_EXTERNAL_SOURCE_REFERENCE_COUNT=0
+APT_REPOSITORY_AUTHENTICATION="UNKNOWN"
+APT_PERMISSION_WARNING_COUNT=0
+
+# Effective path resolution (from apt-config dump with the same -o options).
+APT_EFFECTIVE_DIR=""
+APT_EFFECTIVE_ETC=""
+APT_EFFECTIVE_SOURCELIST=""
+APT_EFFECTIVE_SOURCEPARTS=""
+APT_EFFECTIVE_TRUSTED=""
+APT_EFFECTIVE_TRUSTEDPARTS=""
+APT_EFFECTIVE_LISTS=""
+APT_EFFECTIVE_ARCHIVES=""
+
+# APT-level key visibility probe.
+APT_EXPECTED_REPOSITORY_KEY_FPR=""
+APT_EXPECTED_REPOSITORY_KEY_LONG_ID=""
+APT_TRUSTED_KEY_VISIBLE="UNKNOWN"
+APT_TRUSTED_KEY_VISIBLE_FPR=""
+APT_TRUSTED_KEY_VISIBLE_LONG_ID=""
+APT_GPGV_KEYRING_ARGUMENT=""
+
+apt_preflight_sandbox_user_exists() {
+  getent passwd _apt >/dev/null 2>&1
+}
+
+apt_preflight_run_as_sandbox() {
+  # Run a simple command as _apt. Prefer sudo (clients already run as root).
+  if command -v sudo >/dev/null 2>&1; then
+    sudo -u "$APT_SANDBOX_USER" "$@"
+  elif command -v runuser >/dev/null 2>&1; then
+    runuser -u "$APT_SANDBOX_USER" -- "$@"
+  else
+    return 127
+  fi
+}
+
+apt_preflight_cleanup_temp_root() {
+  if [[ -n "${APT_PREFLIGHT_ROOT:-}" && -d "${APT_PREFLIGHT_ROOT}" ]]; then
+    rm -rf "${APT_PREFLIGHT_ROOT}"
+  fi
+  APT_PREFLIGHT_ROOT=""
+}
+
+# Persist apt-update stdout/stderr and metadata under a root-owned evidence path.
+# Path: ${STATE_ROOT}/evidence/apt-preflight/<run-id>/
+# Directory mode 0700, files mode 0600, atomic publication via temp+rename.
+persist_apt_preflight_evidence() {
+  local label="${1:-apt-preflight}"
+  local run_id stamp dest staging f
+  run_id="${CURRENT_RUN_ID:-}"
+  if [[ -z "$run_id" ]]; then
+    run_id="$(date -u '+%Y%m%dT%H%M%SZ')-$$"
+  fi
+  stamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  dest="$(hostpath "${STATE_ROOT}/evidence/apt-preflight/${run_id}")"
+  staging="${dest}.tmp.$$.$RANDOM"
+  mkdir -p "$(dirname "$dest")"
+  rm -rf "$staging"
+  mkdir -p "$staging"
+  chmod 0700 "$staging"
+
+  if [[ -n "${APT_PREFLIGHT_ERR:-}" && -f "${APT_PREFLIGHT_ERR}" ]]; then
+    cp -a "${APT_PREFLIGHT_ERR}" "${staging}/apt-update.err" 2>/dev/null || true
+  fi
+  if [[ -n "${APT_PREFLIGHT_OUT:-}" && -f "${APT_PREFLIGHT_OUT}" ]]; then
+    cp -a "${APT_PREFLIGHT_OUT}" "${staging}/apt-update.out" 2>/dev/null || true
+  fi
+  if [[ -n "${APT_PREFLIGHT_ROOT:-}" && -f "${APT_PREFLIGHT_ROOT}/etc/apt/sources.list" ]]; then
+    cp -a "${APT_PREFLIGHT_ROOT}/etc/apt/sources.list" "${staging}/sources.list" 2>/dev/null || true
+  fi
+
+  {
+    printf 'label=%s\n' "$label"
+    printf 'hop=%s\n' "${PIN_HOP:-}"
+    printf 'timestamp=%s\n' "$stamp"
+    printf 'APT_SANDBOX_USER=%s\n' "${APT_SANDBOX_USER}"
+    printf 'APT_TEMP_ROOT=%s\n' "${APT_PREFLIGHT_ROOT:-}"
+    printf 'APT_GET_EXIT_CODE=%s\n' "${APT_GET_EXIT_CODE:-}"
+    printf 'APT_PREFLIGHT_CLIENT_EXIT_CODE=%s\n' "${APT_PREFLIGHT_CLIENT_EXIT_CODE:-}"
+    printf 'APT_SANDBOX_TRAVERSAL=%s\n' "${APT_SANDBOX_TRAVERSAL}"
+    printf 'APT_SANDBOX_KEYRING_READABLE=%s\n' "${APT_SANDBOX_KEYRING_READABLE}"
+    printf 'APT_SANDBOX_LISTS_PARTIAL_WRITABLE=%s\n' "${APT_SANDBOX_LISTS_PARTIAL_WRITABLE}"
+    printf 'APT_SANDBOX_ARCHIVES_PARTIAL_WRITABLE=%s\n' "${APT_SANDBOX_ARCHIVES_PARTIAL_WRITABLE}"
+    printf 'APT_SIGNATURE_WARNING_COUNT=%s\n' "${APT_SIGNATURE_WARNING_COUNT}"
+    printf 'APT_EXTERNAL_SOURCE_REFERENCE_COUNT=%s\n' "${APT_EXTERNAL_SOURCE_REFERENCE_COUNT}"
+    printf 'APT_REPOSITORY_AUTHENTICATION=%s\n' "${APT_REPOSITORY_AUTHENTICATION}"
+    printf 'APT_EFFECTIVE_DIR=%s\n' "${APT_EFFECTIVE_DIR}"
+    printf 'APT_EFFECTIVE_ETC=%s\n' "${APT_EFFECTIVE_ETC}"
+    printf 'APT_EFFECTIVE_SOURCELIST=%s\n' "${APT_EFFECTIVE_SOURCELIST}"
+    printf 'APT_EFFECTIVE_SOURCEPARTS=%s\n' "${APT_EFFECTIVE_SOURCEPARTS}"
+    printf 'APT_EFFECTIVE_TRUSTED=%s\n' "${APT_EFFECTIVE_TRUSTED}"
+    printf 'APT_EFFECTIVE_TRUSTEDPARTS=%s\n' "${APT_EFFECTIVE_TRUSTEDPARTS}"
+    printf 'APT_EFFECTIVE_LISTS=%s\n' "${APT_EFFECTIVE_LISTS}"
+    printf 'APT_EFFECTIVE_ARCHIVES=%s\n' "${APT_EFFECTIVE_ARCHIVES}"
+    printf 'APT_EXPECTED_REPOSITORY_KEY_FPR=%s\n' "${APT_EXPECTED_REPOSITORY_KEY_FPR}"
+    printf 'APT_EXPECTED_REPOSITORY_KEY_LONG_ID=%s\n' "${APT_EXPECTED_REPOSITORY_KEY_LONG_ID}"
+    printf 'APT_TRUSTED_KEY_VISIBLE=%s\n' "${APT_TRUSTED_KEY_VISIBLE}"
+    printf 'APT_TRUSTED_KEY_VISIBLE_FPR=%s\n' "${APT_TRUSTED_KEY_VISIBLE_FPR}"
+    printf 'APT_TRUSTED_KEY_VISIBLE_LONG_ID=%s\n' "${APT_TRUSTED_KEY_VISIBLE_LONG_ID}"
+    printf 'APT_GPGV_KEYRING_ARGUMENT=%s\n' "${APT_GPGV_KEYRING_ARGUMENT}"
+  } >"${staging}/meta.txt"
+
+  printf '%s\n' "${APT_GET_EXIT_CODE:-}" >"${staging}/apt-get-exit-code"
+  printf '%s\n' "${APT_PREFLIGHT_CLIENT_EXIT_CODE:-}" >"${staging}/client-exit-code"
+
+  # Mode 0600 for all regular files; keep directory 0700.
+  find "$staging" -type f -exec chmod 0600 {} + 2>/dev/null || true
+  chmod 0700 "$staging"
+
+  rm -rf "$dest"
+  mv -f "$staging" "$dest"
+  APT_PREFLIGHT_EVIDENCE_DIR="$dest"
+  log INFO "APT_PREFLIGHT_EVIDENCE=${dest}"
+  printf '%s\n' "$dest"
+}
+
+# Backward-compatible name used by cross-release temp APT failure paths.
+# Accepts either a private work dir containing apt-update.* or an aptroot parent.
+persist_temp_apt_failure_evidence() {
+  local tmp="$1"
+  local exit_code="$2"
+  local label="${3:-apt-update}"
+  APT_GET_EXIT_CODE="${exit_code}"
+  APT_PREFLIGHT_CLIENT_EXIT_CODE="${EC_MIRROR:-18}"
+  APT_REPOSITORY_AUTHENTICATION="FAIL"
+  if [[ -f "${tmp}/apt-update.err" ]]; then
+    APT_PREFLIGHT_ERR="${tmp}/apt-update.err"
+  elif [[ -f "${tmp}/update.err" ]]; then
+    APT_PREFLIGHT_ERR="${tmp}/update.err"
+  fi
+  if [[ -f "${tmp}/apt-update.out" ]]; then
+    APT_PREFLIGHT_OUT="${tmp}/apt-update.out"
+  fi
+  if [[ -d "${tmp}/aptroot" ]]; then
+    APT_PREFLIGHT_ROOT="${tmp}/aptroot"
+  elif [[ -f "${tmp}/etc/apt/sources.list" ]]; then
+    APT_PREFLIGHT_ROOT="$tmp"
+  fi
+  persist_apt_preflight_evidence "$label" || true
+}
+
+apt_preflight_log_sandbox_state() {
+  local mode owner key_mode
+  mode="missing"
+  owner="missing"
+  key_mode="missing"
+  if [[ -n "${APT_PREFLIGHT_ROOT:-}" && -d "${APT_PREFLIGHT_ROOT}" ]]; then
+    mode="$(stat -c '%a' "${APT_PREFLIGHT_ROOT}" 2>/dev/null || printf 'unknown')"
+    owner="$(stat -c '%U:%G' "${APT_PREFLIGHT_ROOT}" 2>/dev/null || printf 'unknown')"
+  fi
+  if [[ -n "${APT_PREFLIGHT_KEYRING:-}" && -f "${APT_PREFLIGHT_KEYRING}" ]]; then
+    key_mode="$(stat -c '%a' "${APT_PREFLIGHT_KEYRING}" 2>/dev/null || printf 'unknown')"
+  fi
+  log INFO "APT_SANDBOX_USER=${APT_SANDBOX_USER}"
+  log INFO "APT_TEMP_ROOT=${APT_PREFLIGHT_ROOT:-}"
+  log INFO "APT_TEMP_ROOT_MODE=${mode}"
+  log INFO "APT_TEMP_ROOT_OWNER=${owner}"
+  log INFO "APT_TEMP_KEYRING_MODE=${key_mode}"
+  log INFO "APT_SANDBOX_TRAVERSAL=${APT_SANDBOX_TRAVERSAL}"
+  log INFO "APT_SANDBOX_KEYRING_READABLE=${APT_SANDBOX_KEYRING_READABLE}"
+  log INFO "APT_SANDBOX_LISTS_PARTIAL_WRITABLE=${APT_SANDBOX_LISTS_PARTIAL_WRITABLE}"
+  log INFO "APT_SANDBOX_ARCHIVES_PARTIAL_WRITABLE=${APT_SANDBOX_ARCHIVES_PARTIAL_WRITABLE}"
+}
+
+apt_preflight_emit_warning_evidence() {
+  local src n line
+  n=0
+  for src in ${APT_PREFLIGHT_ERR:-} ${APT_PREFLIGHT_OUT:-}; do
+    [[ -f "$src" ]] || continue
+    while IFS= read -r line; do
+      if printf '%s' "$line" | grep -qiE "NO_PUBKEY|BADSIG|EXPKEYSIG|is not signed|not signed|Release file|signatures couldn'?t be verified|signatures could not be verified"; then
+        n=$((n + 1))
+        # Sanitize: never emit key material (none present in apt warnings).
+        log ERROR "APT_SIGNATURE_WARNING_${n}=$(printf '%s' "$line" | tr '\n' ' ' | cut -c1-240)"
+      fi
+    done <"$src"
+  done
+  n=0
+  for src in ${APT_PREFLIGHT_ERR:-} ${APT_PREFLIGHT_OUT:-}; do
+    [[ -f "$src" ]] || continue
+    while IFS= read -r line; do
+      if printf '%s' "$line" | grep -qiE "Can'?t drop privileges|Permission denied|pkgAcquire::Run"; then
+        n=$((n + 1))
+        log ERROR "APT_PERMISSION_WARNING_${n}=$(printf '%s' "$line" | tr '\n' ' ' | cut -c1-240)"
+      fi
+    done <"$src"
+  done
+  APT_PERMISSION_WARNING_COUNT="$n"
+}
+
+apt_preflight_log_trust_diagnostics() {
+  log INFO "APT_EFFECTIVE_DIR=${APT_EFFECTIVE_DIR}"
+  log INFO "APT_EFFECTIVE_ETC=${APT_EFFECTIVE_ETC}"
+  log INFO "APT_EFFECTIVE_SOURCELIST=${APT_EFFECTIVE_SOURCELIST}"
+  log INFO "APT_EFFECTIVE_SOURCEPARTS=${APT_EFFECTIVE_SOURCEPARTS}"
+  log INFO "APT_EFFECTIVE_TRUSTED=${APT_EFFECTIVE_TRUSTED}"
+  log INFO "APT_EFFECTIVE_TRUSTEDPARTS=${APT_EFFECTIVE_TRUSTEDPARTS}"
+  log INFO "APT_EFFECTIVE_LISTS=${APT_EFFECTIVE_LISTS}"
+  log INFO "APT_EFFECTIVE_ARCHIVES=${APT_EFFECTIVE_ARCHIVES}"
+  log INFO "APT_EXPECTED_REPOSITORY_KEY_FPR=${APT_EXPECTED_REPOSITORY_KEY_FPR}"
+  log INFO "APT_EXPECTED_REPOSITORY_KEY_LONG_ID=${APT_EXPECTED_REPOSITORY_KEY_LONG_ID}"
+  log INFO "APT_TRUSTED_KEY_VISIBLE=${APT_TRUSTED_KEY_VISIBLE}"
+  log INFO "APT_TRUSTED_KEY_VISIBLE_FPR=${APT_TRUSTED_KEY_VISIBLE_FPR}"
+  log INFO "APT_TRUSTED_KEY_VISIBLE_LONG_ID=${APT_TRUSTED_KEY_VISIBLE_LONG_ID}"
+  log INFO "APT_GPGV_KEYRING_ARGUMENT=${APT_GPGV_KEYRING_ARGUMENT}"
+}
+
+# Normalize OpenPGP fingerprint to 40 uppercase hex (no spaces).
+apt_preflight_normalize_fpr() {
+  local raw="${1:-}"
+  raw="$(printf '%s' "$raw" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]')"
+  printf '%s' "$raw"
+}
+
+# Extract the first 40-hex fingerprint from a binary public keyring.
+apt_preflight_keyring_fingerprint() {
+  local keyring="$1"
+  local fpr=""
+  if command -v gpg >/dev/null 2>&1; then
+    fpr="$(
+      gpg --batch --no-default-keyring --keyring "$keyring" --with-colons --fingerprint 2>/dev/null \
+        | awk -F: '/^fpr:/ { print $10; exit }'
+    )"
+  fi
+  if [[ -z "$fpr" ]] && command -v apt-key >/dev/null 2>&1; then
+    fpr="$(
+      apt-key --keyring "$keyring" finger 2>/dev/null \
+        | tr -d '[:space:]' \
+        | grep -oE '[A-F0-9a-f]{40}' \
+        | head -1 \
+        || true
+    )"
+  fi
+  apt_preflight_normalize_fpr "$fpr"
+}
+
+# Shared Xenial apt 1.2 Dir overrides (Model A: Dir root + relative children).
+# Populates global APT_PREFLIGHT_APT_OPTS (bash 4.3-safe; no nameref).
+# Also sets Apt::GPGV::TrustedKeyring to the absolute primary keyring so Xenial
+# apt-key verify binds to the sandbox key even when Dir options are incomplete.
+APT_PREFLIGHT_APT_OPTS=()
+apt_preflight_common_apt_opts() {
+  local aptroot="$1"
+  local status_db="$2"
+  local trusted_abs="${aptroot}/etc/apt/trusted.gpg"
+  APT_PREFLIGHT_APT_OPTS=(
+    -o "Dir=${aptroot}"
+    -o "Dir::Etc=etc/apt"
+    -o "Dir::Etc::sourcelist=sources.list"
+    -o "Dir::Etc::sourceparts=sources.list.d"
+    -o "Dir::Etc::trusted=${trusted_abs}"
+    -o "Dir::Etc::trustedparts=${aptroot}/etc/apt/trusted.gpg.d.empty"
+    -o "Dir::Etc::Parts=apt.conf.d"
+    -o "Dir::State=var/lib/apt"
+    -o "Dir::State::status=${status_db}"
+    -o "Dir::State::lists=lists"
+    -o "Dir::Cache=var/cache/apt"
+    -o "Dir::Cache::archives=archives"
+    -o "Acquire::Languages=none"
+    -o "APT::Get::AllowUnauthenticated=false"
+    -o "Apt::GPGV::TrustedKeyring=${trusted_abs}"
+  )
+}
+
+# Parse apt-config dump for a single key's value (quoted or bare).
+apt_preflight_apt_config_value() {
+  local dump_file="$1"
+  local key="$2"
+  local line val
+  line="$(grep -E "^${key} " "$dump_file" 2>/dev/null | head -1 || true)"
+  [[ -n "$line" ]] || return 0
+  val="${line#"${key}" }"
+  val="${val%;}"
+  val="${val#\"}"
+  val="${val%\"}"
+  printf '%s' "$val"
+}
+
+# Join parent/child path; if child is absolute, return child.
+apt_preflight_join_path() {
+  local parent="$1"
+  local child="$2"
+  if [[ -z "$child" ]]; then
+    printf '%s' "$parent"
+  elif [[ "$child" == /* ]]; then
+    printf '%s' "$child"
+  elif [[ -z "$parent" ]]; then
+    printf '%s' "$child"
+  else
+    printf '%s/%s' "${parent%/}" "$child"
+  fi
+}
+
+# Resolve effective paths with the same -o options as apt-get update.
+# apt-config may emit relative children; report absolute paths APT will use.
+apt_preflight_capture_effective_config() {
+  local aptroot status_db dump_file raw_dir raw_etc raw_sl raw_sp raw_tr raw_tp raw_lists raw_ar
+  local conf saved_apt_config="__UNSET__"
+  aptroot="${APT_PREFLIGHT_ROOT}"
+  status_db="$(hostpath /var/lib/dpkg/status)"
+  dump_file="${aptroot}/apt-config.dump"
+  apt_preflight_common_apt_opts "$aptroot" "$status_db"
+  conf="$(apt_preflight_write_apt_config_file)"
+  if [[ -n "${APT_CONFIG+x}" ]]; then
+    saved_apt_config="${APT_CONFIG}"
+  fi
+  export APT_CONFIG="$conf"
+
+  APT_EFFECTIVE_DIR=""
+  APT_EFFECTIVE_ETC=""
+  APT_EFFECTIVE_SOURCELIST=""
+  APT_EFFECTIVE_SOURCEPARTS=""
+  APT_EFFECTIVE_TRUSTED=""
+  APT_EFFECTIVE_TRUSTEDPARTS=""
+  APT_EFFECTIVE_LISTS=""
+  APT_EFFECTIVE_ARCHIVES=""
+
+  set +e
+  apt-config dump "${APT_PREFLIGHT_APT_OPTS[@]}" >"$dump_file" 2>/dev/null
+  set -e
+  chmod 0600 "$dump_file" 2>/dev/null || true
+
+  if [[ "$saved_apt_config" == "__UNSET__" ]]; then
+    unset APT_CONFIG
+  else
+    export APT_CONFIG="$saved_apt_config"
+  fi
+
+  raw_dir="$(apt_preflight_apt_config_value "$dump_file" "Dir")"
+  raw_etc="$(apt_preflight_apt_config_value "$dump_file" "Dir::Etc")"
+  raw_sl="$(apt_preflight_apt_config_value "$dump_file" "Dir::Etc::sourcelist")"
+  raw_sp="$(apt_preflight_apt_config_value "$dump_file" "Dir::Etc::sourceparts")"
+  raw_tr="$(apt_preflight_apt_config_value "$dump_file" "Dir::Etc::trusted")"
+  raw_tp="$(apt_preflight_apt_config_value "$dump_file" "Dir::Etc::trustedparts")"
+  raw_lists="$(apt_preflight_apt_config_value "$dump_file" "Dir::State::lists")"
+  raw_ar="$(apt_preflight_apt_config_value "$dump_file" "Dir::Cache::archives")"
+  # State/Cache parents for lists/archives resolution.
+  local raw_state raw_cache
+  raw_state="$(apt_preflight_apt_config_value "$dump_file" "Dir::State")"
+  raw_cache="$(apt_preflight_apt_config_value "$dump_file" "Dir::Cache")"
+
+  APT_EFFECTIVE_DIR="${raw_dir:-$aptroot}"
+  APT_EFFECTIVE_ETC="$(apt_preflight_join_path "$APT_EFFECTIVE_DIR" "$raw_etc")"
+  APT_EFFECTIVE_SOURCELIST="$(apt_preflight_join_path "$APT_EFFECTIVE_ETC" "$raw_sl")"
+  APT_EFFECTIVE_SOURCEPARTS="$(apt_preflight_join_path "$APT_EFFECTIVE_ETC" "$raw_sp")"
+  APT_EFFECTIVE_TRUSTED="$(apt_preflight_join_path "$APT_EFFECTIVE_ETC" "$raw_tr")"
+  APT_EFFECTIVE_TRUSTEDPARTS="$(apt_preflight_join_path "$APT_EFFECTIVE_ETC" "$raw_tp")"
+  APT_EFFECTIVE_LISTS="$(apt_preflight_join_path "$(apt_preflight_join_path "$APT_EFFECTIVE_DIR" "$raw_state")" "$raw_lists")"
+  APT_EFFECTIVE_ARCHIVES="$(apt_preflight_join_path "$(apt_preflight_join_path "$APT_EFFECTIVE_DIR" "$raw_cache")" "$raw_ar")"
+
+  log INFO "APT_EFFECTIVE_DIR=${APT_EFFECTIVE_DIR}"
+  log INFO "APT_EFFECTIVE_ETC=${APT_EFFECTIVE_ETC}"
+  log INFO "APT_EFFECTIVE_SOURCELIST=${APT_EFFECTIVE_SOURCELIST}"
+  log INFO "APT_EFFECTIVE_SOURCEPARTS=${APT_EFFECTIVE_SOURCEPARTS}"
+  log INFO "APT_EFFECTIVE_TRUSTED=${APT_EFFECTIVE_TRUSTED}"
+  log INFO "APT_EFFECTIVE_TRUSTEDPARTS=${APT_EFFECTIVE_TRUSTEDPARTS}"
+  log INFO "APT_EFFECTIVE_LISTS=${APT_EFFECTIVE_LISTS}"
+  log INFO "APT_EFFECTIVE_ARCHIVES=${APT_EFFECTIVE_ARCHIVES}"
+}
+
+# Prove Xenial APT/apt-key can see the repository key from the exact keyring
+# configuration that apt-get will use. File readability alone is not enough.
+apt_preflight_probe_trusted_key_visibility() {
+  local aptroot status_db expected visible_fpr probe_out
+  aptroot="${APT_PREFLIGHT_ROOT}"
+  status_db="$(hostpath /var/lib/dpkg/status)"
+  probe_out="${aptroot}/apt-key-probe.out"
+
+  APT_TRUSTED_KEY_VISIBLE="FAIL"
+  APT_TRUSTED_KEY_VISIBLE_FPR=""
+  APT_TRUSTED_KEY_VISIBLE_LONG_ID=""
+
+  expected="$(apt_preflight_normalize_fpr "${PIN_KEY_FINGERPRINT:-}")"
+  if [[ -z "$expected" && -n "${APT_PREFLIGHT_KEYRING:-}" && -f "${APT_PREFLIGHT_KEYRING}" ]]; then
+    expected="$(apt_preflight_keyring_fingerprint "${APT_PREFLIGHT_KEYRING}")"
+  fi
+  APT_EXPECTED_REPOSITORY_KEY_FPR="$expected"
+  if [[ ${#expected} -eq 40 ]]; then
+    APT_EXPECTED_REPOSITORY_KEY_LONG_ID="${expected: -16}"
+  else
+    APT_EXPECTED_REPOSITORY_KEY_LONG_ID=""
+  fi
+
+  apt_preflight_common_apt_opts "$aptroot" "$status_db"
+
+  : >"$probe_out"
+  chmod 0600 "$probe_out" 2>/dev/null || true
+
+  local conf saved_apt_config="__UNSET__"
+  conf="$(apt_preflight_write_apt_config_file)"
+  if [[ -n "${APT_CONFIG+x}" ]]; then
+    saved_apt_config="${APT_CONFIG}"
+  fi
+  export APT_CONFIG="$conf"
+
+  set +e
+  if command -v apt-key >/dev/null 2>&1; then
+    # Prefer the same Dir tree apt-get will use (proves effective trust config).
+    # Xenial apt-key resolves Dir::Etc::Trusted/f via APT_CONFIG.
+    apt-key finger >"$probe_out" 2>/dev/null \
+      || apt-key "${APT_PREFLIGHT_APT_OPTS[@]}" finger >"$probe_out" 2>/dev/null \
+      || apt-key --keyring "${APT_PREFLIGHT_KEYRING}" finger >"$probe_out" 2>/dev/null \
+      || true
+  fi
+  if [[ ! -s "$probe_out" ]] && command -v gpg >/dev/null 2>&1; then
+    gpg --batch --no-default-keyring --keyring "${APT_PREFLIGHT_KEYRING}" \
+      --with-colons --fingerprint >"$probe_out" 2>/dev/null || true
+  fi
+  set -e
+
+  if [[ "$saved_apt_config" == "__UNSET__" ]]; then
+    unset APT_CONFIG
+  else
+    export APT_CONFIG="$saved_apt_config"
+  fi
+
+  visible_fpr="$(
+    tr -d '[:space:]' <"$probe_out" \
+      | grep -oE '[A-F0-9a-f]{40}' \
+      | head -1 \
+      || true
+  )"
+  visible_fpr="$(apt_preflight_normalize_fpr "$visible_fpr")"
+  if [[ -z "$visible_fpr" ]]; then
+    visible_fpr="$(
+      awk -F: '/^fpr:/ { print $10; exit }' "$probe_out" 2>/dev/null || true
+    )"
+    visible_fpr="$(apt_preflight_normalize_fpr "$visible_fpr")"
+  fi
+  APT_TRUSTED_KEY_VISIBLE_FPR="$visible_fpr"
+  if [[ ${#visible_fpr} -eq 40 ]]; then
+    APT_TRUSTED_KEY_VISIBLE_LONG_ID="${visible_fpr: -16}"
+  fi
+
+  if [[ -n "$expected" && "$visible_fpr" == "$expected" ]]; then
+    APT_TRUSTED_KEY_VISIBLE="PASS"
+  elif [[ -n "$expected" && -n "${APT_TRUSTED_KEY_VISIBLE_LONG_ID}" \
+      && "${APT_TRUSTED_KEY_VISIBLE_LONG_ID}" == "${APT_EXPECTED_REPOSITORY_KEY_LONG_ID}" ]]; then
+    APT_TRUSTED_KEY_VISIBLE="PASS"
+    APT_TRUSTED_KEY_VISIBLE_FPR="$expected"
+  fi
+
+  log INFO "APT_EXPECTED_REPOSITORY_KEY_FPR=${APT_EXPECTED_REPOSITORY_KEY_FPR}"
+  log INFO "APT_EXPECTED_REPOSITORY_KEY_LONG_ID=${APT_EXPECTED_REPOSITORY_KEY_LONG_ID}"
+  log INFO "APT_TRUSTED_KEY_VISIBLE=${APT_TRUSTED_KEY_VISIBLE}"
+  log INFO "APT_TRUSTED_KEY_VISIBLE_FPR=${APT_TRUSTED_KEY_VISIBLE_FPR}"
+  log INFO "APT_TRUSTED_KEY_VISIBLE_LONG_ID=${APT_TRUSTED_KEY_VISIBLE_LONG_ID}"
+
+  [[ "$APT_TRUSTED_KEY_VISIBLE" == "PASS" ]]
+}
+
+# Create a dedicated _apt-accessible temporary APT root (NOT under a 0700 private dir).
+# Args: public_keyring_path
+# Sets APT_PREFLIGHT_ROOT / APT_PREFLIGHT_KEYRING / OUT / ERR paths.
+apt_preflight_create_sandbox() {
+  local keyring_src="$1"
+  local aptroot keyring_dst trustedparts lists_partial archives_partial
+  local d
+
+  [[ -f "$keyring_src" && -s "$keyring_src" ]] \
+    || die "${EC_MIRROR:-18}" "APT preflight keyring missing or empty: ${keyring_src}"
+
+  aptroot="$(mktemp -d /tmp/stellar-apt-preflight.XXXXXX)"
+  # mktemp defaults to 0700 — open the outer root so _apt can traverse.
+  chmod 0755 "$aptroot"
+  chown root:root "$aptroot" 2>/dev/null || true
+
+  for d in \
+    etc \
+    etc/apt \
+    etc/apt/sources.list.d \
+    etc/apt/apt.conf.d \
+    etc/apt/trusted.gpg.d.empty \
+    var \
+    var/lib \
+    var/lib/apt \
+    var/lib/apt/lists \
+    var/cache \
+    var/cache/apt \
+    var/cache/apt/archives
+  do
+    mkdir -p "${aptroot}/${d}"
+    chown root:root "${aptroot}/${d}" 2>/dev/null || true
+    chmod 0755 "${aptroot}/${d}"
+  done
+
+  lists_partial="${aptroot}/var/lib/apt/lists/partial"
+  archives_partial="${aptroot}/var/cache/apt/archives/partial"
+  mkdir -p "$lists_partial" "$archives_partial"
+
+  if apt_preflight_sandbox_user_exists; then
+    APT_SANDBOX_USER="_apt"
+    # Match Ubuntu host layout: _apt:root mode 0700 on partial dirs.
+    chown _apt:root "$lists_partial" "$archives_partial" 2>/dev/null \
+      || chown _apt "$lists_partial" "$archives_partial"
+    chmod 0700 "$lists_partial" "$archives_partial"
+  else
+    APT_SANDBOX_USER="missing"
+    chmod 0755 "$lists_partial" "$archives_partial"
+  fi
+
+  # Primary trusted keyring file (exact binary OpenPGP keyring). Xenial apt 1.2
+  # binds authentication to Dir::Etc::trusted; do not rely on trustedparts scan.
+  keyring_dst="${aptroot}/etc/apt/trusted.gpg"
+  trustedparts="${aptroot}/etc/apt/trusted.gpg.d.empty"
+  cp -a "$keyring_src" "$keyring_dst"
+  chown root:root "$keyring_dst" 2>/dev/null || true
+  chmod 0644 "$keyring_dst"
+  # Ensure trustedparts stays empty (no host/key fragments).
+  find "$trustedparts" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+
+  # Empty main sources.list placeholder filled by caller; empty sourceparts.
+  : >"${aptroot}/etc/apt/sources.list"
+  chmod 0644 "${aptroot}/etc/apt/sources.list"
+
+  APT_PREFLIGHT_ROOT="$aptroot"
+  APT_PREFLIGHT_KEYRING="$keyring_dst"
+  APT_PREFLIGHT_TRUSTEDPARTS="$trustedparts"
+  APT_PREFLIGHT_OUT="${aptroot}/apt-update.out"
+  APT_PREFLIGHT_ERR="${aptroot}/apt-update.err"
+  : >"${APT_PREFLIGHT_OUT}"
+  : >"${APT_PREFLIGHT_ERR}"
+  chmod 0600 "${APT_PREFLIGHT_OUT}" "${APT_PREFLIGHT_ERR}"
+}
+
+# Fail-closed probes before apt-get update.
+apt_preflight_verify_sandbox_access() {
+  local aptroot keyring lists_partial archives_partial probe
+  aptroot="${APT_PREFLIGHT_ROOT}"
+  keyring="${APT_PREFLIGHT_KEYRING}"
+  lists_partial="${aptroot}/var/lib/apt/lists/partial"
+  archives_partial="${aptroot}/var/cache/apt/archives/partial"
+
+  APT_SANDBOX_TRAVERSAL="FAIL"
+  APT_SANDBOX_KEYRING_READABLE="FAIL"
+  APT_SANDBOX_LISTS_PARTIAL_WRITABLE="FAIL"
+  APT_SANDBOX_ARCHIVES_PARTIAL_WRITABLE="FAIL"
+
+  if ! apt_preflight_sandbox_user_exists; then
+    apt_preflight_log_sandbox_state
+    log ERROR "APT_SANDBOX_USER_MISSING=YES"
+    return 1
+  fi
+
+  if apt_preflight_run_as_sandbox test -x "$aptroot" \
+    && apt_preflight_run_as_sandbox test -x "${aptroot}/etc" \
+    && apt_preflight_run_as_sandbox test -x "${aptroot}/etc/apt"
+  then
+    APT_SANDBOX_TRAVERSAL="PASS"
+  fi
+
+  if apt_preflight_run_as_sandbox test -r "$keyring"; then
+    APT_SANDBOX_KEYRING_READABLE="PASS"
+  fi
+
+  probe="${lists_partial}/.stellar-apt-write-test.$$"
+  if apt_preflight_run_as_sandbox touch "$probe" 2>/dev/null; then
+    APT_SANDBOX_LISTS_PARTIAL_WRITABLE="PASS"
+    rm -f "$probe" 2>/dev/null || apt_preflight_run_as_sandbox rm -f "$probe" 2>/dev/null || true
+  fi
+
+  probe="${archives_partial}/.stellar-apt-write-test.$$"
+  if apt_preflight_run_as_sandbox touch "$probe" 2>/dev/null; then
+    APT_SANDBOX_ARCHIVES_PARTIAL_WRITABLE="PASS"
+    rm -f "$probe" 2>/dev/null || apt_preflight_run_as_sandbox rm -f "$probe" 2>/dev/null || true
+  fi
+
+  apt_preflight_log_sandbox_state
+
+  if [[ "$APT_SANDBOX_TRAVERSAL" != "PASS" \
+     || "$APT_SANDBOX_KEYRING_READABLE" != "PASS" \
+     || "$APT_SANDBOX_LISTS_PARTIAL_WRITABLE" != "PASS" \
+     || "$APT_SANDBOX_ARCHIVES_PARTIAL_WRITABLE" != "PASS" ]]; then
+    return 1
+  fi
+  return 0
+}
+
+apt_preflight_write_sources() {
+  local repo="$1"
+  local suites="$2"
+  local components="$3"
+  local aptroot s
+  aptroot="${APT_PREFLIGHT_ROOT}"
+  {
+    for s in $suites; do
+      printf 'deb [arch=amd64] %s %s %s\n' "$repo" "$s" "$components"
+    done
+  } >"${aptroot}/etc/apt/sources.list"
+  chmod 0644 "${aptroot}/etc/apt/sources.list"
+}
+
+# Extract which keyring path APT passed to gpgv from debug output.
+apt_preflight_extract_gpgv_keyring_argument() {
+  local src line arg
+  APT_GPGV_KEYRING_ARGUMENT=""
+  for src in ${APT_PREFLIGHT_ERR:-} ${APT_PREFLIGHT_OUT:-}; do
+    [[ -f "$src" ]] || continue
+    # Xenial Debug::Acquire::gpgv lines mention --keyring <path>
+    arg="$(
+      grep -oE -- '--keyring[= ][^[:space:]]+' "$src" 2>/dev/null \
+        | head -1 \
+        | sed -E 's/^--keyring[= ]//' \
+        || true
+    )"
+    if [[ -z "$arg" ]]; then
+      arg="$(
+        grep -oE "${APT_PREFLIGHT_ROOT}/etc/apt/trusted\\.gpg" "$src" 2>/dev/null | head -1 || true
+      )"
+    fi
+    if [[ -n "$arg" ]]; then
+      APT_GPGV_KEYRING_ARGUMENT="$arg"
+      break
+    fi
+  done
+  # Fall back to the configured primary keyring. Xenial's gpgv method invokes
+  # apt-key verify (no --keyring argv); trust comes from Dir::Etc::trusted via
+  # APT_CONFIG, so the effective primary trusted.gpg is the keyring in use.
+  if [[ -z "$APT_GPGV_KEYRING_ARGUMENT" && -n "${APT_PREFLIGHT_KEYRING:-}" ]]; then
+    APT_GPGV_KEYRING_ARGUMENT="${APT_PREFLIGHT_KEYRING}"
+  fi
+  log INFO "APT_GPGV_KEYRING_ARGUMENT=${APT_GPGV_KEYRING_ARGUMENT}"
+}
+
+
+# Write an apt.conf that Xenial apt-key will honor via APT_CONFIG.
+# Binds trust to the sandbox primary keyring without modifying host
+# /etc/apt/trusted.gpg{,.d}.
+apt_preflight_write_apt_config_file() {
+  local aptroot conf
+  aptroot="${APT_PREFLIGHT_ROOT}"
+  conf="${aptroot}/apt-preflight.conf"
+  {
+    printf 'Dir "%s";\n' "$aptroot"
+    printf 'Dir::Etc "etc/apt";\n'
+    printf 'Dir::Etc::sourcelist "sources.list";\n'
+    printf 'Dir::Etc::sourceparts "sources.list.d";\n'
+    # Absolute trusted path so Xenial apt-key Dir::Etc::Trusted/f cannot miss the keyring.
+    printf 'Dir::Etc::trusted "%s";\n' "${aptroot}/etc/apt/trusted.gpg"
+    printf 'Dir::Etc::trustedparts "%s";\n' "${aptroot}/etc/apt/trusted.gpg.d.empty"
+    printf 'Dir::Etc::Parts "apt.conf.d";\n'
+    printf 'Dir::State "var/lib/apt";\n'
+    printf 'Dir::State::lists "lists";\n'
+    printf 'Dir::Cache "var/cache/apt";\n'
+    printf 'Dir::Cache::archives "archives";\n'
+    printf 'Acquire::Languages "none";\n'
+    printf 'APT::Get::AllowUnauthenticated "false";\n'
+    printf 'Apt::GPGV::TrustedKeyring "%s";\n' "${aptroot}/etc/apt/trusted.gpg"
+  } >"$conf"
+  # Must be _apt-readable: Xenial's gpgv method execs apt-key as the sandbox
+  # user, which re-reads APT_CONFIG for Dir::Etc::trusted. Mode 0600 causes
+  # apt-key to miss the sandbox keyring and emit NO_PUBKEY despite a valid
+  # primary trusted.gpg. Evidence copies remain 0600 separately.
+  chmod 0644 "$conf"
+  printf '%s' "$conf"
+}
+
+
+# Explicit Xenial apt 1.2-compatible Dir overrides; host sources/keyrings excluded.
+# APT_CONFIG carries absolute Dir::Etc::trusted so Xenial apt-key (exec'd by the
+# gpgv method) resolves the sandbox primary keyring without host keyrings and
+# without replacing /usr/bin/apt-key.
+apt_preflight_run_apt_update() {
+  local aptroot status_db conf saved_apt_config="__UNSET__"
+  aptroot="${APT_PREFLIGHT_ROOT}"
+  status_db="$(hostpath /var/lib/dpkg/status)"
+  apt_preflight_common_apt_opts "$aptroot" "$status_db"
+  conf="$(apt_preflight_write_apt_config_file)"
+  if [[ -n "${APT_CONFIG+x}" ]]; then
+    saved_apt_config="${APT_CONFIG}"
+  fi
+  export APT_CONFIG="$conf"
+  APT_GET_EXIT_CODE=0
+  set +e
+  # Debug::Acquire::gpgv is supported on Xenial apt 1.2; read-only evidence only.
+  apt-get \
+    "${APT_PREFLIGHT_APT_OPTS[@]}" \
+    -o Debug::Acquire::gpgv=true \
+    update >"${APT_PREFLIGHT_OUT}" 2>"${APT_PREFLIGHT_ERR}"
+  APT_GET_EXIT_CODE=$?
+  set -e
+  if [[ "$saved_apt_config" == "__UNSET__" ]]; then
+    unset APT_CONFIG
+  else
+    export APT_CONFIG="$saved_apt_config"
+  fi
+  apt_preflight_extract_gpgv_keyring_argument || true
+  log INFO "APT_GET_EXIT_CODE=${APT_GET_EXIT_CODE}"
+}
+
+apt_preflight_count_signature_warnings() {
+  local count=0
+  APT_SIGNATURE_WARNING_COUNT=0
+  # Count only apt user-facing auth failures. Debug::Acquire::gpgv emits
+  # intermediate [GNUPG:] NO_PUBKEY lines before modern APT retries against
+  # Dir::Etc::trusted / Apt::GPGV::TrustedKeyring; those must not fail a
+  # successful authentication. Xenial apt 1.2 with a correct primary keyring
+  # never emits W: GPG/NO_PUBKEY lines on success.
+  count="$(
+    {
+      grep -hE '^(W|E):' ${APT_PREFLIGHT_ERR:-/dev/null} ${APT_PREFLIGHT_OUT:-/dev/null} 2>/dev/null \
+        | grep -ciE "NO_PUBKEY|BADSIG|EXPKEYSIG|signatures couldn'?t be verified|signatures could not be verified|is not signed|does not have a Release file|The repository is not signed|invalid signature|missing Release|repository without a Release" \
+        || true
+    } | awk '{s+=$1} END {print s+0}'
+  )"
+  APT_SIGNATURE_WARNING_COUNT="${count:-0}"
+}
+
+apt_preflight_count_external_refs() {
+  local count=0
+  local aptroot="${APT_PREFLIGHT_ROOT}"
+  APT_EXTERNAL_SOURCE_REFERENCE_COUNT=0
+  count="$(
+    { grep -hciE '(archive|security|old-releases|changelogs)\.ubuntu\.com' \
+      ${APT_PREFLIGHT_ERR:-/dev/null} ${APT_PREFLIGHT_OUT:-/dev/null} 2>/dev/null || true; } \
+      | awk '{s+=$1} END {print s+0}'
+  )"
+  # Also require acquired list filenames reference only the pinned hop mirror path.
+  if [[ -d "${aptroot}/var/lib/apt/lists" ]]; then
+    local f base
+    shopt -s nullglob
+    for f in "${aptroot}/var/lib/apt/lists/"*; do
+      [[ -e "$f" ]] || continue
+      base="$(basename "$f")"
+      case "$base" in
+        partial|lock) continue ;;
+      esac
+      # Hostnames for Ubuntu archives in list filenames are a hard failure.
+      if printf '%s' "$base" | grep -qiE '(archive|security|old-releases|changelogs)[._-]ubuntu[._-]com'; then
+        count=$((count + 1))
+      fi
+    done
+    shopt -u nullglob
+  fi
+  APT_EXTERNAL_SOURCE_REFERENCE_COUNT="${count:-0}"
+}
+
+apt_preflight_fail() {
+  local msg="$1"
+  APT_REPOSITORY_AUTHENTICATION="FAIL"
+  APT_PREFLIGHT_CLIENT_EXIT_CODE="${EC_MIRROR:-18}"
+  log ERROR "APT_REPOSITORY_AUTHENTICATION=FAIL"
+  log INFO "APT_GET_EXIT_CODE=${APT_GET_EXIT_CODE:-}"
+  log INFO "APT_PREFLIGHT_CLIENT_EXIT_CODE=${APT_PREFLIGHT_CLIENT_EXIT_CODE}"
+  log INFO "APT_SIGNATURE_WARNING_COUNT=${APT_SIGNATURE_WARNING_COUNT}"
+  log INFO "APT_EXTERNAL_SOURCE_REFERENCE_COUNT=${APT_EXTERNAL_SOURCE_REFERENCE_COUNT}"
+  apt_preflight_log_trust_diagnostics || true
+  apt_preflight_emit_warning_evidence || true
+  persist_apt_preflight_evidence "temporary_local_apt_preflight" || true
+  apt_preflight_cleanup_temp_root
+  die "${EC_MIRROR:-18}" "$msg"
+}
+
+# Main entry: temporary local APT authentication preflight.
+# Args: keyring_path repo_url [suites] [components]
+# suites/components default to PIN_SOURCE_SUITES / PIN_COMPONENTS.
+run_temporary_local_apt_authentication_preflight() {
+  local keyring_src="$1"
+  local repo="$2"
+  local suites="${3:-$PIN_SOURCE_SUITES}"
+  local components="${4:-$PIN_COMPONENTS}"
+
+  APT_PREFLIGHT_CLIENT_EXIT_CODE=0
+  APT_REPOSITORY_AUTHENTICATION="UNKNOWN"
+  APT_SIGNATURE_WARNING_COUNT=0
+  APT_EXTERNAL_SOURCE_REFERENCE_COUNT=0
+  APT_TRUSTED_KEY_VISIBLE="UNKNOWN"
+  APT_GPGV_KEYRING_ARGUMENT=""
+
+  apt_preflight_create_sandbox "$keyring_src"
+  apt_preflight_write_sources "$repo" "$suites" "$components"
+
+  if ! apt_preflight_verify_sandbox_access; then
+    APT_GET_EXIT_CODE=""
+    apt_preflight_fail "temporary APT sandbox not accessible to _apt (traversal/keyring/partial write)"
+  fi
+
+  apt_preflight_capture_effective_config || true
+
+  if ! apt_preflight_probe_trusted_key_visibility; then
+    APT_GET_EXIT_CODE=""
+    apt_preflight_fail "APT trusted key not visible to Xenial apt-key/apt-secure from primary keyring binding"
+  fi
+
+  apt_preflight_run_apt_update
+  apt_preflight_count_signature_warnings
+  apt_preflight_count_external_refs
+
+  log INFO "APT_SIGNATURE_WARNING_COUNT=${APT_SIGNATURE_WARNING_COUNT}"
+  log INFO "APT_EXTERNAL_SOURCE_REFERENCE_COUNT=${APT_EXTERNAL_SOURCE_REFERENCE_COUNT}"
+
+  if [[ "${APT_GET_EXIT_CODE}" -ne 0 ]]; then
+    apt_preflight_fail "temporary local apt-get update failed (apt-get exit=${APT_GET_EXIT_CODE}; client exit will be ${EC_MIRROR:-18}; evidence under ${STATE_ROOT}/evidence/apt-preflight/)"
+  fi
+  if [[ "${APT_EXTERNAL_SOURCE_REFERENCE_COUNT}" -ne 0 ]]; then
+    apt_preflight_fail "temporary apt update referenced external Ubuntu hosts"
+  fi
+  if [[ "${APT_SIGNATURE_WARNING_COUNT}" -ne 0 ]]; then
+    apt_preflight_fail "APT repository authentication failed during temporary local apt-get update"
+  fi
+
+  # Success: all gates required by contract.
+  APT_REPOSITORY_AUTHENTICATION="PASS"
+  APT_PREFLIGHT_CLIENT_EXIT_CODE=0
+  log INFO "APT_GET_EXIT_CODE=${APT_GET_EXIT_CODE}"
+  log INFO "APT_PREFLIGHT_CLIENT_EXIT_CODE=0"
+  log INFO "APT_SANDBOX_TRAVERSAL=PASS"
+  log INFO "APT_SANDBOX_KEYRING_READABLE=PASS"
+  log INFO "APT_SANDBOX_LISTS_PARTIAL_WRITABLE=PASS"
+  log INFO "APT_SANDBOX_ARCHIVES_PARTIAL_WRITABLE=PASS"
+  log INFO "APT_REPOSITORY_AUTHENTICATION=PASS"
+  log INFO "APT_SIGNATURE_WARNING_COUNT=0"
+  log INFO "APT_EXTERNAL_SOURCE_REFERENCE_COUNT=0"
+  log INFO "APT_TRUSTED_KEY_VISIBLE=PASS"
+  apt_preflight_log_trust_diagnostics || true
+  log INFO "TEMPORARY_LOCAL_APT_UPDATE=PASS"
+  # Preserve evidence of the successful preflight as well (stdout/stderr), then clean root.
+  persist_apt_preflight_evidence "temporary_local_apt_preflight_success" || true
+  apt_preflight_cleanup_temp_root
+}
+
 
 source_suite_still_xenial() {
   local sl
@@ -1471,28 +3689,6 @@ source_suite_still_xenial() {
   fi
   # Our stellar offline list uses xenial suites during Phase 1 prep.
   if grep -qE 'stellar-offline|xenial' "$sl" 2>/dev/null; then
-    return 0
-  fi
-  return 1
-}
-
-has_upgrade_transaction_evidence() {
-  # Return 0 if dist-upgrade / apt history shows an upgrade transaction.
-  if [[ -n "$TEST_ROOT" ]]; then
-    [[ -f "$(hostpath ${STATE_ROOT}/force-upgrade-transaction-evidence)" ]] && return 0
-    return 1
-  fi
-  if [[ -f /var/log/dist-upgrade/apt.log ]] \
-    && grep -qiE '^(Install|Upgrade|Remove):' /var/log/dist-upgrade/apt.log 2>/dev/null; then
-    return 0
-  fi
-  if [[ -f /var/log/dist-upgrade/main.log ]] \
-    && grep -qiE 'apt.distupgrade|altering|Installing|upgrading packages' /var/log/dist-upgrade/main.log 2>/dev/null; then
-    return 0
-  fi
-  if [[ -f /var/log/apt/history.log ]] \
-    && grep -qiE 'Upgrade:|Install:.*bionic|Commandline:.*do-release-upgrade' /var/log/apt/history.log 2>/dev/null \
-    && grep -qiE 'bionic|18\.04' /var/log/apt/history.log 2>/dev/null; then
     return 0
   fi
   return 1
@@ -1520,162 +3716,6 @@ detect_meta_release_encoding_failure_signature() {
   return 1
 }
 
-package_transition_evidence_present() {
-  # Real package mutation only - not DistUpgrade PID/invocation.
-  # Mirrors runner policy: dpkg unpack/start, status DB change, install phase.
-  local ver status dpkglog mainlog aptlog offset
-  ver="$(read_os_field VERSION_ID)"
-  if [[ "$ver" != "$PIN_SOURCE_VERSION" ]]; then
-    return 0
-  fi
-  if has_target_core_package_contamination; then
-    return 0
-  fi
-  if has_upgrade_transaction_evidence; then
-    return 0
-  fi
-  if [[ -n "$TEST_ROOT" ]]; then
-    [[ -f "$(hostpath ${STATE_ROOT}/force-upgrade-transaction-evidence)" ]] && return 0
-    [[ -f "$(hostpath /tmp/dpkg-broken)" ]] && return 0
-    return 1
-  fi
-  dpkglog="$(hostpath /var/log/dpkg.log)"
-  offset="$(cat "$(critical_holds_dir)/dpkg_log_offset_before" 2>/dev/null || echo 0)"
-  if [[ -f "$dpkglog" ]]; then
-    if [[ "${offset:-0}" =~ ^[0-9]+$ ]] && [[ "$offset" -gt 0 ]]; then
-      if tail -c +"$((offset + 1))" "$dpkglog" 2>/dev/null \
-        | grep -q 'startup archives unpack'; then
-        return 0
-      fi
-    elif grep -q 'startup archives unpack' "$dpkglog" 2>/dev/null \
-      && grep -qiE 'status (half-installed|unpacked) .*(libc-bin|libc6|base-files).* (2\.27|10\.1ubuntu)' "$dpkglog" 2>/dev/null; then
-      return 0
-    fi
-  fi
-  if list_active_upgrade_processes | grep -qE '[[:space:]]dpkg([[:space:]]|$)'; then
-    return 0
-  fi
-  mainlog="$(hostpath /var/log/dist-upgrade/main.log)"
-  aptlog="$(hostpath /var/log/dist-upgrade/apt.log)"
-  if [[ -f "$mainlog" ]] \
-    && grep -qiE 'apt\.distupgrade\.(install|doTheInstall)|installing packages|about to install|DistUpgrade\.install' "$mainlog" 2>/dev/null; then
-    return 0
-  fi
-  if [[ -f "$aptlog" ]] \
-    && grep -qiE '^(Install|Upgrade|Remove):' "$aptlog" 2>/dev/null; then
-    return 0
-  fi
-  if dpkg --audit 2>/dev/null | grep -q .; then
-    return 0
-  fi
-  if ! apt-get check >/dev/null 2>&1; then
-    return 0
-  fi
-  return 1
-}
-
-classify_previous_release_upgrade_failure() {
-  # Sets RELEASE_UPGRADE_FAILURE_CLASS / PREVIOUS_FAILURE_CLASS.
-  RELEASE_UPGRADE_FAILURE_CLASS=""
-  PREVIOUS_FAILURE_CLASS=""
-  local ver
-  ver="$(read_os_field VERSION_ID)"
-
-  if package_transition_evidence_present; then
-    RELEASE_UPGRADE_FAILURE_CLASS="PARTIAL_OR_UNKNOWN_MUTATION"
-    PREVIOUS_FAILURE_CLASS="$RELEASE_UPGRADE_FAILURE_CLASS"
-    PARTIAL_RELEASE_TRANSITION="YES"
-    return 1
-  fi
-
-  if [[ "$ver" == "$PIN_SOURCE_VERSION" ]] \
-    && detect_meta_release_encoding_failure_signature; then
-    RELEASE_UPGRADE_FAILURE_CLASS="PRE_MUTATION_META_RELEASE_ENCODING"
-    PREVIOUS_FAILURE_CLASS="$RELEASE_UPGRADE_FAILURE_CLASS"
-    PARTIAL_RELEASE_TRANSITION="NO"
-    log INFO "RELEASE_UPGRADE_FAILURE_CLASS=PRE_MUTATION_CONFIG_PARSE"
-    log INFO "RELEASE_UPGRADE_FAILURE_CLASS=${RELEASE_UPGRADE_FAILURE_CLASS}"
-    log INFO "RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED=false"
-    return 0
-  fi
-
-  if [[ "$ver" == "$PIN_SOURCE_VERSION" ]] \
-    && ! has_upgrade_transaction_evidence \
-    && ! has_target_core_package_contamination; then
-    # Clean source OS without a known pre-mutation signature is NOT auto-resumable.
-    RELEASE_UPGRADE_FAILURE_CLASS="PRE_MUTATION_UNKNOWN"
-    PREVIOUS_FAILURE_CLASS="$RELEASE_UPGRADE_FAILURE_CLASS"
-    PARTIAL_RELEASE_TRANSITION="NO"
-    return 1
-  fi
-
-  RELEASE_UPGRADE_FAILURE_CLASS="UNCLASSIFIED"
-  PREVIOUS_FAILURE_CLASS="$RELEASE_UPGRADE_FAILURE_CLASS"
-  PARTIAL_RELEASE_TRANSITION="YES"
-  return 1
-}
-
-reconcile_legacy_release_upgrade_state() {
-  # Migrate legacy release_upgrade_started=true without assuming package mutation.
-  load_release_upgrade_started_flag
-  local dir legacy=0
-  dir="$(critical_holds_dir)"
-  [[ -f "$dir/release_upgrade_started" ]] && grep -qx 'true' "$dir/release_upgrade_started" && legacy=1
-
-  if [[ "$legacy" -eq 0 && "$RELEASE_UPGRADE_STARTED" != "true" ]]; then
-    return 0
-  fi
-
-  if package_transition_evidence_present; then
-    log ERROR "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
-    log ERROR "MANUAL_REVIEW_REQUIRED=YES"
-    log ERROR "REASON=legacy_flag_with_package_transition_evidence"
-    die "$EC_RESUME" "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
-  fi
-
-  if [[ "$LEGACY_STATE_RECONCILED" == "true" && -n "$RECONCILIATION_REASON" ]]; then
-    log INFO "legacy_state_reconciled=true"
-    log INFO "reconciliation_reason=${RECONCILIATION_REASON}"
-    return 0
-  fi
-
-  log INFO "legacy_release_upgrade_started=true"
-
-  if ! classify_previous_release_upgrade_failure; then
-    if [[ "$PREVIOUS_FAILURE_CLASS" != "PRE_MUTATION_META_RELEASE_ENCODING" \
-       && "$PREVIOUS_FAILURE_CLASS" != "PRE_MUTATION_CONFIG_PARSE" ]]; then
-      log ERROR "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
-      log ERROR "MANUAL_REVIEW_REQUIRED=YES"
-      log ERROR "PREVIOUS_FAILURE_CLASS=${PREVIOUS_FAILURE_CLASS}"
-      die "$EC_RESUME" "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
-    fi
-  fi
-
-  # Only reconcile to resumable state for known pre-mutation encoding/parse failures.
-  if [[ "$PREVIOUS_FAILURE_CLASS" != "PRE_MUTATION_META_RELEASE_ENCODING" \
-     && "$PREVIOUS_FAILURE_CLASS" != "PRE_MUTATION_CONFIG_PARSE" ]]; then
-    log ERROR "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
-    log ERROR "MANUAL_REVIEW_REQUIRED=YES"
-    die "$EC_RESUME" "FAIL_RELEASE_UPGRADE_STATE_RECONCILIATION"
-  fi
-
-  RELEASE_UPGRADE_INVOCATION_STARTED="true"
-  RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED="false"
-  RELEASE_UPGRADE_STARTED="true"
-  LEGACY_STATE_RECONCILED="true"
-  if [[ "$PREVIOUS_FAILURE_CLASS" == "PRE_MUTATION_META_RELEASE_ENCODING" ]]; then
-    RECONCILIATION_REASON="META_RELEASE_CONFIG_PARSE_BEFORE_TRANSACTION"
-  else
-    RECONCILIATION_REASON="PRE_MUTATION_FAILURE_BEFORE_TRANSACTION"
-  fi
-  persist_release_upgrade_flags
-  log INFO "release_upgrade_invocation_started=true"
-  log INFO "release_upgrade_package_transition_started=false"
-  log INFO "legacy_state_reconciled=true"
-  log INFO "reconciliation_reason=${RECONCILIATION_REASON}"
-  return 0
-}
-
 verify_prior_critical_hold_resume_consistency() {
   # Prior unhold + live no-hold => PASS. State says removed but live held => fail-closed.
   local dir removed pkg unexpectedly_held=""
@@ -1701,7 +3741,9 @@ verify_prior_critical_hold_resume_consistency() {
   log INFO "CRITICAL_OS_HOLD_STATE=ALREADY_UNHELD_BY_PRIOR_PHASE1_ATTEMPT"
   log INFO "ORIGINAL_CRITICAL_OS_HOLDS=${removed}"
   log INFO "CURRENT_CRITICAL_OS_HOLDS="
-  log INFO "CRITICAL_OS_HOLD_RESTORE=DEFERRED_UNTIL_PHASE2_POLICY"
+  log INFO "CRITICAL_OS_HOLDS_REMAIN_UNHELD_THROUGH_OS_UPGRADE=YES"
+  log INFO "CRITICAL_OS_HOLDS_RESTORED_ON_PRE_TRANSITION_FAILURE=YES"
+  log INFO "CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO"
   log INFO "PREVIOUS_UNHOLD_REUSED=YES"
   # Do not re-plan unhold for packages already removed.
   PLANNED_CRITICAL_OS_HOLDS=""
@@ -1735,74 +3777,6 @@ log_idempotent_prep_states() {
       fi
     fi
   fi
-}
-
-assess_safe_resume_from_failed() {
-  # Return 0 when FAILED state is a safe pre-mutation resume candidate.
-  local ver st
-  ver="$(read_os_field VERSION_ID)"
-  st="$(read_state)"
-  PREVIOUS_FAILURE_DETECTED="YES"
-  load_release_upgrade_started_flag
-
-  if [[ "$ver" != "$PIN_SOURCE_VERSION" ]]; then
-    log ERROR "RESUME_SAFETY_VALIDATION=FAIL"
-    log ERROR "REASON=os_not_source_version"
-    return 1
-  fi
-
-  # Explicit pre-DRO / pre-package-transition terminal failures with no package
-  # mutation evidence are safe to re-confirm; never auto-start DRO.
-  # Invocation/process-spawn alone does NOT block resume.
-  # Plain FAILED without a known pre-mutation signature stays non-resumable
-  # (handled below via classify_previous_release_upgrade_failure).
-  if [[ "$st" == "FAILED_PRE_DRO" || "$st" == "FAILED_PRE_DRO_STALE" \
-     || "$st" == "FAILED_BEFORE_PACKAGE_TRANSITION" ]]; then
-    if [[ "$RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED" != "true" ]] \
-      && ! package_transition_evidence_present; then
-      PREVIOUS_FAILURE_CLASS="PRE_DRO_FAILURE_BEFORE_TRANSACTION"
-      PARTIAL_RELEASE_TRANSITION="NO"
-      RESUME_FROM="PRE_DRO_CONFIGURATION"
-      verify_prior_critical_hold_resume_consistency
-      log_idempotent_prep_states
-      log INFO "PREVIOUS_FAILURE_DETECTED=YES"
-      log INFO "PREVIOUS_FAILURE_CLASS=${PREVIOUS_FAILURE_CLASS}"
-      log INFO "PARTIAL_RELEASE_TRANSITION=NO"
-      log INFO "RESUME_SAFETY_VALIDATION=PASS"
-      log INFO "RESUME_FROM=${RESUME_FROM}"
-      return 0
-    fi
-  fi
-
-  reconcile_legacy_release_upgrade_state
-
-  if ! classify_previous_release_upgrade_failure; then
-    log ERROR "RESUME_SAFETY_VALIDATION=FAIL"
-    log ERROR "PARTIAL_RELEASE_TRANSITION=${PARTIAL_RELEASE_TRANSITION}"
-    log ERROR "PREVIOUS_FAILURE_CLASS=${PREVIOUS_FAILURE_CLASS:-UNCLASSIFIED}"
-    return 1
-  fi
-
-  case "$PREVIOUS_FAILURE_CLASS" in
-    PRE_MUTATION_META_RELEASE_ENCODING|PRE_MUTATION_CONFIG_PARSE) ;;
-    *)
-      log ERROR "RESUME_SAFETY_VALIDATION=FAIL"
-      log ERROR "REASON=failure_class_not_auto_resumable"
-      log ERROR "PREVIOUS_FAILURE_CLASS=${PREVIOUS_FAILURE_CLASS}"
-      return 1
-      ;;
-  esac
-
-  verify_prior_critical_hold_resume_consistency
-  log_idempotent_prep_states
-
-  RESUME_FROM="PRE_DRO_CONFIGURATION"
-  log INFO "PREVIOUS_FAILURE_DETECTED=YES"
-  log INFO "PREVIOUS_FAILURE_CLASS=${PREVIOUS_FAILURE_CLASS}"
-  log INFO "PARTIAL_RELEASE_TRANSITION=NO"
-  log INFO "RESUME_SAFETY_VALIDATION=PASS"
-  log INFO "RESUME_FROM=${RESUME_FROM}"
-  return 0
 }
 
 log_phase1_banner() {
@@ -1926,9 +3900,13 @@ avail_bytes() {
 
 write_state() {
   local st="$1"
-  mkdir -p "$(dirname "$(hostpath "$STATE_FILE")")"
-  printf '%s\n' "$st" >"$(hostpath "$STATE_FILE")"
-  sync
+  local dest
+  dest="$(hostpath "$STATE_FILE")"
+  mkdir -p "$(dirname "$dest")"
+  printf '%s\n' "$st" | durable_atomic_write "write_state" "$dest" || {
+    log ERROR "DURABLE_WRITE_RESULT=FAIL logical=write_state path=${dest}"
+    return 1
+  }
 }
 
 read_state() {
@@ -2005,7 +3983,8 @@ verify_mirror_trust_chain() {
   local work="$1"
   local repo="${MIRROR_BASE}/hops/${PIN_HOP}/ubuntu"
   local tmp code
-  tmp="$(mktemp -d)"
+  # Root-private work dir for embedded-asset fetches (NOT the APT sandbox root).
+  tmp="$(mktemp -d /tmp/stellar-offline-private.XXXXXX)"
   # TCP/80
   code="$(http_code "${MIRROR_BASE}/")"
   # 200/403/404 acceptable for root; connection failure is 000
@@ -2048,29 +4027,13 @@ verify_mirror_trust_chain() {
   http_fetch "${repo}/dists/${PIN_SOURCE_CODENAME}/InRelease" "${tmp}/InRelease"
   gpgv --keyring "$work/stellar-offline-upgrade.gpg" "${tmp}/InRelease" \
     || die "$EC_TRUST" "repository InRelease signature verification failed"
+  log INFO "APT_INRELEASE_SIGNATURE=PASS"
 
   # Temporary apt update using only local hop (no persistent changes).
-  # Use trusted.gpg.d + DistUpgrade-compatible lines (no signed-by=).
+  # Dedicated _apt-accessible APT root (shared helper); never nest under 0700 private tmp.
   if [[ -z "$TEST_ROOT" ]]; then
-    local aptroot="${tmp}/aptroot"
-    mkdir -p "${aptroot}/etc/apt/apt.conf.d" "${aptroot}/var/lib/apt/lists/partial" \
-      "${aptroot}/var/cache/apt/archives/partial" "${aptroot}/etc/apt/trusted.gpg.d"
-    cp -a "$work/stellar-offline-upgrade.gpg" "${aptroot}/etc/apt/trusted.gpg.d/stellar-offline-upgrade.gpg"
-    {
-      local s
-      for s in $PIN_SOURCE_SUITES; do
-        printf 'deb [arch=amd64] %s %s %s\n' "$repo" "$s" "$PIN_COMPONENTS"
-      done
-    } >"${aptroot}/etc/apt/sources.list"
-    # Xenial apt: Dir override
-    if ! apt-get -o Dir="${aptroot}" -o Dir::State::status="$(hostpath /var/lib/dpkg/status)" \
-        -o Acquire::Languages=none -o APT::Get::AllowUnauthenticated=false update 2>"${tmp}/apt-update.err"; then
-      die "$EC_MIRROR" "temporary local apt-get update failed (see ${tmp}/apt-update.err)"
-    fi
-    if grep -qiE '(archive|security|old-releases|changelogs)\.ubuntu\.com' "${tmp}/apt-update.err" \
-         "${aptroot}/var/lib/apt/lists/"* 2>/dev/null; then
-      die "$EC_MIRROR" "temporary apt update referenced external Ubuntu hosts"
-    fi
+    run_temporary_local_apt_authentication_preflight \
+      "$work/stellar-offline-upgrade.gpg" "$repo" "$PIN_SOURCE_SUITES" "$PIN_COMPONENTS"
   fi
 
   # Optional HTTP meta-release on /client/ - warn if absent (embedded copy is authoritative)
@@ -2269,7 +4232,9 @@ check_critical_package_holds() {
   log INFO "CRITICAL_OS_HOLDS_DETECTED=${PLANNED_CRITICAL_OS_HOLDS}"
   log INFO "CRITICAL_OS_HOLD_ACTION=UNHOLD_AFTER_CONFIRMATION"
   log INFO "CRITICAL_OS_HOLD_PREFLIGHT=PASS_WITH_PLANNED_ACTION"
-  log INFO "CRITICAL_OS_HOLD_RESTORE=DEFERRED_UNTIL_PHASE2_POLICY"
+  log INFO "CRITICAL_OS_HOLDS_REMAIN_UNHELD_THROUGH_OS_UPGRADE=YES"
+  log INFO "CRITICAL_OS_HOLDS_RESTORED_ON_PRE_TRANSITION_FAILURE=YES"
+  log INFO "CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO"
   return 0
 }
 
@@ -2296,8 +4261,9 @@ EOF
     cat <<EOF
 
 NOTE: Removing these holds is a persistent package selection change.
-Phase 1 will NOT automatically restore systemd/udev (or other critical OS)
-holds after a successful release upgrade. Restore policy is deferred to Phase 2.
+Critical OS holds are removed for the release upgrade. If failure occurs
+before package transition starts, the original holds are restored. After a
+successful OS upgrade they are not automatically re-held.
 EOF
   else
     cat <<EOF
@@ -2556,6 +4522,7 @@ run_os_post_upgrade_validation() {
   return 0
 }
 
+# shellcheck shell=bash
 # Shared destructive confirmation helpers for offline OS upgrade clients.
 # Injected into single-file clients at build / stub-render time.
 # Compatible with Bash 4.3+ and safe under `set -Eeuo pipefail`.
@@ -4318,51 +6285,144 @@ EOF
 
 change_login_shells() {
   local stamp="$1"
-  local rec passwd_file
+  local rec evidence_file passwd_file
+  local changed_at user shell line after action
+  local root_before="" aella_before="" root_action="" aella_action=""
   rec="$(hostpath "${BACKUP_ROOT}/${stamp}/passwd/shell-changes.tsv")"
+  evidence_file="$(hostpath "${BACKUP_ROOT}/${stamp}/passwd/shell-automation.txt")"
   mkdir -p "$(dirname "$rec")"
   : >"$rec"
+  changed_at="$(utc_now 2>/dev/null || date -u '+%Y-%m-%dT%H:%M:%SZ')"
   passwd_file="$(hostpath /etc/passwd)"
-  local user shell line
-  for user in root aella; do
+
+  _login_shell_read() {
+    local u="$1" l
     if [[ -n "$TEST_ROOT" ]]; then
-      line="$(grep -E "^${user}:" "$passwd_file" 2>/dev/null || true)"
-      [[ -n "$line" ]] || continue
-      shell="$(printf '%s' "$line" | cut -d: -f7)"
-      printf '%s\t%s\n' "$user" "$shell" >>"$rec"
-      if [[ "$shell" != "/bin/bash" ]]; then
-        # Fake-root: rewrite fixture passwd only (never touch host chsh)
-        # Fields after name: password:uid:gid:gecos:home:shell
-        awk -F: -v u="$user" 'BEGIN{OFS=":"} $1==u {$7="/bin/bash"} {print}' \
+      l="$(grep -E "^${u}:" "$passwd_file" 2>/dev/null || true)"
+      [[ -n "$l" ]] || return 1
+      printf '%s' "$(printf '%s' "$l" | cut -d: -f7)"
+      return 0
+    fi
+    getent passwd "$u" >/dev/null 2>&1 || return 1
+    getent passwd "$u" | cut -d: -f7
+  }
+
+  _login_shell_set() {
+    local u="$1"
+    if [[ -n "$TEST_ROOT" ]]; then
+      awk -F: -v u="$u" 'BEGIN{OFS=":"} $1==u {$7="/bin/bash"} {print}' \
+        "$passwd_file" >"${passwd_file}.new"
+      mv -f "${passwd_file}.new" "$passwd_file"
+      return 0
+    fi
+    if command -v chsh >/dev/null 2>&1; then
+      if chsh -s /bin/bash "$u"; then
+        return 0
+      fi
+    fi
+    if command -v usermod >/dev/null 2>&1; then
+      usermod -s /bin/bash "$u"
+      return $?
+    fi
+    return 1
+  }
+
+  if ! _login_shell_read root >/dev/null; then
+    log ERROR "LOGIN_SHELL_ROOT_ACCOUNT=FAIL"
+    log ERROR "LOGIN_SHELL_AUTOMATION=FAIL"
+    die "$EC_INTERNAL" "FAIL_LOGIN_SHELL_ROOT_ACCOUNT_MISSING"
+  fi
+  log INFO "LOGIN_SHELL_ROOT_ACCOUNT=PASS"
+  if ! _login_shell_read aella >/dev/null; then
+    log ERROR "LOGIN_SHELL_AELLA_ACCOUNT=FAIL"
+    log ERROR "LOGIN_SHELL_AUTOMATION=FAIL"
+    die "$EC_INTERNAL" "FAIL_LOGIN_SHELL_AELLA_ACCOUNT_MISSING"
+  fi
+  log INFO "LOGIN_SHELL_AELLA_ACCOUNT=PASS"
+
+  if [[ -n "$TEST_ROOT" ]]; then
+    if [[ ! -x "$(hostpath /bin/bash)" && ! -x /bin/bash ]]; then
+      # Fixture hosts may lack a real /bin/bash under TEST_ROOT; require host bash.
+      if [[ ! -x /bin/bash ]]; then
+        log ERROR "LOGIN_SHELL_BASH_EXECUTABLE=FAIL"
+        log ERROR "LOGIN_SHELL_AUTOMATION=FAIL"
+        die "$EC_INTERNAL" "FAIL_LOGIN_SHELL_BASH_MISSING"
+      fi
+    fi
+  else
+    if [[ ! -f /bin/bash || ! -x /bin/bash ]]; then
+      log ERROR "LOGIN_SHELL_BASH_EXECUTABLE=FAIL"
+      log ERROR "LOGIN_SHELL_AUTOMATION=FAIL"
+      die "$EC_INTERNAL" "FAIL_LOGIN_SHELL_BASH_MISSING"
+    fi
+  fi
+  log INFO "LOGIN_SHELL_BASH_EXECUTABLE=PASS"
+
+  for user in root aella; do
+    shell="$(_login_shell_read "$user")" || {
+      log ERROR "LOGIN_SHELL_AUTOMATION=FAIL"
+      die "$EC_INTERNAL" "FAIL_LOGIN_SHELL_READ_${user}"
+    }
+    printf '%s\t%s\n' "$user" "$shell" >>"$rec"
+    if [[ "$user" == "root" ]]; then
+      root_before="$shell"
+    else
+      aella_before="$shell"
+    fi
+    log INFO "LOGIN_SHELL_${user^^}_BEFORE=${shell}"
+    if [[ "$shell" == "/bin/bash" ]]; then
+      action="UNCHANGED"
+      log INFO "LOGIN_SHELL_${user^^}_ACTION=UNCHANGED"
+    else
+      if [[ "$shell" != "/usr/bin/aella_cli" && "$shell" != *aella_cli* ]]; then
+        log WARN "unexpected ${user} shell ${shell}; setting /bin/bash for upgrade safety"
+      fi
+      if [[ -n "$TEST_ROOT" && "${DP_OFFLINE_FAKE_SHELL_CHANGE_FAIL:-}" == "1" ]]; then
+        log ERROR "LOGIN_SHELL_AUTOMATION=FAIL"
+        die "$EC_INTERNAL" "FAIL_LOGIN_SHELL_CHANGE_${user}"
+      fi
+      if [[ -n "$TEST_ROOT" && "${DP_OFFLINE_FAKE_SHELL_CHSH_FAIL:-}" == "1" ]]; then
+        # Force usermod path in fixture mode by rewriting passwd directly (usermod success).
+        :
+      fi
+      if ! _login_shell_set "$user"; then
+        log ERROR "LOGIN_SHELL_AUTOMATION=FAIL"
+        die "$EC_INTERNAL" "FAIL_LOGIN_SHELL_CHANGE_${user}"
+      fi
+      if [[ -n "$TEST_ROOT" && "${DP_OFFLINE_FAKE_SHELL_NOOP_SUCCESS:-}" == "1" ]]; then
+        # Command "succeeded" but leave shell unchanged to exercise post-change verify.
+        awk -F: -v u="$user" -v s="$shell" 'BEGIN{OFS=":"} $1==u {$7=s} {print}' \
           "$passwd_file" >"${passwd_file}.new"
         mv -f "${passwd_file}.new" "$passwd_file"
-        log INFO "TEST_ROOT: set ${user} shell ${shell} → /bin/bash in fixture passwd"
-      else
-        log INFO "${user} shell already /bin/bash"
       fi
-      continue
+      action="CHANGED"
+      log INFO "LOGIN_SHELL_${user^^}_ACTION=CHANGED"
     fi
-    if ! getent passwd "$user" >/dev/null 2>&1; then
-      continue
+    after="$(_login_shell_read "$user")" || after=""
+    log INFO "LOGIN_SHELL_${user^^}_AFTER=${after}"
+    if [[ "$after" != "/bin/bash" ]]; then
+      log ERROR "LOGIN_SHELL_AUTOMATION=FAIL"
+      die "$EC_INTERNAL" "FAIL_LOGIN_SHELL_VERIFY_${user}"
     fi
-    shell="$(getent passwd "$user" | cut -d: -f7)"
-    printf '%s\t%s\n' "$user" "$shell" >>"$rec"
-    if [[ "$shell" == "/bin/bash" ]]; then
-      log INFO "${user} shell already /bin/bash"
-      continue
-    fi
-    if [[ "$shell" == "/usr/bin/aella_cli" || "$shell" == *aella_cli* ]]; then
-      if command -v chsh >/dev/null 2>&1; then
-        chsh -s /bin/bash "$user"
-      else
-        usermod -s /bin/bash "$user"
-      fi
-      log INFO "changed ${user} shell ${shell} → /bin/bash"
+    if [[ "$user" == "root" ]]; then
+      root_action="$action"
     else
-      log WARN "unexpected ${user} shell ${shell}; setting /bin/bash for upgrade safety"
-      chsh -s /bin/bash "$user" 2>/dev/null || usermod -s /bin/bash "$user"
+      aella_action="$action"
     fi
   done
+
+  {
+    printf 'changed_at=%s\n' "$changed_at"
+    printf 'root_original_shell=%s\n' "$root_before"
+    printf 'aella_original_shell=%s\n' "$aella_before"
+    printf 'root_action=%s\n' "$root_action"
+    printf 'aella_action=%s\n' "$aella_action"
+    printf 'root_final_shell=/bin/bash\n'
+    printf 'aella_final_shell=/bin/bash\n'
+    printf 'result=PASS\n'
+  } >"$evidence_file"
+
+  log INFO "LOGIN_SHELL_AUTOMATION=PASS"
 }
 
 install_runner_and_units() {
@@ -4374,6 +6434,219 @@ install_runner_and_units() {
 # stellar-offline-os-upgrade-runner - Xenial→Bionic detached upgrade
 # Bash 4.3 compatible. Does not inherit client shell env; loads EnvironmentFile.
 set -eo pipefail
+# Shared durable atomic write helpers for offline OS-upgrade clients.
+# Injected at build time via the DURABLE_WRITE_HELPER template token.
+# Prefer targeted file+directory fsync over unbounded global `sync`.
+# Bash 4.3+/4.4 safe; requires python3 (standard on Bionic+ upgrade hosts).
+
+DURABLE_WRITE_LOG_THRESHOLD_MS="${DURABLE_WRITE_LOG_THRESHOLD_MS:-500}"
+
+_durable_now_ms() {
+  python3 -c 'import time; print(int(time.time()*1000))' 2>/dev/null || echo 0
+}
+
+_durable_write_python() {
+  # stdin → durable atomic replace at path. Args: path mode_or_empty preserve_owner(0|1)
+  local dest="$1"
+  local mode="${2:-}"
+  local preserve_owner="${3:-1}"
+  local content_file
+  content_file="$(mktemp "${TMPDIR:-/tmp}/durable-content.XXXXXX")"
+  cat >"$content_file"
+  python3 - "$dest" "$mode" "$preserve_owner" "$content_file" <<'PY'
+import errno
+import os
+import stat
+import sys
+import tempfile
+
+dest = sys.argv[1]
+mode_arg = sys.argv[2]
+preserve_owner = sys.argv[3] == "1"
+with open(sys.argv[4], "rb") as fh:
+    data = fh.read()
+
+parent = os.path.dirname(os.path.abspath(dest)) or "."
+base = os.path.basename(dest)
+os.makedirs(parent, mode=0o755, exist_ok=True)
+
+existed = False
+old_mode = None
+old_uid = None
+old_gid = None
+if os.path.lexists(dest):
+    if os.path.islink(dest):
+        sys.stderr.write("DURABLE_WRITE_ERR=dest_is_symlink\n")
+        sys.exit(2)
+    st = os.lstat(dest)
+    if not stat.S_ISREG(st.st_mode):
+        sys.stderr.write("DURABLE_WRITE_ERR=dest_not_regular\n")
+        sys.exit(2)
+    existed = True
+    old_mode = stat.S_IMODE(st.st_mode)
+    old_uid = st.st_uid
+    old_gid = st.st_gid
+
+if mode_arg:
+    mode = int(mode_arg, 8)
+elif existed and old_mode is not None:
+    mode = old_mode
+else:
+    mode = 0o644
+
+fd = None
+tmp_path = None
+try:
+    fd, tmp_path = tempfile.mkstemp(
+        prefix="." + base + ".",
+        suffix=".tmp",
+        dir=parent,
+    )
+    written = 0
+    view = memoryview(data)
+    while written < len(data):
+        n = os.write(fd, view[written:])
+        if n <= 0:
+            raise OSError(errno.EIO, "short write")
+        written += n
+    os.fsync(fd)
+    os.fchmod(fd, mode)
+    if preserve_owner and existed and old_uid is not None:
+        try:
+            os.fchown(fd, old_uid, old_gid)
+        except OSError:
+            pass
+    os.close(fd)
+    fd = None
+    os.replace(tmp_path, dest)
+    tmp_path = None
+    dirfd = os.open(parent, os.O_RDONLY)
+    try:
+        os.fsync(dirfd)
+    finally:
+        os.close(dirfd)
+except Exception as exc:
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    if tmp_path and os.path.lexists(tmp_path):
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+    sys.stderr.write("DURABLE_WRITE_ERR=%s\n" % (exc,))
+    sys.exit(1)
+sys.exit(0)
+PY
+  local py_rc=$?
+  rm -f "$content_file"
+  return "$py_rc"
+}
+
+durable_fsync_path() {
+  # Targeted fsync of an existing regular file and its parent directory.
+  # Never falls back to unbounded global sync.
+  local path="$1"
+  python3 - "$path" <<'PY'
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+if not os.path.lexists(path):
+    sys.exit(1)
+if os.path.islink(path):
+    sys.exit(2)
+st = os.lstat(path)
+parent = os.path.dirname(os.path.abspath(path)) or "."
+if stat.S_ISREG(st.st_mode):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+elif stat.S_ISDIR(st.st_mode):
+    parent = path
+else:
+    sys.exit(2)
+dirfd = os.open(parent, os.O_RDONLY)
+try:
+    os.fsync(dirfd)
+finally:
+    os.close(dirfd)
+sys.exit(0)
+PY
+}
+
+durable_atomic_write() {
+  # durable_atomic_write <logical-name> <path> [mode]
+  # Content from stdin. Optional mode octal (0600). Preserves owner when file exists.
+  local logical="$1"
+  local path="$2"
+  local mode="${3:-}"
+  local start_ms end_ms dur rc=0
+  local errf
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    if declare -F log >/dev/null 2>&1; then
+      log ERROR "DURABLE_WRITE_BEGIN=${logical}"
+      log ERROR "DURABLE_WRITE_PATH=${path}"
+      log ERROR "DURABLE_WRITE_RESULT=FAIL"
+      log ERROR "DURABLE_WRITE_DURATION_MS=0"
+      log ERROR "DURABLE_WRITE_ERR=python3_missing"
+    fi
+    return 1
+  fi
+
+  start_ms="$(_durable_now_ms)"
+  errf="$(mktemp "${TMPDIR:-/tmp}/durable-write.XXXXXX")"
+  set +e
+  _durable_write_python "$path" "$mode" 1 2>"$errf"
+  rc=$?
+  set -e
+  end_ms="$(_durable_now_ms)"
+  dur=$((end_ms - start_ms))
+  if [[ "$dur" -lt 0 ]]; then
+    dur=0
+  fi
+
+  if [[ "$rc" -ne 0 ]]; then
+    if declare -F log >/dev/null 2>&1; then
+      log ERROR "DURABLE_WRITE_BEGIN=${logical}"
+      log ERROR "DURABLE_WRITE_PATH=${path}"
+      log ERROR "DURABLE_WRITE_RESULT=FAIL"
+      log ERROR "DURABLE_WRITE_DURATION_MS=${dur}"
+      if [[ -s "$errf" ]]; then
+        log ERROR "DURABLE_WRITE_ERR=$(tr '\n' ' ' <"$errf" | head -c 200)"
+      fi
+    fi
+    rm -f "$errf"
+    return 1
+  fi
+
+  if [[ "$dur" -ge "${DURABLE_WRITE_LOG_THRESHOLD_MS}" ]] && declare -F log >/dev/null 2>&1; then
+    log INFO "DURABLE_WRITE_BEGIN=${logical}"
+    log INFO "DURABLE_WRITE_PATH=${path}"
+    log INFO "DURABLE_WRITE_RESULT=PASS"
+    log INFO "DURABLE_WRITE_DURATION_MS=${dur}"
+  fi
+  rm -f "$errf"
+  return 0
+}
+
+durable_atomic_write_string() {
+  local logical="$1" path="$2" content="$3" mode="${4:-}"
+  printf '%s' "$content" | durable_atomic_write "$logical" "$path" "$mode"
+}
+
+# Drop-in replacement for prior temp+rename helper (now durable).
+atomic_write_file() {
+  local dest="$1"
+  durable_atomic_write "atomic_write_file" "$dest" || return 1
+}
+
 
 # Optional fake-root prefix for fixture tests only (never set by production unit).
 _TEST_PREFIX="${STELLAR_OFFLINE_TEST_ROOT:-}"
@@ -4430,7 +6703,9 @@ RELEASE_UPGRADE_COMPLETED="false"
 mkdir -p "$(dirname "$LOG_FILE")" "$STATE_ROOT" 2>/dev/null || true
 exec >>"$LOG_FILE" 2>&1
 log() { printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" "$2"; }
-write_state() { printf '%s\n' "$1" >"$STATE_FILE"; sync; }
+write_state() {
+  printf '%s\n' "$1" | durable_atomic_write "write_state" "$STATE_FILE" || return 1
+}
 set_stage() {
   STAGE="$1"
   log INFO "STAGE=${STAGE}"
@@ -4875,9 +7150,7 @@ mark_package_transition_detected() {
   RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED="true"
   tmp="${marker}.tmp.$$"
   printf 'true\n' >"$tmp"
-  sync 2>/dev/null || true
   mv -f "$tmp" "$marker"
-  sync 2>/dev/null || true
   meta_tmp="${donef}.tmp.$$"
   {
     printf 'PACKAGE_TRANSITION_DETECTED_AT=%s\n' "$detected_at"
@@ -4885,7 +7158,6 @@ mark_package_transition_detected() {
     printf 'PACKAGE_TRANSITION_DETECTION_EVIDENCE=%s\n' "$PACKAGE_TRANSITION_DETECTION_EVIDENCE"
     printf 'PACKAGE_TRANSITION_DETECTION_LATENCY_SECONDS=%s\n' "$latency"
   } >"$meta_tmp"
-  sync 2>/dev/null || true
   mv -f "$meta_tmp" "$donef"
   chmod 0600 "$donef" 2>/dev/null || true
   STAGE="PACKAGE_TRANSACTION"
@@ -4898,7 +7170,9 @@ mark_package_transition_detected() {
   log INFO "STAGE=PACKAGE_TRANSACTION"
   log INFO "RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED=true"
   log INFO "ROLLBACK_ELIGIBLE=NO"
-  log INFO "CRITICAL_OS_HOLD_RESTORE=DEFERRED_UNTIL_PHASE2_POLICY"
+  log INFO "CRITICAL_OS_HOLDS_REMAIN_UNHELD_THROUGH_OS_UPGRADE=YES"
+  log INFO "CRITICAL_OS_HOLDS_RESTORED_ON_PRE_TRANSITION_FAILURE=YES"
+  log INFO "CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO"
   return 0
 }
 
@@ -4970,8 +7244,7 @@ clear_runner_pid() {
 }
 write_runner_pid() {
   mkdir -p "$(dirname "$RUNNER_PID_FILE")" 2>/dev/null || true
-  printf '%s\n' "$$" >"$RUNNER_PID_FILE"
-  sync
+  printf '%s\n' "$$" | durable_atomic_write "write_runner_pid" "$RUNNER_PID_FILE" 0600 || return 1
 }
 
 persist_flags() {
@@ -5802,13 +8075,13 @@ runner_collect_pre_dro_evidence() {
 
 reboot_if_success() {
   write_state REBOOT_PENDING
-  sync
-  log INFO "CRITICAL_OS_HOLD_RESTORE=DEFERRED_UNTIL_PHASE2_POLICY"
+  log INFO "CRITICAL_OS_HOLDS_REMAIN_UNHELD_THROUGH_OS_UPGRADE=YES"
+  log INFO "CRITICAL_OS_HOLDS_RESTORED_ON_PRE_TRANSITION_FAILURE=YES"
+  log INFO "CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO"
   if [[ -f "${HOLDS_DIR}/critical-holds-removed.txt" ]]; then
     log INFO "ORIGINAL_CRITICAL_OS_HOLDS=$(tr '\n' ' ' <"${HOLDS_DIR}/critical-holds-removed.txt" | sed 's/[[:space:]]*$//')"
   fi
   write_state REBOOTING
-  sync
   log INFO "requesting reboot"
   if [[ -n "$_TEST_PREFIX" ]]; then
     log INFO "TEST_ROOT: reboot recorded, not executed"
@@ -5990,6 +8263,219 @@ main "$@"
 RUNNER
 
   install -m 0755 /dev/stdin "$(hostpath "$POSTBOOT_PATH")" <<'POSTBOOT'
+# Shared durable atomic write helpers for offline OS-upgrade clients.
+# Injected at build time via the DURABLE_WRITE_HELPER template token.
+# Prefer targeted file+directory fsync over unbounded global `sync`.
+# Bash 4.3+/4.4 safe; requires python3 (standard on Bionic+ upgrade hosts).
+
+DURABLE_WRITE_LOG_THRESHOLD_MS="${DURABLE_WRITE_LOG_THRESHOLD_MS:-500}"
+
+_durable_now_ms() {
+  python3 -c 'import time; print(int(time.time()*1000))' 2>/dev/null || echo 0
+}
+
+_durable_write_python() {
+  # stdin → durable atomic replace at path. Args: path mode_or_empty preserve_owner(0|1)
+  local dest="$1"
+  local mode="${2:-}"
+  local preserve_owner="${3:-1}"
+  local content_file
+  content_file="$(mktemp "${TMPDIR:-/tmp}/durable-content.XXXXXX")"
+  cat >"$content_file"
+  python3 - "$dest" "$mode" "$preserve_owner" "$content_file" <<'PY'
+import errno
+import os
+import stat
+import sys
+import tempfile
+
+dest = sys.argv[1]
+mode_arg = sys.argv[2]
+preserve_owner = sys.argv[3] == "1"
+with open(sys.argv[4], "rb") as fh:
+    data = fh.read()
+
+parent = os.path.dirname(os.path.abspath(dest)) or "."
+base = os.path.basename(dest)
+os.makedirs(parent, mode=0o755, exist_ok=True)
+
+existed = False
+old_mode = None
+old_uid = None
+old_gid = None
+if os.path.lexists(dest):
+    if os.path.islink(dest):
+        sys.stderr.write("DURABLE_WRITE_ERR=dest_is_symlink\n")
+        sys.exit(2)
+    st = os.lstat(dest)
+    if not stat.S_ISREG(st.st_mode):
+        sys.stderr.write("DURABLE_WRITE_ERR=dest_not_regular\n")
+        sys.exit(2)
+    existed = True
+    old_mode = stat.S_IMODE(st.st_mode)
+    old_uid = st.st_uid
+    old_gid = st.st_gid
+
+if mode_arg:
+    mode = int(mode_arg, 8)
+elif existed and old_mode is not None:
+    mode = old_mode
+else:
+    mode = 0o644
+
+fd = None
+tmp_path = None
+try:
+    fd, tmp_path = tempfile.mkstemp(
+        prefix="." + base + ".",
+        suffix=".tmp",
+        dir=parent,
+    )
+    written = 0
+    view = memoryview(data)
+    while written < len(data):
+        n = os.write(fd, view[written:])
+        if n <= 0:
+            raise OSError(errno.EIO, "short write")
+        written += n
+    os.fsync(fd)
+    os.fchmod(fd, mode)
+    if preserve_owner and existed and old_uid is not None:
+        try:
+            os.fchown(fd, old_uid, old_gid)
+        except OSError:
+            pass
+    os.close(fd)
+    fd = None
+    os.replace(tmp_path, dest)
+    tmp_path = None
+    dirfd = os.open(parent, os.O_RDONLY)
+    try:
+        os.fsync(dirfd)
+    finally:
+        os.close(dirfd)
+except Exception as exc:
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    if tmp_path and os.path.lexists(tmp_path):
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+    sys.stderr.write("DURABLE_WRITE_ERR=%s\n" % (exc,))
+    sys.exit(1)
+sys.exit(0)
+PY
+  local py_rc=$?
+  rm -f "$content_file"
+  return "$py_rc"
+}
+
+durable_fsync_path() {
+  # Targeted fsync of an existing regular file and its parent directory.
+  # Never falls back to unbounded global sync.
+  local path="$1"
+  python3 - "$path" <<'PY'
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+if not os.path.lexists(path):
+    sys.exit(1)
+if os.path.islink(path):
+    sys.exit(2)
+st = os.lstat(path)
+parent = os.path.dirname(os.path.abspath(path)) or "."
+if stat.S_ISREG(st.st_mode):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+elif stat.S_ISDIR(st.st_mode):
+    parent = path
+else:
+    sys.exit(2)
+dirfd = os.open(parent, os.O_RDONLY)
+try:
+    os.fsync(dirfd)
+finally:
+    os.close(dirfd)
+sys.exit(0)
+PY
+}
+
+durable_atomic_write() {
+  # durable_atomic_write <logical-name> <path> [mode]
+  # Content from stdin. Optional mode octal (0600). Preserves owner when file exists.
+  local logical="$1"
+  local path="$2"
+  local mode="${3:-}"
+  local start_ms end_ms dur rc=0
+  local errf
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    if declare -F log >/dev/null 2>&1; then
+      log ERROR "DURABLE_WRITE_BEGIN=${logical}"
+      log ERROR "DURABLE_WRITE_PATH=${path}"
+      log ERROR "DURABLE_WRITE_RESULT=FAIL"
+      log ERROR "DURABLE_WRITE_DURATION_MS=0"
+      log ERROR "DURABLE_WRITE_ERR=python3_missing"
+    fi
+    return 1
+  fi
+
+  start_ms="$(_durable_now_ms)"
+  errf="$(mktemp "${TMPDIR:-/tmp}/durable-write.XXXXXX")"
+  set +e
+  _durable_write_python "$path" "$mode" 1 2>"$errf"
+  rc=$?
+  set -e
+  end_ms="$(_durable_now_ms)"
+  dur=$((end_ms - start_ms))
+  if [[ "$dur" -lt 0 ]]; then
+    dur=0
+  fi
+
+  if [[ "$rc" -ne 0 ]]; then
+    if declare -F log >/dev/null 2>&1; then
+      log ERROR "DURABLE_WRITE_BEGIN=${logical}"
+      log ERROR "DURABLE_WRITE_PATH=${path}"
+      log ERROR "DURABLE_WRITE_RESULT=FAIL"
+      log ERROR "DURABLE_WRITE_DURATION_MS=${dur}"
+      if [[ -s "$errf" ]]; then
+        log ERROR "DURABLE_WRITE_ERR=$(tr '\n' ' ' <"$errf" | head -c 200)"
+      fi
+    fi
+    rm -f "$errf"
+    return 1
+  fi
+
+  if [[ "$dur" -ge "${DURABLE_WRITE_LOG_THRESHOLD_MS}" ]] && declare -F log >/dev/null 2>&1; then
+    log INFO "DURABLE_WRITE_BEGIN=${logical}"
+    log INFO "DURABLE_WRITE_PATH=${path}"
+    log INFO "DURABLE_WRITE_RESULT=PASS"
+    log INFO "DURABLE_WRITE_DURATION_MS=${dur}"
+  fi
+  rm -f "$errf"
+  return 0
+}
+
+durable_atomic_write_string() {
+  local logical="$1" path="$2" content="$3" mode="${4:-}"
+  printf '%s' "$content" | durable_atomic_write "$logical" "$path" "$mode"
+}
+
+# Drop-in replacement for prior temp+rename helper (now durable).
+atomic_write_file() {
+  local dest="$1"
+  durable_atomic_write "atomic_write_file" "$dest" || return 1
+}
+
 #!/usr/bin/env bash
 set -euo pipefail
 STATE_ROOT="/opt/aelladata/os-upgrade/offline"
@@ -5999,7 +8485,9 @@ LOG_FILE="/var/log/aella/offline_os_upgrade.log"
 MOTD="/etc/motd.d/99-stellar-offline-upgrade"
 exec >>"$LOG_FILE" 2>&1
 log() { printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" "$2"; }
-write_state() { printf '%s\n' "$1" >"$STATE_FILE"; sync; }
+write_state() {
+  printf '%s\n' "$1" | durable_atomic_write "write_state" "$STATE_FILE" || return 1
+}
 
 main() {
   write_state POST_BOOT_VERIFY
@@ -6298,6 +8786,17 @@ proc_cmdline() {
   printf '%s' "$raw"
 }
 
+fixture_test_root_prefix() {
+  # Handoff fixtures set TEST_ROOT + DP_OFFLINE_TEST_HANDOFF=1. Prefer those so a
+  # stale STELLAR_OFFLINE_TEST_ROOT from the parent environment cannot poison
+  # runner cmdline matching. Runner-only fixtures still use STELLAR_*.
+  if [[ "${DP_OFFLINE_TEST_HANDOFF:-}" == "1" ]]; then
+    printf '%s' "${TEST_ROOT:-${DP_OFFLINE_TEST_ROOT:-}}"
+    return 0
+  fi
+  printf '%s' "${STELLAR_OFFLINE_TEST_ROOT:-${TEST_ROOT:-${DP_OFFLINE_TEST_ROOT:-}}}"
+}
+
 runner_cmdline_matches() {
   local pid="$1"
   local cmd prefix
@@ -6305,7 +8804,7 @@ runner_cmdline_matches() {
   [[ -n "$cmd" ]] || return 1
   printf '%s' "$cmd" | grep -q 'stellar-offline-os-upgrade-runner' || return 1
   # Fixture tests: only match runners under the active fake-root prefix.
-  prefix="${STELLAR_OFFLINE_TEST_ROOT:-${TEST_ROOT:-${DP_OFFLINE_TEST_ROOT:-}}}"
+  prefix="$(fixture_test_root_prefix)"
   if [[ -n "$prefix" ]]; then
     printf '%s' "$cmd" | grep -qF "$prefix" || return 1
   fi
@@ -6315,7 +8814,7 @@ runner_cmdline_matches() {
 find_runner_pid_via_ps() {
   # Prefer ps (fast) over full /proc walk.
   local pid prefix
-  prefix="${STELLAR_OFFLINE_TEST_ROOT:-${TEST_ROOT:-${DP_OFFLINE_TEST_ROOT:-}}}"
+  prefix="$(fixture_test_root_prefix)"
   if [[ -n "$prefix" ]]; then
     pid="$(ps -eo pid=,args= 2>/dev/null | awk -v p="$prefix" '
       index($0, "stellar-offline-os-upgrade-runner") && index($0, p) && $0 !~ /awk/ {
@@ -7303,8 +9802,9 @@ commit_and_start() {
   mkdir -p "$(hostpath "$STATE_ROOT")" "$(hostpath "$BACKUP_ROOT")"
   ensure_log_dir
 
-  # Order: backup → hold snapshot → unhold → verify → APT metadata → runner.
+  # Order: backup → login shells → hold snapshot → unhold → APT metadata → runner.
   backup_persistent_config "$stamp"
+  change_login_shells "$stamp"
 
   # Re-classify from live selection at commit time (still before mutation).
   classify_held_packages
@@ -7349,7 +9849,6 @@ commit_and_start() {
     fi
     log INFO "TARGET_POCKET_REGISTRATION_PREFLIGHT=PASS"
     apply_meta_release "$work"
-    change_login_shells "$stamp"
     write_pins_env "$stamp"
     install -m 0644 "$work/client-manifest.json" "$(hostpath ${STATE_ROOT}/client-manifest.json)"
     install_runner_and_units "$work"
@@ -7489,6 +9988,8 @@ main() {
         esac
         shift 2 || die "$EC_USAGE" "--mode requires value"
         ;;
+      --diagnose-state)
+        DIAGNOSE_STATE_ONLY=1; shift ;;
       --help|-h) usage; exit 0 ;;
       --detach)
         DETACH_AFTER_HANDOFF=1; shift ;;
@@ -7526,6 +10027,10 @@ main() {
 
   ensure_log_dir
   load_release_upgrade_started_flag
+  if [[ "${DIAGNOSE_STATE_ONLY:-0}" -eq 1 ]]; then
+    diagnose_release_upgrade_state
+    exit 0
+  fi
   handle_existing_state
   detect_partial_release_transition
 

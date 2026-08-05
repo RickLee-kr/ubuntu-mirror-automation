@@ -854,6 +854,8 @@ is_critical_os_hold_package() {
   return 1
 }
 
+@@DURABLE_WRITE_HELPER@@
+
 critical_holds_dir() {
   hostpath "${STATE_ROOT}/critical-holds"
 }
@@ -889,13 +891,6 @@ json_string_array_from_words() {
   printf ']'
 }
 
-atomic_write_file() {
-  local dest="$1"
-  local tmp
-  tmp="${dest}.tmp.$$"
-  cat >"$tmp"
-  mv -f "$tmp" "$dest"
-}
 
 list_held_packages() {
   # Print currently held package names, one per line (or space-joined via caller).
@@ -1557,9 +1552,13 @@ avail_bytes() {
 
 write_state() {
   local st="$1"
-  mkdir -p "$(dirname "$(hostpath "$STATE_FILE")")"
-  printf '%s\n' "$st" >"$(hostpath "$STATE_FILE")"
-  sync
+  local dest
+  dest="$(hostpath "$STATE_FILE")"
+  mkdir -p "$(dirname "$dest")"
+  printf '%s\n' "$st" | durable_atomic_write "write_state" "$dest" || {
+    log ERROR "DURABLE_WRITE_RESULT=FAIL logical=write_state path=${dest}"
+    return 1
+  }
 }
 
 read_state() {
@@ -4018,6 +4017,7 @@ install_runner_and_units() {
 # stellar-offline-os-upgrade-runner - Xenial→Bionic detached upgrade
 # Bash 4.3 compatible. Does not inherit client shell env; loads EnvironmentFile.
 set -eo pipefail
+@@DURABLE_WRITE_HELPER@@
 
 # Optional fake-root prefix for fixture tests only (never set by production unit).
 _TEST_PREFIX="${STELLAR_OFFLINE_TEST_ROOT:-}"
@@ -4074,7 +4074,9 @@ RELEASE_UPGRADE_COMPLETED="false"
 mkdir -p "$(dirname "$LOG_FILE")" "$STATE_ROOT" 2>/dev/null || true
 exec >>"$LOG_FILE" 2>&1
 log() { printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" "$2"; }
-write_state() { printf '%s\n' "$1" >"$STATE_FILE"; sync; }
+write_state() {
+  printf '%s\n' "$1" | durable_atomic_write "write_state" "$STATE_FILE" || return 1
+}
 set_stage() {
   STAGE="$1"
   log INFO "STAGE=${STAGE}"
@@ -4519,9 +4521,7 @@ mark_package_transition_detected() {
   RELEASE_UPGRADE_PACKAGE_TRANSITION_STARTED="true"
   tmp="${marker}.tmp.$$"
   printf 'true\n' >"$tmp"
-  sync 2>/dev/null || true
   mv -f "$tmp" "$marker"
-  sync 2>/dev/null || true
   meta_tmp="${donef}.tmp.$$"
   {
     printf 'PACKAGE_TRANSITION_DETECTED_AT=%s\n' "$detected_at"
@@ -4529,7 +4529,6 @@ mark_package_transition_detected() {
     printf 'PACKAGE_TRANSITION_DETECTION_EVIDENCE=%s\n' "$PACKAGE_TRANSITION_DETECTION_EVIDENCE"
     printf 'PACKAGE_TRANSITION_DETECTION_LATENCY_SECONDS=%s\n' "$latency"
   } >"$meta_tmp"
-  sync 2>/dev/null || true
   mv -f "$meta_tmp" "$donef"
   chmod 0600 "$donef" 2>/dev/null || true
   STAGE="PACKAGE_TRANSACTION"
@@ -4616,8 +4615,7 @@ clear_runner_pid() {
 }
 write_runner_pid() {
   mkdir -p "$(dirname "$RUNNER_PID_FILE")" 2>/dev/null || true
-  printf '%s\n' "$$" >"$RUNNER_PID_FILE"
-  sync
+  printf '%s\n' "$$" | durable_atomic_write "write_runner_pid" "$RUNNER_PID_FILE" 0600 || return 1
 }
 
 persist_flags() {
@@ -5448,7 +5446,6 @@ runner_collect_pre_dro_evidence() {
 
 reboot_if_success() {
   write_state REBOOT_PENDING
-  sync
   log INFO "CRITICAL_OS_HOLDS_REMAIN_UNHELD_THROUGH_OS_UPGRADE=YES"
   log INFO "CRITICAL_OS_HOLDS_RESTORED_ON_PRE_TRANSITION_FAILURE=YES"
   log INFO "CRITICAL_OS_HOLDS_AUTO_REHOLD_AFTER_SUCCESS=NO"
@@ -5456,7 +5453,6 @@ reboot_if_success() {
     log INFO "ORIGINAL_CRITICAL_OS_HOLDS=$(tr '\n' ' ' <"${HOLDS_DIR}/critical-holds-removed.txt" | sed 's/[[:space:]]*$//')"
   fi
   write_state REBOOTING
-  sync
   log INFO "requesting reboot"
   if [[ -n "$_TEST_PREFIX" ]]; then
     log INFO "TEST_ROOT: reboot recorded, not executed"
@@ -5638,6 +5634,7 @@ main "$@"
 RUNNER
 
   install -m 0755 /dev/stdin "$(hostpath "$POSTBOOT_PATH")" <<'POSTBOOT'
+@@DURABLE_WRITE_HELPER@@
 #!/usr/bin/env bash
 set -euo pipefail
 STATE_ROOT="/opt/aelladata/os-upgrade/offline"
@@ -5647,7 +5644,9 @@ LOG_FILE="/var/log/aella/offline_os_upgrade.log"
 MOTD="/etc/motd.d/99-stellar-offline-upgrade"
 exec >>"$LOG_FILE" 2>&1
 log() { printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" "$2"; }
-write_state() { printf '%s\n' "$1" >"$STATE_FILE"; sync; }
+write_state() {
+  printf '%s\n' "$1" | durable_atomic_write "write_state" "$STATE_FILE" || return 1
+}
 
 main() {
   write_state POST_BOOT_VERIFY
@@ -5946,6 +5945,17 @@ proc_cmdline() {
   printf '%s' "$raw"
 }
 
+fixture_test_root_prefix() {
+  # Handoff fixtures set TEST_ROOT + DP_OFFLINE_TEST_HANDOFF=1. Prefer those so a
+  # stale STELLAR_OFFLINE_TEST_ROOT from the parent environment cannot poison
+  # runner cmdline matching. Runner-only fixtures still use STELLAR_*.
+  if [[ "${DP_OFFLINE_TEST_HANDOFF:-}" == "1" ]]; then
+    printf '%s' "${TEST_ROOT:-${DP_OFFLINE_TEST_ROOT:-}}"
+    return 0
+  fi
+  printf '%s' "${STELLAR_OFFLINE_TEST_ROOT:-${TEST_ROOT:-${DP_OFFLINE_TEST_ROOT:-}}}"
+}
+
 runner_cmdline_matches() {
   local pid="$1"
   local cmd prefix
@@ -5953,7 +5963,7 @@ runner_cmdline_matches() {
   [[ -n "$cmd" ]] || return 1
   printf '%s' "$cmd" | grep -q 'stellar-offline-os-upgrade-runner' || return 1
   # Fixture tests: only match runners under the active fake-root prefix.
-  prefix="${STELLAR_OFFLINE_TEST_ROOT:-${TEST_ROOT:-${DP_OFFLINE_TEST_ROOT:-}}}"
+  prefix="$(fixture_test_root_prefix)"
   if [[ -n "$prefix" ]]; then
     printf '%s' "$cmd" | grep -qF "$prefix" || return 1
   fi
@@ -5963,7 +5973,7 @@ runner_cmdline_matches() {
 find_runner_pid_via_ps() {
   # Prefer ps (fast) over full /proc walk.
   local pid prefix
-  prefix="${STELLAR_OFFLINE_TEST_ROOT:-${TEST_ROOT:-${DP_OFFLINE_TEST_ROOT:-}}}"
+  prefix="$(fixture_test_root_prefix)"
   if [[ -n "$prefix" ]]; then
     pid="$(ps -eo pid=,args= 2>/dev/null | awk -v p="$prefix" '
       index($0, "stellar-offline-os-upgrade-runner") && index($0, p) && $0 !~ /awk/ {

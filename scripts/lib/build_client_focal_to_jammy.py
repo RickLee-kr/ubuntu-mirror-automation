@@ -580,6 +580,31 @@ def render_script(template_path, replacements):
     with open(apt_path, "r", encoding="utf-8") as fh:
         apt_body = fh.read().rstrip("\n") + "\n"
     body = body.replace(apt_token, apt_body)
+    durable_token = "@@DURABLE_WRITE_HELPER@@"
+    durable_path = os.path.join(
+        os.path.dirname(os.path.abspath(template_path)),
+        "lib",
+        "dp-offline-durable-write.sh",
+    )
+    if durable_token not in body:
+        raise BuildError("template missing token {}".format(durable_token))
+    if not os.path.isfile(durable_path):
+        raise BuildError("missing durable-write helper: {}".format(durable_path))
+    with open(durable_path, "r", encoding="utf-8") as fh:
+        durable_body = fh.read().rstrip("\n") + "\n"
+    body = body.replace(durable_token, durable_body)
+    lxd_token = "@@LXD_INVENTORY_HELPER@@"
+    if lxd_token in body:
+        lxd_path = os.path.join(
+            os.path.dirname(os.path.abspath(template_path)),
+            "lib",
+            "dp-offline-lxd-inventory.sh",
+        )
+        if not os.path.isfile(lxd_path):
+            raise BuildError("missing LXD inventory helper: {}".format(lxd_path))
+        with open(lxd_path, "r", encoding="utf-8") as fh:
+            lxd_body = fh.read().rstrip("\n") + "\n"
+        body = body.replace(lxd_token, lxd_body)
     for key, value in replacements.items():
         token = "@@{}@@".format(key)
         if token not in body:

@@ -73,8 +73,13 @@ recon_atomic_write() {
     rm -f "$tmp"
   else
     chmod --reference="$dest" "$tmp" 2>/dev/null || chmod 0644 "$tmp" 2>/dev/null || true
-    sync 2>/dev/null || true
+    if declare -F durable_fsync_path >/dev/null 2>&1; then
+      durable_fsync_path "$tmp" 2>/dev/null || true
+    fi
     mv -f "$tmp" "$dest"
+    if declare -F durable_fsync_path >/dev/null 2>&1; then
+      durable_fsync_path "$(dirname "$dest")" 2>/dev/null || true
+    fi
   fi
 }
 
@@ -363,8 +368,13 @@ record_release_upgrade_run_baseline() {
     printf 'BASE_FILES_VERSION=%s\n' "$bf_ver"
     printf 'DPKG_AUDIT=%s\n' "$audit_out"
   } >"$tmpenv"
-  sync 2>/dev/null || true
+  if declare -F durable_fsync_path >/dev/null 2>&1; then
+    durable_fsync_path "$tmpenv" 2>/dev/null || true
+  fi
   mv -f "$tmpenv" "${run_dir}/baseline.env"
+  if declare -F durable_fsync_path >/dev/null 2>&1; then
+    durable_fsync_path "$run_dir" 2>/dev/null || true
+  fi
   # Also snapshot core package versions.
   {
     local pkg
@@ -465,14 +475,19 @@ collect_package_transition_evidence() {
   # Core package consistency
   for pkg in base-files libc6 apt dpkg systemd systemd-sysv; do
     ivers=""
-    if declare -F pkg_installed_version >/dev/null 2>&1; then
-      ivers="$(pkg_installed_version "$pkg")"
-    fi
     if [[ -n "${TEST_ROOT:-}" && -f "$(hostpath ${STATE_ROOT}/force-target-core-packages)" ]]; then
       target_pkgs=1
       recon_append_evidence "AUTHORITATIVE_PACKAGE_TRANSITION" "test_fixture" \
         "$(hostpath ${STATE_ROOT}/force-target-core-packages)" "force-target-core-packages" "yes" "$pkg" "fixture"
       break
+    fi
+    # Fixture roots do not virtualize dpkg; never treat the host's installed
+    # package versions as this-hop transition evidence under TEST_ROOT.
+    if [[ -n "${TEST_ROOT:-}" ]]; then
+      continue
+    fi
+    if declare -F pkg_installed_version >/dev/null 2>&1; then
+      ivers="$(pkg_installed_version "$pkg")"
     fi
     if recon_is_target_version_for_pkg "$pkg" "$ivers"; then
       target_pkgs=$((target_pkgs + 1))
