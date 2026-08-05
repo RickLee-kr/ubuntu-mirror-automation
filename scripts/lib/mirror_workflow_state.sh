@@ -63,6 +63,11 @@ OS_CORE_GENERATION_ID=
 PHASE2_GENERATION_ID=
 CLIENT_SET_GENERATION_ID=
 CLIENT_SIGNING_FINGERPRINT=
+CLIENT_BUILD_INPUT_SHA256=
+CLIENT_SOURCE_REVISION=
+CLIENT_RUNTIME_MANIFEST_SHA256=
+CLIENT_COMMAND_BLOCK_VERSION=
+CLIENT_PROVENANCE_SCHEMA_VERSION=
 HTTP_PUBLICATION_GENERATION_ID=
 READINESS_VERIFIED_GENERATION_ID=
 COMMAND_FILE_GENERATION_ID=
@@ -112,7 +117,10 @@ mm_wf_set_many() {
       WORKFLOW_STATE WORKFLOW_GENERATION_ID CONFIG_SHA256 PREPARATION_MODE \
       MIRROR_SERVER_IP MIRROR_HTTP_URL PHASE2_TARGET_VERSION \
       OS_CORE_GENERATION_ID PHASE2_GENERATION_ID CLIENT_SET_GENERATION_ID \
-      CLIENT_SIGNING_FINGERPRINT HTTP_PUBLICATION_GENERATION_ID \
+      CLIENT_SIGNING_FINGERPRINT CLIENT_BUILD_INPUT_SHA256 \
+      CLIENT_SOURCE_REVISION CLIENT_RUNTIME_MANIFEST_SHA256 \
+      CLIENT_COMMAND_BLOCK_VERSION CLIENT_PROVENANCE_SCHEMA_VERSION \
+      HTTP_PUBLICATION_GENERATION_ID \
       READINESS_VERIFIED_GENERATION_ID COMMAND_FILE_GENERATION_ID \
       CREATED_UTC VERIFIED_UTC HTTP_REENABLE_REQUIRED
     do
@@ -193,6 +201,11 @@ mm_wf_mark_configured() {
     "PHASE2_GENERATION_ID=" \
     "CLIENT_SET_GENERATION_ID=" \
     "CLIENT_SIGNING_FINGERPRINT=" \
+    "CLIENT_BUILD_INPUT_SHA256=" \
+    "CLIENT_SOURCE_REVISION=" \
+    "CLIENT_RUNTIME_MANIFEST_SHA256=" \
+    "CLIENT_COMMAND_BLOCK_VERSION=" \
+    "CLIENT_PROVENANCE_SCHEMA_VERSION=" \
     "HTTP_PUBLICATION_GENERATION_ID=" \
     "READINESS_VERIFIED_GENERATION_ID=" \
     "COMMAND_FILE_GENERATION_ID=" \
@@ -269,13 +282,23 @@ mm_wf_mark_prepared() {
 }
 
 mm_wf_mark_client_set_published() {
-  local client_gen fpr
+  local client_gen fpr input_sha source_rev runtime_sha command_ver schema_ver
   client_gen="${1:-$(mm_wf_new_generation_id)}"
   fpr="${2:-}"
+  input_sha="${3:-}"
+  source_rev="${4:-}"
+  runtime_sha="${5:-}"
+  command_ver="${6:-SUBSHELL_V2}"
+  schema_ver="${7:-1}"
   mm_wf_set_many \
     "WORKFLOW_STATE=CLIENT_SET_PUBLISHED" \
     "CLIENT_SET_GENERATION_ID=${client_gen}" \
     "CLIENT_SIGNING_FINGERPRINT=${fpr}" \
+    "CLIENT_BUILD_INPUT_SHA256=${input_sha}" \
+    "CLIENT_SOURCE_REVISION=${source_rev}" \
+    "CLIENT_RUNTIME_MANIFEST_SHA256=${runtime_sha}" \
+    "CLIENT_COMMAND_BLOCK_VERSION=${command_ver}" \
+    "CLIENT_PROVENANCE_SCHEMA_VERSION=${schema_ver}" \
     "HTTP_PUBLICATION_GENERATION_ID=" \
     "READINESS_VERIFIED_GENERATION_ID=" \
     "COMMAND_FILE_GENERATION_ID=" \
@@ -284,9 +307,10 @@ mm_wf_mark_client_set_published() {
     mm_status_set WORKFLOW_STATE CLIENT_SET_PUBLISHED
     mm_status_set CLIENT_SET_GENERATION_ID "$client_gen"
     mm_status_set CLIENT_SIGNING_FINGERPRINT "$fpr"
+    mm_status_set CLIENT_BUILD_INPUT_SHA256 "$input_sha"
     mm_status_set UPGRADE_READINESS FAIL
   fi
-  mm_info "WORKFLOW_STATE=CLIENT_SET_PUBLISHED CLIENT_SET_GENERATION_ID=${client_gen}"
+  mm_info "WORKFLOW_STATE=CLIENT_SET_PUBLISHED CLIENT_SET_GENERATION_ID=${client_gen} CLIENT_BUILD_INPUT_SHA256=${input_sha}"
 }
 
 mm_wf_mark_http_enabled() {
@@ -470,6 +494,13 @@ mm_wf_commands_preflight() {
     MM_WF_BLOCK_REASON="CLIENT_SIGNING_FINGERPRINT_MISSING"
     MM_WF_REQUIRED_ACTION="Download and Prepare"
     return 1
+  fi
+  if declare -F mm_client_set_current_source >/dev/null 2>&1; then
+    if ! mm_client_set_current_source "${MM_CLIENT_ROOT:-}" >/dev/null 2>&1; then
+      MM_WF_BLOCK_REASON="STALE_CLIENT_BUILD_INPUT"
+      MM_WF_REQUIRED_ACTION="Download and Prepare"
+      return 1
+    fi
   fi
 
   return 0
@@ -851,6 +882,11 @@ mm_wf_atomic_publish_command_file() {
 # Write client-set generation metadata into a published client root.
 mm_wf_write_client_set_metadata() {
   local dest="$1" gen="$2" fpr="$3" mirror_url="$4" mode="$5"
+  local input_sha="${6:-}" source_rev="${7:-}" runtime_sha="${8:-}"
+  local builders_sha="${9:-}" templates_sha="${10:-}" helpers_sha="${11:-}"
+  local runner_sha="${12:-}" command_ver="${13:-SUBSHELL_V2}"
+  local schema_ver="${14:-1}" tree_state="${15:-}" mirror_pin="${16:-${mirror_url}}"
+  local created_utc="${17:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
   local meta="${dest}/client-set.env"
   cat >"${meta}.tmp" <<EOF
 CLIENT_SET_GENERATION_ID=${gen}
@@ -858,7 +894,19 @@ CLIENT_SIGNING_FINGERPRINT=${fpr}
 MIRROR_HTTP_URL=${mirror_url}
 PREPARATION_MODE=${mode}
 PHASE2_TARGET_VERSION=${PHASE2_TARGET_VERSION:-6.5.0}
-CREATED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+CLIENT_PROVENANCE_SCHEMA_VERSION=${schema_ver}
+CLIENT_BUILD_INPUT_SHA256=${input_sha}
+CLIENT_SOURCE_REVISION=${source_rev}
+CLIENT_SOURCE_TREE_STATE=${tree_state}
+CLIENT_RUNTIME_MANIFEST_SHA256=${runtime_sha}
+CLIENT_BUILDERS_SHA256=${builders_sha}
+CLIENT_TEMPLATES_SHA256=${templates_sha}
+CLIENT_SHARED_HELPERS_SHA256=${helpers_sha}
+CLIENT_RUNNER_SHA256=${runner_sha}
+CLIENT_COMMAND_BLOCK_VERSION=${command_ver}
+CLIENT_MIRROR_BASE_URL=${mirror_pin}
+CLIENT_BUILD_CREATED_UTC=${created_utc}
+CREATED_UTC=${created_utc}
 EOF
   chmod 0644 "${meta}.tmp"
   mv -f "${meta}.tmp" "$meta"

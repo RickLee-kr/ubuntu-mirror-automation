@@ -23,6 +23,7 @@ _LIB_DIR = os.path.dirname(os.path.abspath(__file__))
 if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import client_build_repository as cbr
+import client_build_provenance as cbp
 
 
 HOP = "xenial-to-bionic"
@@ -729,6 +730,12 @@ def main(argv=None):
             "manifest_signing_key=local-mirror-client-signing path={}".format(sign_priv)
         )
 
+    build_provenance = cbp.compute_provenance(
+        project_root,
+        mirror_base_url=mirror_base,
+        signing_fingerprint=manifest_key_fpr or "",
+    )
+
     manifest = OrderedDict(
         [
             ("schema_version", 1),
@@ -770,6 +777,18 @@ def main(argv=None):
             ("plan_checksum", plan_checksum),
             ("discovery_checksum", discovery_checksum),
             ("confirm_phrase", CONFIRM_PHRASE),
+            ("client_provenance_schema_version", build_provenance["CLIENT_PROVENANCE_SCHEMA_VERSION"]),
+            ("client_build_input_sha256", build_provenance["CLIENT_BUILD_INPUT_SHA256"]),
+            ("client_source_revision", build_provenance["CLIENT_SOURCE_REVISION"]),
+            ("client_source_tree_state", build_provenance["CLIENT_SOURCE_TREE_STATE"]),
+            ("client_command_block_version", build_provenance["CLIENT_COMMAND_BLOCK_VERSION"]),
+            ("client_mirror_base_url", build_provenance["CLIENT_MIRROR_BASE_URL"]),
+            ("client_signing_fingerprint", build_provenance["CLIENT_SIGNING_FINGERPRINT"]),
+            ("client_runtime_manifest_sha256", build_provenance["CLIENT_RUNTIME_MANIFEST_SHA256"]),
+            ("client_builders_sha256", build_provenance["CLIENT_BUILDERS_SHA256"]),
+            ("client_templates_sha256", build_provenance["CLIENT_TEMPLATES_SHA256"]),
+            ("client_shared_helpers_sha256", build_provenance["CLIENT_SHARED_HELPERS_SHA256"]),
+            ("client_runner_sha256", build_provenance["CLIENT_RUNNER_SHA256"]),
             ("generated_at", generated_at),
             ("announcements", announcements),
         ]

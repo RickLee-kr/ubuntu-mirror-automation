@@ -53,6 +53,7 @@ UM_RUNTIME_SCRIPT_LIB_SHELL=(
 # ---------------------------------------------------------------------------
 UM_RUNTIME_SCRIPT_LIB_PYTHON_MODULES=(
   client_build_repository.py
+  client_build_provenance.py
 )
 
 # ---------------------------------------------------------------------------
@@ -117,6 +118,7 @@ UM_RUNTIME_REQUIRED_RELATIVE_PATHS=(
   scripts/lib/local_client_signing.sh
   scripts/lib/os_core_package.py
   scripts/lib/client_build_repository.py
+  scripts/lib/client_build_provenance.py
   scripts/lib/atomic_dir_swap.py
   scripts/lib/build_client_xenial_to_bionic.py
   scripts/lib/build_client_bionic_to_focal.py
@@ -395,7 +397,7 @@ def import_module(name):
     return mod
 
 try:
-    for name in ("client_build_repository", "atomic_dir_swap"):
+    for name in ("client_build_repository", "client_build_provenance", "atomic_dir_swap"):
         import_module(name)
         print("RUNTIME_MODULE_IMPORT=PASS module=" + name)
     hop_map = {
