@@ -223,12 +223,14 @@ export CLIENT_PROVENANCE_SCHEMA_VERSION CLIENT_BUILD_INPUT_SHA256
 export CLIENT_SOURCE_REVISION CLIENT_SOURCE_TREE_STATE CLIENT_BUILD_SOURCE_REVISION
 export CLIENT_RUNTIME_MANIFEST_SHA256 CLIENT_BUILDERS_SHA256 CLIENT_TEMPLATES_SHA256
 export CLIENT_SHARED_HELPERS_SHA256 CLIENT_RUNNER_SHA256 CLIENT_COMMAND_BLOCK_VERSION
-export CLIENT_MIRROR_BASE_URL CLIENT_SIGNING_FINGERPRINT CLIENT_BUILD_CREATED_UTC
+export CLIENT_LAUNCHER_SCHEMA_VERSION CLIENT_MIRROR_BASE_URL CLIENT_SIGNING_FINGERPRINT
+export CLIENT_BUILD_CREATED_UTC
 evidence_echo "CLIENT_PROVENANCE_SCHEMA_VERSION=${CLIENT_PROVENANCE_SCHEMA_VERSION}"
 evidence_echo "CLIENT_BUILD_INPUT_SHA256=${CLIENT_BUILD_INPUT_SHA256}"
 evidence_echo "CLIENT_SOURCE_REVISION=${CLIENT_SOURCE_REVISION}"
 evidence_echo "CLIENT_SOURCE_TREE_STATE=${CLIENT_SOURCE_TREE_STATE}"
 evidence_echo "CLIENT_COMMAND_BLOCK_VERSION=${CLIENT_COMMAND_BLOCK_VERSION}"
+evidence_echo "CLIENT_LAUNCHER_SCHEMA_VERSION=${CLIENT_LAUNCHER_SCHEMA_VERSION}"
 evidence_echo "CLIENT_MIRROR_BASE_URL=${CLIENT_MIRROR_BASE_URL}"
 evidence_echo "CLIENT_SIGNING_FINGERPRINT=${CLIENT_SIGNING_FINGERPRINT}"
 
@@ -393,6 +395,33 @@ if [[ -f "${ROOT}/client/dp-client-command-runner.sh" ]]; then
   fi
   evidence_echo "COMMAND_RUNNER_PUBLISH=PASS"
 fi
+# Menu 7 OS-hop launchers: deterministic hash-pinned operator entrypoints.
+LAUNCHER_BUILDER="${ROOT}/scripts/lib/build_client_launchers.py"
+if [[ ! -f "$LAUNCHER_BUILDER" ]]; then
+  fail_build "" "launcher_builder_missing" "missing ${LAUNCHER_BUILDER}" 1
+fi
+if ! python3 "$LAUNCHER_BUILDER" \
+  --project-root "$ROOT" \
+  --output-dir "$STAGE_DIR" \
+  --mirror-base-url "$MIRROR_BASE" \
+  --signing-fingerprint "$LOCAL_KEY_FINGERPRINT" \
+  --print-env >>"$EVIDENCE_LOG"
+then
+  fail_build "" "launcher_build" "LAUNCHER_BUILD=FAIL" 1
+fi
+for hop in "${HOPS[@]}"; do
+  lname="dp-launch-${hop}.sh"
+  [[ -f "${STAGE_DIR}/${lname}" && -f "${STAGE_DIR}/${lname}.sha256" ]] || {
+    fail_build "$hop" "launcher_missing" "missing staged launcher ${lname}" 1
+  }
+  ( cd "$STAGE_DIR" && sha256sum -c "${lname}.sha256" >/dev/null ) || {
+    fail_build "$hop" "launcher_checksum" "launcher sidecar mismatch ${lname}" 1
+  }
+  chmod 0644 "${STAGE_DIR}/${lname}" "${STAGE_DIR}/${lname}.sha256"
+  evidence_echo "LAUNCHER_PUBLISH=PASS hop=${hop} file=${lname}"
+done
+evidence_echo "LAUNCHER_SET_PUBLISH=PASS"
+evidence_echo "CLIENT_LAUNCHER_SCHEMA_VERSION=${CLIENT_LAUNCHER_SCHEMA_VERSION:-1}"
 if [[ -d "${ROOT}/client/lib" ]]; then
   mkdir -p "${STAGE_DIR}/lib"
   chmod 0755 "${STAGE_DIR}/lib"
@@ -425,10 +454,18 @@ CLIENT_TEMPLATES_SHA256=${CLIENT_TEMPLATES_SHA256}
 CLIENT_SHARED_HELPERS_SHA256=${CLIENT_SHARED_HELPERS_SHA256}
 CLIENT_RUNNER_SHA256=${CLIENT_RUNNER_SHA256}
 CLIENT_COMMAND_BLOCK_VERSION=${CLIENT_COMMAND_BLOCK_VERSION}
+CLIENT_LAUNCHER_SCHEMA_VERSION=${CLIENT_LAUNCHER_SCHEMA_VERSION}
 CLIENT_MIRROR_BASE_URL=${CLIENT_MIRROR_BASE_URL}
 CLIENT_BUILD_CREATED_UTC=${CLIENT_BUILD_CREATED_UTC}
 CREATED_UTC=${CLIENT_BUILD_CREATED_UTC}
 EOF
+# Bind published launcher digests into client-set metadata for readiness/Menu 7.
+for hop in "${HOPS[@]}"; do
+  lname="dp-launch-${hop}.sh"
+  lsha="$(awk '{print $1; exit}' "${STAGE_DIR}/${lname}.sha256")"
+  meta_key="CLIENT_LAUNCHER_$(printf '%s' "$hop" | tr 'a-z-' 'A-Z_')_SHA256"
+  printf '%s=%s\n' "$meta_key" "$lsha" >>"${STAGE_DIR}/client-set.env"
+done
 chmod 0644 "${STAGE_DIR}/client-set.env"
 
 # Final verify on staged tree before cutover.
@@ -557,7 +594,8 @@ if [[ -f "${ROOT}/scripts/lib/mirror_workflow_state.sh" ]]; then
     "$CLIENT_PROVENANCE_SCHEMA_VERSION" \
     "$CLIENT_SOURCE_TREE_STATE" \
     "$CLIENT_MIRROR_BASE_URL" \
-    "$CLIENT_BUILD_CREATED_UTC"
+    "$CLIENT_BUILD_CREATED_UTC" \
+    "${CLIENT_LAUNCHER_SCHEMA_VERSION:-1}"
   mm_wf_mark_client_set_published \
     "$CLIENT_BUILD_GENERATION_ID" \
     "$LOCAL_KEY_FINGERPRINT" \

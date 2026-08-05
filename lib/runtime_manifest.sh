@@ -66,6 +66,7 @@ UM_RUNTIME_SCRIPT_LIB_PYTHON_EXECUTABLES=(
   build_client_bionic_to_focal.py
   build_client_focal_to_jammy.py
   build_client_jammy_to_noble.py
+  build_client_launchers.py
 )
 
 # ---------------------------------------------------------------------------
@@ -89,6 +90,7 @@ UM_RUNTIME_CLIENT_FILES=(
   dp-offline-upgrade-bionic-to-focal.sh.in
   dp-offline-upgrade-focal-to-jammy.sh.in
   dp-offline-upgrade-jammy-to-noble.sh.in
+  dp-client-hop-launcher.sh.in
   dp-postboot-readiness-policy.sh.inc
   stage-dp-phase2.sh
   stage-dp-phase2-6.5.0.sh
@@ -124,10 +126,12 @@ UM_RUNTIME_REQUIRED_RELATIVE_PATHS=(
   scripts/lib/build_client_bionic_to_focal.py
   scripts/lib/build_client_focal_to_jammy.py
   scripts/lib/build_client_jammy_to_noble.py
+  scripts/lib/build_client_launchers.py
   client/lib/dp-offline-destructive-confirmation.sh
   client/lib/dp-offline-release-upgrade-reconciliation.sh
   client/lib/dp-offline-apt-preflight-sandbox.sh
   client/dp-client-command-runner.sh
+  client/dp-client-hop-launcher.sh.in
   vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh
   vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1
   templates/nginx.conf

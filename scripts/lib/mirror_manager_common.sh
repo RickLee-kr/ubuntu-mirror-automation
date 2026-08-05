@@ -892,14 +892,24 @@ mm_client_commands_stale() {
   if ! grep -qE '^DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2$' "$f"; then
     return 0
   fi
+  # Phase 2 stage block still requires the SUBSHELL_V2 guard markers.
   if ! grep -qE 'BASH_SUBSHELL' "$f" || ! grep -qE 'DP_COMMAND_SUBSHELL_REQUIRED=YES' "$f"; then
     return 0
   fi
-  # Legacy non-subshell blocks (bare "cd /home/aella") are stale.
-  if grep -qE '^cd /home/aella && ' "$f"; then
-    return 0
-  fi
   mm_normalize_preparation_mode
+  if [[ "${PREPARATION_MODE}" == "FULL" ]]; then
+    # FULL mode OS hops must use LAUNCHER_V1 one-liners.
+    if ! grep -qE '^DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1$' "$f"; then
+      return 0
+    fi
+    # Legacy three-line OS-hop bootstrap blocks are stale.
+    if grep -qE "^\( .*HOP=" "$f"; then
+      return 0
+    fi
+    if ! grep -qE '^cd /home/aella && curl -fsSLo dp-launch-' "$f"; then
+      return 0
+    fi
+  fi
   mode_saved="$(mm_status_get CLIENT_COMMANDS_MODE)"
   [[ "$mode_saved" == "${PREPARATION_MODE}" ]] || return 0
   if declare -F mm_wf_get >/dev/null 2>&1; then
@@ -1134,6 +1144,10 @@ mm_http_required_urls_ok() {
   mm_http_probe_ok "${base}/client/stage-dp-phase2.sh.sha256" || return 1
   if ! mm_is_phase2_only; then
     mm_http_probe_ok "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh" || return 1
+    mm_http_probe_ok "${base}/client/dp-launch-xenial-to-bionic.sh" || return 1
+    mm_http_probe_ok "${base}/client/dp-launch-bionic-to-focal.sh" || return 1
+    mm_http_probe_ok "${base}/client/dp-launch-focal-to-jammy.sh" || return 1
+    mm_http_probe_ok "${base}/client/dp-launch-jammy-to-noble.sh" || return 1
     mm_http_probe_ok "${base}/offline/meta-release-lts" || return 1
   fi
   return 0
@@ -1586,6 +1600,14 @@ MM_CLIENT_REQUIRED_FILES=(
   dp-offline-upgrade-focal-to-jammy.sh.sha256
   dp-offline-upgrade-jammy-to-noble.sh
   dp-offline-upgrade-jammy-to-noble.sh.sha256
+  dp-launch-xenial-to-bionic.sh
+  dp-launch-xenial-to-bionic.sh.sha256
+  dp-launch-bionic-to-focal.sh
+  dp-launch-bionic-to-focal.sh.sha256
+  dp-launch-focal-to-jammy.sh
+  dp-launch-focal-to-jammy.sh.sha256
+  dp-launch-jammy-to-noble.sh
+  dp-launch-jammy-to-noble.sh.sha256
   stage-dp-phase2.sh
   stage-dp-phase2.sh.sha256
   dp-client-command-runner.sh
@@ -1624,6 +1646,10 @@ mm_client_files_ready() {
     dp-offline-upgrade-bionic-to-focal.sh \
     dp-offline-upgrade-focal-to-jammy.sh \
     dp-offline-upgrade-jammy-to-noble.sh \
+    dp-launch-xenial-to-bionic.sh \
+    dp-launch-bionic-to-focal.sh \
+    dp-launch-focal-to-jammy.sh \
+    dp-launch-jammy-to-noble.sh \
     stage-dp-phase2.sh \
     dp-client-command-runner.sh
   do
@@ -1632,6 +1658,41 @@ mm_client_files_ready() {
   # Signed runner checksum manifest must match the sidecar.
   [[ -f "${root}/runner-manifest" && -f "${root}/runner-manifest.asc" ]] || return 1
   cmp -s "${root}/runner-manifest" "${root}/dp-client-command-runner.sh.sha256" || return 1
+  mm_client_launchers_ready "$root" || return 1
+  return 0
+}
+
+# Local pre-readiness launcher contract for FULL mode.
+mm_client_launchers_ready() {
+  local root="${1:-${MM_CLIENT_ROOT}}"
+  local hop launcher meta_key meta_sha file_sha mirror fpr
+  local meta="${root}/client-set.env"
+  [[ -d "$root" && -f "$meta" ]] || return 1
+  mirror="$(awk -F= '$1=="CLIENT_MIRROR_BASE_URL"{print substr($0,index($0,"=")+1);exit}' "$meta")"
+  [[ -z "$mirror" ]] && mirror="$(awk -F= '$1=="MIRROR_HTTP_URL"{print substr($0,index($0,"=")+1);exit}' "$meta")"
+  fpr="$(awk -F= '$1=="CLIENT_SIGNING_FINGERPRINT"{print substr($0,index($0,"=")+1);exit}' "$meta")"
+  fpr="${fpr^^}"
+  fpr="${fpr// /}"
+  [[ -n "$mirror" && -n "$fpr" ]] || return 1
+  awk -F= '$1=="CLIENT_LAUNCHER_SCHEMA_VERSION"{found=1} END{exit found?0:1}' "$meta" || return 1
+  for hop in xenial-to-bionic bionic-to-focal focal-to-jammy jammy-to-noble; do
+    launcher="dp-launch-${hop}.sh"
+    [[ -f "${root}/${launcher}" && -s "${root}/${launcher}" ]] || return 1
+    [[ -f "${root}/${launcher}.sha256" ]] || return 1
+    (cd "$root" && sha256sum -c "${launcher}.sha256" >/dev/null 2>&1) || return 1
+    file_sha="$(sha256sum "${root}/${launcher}" | awk '{print $1}')"
+    meta_key="CLIENT_LAUNCHER_$(printf '%s' "$hop" | tr 'a-z-' 'A-Z_')_SHA256"
+    meta_sha="$(awk -F= -v k="$meta_key" '$1==k{print substr($0,index($0,"=")+1);exit}' "$meta")"
+    [[ -n "$meta_sha" && "$meta_sha" == "$file_sha" ]] || return 1
+    grep -q "HOP='${hop}'" "${root}/${launcher}" || return 1
+    grep -Fq "${mirror%/}" "${root}/${launcher}" || return 1
+    grep -q "EXPECTED_FPR='${fpr}'" "${root}/${launcher}" || return 1
+    grep -q 'dp-client-command-runner.sh' "${root}/${launcher}" || return 1
+    if grep -qE 'BEGIN PGP PRIVATE KEY|ACPS_PASS|PASSWORD=' "${root}/${launcher}"; then
+      return 1
+    fi
+    bash -n "${root}/${launcher}" || return 1
+  done
   return 0
 }
 
@@ -1782,10 +1843,12 @@ mm_check_client_build_prerequisites_ready() {
     "${root}/client/dp-offline-upgrade-bionic-to-focal.sh.in" \
     "${root}/client/dp-offline-upgrade-focal-to-jammy.sh.in" \
     "${root}/client/dp-offline-upgrade-jammy-to-noble.sh.in" \
+    "${root}/client/dp-client-hop-launcher.sh.in" \
     "${libdir}/build_client_xenial_to_bionic.py" \
     "${libdir}/build_client_bionic_to_focal.py" \
     "${libdir}/build_client_focal_to_jammy.py" \
     "${libdir}/build_client_jammy_to_noble.py" \
+    "${libdir}/build_client_launchers.py" \
     "${libdir}/client_build_repository.py" \
     "${libdir}/client_build_provenance.py" \
     "${libdir}/atomic_dir_swap.py" \

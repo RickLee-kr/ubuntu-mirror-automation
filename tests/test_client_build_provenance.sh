@@ -182,6 +182,8 @@ assert_digest_changes 3 "client/dp-offline-upgrade-xenial-to-bionic.sh.in"
 assert_digest_changes 4 "client/dp-client-command-runner.sh"
 assert_digest_changes 5 "client/lib/dp-offline-apt-preflight-sandbox.sh"
 assert_digest_changes 6 "client/lib/dp-offline-release-upgrade-reconciliation.sh"
+assert_digest_changes "6b" "client/dp-client-hop-launcher.sh.in"
+assert_digest_changes "6c" "scripts/lib/build_client_launchers.py"
 
 # Case 7: command-block version (mutate constant in scratch copy)
 make_scratch

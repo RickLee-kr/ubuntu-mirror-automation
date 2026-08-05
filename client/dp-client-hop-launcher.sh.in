@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# dp-client-hop-launcher.sh.in — authenticated Menu 7 OS-hop launcher template.
+#
+# Generated deterministically per hop with embedded Mirror URL, signing
+# fingerprint, hop id, and hop script name. Operator commands download this
+# file and pin its SHA256 literally; this launcher then authenticates the
+# existing dp-client-command-runner.sh exactly as the former three-line
+# Menu 7 bootstrap did.
+#
+# Placeholders (replaced by scripts/lib/build_client_launchers.py):
+#   @@MIRROR_BASE@@  @@EXPECTED_FPR@@  @@HOP@@  @@SCRIPT@@
+#   @@LAUNCHER_SCHEMA_VERSION@@
+set -euo pipefail
+
+DP_OS_HOP_LAUNCHER_SCHEMA='@@LAUNCHER_SCHEMA_VERSION@@'
+MIRROR_BASE='@@MIRROR_BASE@@'
+EXPECTED_FPR='@@EXPECTED_FPR@@'
+HOP='@@HOP@@'
+SCRIPT='@@SCRIPT@@'
+
+die() {
+  printf 'dp-launch-%s.sh: %s\n' "${HOP:-unknown}" "$*" >&2
+  exit 1
+}
+
+[[ -n "$MIRROR_BASE" && "$MIRROR_BASE" != *__UNREPLACED__* ]] || die "invalid embedded MIRROR_BASE"
+[[ -n "$EXPECTED_FPR" && ${#EXPECTED_FPR} -eq 40 ]] || die "invalid embedded EXPECTED_FPR"
+[[ "$EXPECTED_FPR" =~ ^[0-9A-Fa-f]{40}$ ]] || die "EXPECTED_FPR must be 40 hex characters"
+[[ -n "$HOP" && "$HOP" != *__UNREPLACED__* ]] || die "invalid embedded HOP"
+[[ -n "$SCRIPT" && "$SCRIPT" == "dp-offline-upgrade-${HOP}.sh" ]] || die "SCRIPT/HOP binding mismatch"
+[[ -n "$DP_OS_HOP_LAUNCHER_SCHEMA" && "$DP_OS_HOP_LAUNCHER_SCHEMA" != *__UNREPLACED__* ]] \
+  || die "invalid launcher schema version"
+
+W="$(mktemp -d)"
+trap 'rm -rf "$W"' EXIT
+cd "$W"
+
+export GNUPGHOME="$W/gnupg"
+mkdir -m 700 "$GNUPGHOME"
+
+R=dp-client-command-runner.sh
+M=runner-manifest
+K=public-keyring.gpg
+for f in "$K" "$R" "${R}.sha256" "$M" "${M}.asc"; do
+  curl -fsSLo "$f" "${MIRROR_BASE}/client/${f}" && test -s "$f" || exit 1
+done
+
+gpg --batch --no-default-keyring --keyring "./$K" --with-colons --fingerprint \
+  | grep -q ":${EXPECTED_FPR}:"
+gpgv --keyring "./$K" "${M}.asc" "$M"
+sha256sum -c "$M"
+sha256sum -c "${R}.sha256"
+bash "$R" "$MIRROR_BASE" "$HOP" "$SCRIPT" "$EXPECTED_FPR"

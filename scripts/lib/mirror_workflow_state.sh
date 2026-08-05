@@ -503,6 +503,15 @@ mm_wf_commands_preflight() {
     fi
   fi
 
+  # FULL mode requires current-generation launchers before Menu 7 may show commands.
+  if [[ "$mode" == "FULL" ]] && declare -F mm_client_launchers_ready >/dev/null 2>&1; then
+    if ! mm_client_launchers_ready "${MM_CLIENT_ROOT:-}" >/dev/null 2>&1; then
+      MM_WF_BLOCK_REASON="launcher_generation_mismatch"
+      MM_WF_REQUIRED_ACTION="Run Download and Prepare Upgrade Files"
+      return 1
+    fi
+  fi
+
   return 0
 }
 
@@ -517,111 +526,108 @@ mm_wf_reconstruct_command_block() {
   printf '\n'
 }
 
-# Validate one OS-hop three-line block starting at file line number.
+# Validate one OS-hop LAUNCHER_V1 one-line command at file line number.
 # Prints evidence; returns 0 on PASS.
-# Contract: DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2 — leading "(" required;
-# legacy non-subshell "cd /home/aella ..." is rejected.
-mm_wf_validate_os_hop_block_at() {
-  local file="$1" start_line="$2"
-  local max_len="${3:-360}"
-  local l1 l2 l3 l4 recon l3_stripped
-
-  l1="$(sed -n "${start_line}p" "$file")"
-  l2="$(sed -n "$((start_line + 1))p" "$file")"
-  l3="$(sed -n "$((start_line + 2))p" "$file")"
-  l4="$(sed -n "$((start_line + 3))p" "$file" || true)"
-
-  [[ -n "$l1" && -n "$l2" && -n "$l3" ]] || {
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_HOP_BLOCK_INCOMPLETE=YES\n'
+mm_wf_validate_os_hop_launcher_at() {
+  local file="$1" start_line="$2" expected_hop="${3:-}" expected_mirror="${4:-}"
+  local line launcher sha download_name url_part
+  line="$(sed -n "${start_line}p" "$file")"
+  [[ -n "$line" ]] || {
+    printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_HOP_LAUNCHER_EMPTY=YES\n'
     return 1
   }
-  # SUBSHELL_V2 only: first non-whitespace must be "("; reject legacy "cd ...".
-  [[ "$l1" == '('* ]] || {
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_HOP_BLOCK_PREFIX=FAIL\n'
-    printf 'COMMAND_FILE_LEGACY_NON_SUBSHELL=YES\n'
-    return 1
-  }
-  printf '%s\n' "$l1" | grep -qE 'BASH_SUBSHELL' || {
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_SUBSHELL_GUARD=MISSING\n'
-    return 1
-  }
-  printf '%s\n' "$l1" | grep -q 'DP_COMMAND_SUBSHELL_REQUIRED=YES' || {
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_SUBSHELL_GUARD=MISSING\n'
-    return 1
-  }
-  printf '%s\n' "$l1" | grep -qE 'cd /home/aella &&' || {
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_HOP_BLOCK_PREFIX=FAIL\n'
-    return 1
-  }
-  l3_stripped="$(printf '%s' "$l3" | sed 's/[[:space:]]*$//')"
-  [[ "${l3_stripped: -1}" == ')' ]] || {
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_HOP_BLOCK_CLOSE_PAREN=MISSING\n'
-    return 1
-  }
-  [[ "$l1" =~ \\[[:space:]]*$ ]] || {
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_HOP_BLOCK_LINE1_BACKSLASH=FAIL\n'
-    return 1
-  }
-  [[ "$l2" =~ \\[[:space:]]*$ ]] || {
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_HOP_BLOCK_LINE2_BACKSLASH=FAIL\n'
-    return 1
-  }
-  if [[ "$l3" =~ \\[[:space:]]*$ ]]; then
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_HOP_BLOCK_FINAL_BACKSLASH=YES\n'
+  # Exactly one physical line: no backslash continuation, no subshell block.
+  if [[ "$line" =~ \\[[:space:]]*$ ]]; then
+    printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_HOP_LAUNCHER_BACKSLASH=YES\n'
     return 1
   fi
-  if [[ -z "${l1// /}" || -z "${l2// /}" || -z "${l3// /}" ]]; then
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_HOP_BLOCK_BLANK=YES\n'
+  [[ "$line" != '('* ]] || {
+    printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_OS_HOP_LEGACY_BLOCK=YES\n'
+    return 1
+  }
+  printf '%s\n' "$line" | grep -qE '^cd /home/aella && ' || {
+    printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_HOP_LAUNCHER_PREFIX=FAIL\n'
+    return 1
+  }
+  launcher="$(printf '%s\n' "$line" | sed -nE 's/.*bash \.\/(dp-launch-[a-z0-9-]+\.sh).*/\1/p')"
+  [[ -n "$launcher" ]] || {
+    printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_HOP_LAUNCHER_BASH_TARGET=MISSING\n'
+    return 1
+  }
+  if [[ -n "$expected_hop" && "$launcher" != "dp-launch-${expected_hop}.sh" ]]; then
+    printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_HOP_LAUNCHER_NAME_MISMATCH=YES\n'
     return 1
   fi
-  if [[ -n "$l4" && "$l4" =~ \\[[:space:]]*$ ]]; then
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_HOP_BLOCK_EXTRA_CONTINUATION=YES\n'
+  download_name="${launcher}.download"
+  printf '%s\n' "$line" | grep -qE "curl -fsSLo ${download_name} " || {
+    printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_HOP_LAUNCHER_DOWNLOAD_NAME=FAIL\n'
+    return 1
+  }
+  if ! printf '%s\n' "$line" | grep -qE "'[0-9A-Fa-f]{64}'"; then
+    printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_LAUNCHER_SHA_PINNING=FAIL\n'
     return 1
   fi
-  if [[ ${#l1} -gt "$max_len" || ${#l2} -gt "$max_len" || ${#l3} -gt "$max_len" ]]; then
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_PHYSICAL_LINE_TOO_LONG=YES\n'
+  if ! printf '%s\n' "$line" | grep -qE "sha256sum -c - && mv -f ${download_name} ${launcher} && bash \./${launcher}"; then
+    printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_LAUNCHER_SHA_PINNING=FAIL\n'
     return 1
   fi
-
-  recon="$(mm_wf_reconstruct_command_block "$(printf '%s\n%s\n%s\n' "$l1" "$l2" "$l3")")"
-  [[ -n "${recon// /}" ]] || {
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_HOP_BLOCK_EMPTY=YES\n'
+  # SHA verify before mv; mv before bash.
+  local sha_pos mv_pos bash_pos
+  sha_pos="$(python3 -c 'import sys; s=sys.argv[1]; print(s.find("sha256sum -c -"))' "$line")"
+  mv_pos="$(python3 -c 'import sys; s=sys.argv[1]; n=sys.argv[2]; print(s.find(n))' "$line" "mv -f ${download_name} ${launcher}")"
+  bash_pos="$(python3 -c 'import sys; s=sys.argv[1]; n=sys.argv[2]; print(s.find(n))' "$line" "bash ./${launcher}")"
+  if [[ "$sha_pos" -lt 0 || "$mv_pos" -lt 0 || "$bash_pos" -lt 0 \
+    || "$sha_pos" -ge "$mv_pos" || "$mv_pos" -ge "$bash_pos" ]]; then
+    printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_LAUNCHER_ORDER=FAIL\n'
     return 1
-  }
-  printf '%s\n' "$recon" | grep -q "EXPECTED_FPR=" || {
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_FINGERPRINT_PIN=MISSING\n'
+  fi
+  if printf '%s\n' "$line" | grep -qE 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)'; then
+    printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_CURL_PIPE_BASH=YES\n'
     return 1
-  }
-  printf '%s\n' "$recon" | grep -q "gpgv --keyring" || {
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_GPGV=MISSING\n'
+  fi
+  if printf '%s\n' "$line" | grep -qE '\.sha256'; then
+    printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_HTTP_SIDECAR_TRUST_ANCHOR=YES\n'
     return 1
-  }
-  printf '%s\n' "$recon" | grep -qE 'bash \$R |bash \./\$R |dp-client-command-runner\.sh' || {
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_RUNNER_INVOKE=MISSING\n'
+  fi
+  if printf '%s\n' "$line" | grep -qE 'EXPECTED_FPR=|gpgv |GNUPGHOME=|for f in'; then
+    printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_OS_HOP_LEGACY_BOOTSTRAP=YES\n'
     return 1
-  }
-  if printf '%s\n' "$recon" | grep -qE 'bash \$R .*(&&|;[[:space:]])'; then
-    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-    printf 'COMMAND_FILE_TRAILING_COMMAND=YES\n'
-    return 1
+  fi
+  if [[ -n "$expected_mirror" ]]; then
+    url_part="${expected_mirror%/}/client/${launcher}"
+    printf '%s\n' "$line" | grep -Fq "$url_part" || {
+      printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
+      printf 'COMMAND_FILE_HOP_LAUNCHER_MIRROR_URL=FAIL\n'
+      return 1
+    }
   fi
   return 0
+}
+
+# Legacy name kept for callers; rejects three-line OS-hop blocks.
+mm_wf_validate_os_hop_block_at() {
+  local file="$1" start_line="$2"
+  local l1
+  l1="$(sed -n "${start_line}p" "$file")"
+  if [[ "$l1" == '('* ]]; then
+    printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_OS_HOP_LEGACY_BLOCK=YES\n'
+    return 1
+  fi
+  mm_wf_validate_os_hop_launcher_at "$file" "$start_line"
 }
 
 mm_wf_validate_command_file_content() {
@@ -630,9 +636,11 @@ mm_wf_validate_command_file_content() {
   local file="$1" mode="$2"
   local lines exec_count hop_count stage_count bringup_count
   local xenial bionic focal jammy
-  local max_phys=360 max_block_lines=0 block_count=0 hop_block_count=0
+  local max_phys=0 max_block_lines=0 block_count=0 hop_block_count=0
   local lineno line
   local -a hop_starts=()
+  local launcher_count=0 legacy_hop_count=0
+  local mirror_url="${MIRROR_HTTP_URL:-}"
 
   if [[ ! -f "$file" || ! -s "$file" ]]; then
     printf 'COMMAND_FILE_BUILD=FAIL\n'
@@ -647,17 +655,21 @@ mm_wf_validate_command_file_content() {
     return 1
   fi
   printf 'DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2\n'
+  printf 'COMMAND_FILE_PHASE2_BLOCK_VERSION=SUBSHELL_V2\n'
 
   lines="$(wc -l <"$file" | tr -d ' ')"
-  # Count executable command blocks (SUBSHELL_V2 only: leading "(" required).
+  # Phase 2 executable command blocks still use leading "(".
   exec_count="$(grep -cE '^\( .*cd /home/aella && ' "$file" || true)"
-  hop_count="$(grep -cE "^\( .*HOP='(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)'" "$file" || true)"
+  # OS-hop LAUNCHER_V1 one-liners.
+  hop_count="$(grep -cE "^cd /home/aella && curl -fsSLo dp-launch-(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)\.sh\.download " "$file" || true)"
+  launcher_count="$hop_count"
+  legacy_hop_count="$(grep -cE "^\( .*HOP='(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)'" "$file" || true)"
   stage_count="$(grep -cE "^\( .*SCRIPT='stage-dp-phase2\.sh'" "$file" || true)"
   bringup_count="$(grep -cE 'bringup_py3_dp_after_os_upgrade\.sh' "$file" || true)"
-  xenial="$(grep -cE "^\( .*HOP='xenial-to-bionic'" "$file" || true)"
-  bionic="$(grep -cE "^\( .*HOP='bionic-to-focal'" "$file" || true)"
-  focal="$(grep -cE "^\( .*HOP='focal-to-jammy'" "$file" || true)"
-  jammy="$(grep -cE "^\( .*HOP='jammy-to-noble'" "$file" || true)"
+  xenial="$(grep -cE '^cd /home/aella && curl -fsSLo dp-launch-xenial-to-bionic\.sh\.download ' "$file" || true)"
+  bionic="$(grep -cE '^cd /home/aella && curl -fsSLo dp-launch-bionic-to-focal\.sh\.download ' "$file" || true)"
+  focal="$(grep -cE '^cd /home/aella && curl -fsSLo dp-launch-focal-to-jammy\.sh\.download ' "$file" || true)"
+  jammy="$(grep -cE '^cd /home/aella && curl -fsSLo dp-launch-jammy-to-noble\.sh\.download ' "$file" || true)"
 
   block_count="$exec_count"
   hop_block_count="$hop_count"
@@ -668,21 +680,29 @@ mm_wf_validate_command_file_content() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     lineno=$((lineno + 1))
     [[ ${#line} -gt "$max_phys" ]] && max_phys=${#line}
-    if [[ "$line" == '('* ]] && [[ "$line" == *'cd /home/aella &&'* ]] && [[ "$line" == *HOP=* ]]; then
+    if [[ "$line" == 'cd /home/aella && curl -fsSLo dp-launch-'*'.download '* ]]; then
       hop_starts+=("$lineno")
     fi
   done <"$file"
 
   printf 'COMMAND_FILE_MODE=%s\n' "$mode"
   printf 'COMMAND_FILE_LINE_COUNT=%s\n' "$lines"
-  printf 'COMMAND_FILE_EXECUTABLE_COUNT=%s\n' "$exec_count"
+  printf 'COMMAND_FILE_EXECUTABLE_COUNT=%s\n' "$((exec_count + hop_count))"
   printf 'COMMAND_FILE_COMMAND_BLOCK_COUNT=%s\n' "$block_count"
   printf 'COMMAND_FILE_OS_HOP_COUNT=%s\n' "$hop_count"
   printf 'COMMAND_FILE_OS_HOP_BLOCK_COUNT=%s\n' "$hop_block_count"
+  printf 'COMMAND_FILE_OS_HOP_LAUNCHER_COUNT=%s\n' "$launcher_count"
+  printf 'COMMAND_FILE_OS_HOP_LEGACY_BLOCK_COUNT=%s\n' "$legacy_hop_count"
   printf 'COMMAND_FILE_MAX_PHYSICAL_LINE_LENGTH=%s\n' "$max_phys"
 
   case "$mode" in
     FULL)
+      if ! grep -qE '^DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1$' "$file"; then
+        printf 'COMMAND_FILE_BUILD=FAIL\n'
+        printf 'COMMAND_FILE_OS_HOP_COMMAND_VERSION=FAIL\n'
+        return 1
+      fi
+      printf 'DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1\n'
       for n in 0 1 2 3 4 5 6 7 8 9; do
         if ! grep -qE "STEP ${n} —|Step ${n} —" "$file"; then
           printf 'COMMAND_FILE_BUILD=FAIL\n'
@@ -690,10 +710,15 @@ mm_wf_validate_command_file_content() {
           return 1
         fi
       done
+      if [[ "$legacy_hop_count" -ne 0 ]]; then
+        printf 'COMMAND_FILE_BUILD=FAIL\n'
+        printf 'COMMAND_FILE_OS_HOP_LEGACY_BLOCK_COUNT=%s\n' "$legacy_hop_count"
+        return 1
+      fi
       if [[ "$hop_count" -ne 4 ]]; then
         printf 'COMMAND_FILE_BUILD=FAIL\n'
         printf 'COMMAND_FILE_OS_HOP_COUNT=%s\n' "$hop_count"
-        printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+        printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
         return 1
       fi
       [[ "$xenial" -eq 1 && "$bionic" -eq 1 && "$focal" -eq 1 && "$jammy" -eq 1 ]] || {
@@ -711,55 +736,38 @@ mm_wf_validate_command_file_content() {
         printf 'COMMAND_FILE_BRINGUP_COUNT=%s\n' "$bringup_count"
         return 1
       }
-      grep -q "EXPECTED_FPR=" "$file" || {
-        printf 'COMMAND_FILE_BUILD=FAIL\n'
-        printf 'COMMAND_FILE_FINGERPRINT_PIN=MISSING\n'
-        return 1
-      }
-      grep -q "public-keyring.gpg" "$file" || {
-        printf 'COMMAND_FILE_BUILD=FAIL\n'
-        printf 'COMMAND_FILE_KEYRING=MISSING\n'
-        return 1
-      }
-      grep -q "gpgv --keyring" "$file" || {
-        printf 'COMMAND_FILE_BUILD=FAIL\n'
-        printf 'COMMAND_FILE_GPGV=MISSING\n'
-        return 1
-      }
-      # Hop blocks invoke the verified runner; Phase 2 stage still has sudo bash.
-      grep -q "dp-client-command-runner.sh\|bash \$R " "$file" || {
-        printf 'COMMAND_FILE_BUILD=FAIL\n'
-        printf 'COMMAND_FILE_RUNNER_INVOKE=MISSING\n'
-        return 1
-      }
+      # Phase 2 still uses sudo bash; OS-hop operator command must not.
       grep -q "sudo bash" "$file" || {
         printf 'COMMAND_FILE_BUILD=FAIL\n'
         printf 'COMMAND_FILE_SUDO_BASH=MISSING\n'
         return 1
       }
+      if grep -qE "^\( .*HOP=" "$file"; then
+        printf 'COMMAND_FILE_BUILD=FAIL\n'
+        printf 'COMMAND_FILE_OS_HOP_LEGACY_BLOCK=YES\n'
+        return 1
+      fi
 
-      max_block_lines=3
-      for lineno in "${hop_starts[@]}"; do
-        if ! mm_wf_validate_os_hop_block_at "$file" "$lineno" 360; then
+      local hops=(xenial-to-bionic bionic-to-focal focal-to-jammy jammy-to-noble)
+      local idx=0 hs
+      for hs in "${hop_starts[@]}"; do
+        if ! mm_wf_validate_os_hop_launcher_at "$file" "$hs" "${hops[$idx]}" "$mirror_url"; then
           printf 'COMMAND_FILE_BUILD=FAIL\n'
           return 1
         fi
+        idx=$((idx + 1))
       done
-      # Reject trailing backslashes outside hop/stage command blocks.
-      local stage_start="" ok_cont hs
+      printf 'COMMAND_FILE_LAUNCHER_SHA_PINNING=PASS\n'
+
+      # Reject trailing backslashes outside the Phase 2 stage command block.
+      local stage_start="" ok_cont
       stage_start="$(grep -nE "^\( .*SCRIPT='stage-dp-phase2\.sh'" "$file" | head -1 | cut -d: -f1 || true)"
       lineno=0
       while IFS= read -r line || [[ -n "$line" ]]; do
         lineno=$((lineno + 1))
         if [[ "$line" =~ \\[[:space:]]*$ ]]; then
           ok_cont=0
-          for hs in "${hop_starts[@]}"; do
-            if [[ "$lineno" -eq "$hs" || "$lineno" -eq $((hs + 1)) ]]; then
-              ok_cont=1
-              break
-            fi
-          done
-          if [[ "$ok_cont" -eq 0 && -n "$stage_start" ]] \
+          if [[ -n "$stage_start" ]] \
             && { [[ "$lineno" -eq "$stage_start" ]] || [[ "$lineno" -eq $((stage_start + 1)) ]]; }
           then
             ok_cont=1
@@ -773,13 +781,17 @@ mm_wf_validate_command_file_content() {
           fi
         fi
       done <"$file"
+      max_block_lines=3
       ;;
     PHASE2_ONLY)
-      if [[ "$hop_count" -ne 0 ]]; then
+      if [[ "$hop_count" -ne 0 || "$legacy_hop_count" -ne 0 ]]; then
         printf 'COMMAND_FILE_BUILD=FAIL\n'
         printf 'COMMAND_FILE_OS_HOP_COUNT=%s\n' "$hop_count"
+        printf 'COMMAND_FILE_OS_HOP_LAUNCHER_COUNT=%s\n' "$launcher_count"
         return 1
       fi
+      printf 'COMMAND_FILE_OS_HOP_LAUNCHER_COUNT=0\n'
+      printf 'COMMAND_FILE_OS_HOP_LEGACY_BLOCK_COUNT=0\n'
       grep -q 'Required OS: Ubuntu 24.04' "$file" || {
         printf 'COMMAND_FILE_BUILD=FAIL\n'
         printf 'COMMAND_FILE_REQUIRED_OS=MISSING\n'
@@ -873,8 +885,9 @@ mm_wf_atomic_publish_command_file() {
   printf 'COMMAND_FILE_ATOMIC_PUBLISH=PASS\n'
   printf 'COMMAND_FILE_VALID_FOR_READINESS_GENERATION=%s\n' "$ready_gen"
   # Re-emit counts from evidence
-  grep -E '^COMMAND_FILE_(LINE|EXECUTABLE|OS_HOP|COMMAND_BLOCK|OS_HOP_BLOCK)_COUNT=' "$evidence" || true
-  grep -E '^COMMAND_FILE_(MAX_BLOCK_LINES|MAX_PHYSICAL_LINE_LENGTH|CONTINUATION_VALIDATION)=' "$evidence" || true
+  grep -E '^COMMAND_FILE_(LINE|EXECUTABLE|OS_HOP|COMMAND_BLOCK|OS_HOP_BLOCK|OS_HOP_LAUNCHER|OS_HOP_LEGACY_BLOCK)_COUNT=' "$evidence" || true
+  grep -E '^COMMAND_FILE_(MAX_BLOCK_LINES|MAX_PHYSICAL_LINE_LENGTH|CONTINUATION_VALIDATION|LAUNCHER_SHA_PINNING|PHASE2_BLOCK_VERSION)=' "$evidence" || true
+  grep -E '^DP_(COMMAND_BLOCK_VERSION|OS_HOP_COMMAND_VERSION)=' "$evidence" || true
   rm -f "$evidence"
   return 0
 }
@@ -887,7 +900,9 @@ mm_wf_write_client_set_metadata() {
   local runner_sha="${12:-}" command_ver="${13:-SUBSHELL_V2}"
   local schema_ver="${14:-1}" tree_state="${15:-}" mirror_pin="${16:-${mirror_url}}"
   local created_utc="${17:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+  local launcher_schema="${18:-${CLIENT_LAUNCHER_SCHEMA_VERSION:-1}}"
   local meta="${dest}/client-set.env"
+  local hop lname lsha meta_key
   cat >"${meta}.tmp" <<EOF
 CLIENT_SET_GENERATION_ID=${gen}
 CLIENT_SIGNING_FINGERPRINT=${fpr}
@@ -904,10 +919,19 @@ CLIENT_TEMPLATES_SHA256=${templates_sha}
 CLIENT_SHARED_HELPERS_SHA256=${helpers_sha}
 CLIENT_RUNNER_SHA256=${runner_sha}
 CLIENT_COMMAND_BLOCK_VERSION=${command_ver}
+CLIENT_LAUNCHER_SCHEMA_VERSION=${launcher_schema}
 CLIENT_MIRROR_BASE_URL=${mirror_pin}
 CLIENT_BUILD_CREATED_UTC=${created_utc}
 CREATED_UTC=${created_utc}
 EOF
+  for hop in xenial-to-bionic bionic-to-focal focal-to-jammy jammy-to-noble; do
+    lname="dp-launch-${hop}.sh"
+    if [[ -f "${dest}/${lname}.sha256" ]]; then
+      lsha="$(awk '{print $1; exit}' "${dest}/${lname}.sha256")"
+      meta_key="CLIENT_LAUNCHER_$(printf '%s' "$hop" | tr 'a-z-' 'A-Z_')_SHA256"
+      printf '%s=%s\n' "$meta_key" "$lsha" >>"${meta}.tmp"
+    fi
+  done
   chmod 0644 "${meta}.tmp"
   mv -f "${meta}.tmp" "$meta"
   chmod 0644 "$meta"

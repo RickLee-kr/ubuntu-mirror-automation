@@ -957,31 +957,51 @@ gui_expected_signing_fingerprint() {
   printf '%s\n' "$fpr"
 }
 
-# DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2
-# Three physical-line OS-hop command block (one Bash logical command):
-#   Entire operation runs in a subshell so caller cwd / EXIT trap are unchanged.
-#   First command inside the block requires BASH_SUBSHELL>0 (exit 97 otherwise)
-#   so a paste that omits the opening "(" fails closed before cd/trap/GNUPGHOME.
-#   line 1: subshell guard + cd, mirror, EXPECTED_FPR, HOP/SCRIPT, workdir + trap
-#   line 2: ephemeral GNUPGHOME + download keyring/runner/manifest
-#   line 3: fingerprint pin, gpgv manifest, SHA bindings, then bash runner
-# Max intended physical-line length: 360 (guard adds ~100 chars on line 1).
-# Trailing \ on lines 1–2 only. Fail-closed: partial copy waits for continuation.
+# DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1
+# One physical-line OS-hop operator command:
+#   cd /home/aella
+#   curl launcher into *.download
+#   verify literal SHA256 embedded in the command (not an HTTP sidecar)
+#   mv verified download to final launcher name
+#   bash ./dp-launch-<hop>.sh
+# The launcher authenticates the existing runner; the runner retains sudo.
+# Phase 2 staging remains DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2 (three lines).
+gui_client_launcher_sha256() {
+  local hop="$1"
+  local root="${MM_CLIENT_ROOT:-}"
+  local launcher="dp-launch-${hop}.sh"
+  local path sha
+  [[ -n "$hop" ]] || return 1
+  if [[ -n "$root" && -f "${root}/${launcher}" ]]; then
+    path="${root}/${launcher}"
+  elif [[ -n "${MM_PROJECT_ROOT:-}" && -f "${MM_PROJECT_ROOT}/client/${launcher}" ]]; then
+    path="${MM_PROJECT_ROOT}/client/${launcher}"
+  else
+    return 1
+  fi
+  sha="$(sha256sum "$path" | awk '{print $1}')"
+  [[ "$sha" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+  printf '%s\n' "$sha"
+}
+
 gui_client_hop_command_line() {
   local mirror="$1" script="$2"
   local hop="${script#dp-offline-upgrade-}"
   hop="${hop%.sh}"
-  local fpr="${3:-}"
-  if [[ -z "$fpr" ]]; then
-    fpr="$(gui_expected_signing_fingerprint 2>/dev/null || true)"
+  local launcher="dp-launch-${hop}.sh"
+  local sha="${3:-}"
+  local url
+  mirror="${mirror%/}"
+  if [[ -z "$sha" ]]; then
+    sha="$(gui_client_launcher_sha256 "$hop" 2>/dev/null || true)"
   fi
-  if [[ -z "$fpr" ]]; then
-    fpr="MISSING_SIGNING_FINGERPRINT"
+  if [[ -z "$sha" || ! "$sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    sha="MISSING_LAUNCHER_SHA256"
   fi
+  url="${mirror}/client/${launcher}"
+  # Exactly one physical line. SHA is the operator trust anchor (not HTTP sidecar).
   printf '%s\n' \
-    "( [[ \${BASH_SUBSHELL:-0} -gt 0 ]] || { printf '%s\\n' 'DP_COMMAND_SUBSHELL_REQUIRED=YES' >&2; exit 97; }; cd /home/aella && MIRROR='${mirror}' && EXPECTED_FPR='${fpr}' && HOP='${hop}' && SCRIPT=\"dp-offline-upgrade-\${HOP}.sh\" && W=\$(mktemp -d)&&trap 'rm -rf \"\$W\"' EXIT&&cd \"\$W\" && \\" \
-    "  export GNUPGHOME=\"\$W/gnupg\"&&mkdir -m700 \"\$GNUPGHOME\"&&R=dp-client-command-runner.sh M=runner-manifest K=public-keyring.gpg&&for f in \$K \$R \$R.sha256 \$M \$M.asc;do curl -fsSLo \"\$f\" \"\$MIRROR/client/\$f\"&&test -s \"\$f\"||exit 1;done && \\" \
-    "  gpg --batch --no-default-keyring --keyring ./\$K --with-colons --fingerprint|grep -q :\$EXPECTED_FPR:&&gpgv --keyring ./\$K \$M.asc \$M&&sha256sum -c \$M&&sha256sum -c \$R.sha256&&bash \$R \"\$MIRROR\" \"\$HOP\" \"\$SCRIPT\" \"\$EXPECTED_FPR\")"
+    "cd /home/aella && curl -fsSLo ${launcher}.download ${url} && printf '%s  %s\\n' '${sha}' '${launcher}.download' | sha256sum -c - && mv -f ${launcher}.download ${launcher} && bash ./${launcher}"
 }
 
 # Backward-compatible names used by older tests/callers.
@@ -1009,14 +1029,14 @@ gui_phase2_stage_command_block() {
 gui_build_client_commands() {
   # Writes command text to stdout. Args: mirror topology worker_ips
   # Uses PREPARATION_MODE from config (FULL or PHASE2_ONLY).
-  # OS-hop commands are three physical lines (backslash continuations) forming
-  # one Bash logical command. Short bringup/prereq commands may remain one line.
+  # OS-hop commands are one physical LAUNCHER_V1 line each.
+  # Phase 2 stage remains a three-line SUBSHELL_V2 block.
   local mirror="$1" topology="$2" worker_ips="${3:-}"
   mm_normalize_preparation_mode
   mm_force_phase2_target
   local ver="${PHASE2_TARGET_VERSION}"
   local snap_line stage_cmd bringup_cmd prereq_cmd hop2 hop3 hop4 hop5
-  local copy_block_guide
+  local copy_block_guide hop_copy_guide
   if [[ "$topology" == "cluster" ]]; then
     snap_line="Create a full hypervisor snapshot of every DP VM."
   else
@@ -1034,6 +1054,8 @@ gui_build_client_commands() {
   fi
   prereq_cmd="set -euo pipefail; . /etc/os-release; test \"\$ID\" = ubuntu; test \"\$VERSION_ID\" = 24.04; test \"\$VERSION_CODENAME\" = noble; getent passwd aella root | awk -F: '\$7!=\"/bin/bash\"{exit 1}'; avail_root=\$(df -BG --output=avail / | awk 'NR==2{gsub(/G/,\"\"); print}'); avail_data=\$(df -BG --output=avail /opt/aelladata 2>/dev/null | awk 'NR==2{gsub(/G/,\"\"); print}'); test \"\${avail_root:-0}\" -ge 20; test \"\${avail_data:-0}\" -ge 70; ! pgrep -fa 'apt-get|dpkg|do-release-upgrade|dp-offline-upgrade' >/dev/null"
 
+  hop_copy_guide='Copy and paste the following entire line into the DP terminal:'
+
   copy_block_guide='Copy the complete three-line block.
 
 The block begins with an opening parenthesis "(" and ends with a closing
@@ -1043,7 +1065,7 @@ Verify both parentheses are present before pressing Enter.
 
 The first two lines must end with backslash.
 
-Each executable block below is one logical Bash command (DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2).
+Each Phase 2 executable block below is one logical Bash command (DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2).
 
 Do not copy only one or two lines.
 Do not include borders, status text, or the next section heading.'
@@ -1157,6 +1179,7 @@ DP Client Upgrade Commands
 ==========================
 
 DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2
+DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1
 
 Supported Starting DP Versions: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0
 Phase 2 Target: ${ver}
@@ -1171,7 +1194,8 @@ Do not edit the stage command to add a source version.
 Commands saved to:
 $(mm_client_commands_file)
 
-${copy_block_guide}
+OS-hop steps use one hash-pinned launcher command per hop (DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1).
+The Phase 2 staging step remains a three-line SUBSHELL_V2 block.
 
 STEP 0 — SNAPSHOT
 -----------------
@@ -1199,7 +1223,7 @@ STEP 2 — UBUNTU 16.04 TO 18.04
 The Xenial-to-Bionic client automatically sets the aella and root login
 shells to /bin/bash after upgrade confirmation.
 
-Copy all three lines of the following block into the DP terminal once:
+${hop_copy_guide}
 
 ${hop2}
 
@@ -1207,7 +1231,7 @@ ${hop2}
 STEP 3 — UBUNTU 18.04 TO 20.04
 ------------------------------------------------------------------------
 
-Copy all three lines of the following block into the DP terminal once:
+${hop_copy_guide}
 
 ${hop3}
 
@@ -1215,7 +1239,7 @@ ${hop3}
 STEP 4 — UBUNTU 20.04 TO 22.04
 ------------------------------------------------------------------------
 
-Copy all three lines of the following block into the DP terminal once:
+${hop_copy_guide}
 
 ${hop4}
 
@@ -1223,7 +1247,7 @@ ${hop4}
 STEP 5 — UBUNTU 22.04 TO 24.04
 ------------------------------------------------------------------------
 
-Copy all three lines of the following block into the DP terminal once:
+${hop_copy_guide}
 
 ${hop5}
 
@@ -1232,6 +1256,8 @@ Do not resume the DP during the intermediate OS upgrades.
 ------------------------------------------------------------------------
 STEP 6 — STAGE DP ${ver} FILES
 ------------------------------------------------------------------------
+
+${copy_block_guide}
 
 Copy all three lines of the following block into the DP terminal once:
 

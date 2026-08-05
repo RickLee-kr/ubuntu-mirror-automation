@@ -182,25 +182,21 @@ fi
 [[ "$cmd_a" == *"MIRROR='${HOST_A}'"* || "$cmd_a" == *"$HOST_A/client/"* ]] \
   && pass "GUI hop command downloads from Host A" \
   || fail "GUI hop command missing Host A URL"
-[[ "$cmd_a" == *"public-keyring.gpg"* ]] \
-  && pass "GUI hop command downloads binary public keyring" \
-  || fail "GUI hop command missing public-keyring.gpg download"
-# Accept literal --keyring ./public-keyring.gpg or K=public-keyring.gpg with ./$K.
-if [[ "$cmd_a" == *"gpgv"* ]] && {
-     [[ "$cmd_a" == *"--keyring ./public-keyring.gpg"* ]] \
-     || { [[ "$cmd_a" == *"K=public-keyring.gpg"* ]] && [[ "$cmd_a" == *'gpgv --keyring ./$K'* ]]; }
-   }
-then
-  pass "GUI hop command verifies signature with binary keyring"
-else
-  fail "GUI hop command missing gpgv --keyring public-keyring.gpg"
-fi
+[[ "$cmd_a" == *"dp-launch-xenial-to-bionic.sh"* ]] \
+  && pass "GUI hop command downloads hop launcher" \
+  || fail "GUI hop command missing launcher download"
+[[ "$cmd_a" == *"sha256sum -c -"* ]] \
+  && pass "GUI hop command pins launcher SHA256" \
+  || fail "GUI hop command missing SHA pin"
+[[ "$cmd_a" != *"EXPECTED_FPR="* && "$cmd_a" != *"EXPECTED_FINGERPRINT"* ]] \
+  && pass "GUI hop command does not expose fingerprint pin" \
+  || fail "GUI hop command still exposes fingerprint pin"
+[[ "$cmd_a" != *"gpgv"* ]] \
+  && pass "GUI hop command does not expose gpgv" \
+  || fail "GUI hop command still exposes gpgv"
 [[ "$cmd_a" != *"--keyring ./public.gpg"* ]] \
   && pass "GUI hop command does not use armored public.gpg as keyring" \
   || fail "GUI hop command still uses public.gpg as gpgv keyring"
-[[ "$cmd_a" != *"EXPECTED_FINGERPRINT"* ]] \
-  && pass "GUI command has no EXPECTED_FINGERPRINT argument" \
-  || fail "GUI command still passes EXPECTED_FINGERPRINT"
 
 # --- source hardcode gate ---
 count="$(rg -n '221\.139\.249\.(111|112)' \

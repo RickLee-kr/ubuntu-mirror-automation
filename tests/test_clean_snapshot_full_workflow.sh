@@ -165,6 +165,12 @@ LOCAL_SIGNING_PUBLIC_KEY="$LOCAL_CLIENT_SIGNING_DIR/public.gpg"
 LOCAL_KEY_FINGERPRINT="$FPR"
 expect "command runner staged" \
   local_signing_stage_command_runner "$STAGE" "$ROOT/client/dp-client-command-runner.sh"
+python3 "$RUNTIME/scripts/lib/build_client_launchers.py" \
+  --project-root "$RUNTIME" \
+  --output-dir "$STAGE" \
+  --mirror-base-url "$MIRROR_HTTP_URL" \
+  --signing-fingerprint "$FPR" >/dev/null
+expect "launchers staged" test -f "$STAGE/dp-launch-xenial-to-bionic.sh"
 local_signing_stage_http_public_artifacts \
   "$STAGE" "$LOCAL_CLIENT_SIGNING_DIR/public.gpg" "$FPR"
 CLIENT_GEN="client-fixture-1"
@@ -205,13 +211,12 @@ COMMAND_LIVE="$MM_LOG_DIR/dp-client-upgrade-commands.txt"
 gui_build_client_commands "$MIRROR_HTTP_URL" single "" >"$COMMAND_TMP"
 expect "FULL command structure validates" \
   mm_wf_validate_command_file_content "$COMMAND_TMP" FULL
-FULL_HOP_COUNT=$(grep -cE '^\( .*HOP=|^cd /home/aella && .*HOP=' "$COMMAND_TMP" || true)
+FULL_HOP_COUNT=$(grep -cE '^cd /home/aella && curl -fsSLo dp-launch-' "$COMMAND_TMP" || true)
 expect "FULL command has four hops" test "$FULL_HOP_COUNT" = 4
-expect "FULL commands pin EXPECTED_FPR" grep -q "EXPECTED_FPR='${FPR}'" "$COMMAND_TMP"
-expect "FULL hop blocks use controlled continuations" \
-  grep -qE '\\[[:space:]]*$' "$COMMAND_TMP"
-expect "FULL hop blocks are three-line" \
-  test "$(gui_client_hop_command_line "$MIRROR_HTTP_URL" dp-offline-upgrade-xenial-to-bionic.sh "$FPR" | wc -l)" = 3
+expect "FULL commands use LAUNCHER_V1" grep -q '^DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1$' "$COMMAND_TMP"
+expect "FULL Phase2 still SUBSHELL_V2" grep -q '^DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2$' "$COMMAND_TMP"
+expect "FULL hop commands are one-line" \
+  test "$(gui_client_hop_command_line "$MIRROR_HTTP_URL" dp-offline-upgrade-xenial-to-bionic.sh | wc -l)" = 1
 READY_GEN="$(mm_wf_get READINESS_VERIFIED_GENERATION_ID)"
 mm_wf_atomic_publish_command_file "$COMMAND_TMP" "$COMMAND_LIVE" FULL "$READY_GEN" >/dev/null
 expect "state COMMANDS_GENERATED" test "$(mm_wf_state)" = COMMANDS_GENERATED
@@ -251,9 +256,15 @@ for _ in {1..30}; do
   sleep 0.1
 done
 LOCAL_MIRROR="http://127.0.0.1:$PORT"
+python3 "$RUNTIME/scripts/lib/build_client_launchers.py" \
+  --project-root "$RUNTIME" \
+  --output-dir "$MM_CLIENT_ROOT" \
+  --mirror-base-url "$LOCAL_MIRROR" \
+  --signing-fingerprint "$FPR" >/dev/null
+STEP2_SHA=$(sha256sum "$MM_CLIENT_ROOT/dp-launch-xenial-to-bionic.sh" | awk '{print $1}')
 STEP2=$(gui_client_hop_command_line "$LOCAL_MIRROR" \
-  dp-offline-upgrade-xenial-to-bionic.sh "$FPR")
-expect "Step 2 generator emits three lines" test "$(printf '%s\n' "$STEP2" | wc -l)" = 3
+  dp-offline-upgrade-xenial-to-bionic.sh "$STEP2_SHA")
+expect "Step 2 generator emits one line" test "$(printf '%s\n' "$STEP2" | wc -l)" = 1
 DP_HOME="$TMP/home/aella"
 STUB_BIN="$TMP/stub-bin"
 RUNS="$TMP/sudo-runs"
@@ -274,14 +285,14 @@ expect "Step 2 executes sudo exactly once" test "$(wc -l <"$RUNS")" = 1
 
 : >"$RUNS"
 BAD_STEP2=$(gui_client_hop_command_line "$LOCAL_MIRROR" \
-  dp-offline-upgrade-xenial-to-bionic.sh FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+  dp-offline-upgrade-xenial-to-bionic.sh "$(printf '%064d' 1)")
 printf '%s\n' "$BAD_STEP2" | rewrite_command >"$TMP/bad-fpr.sh"
 if env PATH="$STUB_BIN:/usr/bin:/bin" bash "$TMP/bad-fpr.sh" >/dev/null 2>&1; then
-  fail "fingerprint mismatch command unexpectedly succeeded"
+  fail "wrong launcher SHA unexpectedly succeeded"
 else
-  pass "fingerprint mismatch rejected"
+  pass "wrong launcher SHA rejected"
 fi
-expect "fingerprint mismatch causes zero executions" test "$(wc -l <"$RUNS")" = 0
+expect "wrong launcher SHA causes zero executions" test "$(wc -l <"$RUNS")" = 0
 
 # Stale config identity blocks Menu 7 preflight.
 printf '\nACPS_USERNAME=changed-fixture\n' >>"$MM_CONFIG_FILE"

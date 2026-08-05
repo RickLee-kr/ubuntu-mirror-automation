@@ -66,19 +66,24 @@ Verify Upgrade Readiness (Menu 4)
 Menu 7 — DP Client Upgrade Commands
   └─ install-dp-upgrade-mirror.sh generate path
        ├─ mirror_workflow_state.sh generation gates
-       ├─ SUBSHELL_V2 three-line hop blocks + EXPECTED_FPR
-       └─ dp-client-command-runner.sh SHA + runner-manifest.asc
+       ├─ LAUNCHER_V1 one-line hash-pinned launcher commands
+       ├─ SUBSHELL_V2 three-line Phase 2 stage block
+       └─ published dp-launch-<hop>.sh (+ .sha256 for client-set validation)
 
 DP execution (off Mirror Server)
-  └─ Step 2 three-line block
-       ├─ isolated temp workdir download
-       ├─ gpgv + EXPECTED_FPR pin
-       ├─ runner-manifest / hop script SHA bindings
-       └─ dp-offline-upgrade-<hop>.sh
-            ├─ dp-offline-apt-preflight-sandbox.sh (target userspace APT auth)
-            ├─ Phase 1 OS-only dist-upgrade path
-            └─ dp-offline-release-upgrade-reconciliation.sh
-                 (safe resume / exit 29 on real partial transition)
+  └─ Step 2 one-line launcher command
+       ├─ curl launcher → `.download`
+       ├─ literal SHA256 pin (operator trust anchor; not HTTP sidecar)
+       ├─ bash ./dp-launch-<hop>.sh
+       └─ launcher authenticates existing runner
+            ├─ isolated temp workdir + ephemeral GNUPGHOME
+            ├─ gpgv + EXPECTED_FPR pin
+            ├─ runner-manifest / hop script SHA bindings
+            └─ unchanged dp-offline-upgrade-<hop>.sh
+                 ├─ dp-offline-apt-preflight-sandbox.sh (target userspace APT auth)
+                 ├─ Phase 1 OS-only dist-upgrade path
+                 └─ dp-offline-release-upgrade-reconciliation.sh
+                      (safe resume / exit 29 on real partial transition)
 ```
 
 ---
@@ -115,13 +120,24 @@ selective tree under `SELECTIVE_ROOT`, local signing keypair.
 | `dp-offline-release-upgrade-reconciliation.sh` | Hop-scoped state; safe resume; exit 29 on real transition |
 | `dp-offline-destructive-confirmation.sh` | Operator confirmation gate |
 
-### Runner and command generation
+### Runner, launchers, and command generation
 
 | Path | Role |
 |------|------|
+| `client/dp-client-hop-launcher.sh.in` | Authoritative OS-hop launcher template |
+| `scripts/lib/build_client_launchers.py` | Deterministic generator for four hop launchers |
+| `client/dp-launch-<hop>.sh` (published) | Hash-pinned Menu 7 operator entrypoint |
 | `client/dp-client-command-runner.sh` | Verified command execution wrapper |
 | `scripts/install-dp-upgrade-mirror.sh` | Menu 7 command file generator |
 | `scripts/lib/mirror_workflow_state.sh` | Generation-bound workflow KV store |
+
+Launchers are part of the mutable client plane. A change to the launcher template,
+generator, Mirror URL, signing fingerprint, hop mapping, or launcher schema version
+updates `CLIENT_BUILD_INPUT_SHA256` and forces `CLIENT_SET_ACTION=REBUILD_SIGN_PUBLISH`.
+OS Core and Phase 2 remain reusable (`OS_CORE_ACTION=REUSE_VERIFIED`,
+`PHASE2_BUNDLE_ACTION=REUSE_VERIFIED`) for launcher-only rebuilds. After Snapshot B
+restoration, Menu 2 must be run so launchers are regenerated with the current Mirror
+URL and fingerprint.
 
 ### Runtime manifest dependencies
 
@@ -313,11 +329,12 @@ See [CLEAN_SNAPSHOT_RETEST.md](CLEAN_SNAPSHOT_RETEST.md):
 
 ## Security contracts (unchanged)
 
-- `EXPECTED_FPR` pinned in Menu 7 blocks and verified at DP download time.
-- Runner detached signature + SHA256 sidecar binding.
-- Hop manifest detached signatures with provenance fields.
-- Isolated temporary workdir for DP Step 2; incomplete copy executes zero clients.
-- `SUBSHELL_V2` three-line command blocks remain mandatory.
+- Menu 7 OS-hop commands are `LAUNCHER_V1` one-liners with a literal launcher SHA256
+  embedded in the copied command. The HTTP `.sha256` sidecar is **not** the operator
+  trust anchor.
+- The launcher authenticates the existing runner (`EXPECTED_FPR`, `gpgv`, runner SHA).
+- The runner authenticates and executes the unchanged OS-hop client.
+- Phase 2 staging remains `SUBSHELL_V2` three-line command blocks.
 - Private signing key never published under HTTP client root.
 - Fail-closed APT authentication (exit 18) for mirror problems; exit 29 for real
   in-flight OS transition evidence.
@@ -328,6 +345,7 @@ See [CLEAN_SNAPSHOT_RETEST.md](CLEAN_SNAPSHOT_RETEST.md):
 
 | Test | Coverage |
 |------|----------|
+| `tests/test_dp_client_launcher_commands.sh` | Launcher generation, operator pin, negatives, provenance |
 | `tests/test_client_build_provenance.sh` | Provenance cases 1–12, engine assess, workflow demotion |
 | `tests/test_phase2_existing_reuse_progress.sh` | Phase 2 cache, heartbeat, metadata invalidation |
 | `tests/test_client_os_userspace_matrix.sh` | Docker userspace matrix per hop |

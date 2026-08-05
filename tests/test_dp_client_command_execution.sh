@@ -99,6 +99,14 @@ PY
 HTTP_PID=$!
 sleep 0.3
 MIRROR="http://127.0.0.1:${PORT}"
+python3 "${ROOT}/scripts/lib/build_client_launchers.py" \
+  --project-root "$ROOT" \
+  --output-dir "${HTTP_ROOT}/client" \
+  --mirror-base-url "$MIRROR" \
+  --signing-fingerprint "$FPR" >/dev/null
+export MM_CLIENT_ROOT="${HTTP_ROOT}/client"
+LAUNCHER="dp-launch-${HOP}.sh"
+LAUNCHER_SHA="$(sha256sum "${HTTP_ROOT}/client/${LAUNCHER}" | awk '{print $1}')"
 
 LIB="${WORKDIR}/installer-lib.sh"
 awk -v sd="${ROOT}/scripts" '
@@ -109,20 +117,20 @@ awk -v sd="${ROOT}/scripts" '
 # shellcheck disable=SC1090
 source "$LIB"
 
-block="$(gui_client_hop_command_line "$MIRROR" "$SCRIPT" "$FPR")"
-[[ "$(printf '%s\n' "$block" | wc -l | tr -d ' ')" == "3" ]] \
-  && pass "generator emits three physical lines" \
-  || fail "generator not three physical lines"
+block="$(gui_client_hop_command_line "$MIRROR" "$SCRIPT" "$LAUNCHER_SHA")"
+[[ "$(printf '%s\n' "$block" | wc -l | tr -d ' ')" == "1" ]] \
+  && pass "generator emits one physical line" \
+  || fail "generator not one physical line"
 printf '%s\n' "$block" >"${WORKDIR}/cmd.sh"
-grep -q "EXPECTED_FPR='${FPR}'" "${WORKDIR}/cmd.sh" \
-  && pass "fingerprint pinned in command" \
-  || fail "fingerprint missing from command"
-grep -q 'mktemp -d' "${WORKDIR}/cmd.sh" \
-  && pass "isolated workdir present" \
+grep -q "'${LAUNCHER_SHA}'" "${WORKDIR}/cmd.sh" \
+  && pass "literal launcher SHA pinned in command" \
+  || fail "launcher SHA missing from command"
+grep -q 'mktemp -d' "${HTTP_ROOT}/client/${LAUNCHER}" \
+  && pass "isolated workdir present in launcher" \
   || fail "isolated workdir missing"
-grep -q 'dp-client-command-runner.sh' "${WORKDIR}/cmd.sh" \
-  && pass "command references runner" \
-  || fail "runner missing from command"
+grep -q 'dp-client-command-runner.sh' "${HTTP_ROOT}/client/${LAUNCHER}" \
+  && pass "launcher references runner" \
+  || fail "runner missing from launcher"
 
 DP_HOME="${WORKDIR}/dp-home"
 mkdir -p "$DP_HOME"
@@ -149,27 +157,17 @@ run_cmd() {
   env PATH="${STUB_BIN}:/usr/bin:/bin" bash "${WORKDIR}/cmd.run.sh"
 }
 
-# --- incomplete copy protection ---
-head -1 "${WORKDIR}/cmd.run.sh" >"${WORKDIR}/partial1.sh"
+# --- SHA mismatch protection ---
+: >"$STUB_RUNS"
+bad_sha_cmd="$(gui_client_hop_command_line "$MIRROR" "$SCRIPT" "$(printf '%064d' 1)")"
+sed "s|cd /home/aella|cd '${DP_HOME}'|g" <<<"$bad_sha_cmd" >"${WORKDIR}/partial1.sh"
 set +e
-# Feed a newline then exit via timeout so Bash continuation does not hang forever.
-timeout 2 bash -c 'env PATH="'"${STUB_BIN}"':/usr/bin:/bin" bash "'"${WORKDIR}/partial1.sh"'"' \
-  </dev/null >/dev/null 2>&1
+env PATH="${STUB_BIN}:/usr/bin:/bin" bash "${WORKDIR}/partial1.sh" >/dev/null 2>&1
 p1_rc=$?
 set -e
 [[ "$(wc -l <"$STUB_RUNS" | tr -d ' ')" == "0" ]] \
-  && pass "line1 alone never runs client" \
-  || fail "line1 alone executed client"
-: >"$STUB_RUNS"
-head -2 "${WORKDIR}/cmd.run.sh" >"${WORKDIR}/partial2.sh"
-set +e
-timeout 2 bash -c 'env PATH="'"${STUB_BIN}"':/usr/bin:/bin" bash "'"${WORKDIR}/partial2.sh"'"' \
-  </dev/null >/dev/null 2>&1
-p2_rc=$?
-set -e
-[[ "$(wc -l <"$STUB_RUNS" | tr -d ' ')" == "0" ]] \
-  && pass "lines1-2 alone never run client" \
-  || fail "lines1-2 alone executed client"
+  && pass "wrong launcher SHA never runs client" \
+  || fail "wrong launcher SHA executed client"
 
 # --- 1) Happy path ---
 : >"$STUB_RUNS"
@@ -177,8 +175,8 @@ set +e
 run_cmd >"${WORKDIR}/happy.out" 2>"${WORKDIR}/happy.err"
 rc=$?
 set -e
-[[ "$rc" -eq 0 ]] && pass "full three-line command execution rc=0" || {
-  fail "full three-line command execution rc=${rc}"
+[[ "$rc" -eq 0 ]] && pass "full launcher command execution rc=0" || {
+  fail "full launcher command execution rc=${rc}"
   cat "${WORKDIR}/happy.err" || true
 }
 [[ "$(wc -l <"$STUB_RUNS" | tr -d ' ')" == "1" ]] \
@@ -217,16 +215,16 @@ write_manifest
 
 # --- 4) Fingerprint mismatch → 0 runs ---
 : >"$STUB_RUNS"
-bad_block="$(gui_client_hop_command_line "$MIRROR" "$SCRIPT" "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")"
+bad_block="$(gui_client_hop_command_line "$MIRROR" "$SCRIPT" "$(printf '%064d' 2)")"
 sed "s|cd /home/aella|cd '${DP_HOME}'|g" \
   <<<"$bad_block" >"${WORKDIR}/cmd.badfpr.sh"
 set +e
 env PATH="${STUB_BIN}:/usr/bin:/bin" bash "${WORKDIR}/cmd.badfpr.sh" >/dev/null 2>&1
 fpr_rc=$?
 set -e
-[[ "$fpr_rc" -ne 0 ]] && pass "fingerprint mismatch fails" || fail "fingerprint mismatch should fail"
+[[ "$fpr_rc" -ne 0 ]] && pass "wrong launcher SHA fails" || fail "wrong launcher SHA should fail"
 [[ "$(wc -l <"$STUB_RUNS" | tr -d ' ')" == "0" ]] \
-  && pass "FINGERPRINT_MISMATCH_PREVENTS_UPGRADE_EXECUTION=YES" \
+  && pass "LAUNCHER_SHA_MISMATCH_PREVENTS_UPGRADE_EXECUTION=YES" \
   || fail "stub ran after fingerprint mismatch"
 
 # --- 5) Corrupt public-keyring → 0 runs ---
@@ -276,46 +274,34 @@ set -e
   && pass "missing keyring prevents upgrade" \
   || fail "stub ran without keyring"
 
-# --- 8) Malformed block validation ---
+# --- 8) Malformed command validation ---
 # shellcheck source=../scripts/lib/mirror_workflow_state.sh
 source "${ROOT}/scripts/lib/mirror_workflow_state.sh"
-mal="${WORKDIR}/malformed.txt"
-{
-  echo "STEP 0 — SNAPSHOT"
-  head -2 "${WORKDIR}/cmd.sh"
-  # missing third line of hop block — next section
-  echo "STEP 1 — PAUSE"
-} >"$mal"
-# Use a minimal FULL-looking file that fails hop-block validation
-# Production max physical line length is 360 (SUBSHELL_V2). Do not use 240:
-# ephemeral fixture ports can push line 1 over 240 without changing the contract.
-if mm_wf_validate_os_hop_block_at "${WORKDIR}/cmd.sh" 1 360 >/dev/null; then
-  pass "valid three-line hop block accepted"
+if mm_wf_validate_os_hop_launcher_at "${WORKDIR}/cmd.sh" 1 "$HOP" "$MIRROR" >/dev/null; then
+  pass "valid launcher hop command accepted"
 else
-  fail "valid hop block rejected"
+  fail "valid hop launcher rejected"
 fi
-# Missing final line: only two lines
-head -2 "${WORKDIR}/cmd.sh" >"${WORKDIR}/two_lines.sh"
-if mm_wf_validate_os_hop_block_at "${WORKDIR}/two_lines.sh" 1 360 >/dev/null 2>&1; then
-  fail "missing final line should fail validation"
+# Tampered: curl|bash must fail validation
+printf '%s\n' "cd /home/aella && curl -fsSL ${MIRROR}/client/${LAUNCHER} | bash" \
+  >"${WORKDIR}/pipe.sh"
+if mm_wf_validate_os_hop_launcher_at "${WORKDIR}/pipe.sh" 1 "$HOP" "$MIRROR" >/dev/null 2>&1; then
+  fail "curl|bash should fail validation"
 else
-  pass "missing final line fails validation"
+  pass "curl|bash fails validation"
 fi
-# Extra fourth continuation
-{
-  cat "${WORKDIR}/cmd.sh"
-  echo "  echo extra && \\"
-} >"${WORKDIR}/four_lines.sh"
-# validate starting at line 1 — fourth line after block is continuation
-if mm_wf_validate_os_hop_block_at "${WORKDIR}/four_lines.sh" 1 360 >/dev/null 2>&1; then
-  fail "extra fourth continuation should fail"
+# Sidecar trust anchor must fail validation
+printf '%s\n' "cd /home/aella && curl -fsSLo ${LAUNCHER}.download ${MIRROR}/client/${LAUNCHER} && curl -fsSLo ${LAUNCHER}.sha256 ${MIRROR}/client/${LAUNCHER}.sha256 && sha256sum -c ${LAUNCHER}.sha256 && mv -f ${LAUNCHER}.download ${LAUNCHER} && bash ./${LAUNCHER}" \
+  >"${WORKDIR}/sidecar.sh"
+if mm_wf_validate_os_hop_launcher_at "${WORKDIR}/sidecar.sh" 1 "$HOP" "$MIRROR" >/dev/null 2>&1; then
+  fail "HTTP sidecar trust should fail validation"
 else
-  pass "extra fourth line fails validation"
+  pass "HTTP sidecar trust fails validation"
 fi
 
 if [[ "$FAIL" -eq 0 ]]; then
   echo "=== test_dp_client_command_execution PASS ==="
-  echo "GENERATED_THREE_LINE_EXECUTION_TEST=PASS"
+  echo "GENERATED_LAUNCHER_EXECUTION_TEST=PASS"
   exit 0
 fi
 echo "=== test_dp_client_command_execution FAIL ==="

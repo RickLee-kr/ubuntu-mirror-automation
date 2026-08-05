@@ -270,9 +270,11 @@ Menu **7 Show DP Client Upgrade Commands**.
 - ESC, `q`, or Exit closes only the viewer and returns to the Mirror Manager main menu
 - only main-menu option **0** exits Mirror Manager
 - FULL mode Steps 0–9 in one view
-- each OS-hop executable block is exactly three physical lines (trailing `\` on the first two)
-- each hop block contains `EXPECTED_FPR='...'`, `public-keyring.gpg`, `gpgv`, and the verified command runner
-- no horizontal scrolling should be required for the hop block
+- each OS-hop command is exactly one physical line (`DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1`)
+- each hop line downloads `dp-launch-<hop>.sh` into a `.download` name, verifies a
+  literal SHA256 embedded in the command (not an HTTP `.sha256` sidecar), renames,
+  then runs `bash ./dp-launch-<hop>.sh`
+- Phase 2 staging remains a three-line `DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2` block
 - file written atomically to `/var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt`
 
 If blocked:
@@ -287,20 +289,24 @@ REQUIRED_ACTION=...
 
 **Stop if:** Menu 7 shows commands while HTTP is down.
 
+After Snapshot B restoration, Menu 2 must be run so launchers are regenerated when
+Mirror URL, signing fingerprint, or launcher source changes. OS Core and Phase 2
+are not redownloaded for launcher-only client-set rebuilds.
+
 ---
 
 ## 11. Full command file generation verification
 
 ```bash
-sudo grep -E "^cd /home/aella && .*HOP='(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)'" \
-  /var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt | wc -l
-sudo grep -c "EXPECTED_FPR=" \
+sudo grep -cE '^cd /home/aella && curl -fsSLo dp-launch-' \
+  /var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt
+sudo grep -cE '^DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1$' \
   /var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt
 sudo test -s /var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt \
   && stat -c '%a' /var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt
 ```
 
-**Expected:** hop block count `4`, `EXPECTED_FPR` present, non-empty file mode `644`.
+**Expected:** launcher command count `4`, `LAUNCHER_V1` present, non-empty file mode `644`.
 
 **Failure:** empty file or hop count 0 in FULL mode → do not use the file; regenerate via Menu 7 after readiness.
 
@@ -310,22 +316,26 @@ sudo test -s /var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt \
 
 ## 12. DP Step 2 execution
 
-On the DP (after hypervisor snapshot), copy the **complete three-line Step 2 block** from the viewer
-(`cd /home/aella` through the final runner arguments). Include the trailing backslashes on the
-first two lines. Paste all three lines into the DP terminal once. Do not copy only one or two
-lines. Do not manually join the lines or remove characters.
+On the DP (after hypervisor snapshot), copy the **entire one-line Step 2 launcher
+command** from the viewer into the DP terminal once. Do not edit the embedded SHA256.
+Do not trust an HTTP `.sha256` sidecar as the operator trust anchor.
 
 Mouse selection is terminal-controlled because Menu 7 disables dialog mouse handling.
 Use keyboard navigation to move through the viewer.
 
-**Expected:** downloads into an isolated temp workdir, fingerprint pin PASS, gpgv PASS, runner
-and hop script SHA bindings PASS, then the hop client starts.
+**Expected:**
+
+1. HTTP download of the hop launcher into `.download`
+2. literal SHA256 verification PASS, then rename to the final launcher name
+3. launcher authenticates the existing `dp-client-command-runner.sh` (keyring FPR,
+   `gpgv`, runner SHA bindings)
+4. runner authenticates and executes the unchanged OS-hop client
 
 **Failure interpretation:**
 
 - connection refused / HTTP 403/404 → Mirror HTTP not ready; return to Menu 3/4
-- fingerprint mismatch → stop; do not proceed
-- signature / SHA mismatch → stop; do not proceed
+- launcher SHA mismatch → stop; previous final launcher (if any) is not replaced
+- runner/keyring/signature / hop SHA mismatch → stop; do not proceed
 
 **Stop if:** any verification fails before `sudo bash` (execution count must remain 0).
 
@@ -351,7 +361,7 @@ Proceed to the next OS hop only when:
 
 1. current hop completed successfully
 2. Mirror HTTP + readiness generations are still current
-3. the next hop three-line command block is copied complete from Menu 7
+3. the next hop one-line launcher command is copied complete from Menu 7
 
 Do not reuse a command file generated under a different Mirror IP, mode, or client generation.
 
@@ -363,7 +373,7 @@ Retest PASS only when:
 
 - install reported HTTP state clearly
 - FULL prepare → HTTP enable → readiness PASS for one generation
-- Menu 7 emitted four three-line hop command blocks with `EXPECTED_FPR`
+- Menu 7 emitted four one-line hash-pinned launcher commands (`LAUNCHER_V1`)
 - DP Step 2 verified downloads without deleting prior `/home/aella` evidence on HTTP failure
 - safe resume / exit 29 behavior matches policy
 - no forbidden manual repairs were used

@@ -1242,6 +1242,10 @@ engine_http_smoke_urls() {
       "${base}/offline/meta-release-lts"
       "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh"
       "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh.sha256"
+      "${base}/client/dp-launch-xenial-to-bionic.sh"
+      "${base}/client/dp-launch-bionic-to-focal.sh"
+      "${base}/client/dp-launch-focal-to-jammy.sh"
+      "${base}/client/dp-launch-jammy-to-noble.sh"
       "${base}/client/public.gpg"
     )
   fi

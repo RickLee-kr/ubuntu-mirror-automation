@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 
 CLIENT_PROVENANCE_SCHEMA_VERSION = "1"
 COMMAND_BLOCK_VERSION = "SUBSHELL_V2"
+LAUNCHER_SCHEMA_VERSION = "1"
 HOPS = (
     "xenial-to-bionic",
     "bionic-to-focal",
@@ -42,6 +43,7 @@ CATEGORY_PATTERNS = {
         "scripts/lib/build_client_bionic_to_focal.py",
         "scripts/lib/build_client_focal_to_jammy.py",
         "scripts/lib/build_client_jammy_to_noble.py",
+        "scripts/lib/build_client_launchers.py",
     ),
     "templates": (
         "client/dp-offline-upgrade-xenial-to-bionic.sh.in",
@@ -49,6 +51,7 @@ CATEGORY_PATTERNS = {
         "client/dp-offline-upgrade-focal-to-jammy.sh.in",
         "client/dp-offline-upgrade-jammy-to-noble.sh.in",
         "client/dp-postboot-readiness-policy.sh.inc",
+        "client/dp-client-hop-launcher.sh.in",
     ),
     "helpers": (
         "client/lib/dp-offline-destructive-confirmation.sh",
@@ -79,6 +82,7 @@ ENV_FIELDS = (
     "CLIENT_SOURCE_REVISION",
     "CLIENT_SOURCE_TREE_STATE",
     "CLIENT_COMMAND_BLOCK_VERSION",
+    "CLIENT_LAUNCHER_SCHEMA_VERSION",
     "CLIENT_MIRROR_BASE_URL",
     "CLIENT_SIGNING_FINGERPRINT",
     "CLIENT_RUNTIME_MANIFEST_SHA256",
@@ -168,6 +172,8 @@ def compute_provenance(project_root, mirror_base_url="", signing_fingerprint="")
     binder.update(CLIENT_PROVENANCE_SCHEMA_VERSION.encode("utf-8") + b"\n")
     binder.update(b"CLIENT_COMMAND_BLOCK_VERSION\0")
     binder.update(COMMAND_BLOCK_VERSION.encode("utf-8") + b"\n")
+    binder.update(b"CLIENT_LAUNCHER_SCHEMA_VERSION\0")
+    binder.update(LAUNCHER_SCHEMA_VERSION.encode("utf-8") + b"\n")
     binder.update(b"CLIENT_MIRROR_BASE_URL\0")
     binder.update(mirror.encode("utf-8") + b"\n")
     binder.update(b"CLIENT_SIGNING_FINGERPRINT\0")
@@ -186,6 +192,7 @@ def compute_provenance(project_root, mirror_base_url="", signing_fingerprint="")
         "CLIENT_SOURCE_TREE_STATE": _git_tree_state(root),
         "CLIENT_BUILD_SOURCE_REVISION": "tree:" + file_digest,
         "CLIENT_COMMAND_BLOCK_VERSION": COMMAND_BLOCK_VERSION,
+        "CLIENT_LAUNCHER_SCHEMA_VERSION": LAUNCHER_SCHEMA_VERSION,
         "CLIENT_MIRROR_BASE_URL": mirror,
         "CLIENT_SIGNING_FINGERPRINT": fpr,
         "CLIENT_BUILD_CREATED_UTC": created,
@@ -308,6 +315,10 @@ def classify_client_set(project_root, client_root, expected_mirror="", expected_
         return ("STALE_BUILD_INPUT", "REBUILD_SIGN_PUBLISH", current, "schema_mismatch")
     if metadata.get("CLIENT_COMMAND_BLOCK_VERSION", "") != current["CLIENT_COMMAND_BLOCK_VERSION"]:
         return ("STALE_BUILD_INPUT", "REBUILD_SIGN_PUBLISH", current, "command_block_mismatch")
+    meta_launcher_schema = metadata.get("CLIENT_LAUNCHER_SCHEMA_VERSION", "")
+    if meta_launcher_schema != current["CLIENT_LAUNCHER_SCHEMA_VERSION"]:
+        # Legacy client sets without launchers are stale and must rebuild.
+        return ("STALE_BUILD_INPUT", "REBUILD_SIGN_PUBLISH", current, "launcher_schema_mismatch")
     if meta_mirror != current["CLIENT_MIRROR_BASE_URL"].rstrip("/"):
         return ("STALE_BUILD_INPUT", "REBUILD_SIGN_PUBLISH", current, "mirror_mismatch")
     if meta_fpr != current["CLIENT_SIGNING_FINGERPRINT"].upper():
@@ -334,6 +345,9 @@ def verify_client_set_integrity(root, current, expected_mirror="", expected_fing
     if current.get("CLIENT_SIGNING_FINGERPRINT") and fpr != current["CLIENT_SIGNING_FINGERPRINT"].upper():
         raise RuntimeError("CLIENT_SET_SIGNING_FINGERPRINT_MISMATCH")
 
+    meta_path = os.path.join(root, "client-set.env")
+    disk_meta = parse_env_file(meta_path) if os.path.isfile(meta_path) else {}
+
     _verify_sidecar(root, "dp-client-command-runner.sh")
     runner_manifest = os.path.join(root, "runner-manifest")
     runner_sig = runner_manifest + ".asc"
@@ -346,6 +360,27 @@ def verify_client_set_integrity(root, current, expected_mirror="", expected_fing
     for hop in HOPS:
         script = "dp-offline-upgrade-%s.sh" % hop
         _verify_sidecar(root, script)
+        launcher = "dp-launch-%s.sh" % hop
+        _verify_sidecar(root, launcher)
+        launcher_path = os.path.join(root, launcher)
+        with open(launcher_path, "r", encoding="utf-8", errors="replace") as fh:
+            launcher_text = fh.read()
+        if "BEGIN PGP PRIVATE KEY" in launcher_text:
+            raise RuntimeError("CLIENT_LAUNCHER_PRIVATE_KEY_PRESENT hop=" + hop)
+        if ("HOP='%s'" % hop) not in launcher_text and ('HOP="%s"' % hop) not in launcher_text:
+            raise RuntimeError("CLIENT_LAUNCHER_HOP_MISMATCH hop=" + hop)
+        if expected_mirror and expected_mirror.rstrip("/") not in launcher_text:
+            raise RuntimeError("CLIENT_LAUNCHER_MIRROR_MISMATCH hop=" + hop)
+        if fpr not in launcher_text.upper():
+            raise RuntimeError("CLIENT_LAUNCHER_FINGERPRINT_MISMATCH hop=" + hop)
+        if "dp-client-command-runner.sh" not in launcher_text:
+            raise RuntimeError("CLIENT_LAUNCHER_RUNNER_INVOKE_MISSING hop=" + hop)
+        meta_key = "CLIENT_LAUNCHER_%s_SHA256" % hop.upper().replace("-", "_")
+        launcher_sha = _sha_file(launcher_path)
+        if meta_key not in disk_meta:
+            raise RuntimeError("CLIENT_LAUNCHER_METADATA_MISSING hop=" + hop)
+        if disk_meta[meta_key].lower() != launcher_sha:
+            raise RuntimeError("CLIENT_LAUNCHER_METADATA_SHA_MISMATCH hop=" + hop)
         manifest = os.path.join(root, hop, "client-manifest.json")
         signature = manifest + ".asc"
         if not os.path.isfile(manifest) or not os.path.isfile(signature):

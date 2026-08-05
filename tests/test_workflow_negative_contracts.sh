@@ -22,6 +22,11 @@ export MM_CLIENT_ROOT="$TMP/mirror/client"
 export SKIP_MIRROR_HOST_VALIDATE=1
 mkdir -p "$MM_CONFIG_DIR" "$MM_LOG_DIR" "$MM_CLIENT_ROOT"
 : >"$MM_STATUS_FILE"
+python3 "$ROOT/scripts/lib/build_client_launchers.py" \
+  --project-root "$ROOT" \
+  --output-dir "$MM_CLIENT_ROOT" \
+  --mirror-base-url "http://192.0.2.10" \
+  --signing-fingerprint "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" >/dev/null
 
 # Load production command generators without running the program entrypoint.
 LIB="$TMP/installer-lib.sh"
@@ -80,7 +85,7 @@ LIVE_SHA="$(sha256sum "$LIVE" | awk '{print $1}')"
 
 # B. FULL with no hop assignments fails and cannot replace live.
 ZERO_HOPS="$TMP/full-zero-hops.txt"
-grep -v "HOP='" "$VALID" >"$ZERO_HOPS"
+grep -vE '^cd /home/aella && curl -fsSLo dp-launch-' "$VALID" >"$ZERO_HOPS"
 set +e
 B_OUT="$(mm_wf_atomic_publish_command_file "$ZERO_HOPS" "$LIVE" FULL client-gen-1 2>&1)"
 B_RC=$?
@@ -97,7 +102,7 @@ gui_build_client_commands "$MIRROR_HTTP_URL" single "" >"$P2"
 expect "C PHASE2_ONLY with zero hops validates" \
   mm_wf_validate_command_file_content "$P2" PHASE2_ONLY
 P2_HOP_COUNT="$(grep -cE \
-  "HOP='(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)'" \
+  '^cd /home/aella && curl -fsSLo dp-launch-' \
   "$P2" || true)"
 expect "C PHASE2_ONLY has zero OS hops" test "$P2_HOP_COUNT" = 0
 
@@ -218,6 +223,13 @@ gpg --homedir "$GPG_HOME" --batch --yes --armor --detach-sign \
   -o "$HTTP_ROOT/client/$HOP/client-manifest.json.asc" \
   "$HTTP_ROOT/client/$HOP/client-manifest.json"
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+H_FPR="$(local_signing_fingerprint_of "$ASCII_KEY")"
+python3 "$ROOT/scripts/lib/build_client_launchers.py" \
+  --project-root "$ROOT" \
+  --output-dir "$HTTP_ROOT/client" \
+  --mirror-base-url "http://127.0.0.1:$PORT" \
+  --signing-fingerprint "$H_FPR" >/dev/null
+H_LAUNCHER_SHA="$(sha256sum "$HTTP_ROOT/client/dp-launch-${HOP}.sh" | awk '{print $1}')"
 python3 - "$HTTP_ROOT" "$PORT" >/dev/null 2>"$TMP/http.err" <<'PY' &
 import http.server, os, sys
 os.chdir(sys.argv[1])
@@ -230,8 +242,7 @@ for _ in {1..30}; do
   curl -fsS "http://127.0.0.1:$PORT/client/client-set.env" >/dev/null 2>&1 && break
   sleep 0.1
 done
-H_FPR="$(local_signing_fingerprint_of "$ASCII_KEY")"
-H_CMD="$(gui_client_hop_command_line "http://127.0.0.1:$PORT" "$SCRIPT" "$H_FPR")"
+H_CMD="$(gui_client_hop_command_line "http://127.0.0.1:$PORT" "$SCRIPT" "$H_LAUNCHER_SHA")"
 DP_HOME="$TMP/home/aella"
 STUB="$TMP/stub"
 RUNS="$TMP/runs"

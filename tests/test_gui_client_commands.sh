@@ -22,6 +22,12 @@ export MM_CONFIG_DIR="$TMP/config"
 export MM_CONFIG_FILE="$TMP/config/dp-upgrade-mirror.conf"
 export MM_STATUS_FILE="$TMP/config/status"
 export MM_CLIENT_ROOT="$TMP/client"
+mkdir -p "$MM_CLIENT_ROOT"
+python3 "${ROOT}/scripts/lib/build_client_launchers.py" \
+  --project-root "$ROOT" \
+  --output-dir "$MM_CLIENT_ROOT" \
+  --mirror-base-url "http://192.0.2.10" \
+  --signing-fingerprint "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" >/dev/null
 export SCRIPT_DIR="${ROOT}/scripts"
 mkdir -p "$MM_LOG_DIR" "$MM_CONFIG_DIR" "$MM_CLIENT_ROOT"
 : >"$MM_STATUS_FILE"
@@ -110,9 +116,10 @@ grep -q 'Supported Starting DP Versions: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0' "$OUT" \
 grep -q 'Phase 2 Target: 6.5.0' "$OUT" || fail "missing phase2 target header"
 grep -q 'OS Upgrade: Ubuntu 16.04 → Ubuntu 24.04' "$OUT" || fail "missing OS upgrade header"
 grep -q 'Commands saved to:' "$OUT" || fail "missing Commands saved to"
-grep -q 'three physical lines' "$OUT" || fail "missing three-line copy guidance"
-grep -q 'Do not copy only one or two lines' "$OUT" || fail "missing partial-copy warning"
-grep -q 'exactly one physical line' "$OUT" && fail "obsolete one-line guidance still present" || true
+grep -q 'DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1' "$OUT" || fail "missing LAUNCHER_V1"
+grep -q 'Copy and paste the following entire line into the DP terminal:' "$OUT" || fail "missing one-line copy guidance"
+grep -q 'Do not copy only one or two lines' "$OUT" || fail "missing Phase2 partial-copy warning"
+true  # OS-hop one-line guidance is now required
 grep -q 'Visual wrapping does not insert a newline' "$OUT" && fail "obsolete wrap guidance still present" || true
 grep -qE 'STEP 0 — SNAPSHOT|Step 0 —' "$OUT" || fail "missing step 0"
 grep -qE 'STEP 1 — PAUSE|Step 1 — Pause' "$OUT" || fail "missing pause"
@@ -139,12 +146,13 @@ grep -q 'Show Step 2 command block' "$OUT" && fail "Show Step submenu still pres
 grep -q 'BEGIN STEP' "$OUT" && fail "BEGIN STEP markers must be removed" || true
 grep -q 'END STEP' "$OUT" && fail "END STEP markers must be removed" || true
 grep -qE '\\[[:space:]]*$' "$OUT" || fail "expected controlled backslash continuations"
-grep -q 'public-keyring.gpg' "$OUT" || fail "missing public-keyring.gpg in commands"
-grep -q 'gpgv --keyring' "$OUT" || fail "gpgv must be present"
+grep -q 'dp-launch-xenial-to-bionic.sh' "$OUT" || fail "missing launcher in commands"
+# gpgv lives inside launcher, not operator command
+grep -qE 'gpgv --keyring' "$OUT" && fail "gpgv must not appear in operator OS-hop command" || true
 grep -q -- '--keyring ./public.gpg' "$OUT" && fail "gpgv must not use armored public.gpg" || true
-grep -q "EXPECTED_FPR=" "$OUT" || fail "missing EXPECTED_FPR trust pin"
-grep -q 'mktemp -d' "$OUT" || fail "missing isolated workdir"
-grep -q 'dp-client-command-runner.sh' "$OUT" || fail "missing command runner"
+grep -q "EXPECTED_FPR=" "$OUT" && fail "EXPECTED_FPR must not appear in Menu 7 OS-hop command" || true
+grep -q 'mktemp -d' "$MM_CLIENT_ROOT/dp-launch-xenial-to-bionic.sh" || fail "missing isolated workdir in launcher"
+grep -q 'dp-client-command-runner.sh' "$MM_CLIENT_ROOT/dp-launch-xenial-to-bionic.sh" || fail "missing command runner in launcher"
 grep -q 'rm -f "\$SCRIPT"' "$OUT" && fail "must not rm existing files before HTTP" || true
 grep -Eq 'curl -fsSLO([[:space:]]|$)' "$OUT" && fail "naked curl -fsSLO present" || true
 grep -q 'less -S' "$OUT" && fail "less pager guidance must be removed" || true
@@ -159,27 +167,22 @@ do
   grep -Fq "$script" "$OUT" || fail "missing script name: $script"
 done
 for hop in xenial-to-bionic bionic-to-focal focal-to-jammy jammy-to-noble; do
-  grep -q "HOP='${hop}'" "$OUT" || fail "missing HOP=${hop}"
+  grep -q "dp-launch-${hop}.sh" "$OUT" || fail "missing launcher ${hop}"
 done
-grep -q 'dp-offline-upgrade-${HOP}.sh\|dp-offline-upgrade-\${HOP}.sh' "$OUT" \
-  || grep -qF 'dp-offline-upgrade-${HOP}.sh' "$OUT" \
-  || fail "missing SCRIPT derivation from HOP"
-grep -q 'dp-client-command-runner.sh' "$OUT" || fail "missing command runner name"
+true  # SCRIPT binding lives inside launcher
+grep -q 'dp-client-command-runner.sh' "$MM_CLIENT_ROOT/dp-launch-xenial-to-bionic.sh" || fail "missing command runner name in launcher"
 grep -Fq -- '--source-dp-version' "$OUT" && fail "FULL command has --source-dp-version" || true
 grep -Fq -- '--target-version' "$OUT" || fail "target version missing"
 grep -Fq -- '--same-version-recovery' "$OUT" || fail "same-version-recovery missing"
-hop_count="$(grep -cE "HOP='(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)'" "$OUT" || true)"
-[[ "$hop_count" -eq 4 ]] || fail "expected four hop HOP= assignments, got ${hop_count}"
-mirror_count="$(grep -c "MIRROR='http://192.0.2.10'" "$OUT" || true)"
-[[ "$mirror_count" -ge 4 ]] || fail "expected MIRROR pin in hop lines, got ${mirror_count}"
-grep -qF 'bash $R "$MIRROR"' "$OUT" || fail "hop command lacks runner mirror arg"
+hop_count="$(grep -cE '^cd /home/aella && curl -fsSLo dp-launch-' "$OUT" || true)"
+[[ "$hop_count" -eq 4 ]] || fail "expected four launcher commands, got ${hop_count}"
+mirror_count="$(grep -c "http://192.0.2.10/client/dp-launch-" "$OUT" || true)"
+[[ "$mirror_count" -ge 4 ]] || fail "expected launcher URLs, got ${mirror_count}"
 second_cmd="$(gui_client_hop_command_line "http://192.0.2.20" "dp-offline-upgrade-xenial-to-bionic.sh")"
-[[ "$(printf '%s\n' "$second_cmd" | wc -l | tr -d ' ')" == "3" ]] \
-  || fail "hop command_line must be three physical lines"
-[[ "$second_cmd" == *"MIRROR='http://192.0.2.20'"* ]] \
+[[ "$(printf '%s\n' "$second_cmd" | wc -l | tr -d ' ')" == "1" ]] \
+  || fail "hop command_line must be one physical line"
+[[ "$second_cmd" == *"http://192.0.2.20/client/dp-launch-xenial-to-bionic.sh"* ]] \
   || fail "second fixture URL missing from hop command"
-printf '%s\n' "$second_cmd" | grep -qF 'bash $R "$MIRROR"' \
-  || fail "second fixture missing runner mirror arg"
 grep -q 'License is valid' "$OUT" || fail "license check missing"
 pass "FULL mode client commands"
 
@@ -303,6 +306,25 @@ mm_wf_set_many \
   "HTTP_PUBLICATION_GENERATION_ID=gen-test-1" \
   "READINESS_VERIFIED_GENERATION_ID=gen-test-1"
 export MM_SKIP_HTTP_VALIDATE=1
+# Satisfy launcher readiness for Menu 7 preflight (FULL mode).
+{
+  cat <<EOF
+CLIENT_SET_GENERATION_ID=gen-test-1
+CLIENT_SIGNING_FINGERPRINT=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+MIRROR_HTTP_URL=http://192.0.2.10
+CLIENT_MIRROR_BASE_URL=http://192.0.2.10
+PREPARATION_MODE=FULL
+CLIENT_LAUNCHER_SCHEMA_VERSION=1
+EOF
+  for hop in xenial-to-bionic bionic-to-focal focal-to-jammy jammy-to-noble; do
+    name="dp-launch-${hop}.sh"
+    sha="$(sha256sum "${MM_CLIENT_ROOT}/${name}" | awk '{print $1}')"
+    key="CLIENT_LAUNCHER_$(printf '%s' "$hop" | tr 'a-z-' 'A-Z_')_SHA256"
+    printf '%s=%s\n' "$key" "$sha"
+  done
+} >"${MM_CLIENT_ROOT}/client-set.env"
+mm_client_set_current_source() { return 0; }
+mm_client_launchers_ready() { return 0; }
 MENU7_TRACE="$TMP/menu7.trace"
 : >"$MENU7_TRACE"
 INPUTBOX_COUNT=0
@@ -360,16 +382,16 @@ for n in 0 1 2 3 4 5 6 7 8 9; do
     || fail "menu7 missing step ${n}"
 done
 grep -q 'BEGIN STEP' "$(mm_client_commands_file)" && fail "menu7 still has BEGIN STEP" || true
-grep -q 'public-keyring.gpg' "$(mm_client_commands_file)" || fail "menu7 missing public-keyring.gpg"
-grep -q 'gpgv --keyring' "$(mm_client_commands_file)" \
-  || fail "menu7 missing gpgv"
-grep -q "EXPECTED_FPR=" "$(mm_client_commands_file)" || fail "menu7 missing fingerprint pin"
-grep -q 'dp-client-command-runner.sh' "$(mm_client_commands_file)" \
-  || fail "menu7 missing command runner"
-# Saved file and generators must agree (same three-line hop/stage content).
-gen_hop="$(gui_client_hop_command_line "http://192.0.2.10" "dp-offline-upgrade-xenial-to-bionic.sh" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")"
+grep -q 'dp-launch-xenial-to-bionic.sh' "$(mm_client_commands_file)" || fail "menu7 missing launcher"
+grep -qE 'gpgv --keyring' "$(mm_client_commands_file)" \
+  && fail "menu7 OS-hop must not expose gpgv" || true
+grep -q "DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1" "$(mm_client_commands_file)" || fail "menu7 missing LAUNCHER_V1"
+grep -q 'dp-client-command-runner.sh' "$MM_CLIENT_ROOT/dp-launch-xenial-to-bionic.sh" \
+  || fail "launcher missing command runner"
+# Saved file and generators must agree (same one-line hop / three-line stage content).
+gen_hop="$(gui_client_hop_command_line "http://192.0.2.10" "dp-offline-upgrade-xenial-to-bionic.sh")"
 grep -Fq "$gen_hop" "$(mm_client_commands_file)" \
-  || fail "saved file hop block differs from gui_client_hop_command_line"
+  || fail "saved file hop command differs from gui_client_hop_command_line"
 gen_stage="$(gui_phase2_stage_command_line "http://192.0.2.10" "6.5.0")"
 grep -Fq "$gen_stage" "$(mm_client_commands_file)" \
   || fail "saved file stage block differs from gui_phase2_stage_command_line"
