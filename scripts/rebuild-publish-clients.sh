@@ -380,7 +380,7 @@ if [[ -f "$LOCAL_SIGNING_FINGERPRINT_FILE" ]]; then
 fi
 
 # Phase 2 helpers from source tree (not host-pinned hop clients).
-for f in stage-dp-phase2.sh stage-dp-phase2-6.5.0.sh; do
+for f in stage-dp-phase2.sh stage-dp-phase2-6.5.0.sh bringup_py3_dp_lifecycle.sh; do
   if [[ -f "${ROOT}/client/${f}" ]]; then
     install -m 0755 "${ROOT}/client/${f}" "${STAGE_DIR}/${f}"
     ( cd "$STAGE_DIR" && sha256sum "$f" >"${f}.sha256" )

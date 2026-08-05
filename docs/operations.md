@@ -191,13 +191,52 @@ Phase 1 enables and validates **Ubuntu OS hops only** using the offline selectiv
 sudo bash stage-dp-phase2.sh \
   --target-version 6.5.0 \
   --same-version-recovery \
-  --mirror-url http://221.139.249.111
+  --mirror-url http://<internal-mirror>
+
+# Read-only source version diagnosis (no download / mutation)
+sudo bash stage-dp-phase2.sh --diagnose-source-version
 
 # Compatibility wrapper (target fixed to 6.5.0; source auto-detected)
 sudo bash stage-dp-phase2-6.5.0.sh \
   --same-version-recovery \
-  --mirror-url http://221.139.249.111
+  --mirror-url http://<internal-mirror>
 ```
+
+Staging never executes bringup. The original source DP version is captured during
+the first OS hop when detection succeeds; later hops may lack `aella_cli` (expected
+during OS-only Phase 1). Phase 2 recovers historical Phase 1 log evidence when
+`source-product.env` is missing. Later `UNDETERMINED` log records do not erase
+earlier complete PASS evidence. Failures emit source-specific diagnostics (not
+generic `FAIL_UNKNOWN`). Staging prints progress about every 30 seconds.
+
+`--source-dp-version` remains an optional operator fallback inside the stage
+helper when auto-detection fails; Mirror Manager generated commands do not
+include it. Prefer `--diagnose-source-version` before supplying an override.
+
+**Bringup (after staging PASS)**
+
+```bash
+# Default: detached worker + foreground read-only monitor (survives SSH disconnect)
+sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh \
+  --version 6.5.0 --skip-download
+
+# Return after handoff only
+sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh \
+  --version 6.5.0 --skip-download --detach
+
+# Read-only
+sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --status
+sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --diagnose
+```
+
+Ctrl+C stops the monitor only; the worker continues. Instructional log text
+containing `Bringup complete:` is not completion evidence. Do not check
+`aella_cli` until `BRINGUP_RESULT=PASS`. Absence of `aella_cli` after verified
+completion is a postcondition failure. `resume` is manual and conditional after
+`show status`. Duplicate bringup while a worker is running attaches to the
+existing run.
+
+See [architecture-phase2-source-bringup.md](architecture-phase2-source-bringup.md).
 
 Staging never executes `bringup_py3_dp_after_os_upgrade.sh`. Do not run bringup until `NTP_BRINGUP_READINESS=PASS` (internal NTP only).
 

@@ -122,15 +122,18 @@ fi
 out="$(capture_compat 6.6.0 6.5.0 || true)"
 echo "$out" | grep -q 'FAIL_DOWNGRADE' && pass "downgrade STOP" || fail "downgrade"
 
-SOURCE_DP_VERSION_CHECK="FAIL_UNKNOWN"
-SOURCE_DP_VERSION="UNKNOWN"
+SOURCE_DP_VERSION_CHECK="FAIL"
+SOURCE_DP_VERSION=""
 TARGET_DP_VERSION="6.5.0"
 SAME_VERSION_RECOVERY=0
 set +e
 out="$(evaluate_version_compatibility 2>&1)"
 rc=$?
 set -e
-[[ "$rc" -ne 0 ]] && echo "$out" | grep -q 'FAIL_UNKNOWN' && pass "unknown STOP" || fail "unknown"
+[[ "$rc" -ne 0 ]] && echo "$out" | grep -Eq 'SOURCE_DP_VERSION_RESOLUTION=FAIL|compatibility precondition' \
+  && pass "unresolved source STOP" || fail "unresolved source STOP"
+# Production output must not finish with generic FAIL_UNKNOWN
+echo "$out" | grep -q 'FAIL_UNKNOWN' && fail "FAIL_UNKNOWN still present" || pass "no FAIL_UNKNOWN"
 
 echo "[test] target must not be used as source by default"
 grep -Eq 'SOURCE_DP_VERSION=.*TARGET_DP_VERSION|SOURCE_DP_VERSION="\$TARGET' "$HELPER" \

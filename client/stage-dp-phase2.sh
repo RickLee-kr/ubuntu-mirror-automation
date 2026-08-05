@@ -12,6 +12,24 @@ set +x
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Shared helpers (Phase 2 staging + source version + progress)
+_STAGE_LIB_DIR="${SCRIPT_DIR}/lib"
+if [[ ! -f "${_STAGE_LIB_DIR}/dp-offline-source-product-version.sh" ]]; then
+  for _cand in \
+    "${SCRIPT_DIR}/../client/lib" \
+    /home/aella/ubuntu-mirror-automation/client/lib
+  do
+    if [[ -f "${_cand}/dp-offline-source-product-version.sh" ]]; then
+      _STAGE_LIB_DIR="$_cand"
+      break
+    fi
+  done
+fi
+# shellcheck source=/dev/null
+source "${_STAGE_LIB_DIR}/dp-offline-source-product-version.sh"
+# shellcheck source=/dev/null
+source "${_STAGE_LIB_DIR}/dp-phase2-operation-progress.sh"
+
 readonly MIN_SUPPORTED_SOURCE_DP_VERSION="6.2.0"
 # No built-in mirror address: the address is site-specific and a stale default
 # silently points the DP at the wrong (or no) mirror. --mirror-url is required.
@@ -34,6 +52,13 @@ TARGET_VERSION_COMPATIBILITY=""
 OPERATOR_SOURCE_DP_VERSION=""
 SAME_VERSION_RECOVERY=0
 KEEP_CACHE=0
+DIAGNOSE_SOURCE_VERSION=0
+PHASE2_STAGE_PHASE=""
+BUNDLE_DOWNLOAD_ATTEMPTED="NO"
+ARTIFACT_MUTATION_ATTEMPTED="NO"
+BRINGUP_INSTALL_ATTEMPTED="NO"
+LIFECYCLE_WRAPPER_SRC="${SCRIPT_DIR}/bringup_py3_dp_lifecycle.sh"
+VENDOR_BRINGUP_INSTALLED="${BRINGUP_DIR}/bringup_py3_dp_after_os_upgrade.vendor.sh"
 
 AELLA_UID=""
 AELLA_PRIMARY_GID=""
@@ -77,13 +102,16 @@ Options:
   --source-dp-version VER  Explicit source DP product version (operator override)
   --same-version-recovery  Allow source==target when COMPLETED_NOBLE recovery applies
   --keep-cache             Keep verified bundle cache after successful staging
+  --diagnose-source-version  Read-only source version diagnosis (no download/mutation)
   -h, --help               Show this help
 
 Source version resolution priority:
   1) ${SOURCE_PRODUCT_ENV}
-  2) authoritative keys in /opt/aelladata/release-image.yml
-  3) --source-dp-version (origin=operator-argument)
-  4) UNKNOWN → STOP before download
+  2) immutable capture evidence (same path)
+  3) structured Phase 1 log evidence (COMPLETED_NOBLE recovery)
+  4) authoritative keys in /opt/aelladata/release-image.yml
+  5) --source-dp-version (origin=operator-argument)
+  6) fail closed with source-specific diagnostics (no FAIL_UNKNOWN)
 EOF
 }
 
@@ -212,6 +240,10 @@ parse_args() {
         KEEP_CACHE=1
         shift
         ;;
+      --diagnose-source-version)
+        DIAGNOSE_SOURCE_VERSION=1
+        shift
+        ;;
       -h|--help)
         usage
         exit 0
@@ -222,18 +254,29 @@ parse_args() {
     esac
   done
   MIRROR_URL="${MIRROR_URL%/}"
-  [[ -n "$MIRROR_URL" ]] || die "--mirror-url is required (internal mirror base, e.g. http://192.0.2.10)"
-  if [[ "$MIRROR_URL" == *acps.stellarcyber.ai* ]] || [[ "$MIRROR_URL" == *stellarcyber.ai* ]]; then
-    die "Refusing ACPS/external stellarcyber URL; use internal mirror only"
+  # diagnose-source-version may omit --mirror-url (read-only, no download)
+  if [[ "$DIAGNOSE_SOURCE_VERSION" -eq 0 ]]; then
+    [[ -n "$MIRROR_URL" ]] || die "--mirror-url is required (internal mirror base, e.g. http://192.0.2.10)"
   fi
-  [[ -n "$TARGET_DP_VERSION" ]] || die "--target-version is required"
+  if [[ -n "$MIRROR_URL" ]]; then
+    if [[ "$MIRROR_URL" == *acps.stellarcyber.ai* ]] || [[ "$MIRROR_URL" == *stellarcyber.ai* ]]; then
+      die "Refusing ACPS/external stellarcyber URL; use internal mirror only"
+    fi
+  fi
+  if [[ "$DIAGNOSE_SOURCE_VERSION" -eq 0 ]]; then
+    [[ -n "$TARGET_DP_VERSION" ]] || die "--target-version is required"
+  elif [[ -z "$TARGET_DP_VERSION" ]]; then
+    TARGET_DP_VERSION="0.0.0"
+  fi
   local norm
   norm="$(normalize_dp_version "$TARGET_DP_VERSION")" || die "malformed --target-version: ${TARGET_DP_VERSION}"
   TARGET_DP_VERSION="$norm"
   readonly TARGET_DP_VERSION
   PHASE2_ARTIFACT_VERSION="$TARGET_DP_VERSION"
   readonly PHASE2_ARTIFACT_VERSION
-  set_target_bundle_files "$TARGET_DP_VERSION"
+  if [[ "$DIAGNOSE_SOURCE_VERSION" -eq 0 ]]; then
+    set_target_bundle_files "$TARGET_DP_VERSION"
+  fi
 }
 
 require_root() {
@@ -413,24 +456,45 @@ verify_sha1_pair() {
   local expected actual
   expected="$(read_hash "$sum")"
   [[ "$expected" =~ ^[0-9a-fA-F]{40}$ ]] || die "bad sha1 format in $(basename "$sum")"
-  actual="$(sha1sum "$data" | awk '{print $1}')"
+  if ! dp2_run_with_heartbeat "phase2_verify_sha1_$(basename "$data")" "$data" -- \
+      bash -c "actual=\$(sha1sum \"$data\" | awk '{print \$1}'); printf '%s' \"\$actual\" >\"${data}.sha1.actual\""
+  then
+    die "sha1 computation failed for $(basename "$data")"
+  fi
+  actual="$(cat "${data}.sha1.actual")"
+  rm -f "${data}.sha1.actual"
   [[ "${expected,,}" == "${actual,,}" ]] || die "sha1 mismatch for $(basename "$data")"
 }
 
 verify_sha256_pair() {
   local data="$1" sum="$2"
-  local expected actual
+  local expected actual fsize
   expected="$(read_hash "$sum")"
   [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || die "bad sha256 format in $(basename "$sum")"
-  actual="$(sha256sum "$data" | awk '{print $1}')"
+  fsize="$(stat -c%s "$data" 2>/dev/null || echo 0)"
+  log "SHA256_FILE_SIZE_BYTES=${fsize} file=$(basename "$data")"
+  if ! dp2_run_with_heartbeat "phase2_verify_sha256_$(basename "$data")" "$data" -- \
+      bash -c "actual=\$(sha256sum \"$data\" | awk '{print \$1}'); printf '%s' \"\$actual\" >\"${data}.sha256.actual\""
+  then
+    die "sha256 computation failed for $(basename "$data")"
+  fi
+  actual="$(cat "${data}.sha256.actual")"
+  rm -f "${data}.sha256.actual"
   [[ "${expected,,}" == "${actual,,}" ]] || die "sha256 mismatch for $(basename "$data")"
 }
 
 assert_safe_tar_list() {
   local bundle="$1"
+  PHASE2_STAGE_PHASE="VALIDATE_TAR_CONTENTS"
+  log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
   local tmp lines
   tmp="$(mktemp)"
-  tar -tf "$bundle" >"$tmp"
+  if ! dp2_run_with_heartbeat phase2_tar_list_validation "$bundle" -- \
+      bash -c "tar -tf \"$bundle\" >\"$tmp\""
+  then
+    rm -f "$tmp"
+    die "tar list validation failed"
+  fi
   lines="$(wc -l <"$tmp" | tr -d ' ')"
   [[ "$lines" -eq 9 ]] || { rm -f "$tmp"; die "bundle entry count ${lines} != 9"; }
   if grep -E -q '(^/|^\.\./|/\.\./|/)' "$tmp"; then
@@ -457,110 +521,113 @@ artifact_manifest_hash() {
 }
 
 is_authoritative_release_image_key() {
-  case "${1:-}" in
-    aella-cm-master|aella-cm-bg|aella-cm-user|aella-cm-worker|stellar-conf|stellar-controller)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+  spv_is_authoritative_release_image_key "${1:-}"
 }
 
 detect_source_from_release_image() {
-  local image="/opt/aelladata/release-image.yml"
-  local line re key ver tmp uniq_n
-  [[ -r "$image" ]] || return 1
-  re='^[[:space:]]*([A-Za-z0-9_.-]+):[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+)([.-][A-Za-z0-9.-]+)?[[:space:]]*$'
-  tmp="$(mktemp)"
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
-    if [[ "$line" =~ $re ]]; then
-      key="${BASH_REMATCH[1]}"
-      if is_authoritative_release_image_key "$key"; then
-        printf '%s\n' "${BASH_REMATCH[2]}"
-      fi
-    fi
-  done <"$image" >"$tmp" || true
-  if [[ "$(wc -l <"$tmp" | tr -d ' ')" -lt 2 ]]; then
-    rm -f "$tmp"
-    return 1
+  if spv_detect_from_release_image "/opt/aelladata/release-image.yml"; then
+    SOURCE_DP_VERSION_RAW="$SPV_RELEASE_SELECTED_VERSION"
+    SOURCE_DP_VERSION="$SPV_RELEASE_SELECTED_VERSION"
+    SOURCE_DP_VERSION_ORIGIN="release-image.yml"
+    return 0
   fi
-  sort -u "$tmp" -o "$tmp"
-  uniq_n="$(wc -l <"$tmp" | tr -d ' ')"
-  if [[ "$uniq_n" -ne 1 ]]; then
-    rm -f "$tmp"
-    return 1
-  fi
-  ver="$(tr -d '[:space:]' <"$tmp")"
-  rm -f "$tmp"
-  SOURCE_DP_VERSION_RAW="$ver"
-  SOURCE_DP_VERSION="$(normalize_dp_version "$ver")" || return 1
-  SOURCE_DP_VERSION_ORIGIN="release-image.yml"
-  return 0
+  return 1
 }
 
 detect_source_from_persisted_env() {
-  local f="$SOURCE_PRODUCT_ENV"
-  [[ -f "$f" ]] || return 1
-  local raw="" norm="" origin="" check=""
-  # shellcheck disable=SC1090
-  raw="$(grep -E '^SOURCE_DP_VERSION_RAW=' "$f" | head -1 | cut -d= -f2- | tr -d '"')"
-  norm="$(grep -E '^SOURCE_DP_VERSION=' "$f" | head -1 | cut -d= -f2- | tr -d '"')"
-  origin="$(grep -E '^SOURCE_DP_VERSION_ORIGIN=' "$f" | head -1 | cut -d= -f2- | tr -d '"')"
-  check="$(grep -E '^SOURCE_DP_VERSION_CHECK=' "$f" | head -1 | cut -d= -f2- | tr -d '"')"
-  [[ -n "$norm" ]] || norm="$(normalize_dp_version "${raw:-}")" || return 1
-  norm="$(normalize_dp_version "$norm")" || return 1
-  if [[ "$check" == "FAIL_UNKNOWN" || "$norm" == "UNKNOWN" ]]; then
-    return 1
+  if spv_read_source_product_env "$SOURCE_PRODUCT_ENV"; then
+    SOURCE_DP_VERSION_RAW="$SPV_SOURCE_DP_VERSION_RAW"
+    SOURCE_DP_VERSION="$SPV_SOURCE_DP_VERSION"
+    SOURCE_DP_VERSION_ORIGIN="$SPV_SOURCE_DP_VERSION_ORIGIN"
+    return 0
   fi
-  SOURCE_DP_VERSION_RAW="${raw:-$norm}"
-  SOURCE_DP_VERSION="$norm"
-  SOURCE_DP_VERSION_ORIGIN="${origin:-source-product.env}"
-  return 0
+  return 1
+}
+
+emit_source_resolution_failure() {
+  spv_emit_diagnostics
+  log "SOURCE_DP_VERSION_RESOLUTION=FAIL"
+  log "SOURCE_DP_VERSION_FAILURE_REASON=${SPV_SOURCE_DP_VERSION_FAILURE_REASON}"
+  log "SOURCE_DP_VERSION_REMEDIATION=${SPV_SOURCE_DP_VERSION_REMEDIATION}"
+  log "BUNDLE_DOWNLOAD_ATTEMPTED=${BUNDLE_DOWNLOAD_ATTEMPTED}"
+  log "ARTIFACT_MUTATION_ATTEMPTED=${ARTIFACT_MUTATION_ATTEMPTED}"
+  log "BRINGUP_INSTALL_ATTEMPTED=${BRINGUP_INSTALL_ATTEMPTED}"
 }
 
 resolve_source_dp_version() {
+  local allow_write=1
+  local run_id
   SOURCE_DP_VERSION=""
   SOURCE_DP_VERSION_RAW=""
   SOURCE_DP_VERSION_ORIGIN=""
   SOURCE_DP_VERSION_CHECK=""
+  PHASE2_STAGE_PHASE="RESOLVE_SOURCE_VERSION"
+  log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
+  run_id="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 
-  if detect_source_from_persisted_env; then
-    SOURCE_DP_VERSION_CHECK="PASS"
-    log "SOURCE_DP_VERSION_ORIGIN=${SOURCE_DP_VERSION_ORIGIN}"
-    return 0
+  if ! spv_resolve_source_dp_version \
+      "$SOURCE_PRODUCT_ENV" \
+      "/var/log/aella/offline_os_upgrade.log" \
+      "/opt/aelladata/release-image.yml" \
+      "$OPERATOR_SOURCE_DP_VERSION" \
+      "$allow_write" \
+      "$run_id" \
+      1; then
+    SOURCE_DP_VERSION_CHECK="FAIL"
+    SOURCE_DP_VERSION="${SPV_SOURCE_DP_VERSION:-}"
+    SOURCE_DP_VERSION_RAW="${SPV_SOURCE_DP_VERSION_RAW:-}"
+    SOURCE_DP_VERSION_ORIGIN="${SPV_SOURCE_DP_VERSION_ORIGIN:-}"
+    emit_source_resolution_failure
+    die "SOURCE_DP_VERSION_RESOLUTION=FAIL reason=${SPV_SOURCE_DP_VERSION_FAILURE_REASON}"
   fi
-  if detect_source_from_release_image; then
-    SOURCE_DP_VERSION_CHECK="PASS"
-    log "SOURCE_DP_VERSION_ORIGIN=${SOURCE_DP_VERSION_ORIGIN}"
-    return 0
-  fi
-  if [[ -n "$OPERATOR_SOURCE_DP_VERSION" ]]; then
-    SOURCE_DP_VERSION_RAW="$OPERATOR_SOURCE_DP_VERSION"
-    SOURCE_DP_VERSION="$(normalize_dp_version "$OPERATOR_SOURCE_DP_VERSION")" \
-      || die "malformed --source-dp-version: ${OPERATOR_SOURCE_DP_VERSION}"
-    SOURCE_DP_VERSION_ORIGIN="operator-argument"
-    SOURCE_DP_VERSION_CHECK="PASS"
-    log "SOURCE_DP_VERSION_ORIGIN=${SOURCE_DP_VERSION_ORIGIN}"
-    return 0
-  fi
-  SOURCE_DP_VERSION="UNKNOWN"
-  SOURCE_DP_VERSION_RAW=""
-  SOURCE_DP_VERSION_ORIGIN="none"
-  SOURCE_DP_VERSION_CHECK="FAIL_UNKNOWN"
-  die "SOURCE_DP_VERSION_CHECK=FAIL_UNKNOWN
-The starting DP version could not be detected.
 
-Check source-product.env or release-image.yml before continuing."
+  SOURCE_DP_VERSION="$SPV_SOURCE_DP_VERSION"
+  SOURCE_DP_VERSION_RAW="$SPV_SOURCE_DP_VERSION_RAW"
+  SOURCE_DP_VERSION_ORIGIN="$SPV_SOURCE_DP_VERSION_ORIGIN"
+  SOURCE_DP_VERSION_CHECK="PASS"
+  spv_emit_diagnostics
+  log "SOURCE_DP_VERSION_ORIGIN=${SOURCE_DP_VERSION_ORIGIN}"
+  log "SOURCE_DP_VERSION=${SOURCE_DP_VERSION}"
+  log "SOURCE_DP_VERSION_RESOLUTION=PASS"
+  return 0
+}
+
+diagnose_source_version_main() {
+  PHASE2_STAGE_PHASE="RESOLVE_SOURCE_VERSION"
+  log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
+  log "DIAGNOSE_SOURCE_VERSION=YES"
+  log "DIAGNOSE_READ_ONLY=YES"
+  local run_id
+  run_id="diagnose-$(date -u +%Y%m%dT%H%M%SZ)"
+  if spv_resolve_source_dp_version \
+      "$SOURCE_PRODUCT_ENV" \
+      "/var/log/aella/offline_os_upgrade.log" \
+      "/opt/aelladata/release-image.yml" \
+      "$OPERATOR_SOURCE_DP_VERSION" \
+      0 \
+      "$run_id" \
+      1; then
+    SOURCE_DP_VERSION="$SPV_SOURCE_DP_VERSION"
+    SOURCE_DP_VERSION_RAW="$SPV_SOURCE_DP_VERSION_RAW"
+    SOURCE_DP_VERSION_ORIGIN="$SPV_SOURCE_DP_VERSION_ORIGIN"
+    SOURCE_DP_VERSION_CHECK="PASS"
+    spv_emit_diagnostics
+    log "SOURCE_DP_VERSION_RESOLUTION=PASS"
+    log "BUNDLE_DOWNLOAD_ATTEMPTED=NO"
+    log "ARTIFACT_MUTATION_ATTEMPTED=NO"
+    log "BRINGUP_INSTALL_ATTEMPTED=NO"
+    return 0
+  fi
+  SOURCE_DP_VERSION_CHECK="FAIL"
+  emit_source_resolution_failure
+  return 1
 }
 
 evaluate_version_compatibility() {
   local cmp_min cmp_tgt state
-  if [[ "$SOURCE_DP_VERSION_CHECK" == "FAIL_UNKNOWN" || "$SOURCE_DP_VERSION" == "UNKNOWN" ]]; then
-    SOURCE_DP_VERSION_CHECK="FAIL_UNKNOWN"
-    die "SOURCE_DP_VERSION_CHECK=FAIL_UNKNOWN"
+  if [[ "$SOURCE_DP_VERSION_CHECK" != "PASS" || -z "$SOURCE_DP_VERSION" ]]; then
+    SOURCE_DP_VERSION_CHECK="FAIL"
+    die "SOURCE_DP_VERSION_RESOLUTION=FAIL (compatibility precondition)"
   fi
   cmp_min="$(compare_dp_versions "$SOURCE_DP_VERSION" "$MIN_SUPPORTED_SOURCE_DP_VERSION")"
   if [[ "$cmp_min" == "lt" ]]; then
@@ -568,8 +635,8 @@ evaluate_version_compatibility() {
     die "SOURCE_DP_VERSION_CHECK=FAIL_UNSUPPORTED source=${SOURCE_DP_VERSION} min=${MIN_SUPPORTED_SOURCE_DP_VERSION}"
   fi
   if [[ "$cmp_min" == "unknown" ]]; then
-    SOURCE_DP_VERSION_CHECK="FAIL_UNKNOWN"
-    die "SOURCE_DP_VERSION_CHECK=FAIL_UNKNOWN (compare failed)"
+    SOURCE_DP_VERSION_CHECK="FAIL"
+    die "SOURCE_DP_VERSION_RESOLUTION=FAIL reason=VERSION_COMPARE_FAILED"
   fi
   SOURCE_DP_VERSION_CHECK="PASS"
 
@@ -619,6 +686,8 @@ No Phase 2 recovery is required."
 }
 
 load_release_env_from_mirror() {
+  PHASE2_STAGE_PHASE="VERIFY_RELEASE_ENV"
+  log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
   local url="${MIRROR_URL}/dp-phase2/${TARGET_DP_VERSION}/release.env"
   local tmp
   tmp="$(mktemp)"
@@ -680,19 +749,42 @@ ensure_verified_bundle() {
   local cache_part="${CACHE_DIR}/bundle.tar.part"
   local cache_sha="${CACHE_DIR}/bundle.tar.sha256"
   local verified_marker="${CACHE_DIR}/VERIFIED"
+  local bytes_total="UNKNOWN" mode
   bundle_url="${MIRROR_URL}/dp-phase2/${TARGET_DP_VERSION}/dp_bundle_${TARGET_DP_VERSION}-current.tar"
   sha_url="${bundle_url}.sha256"
 
-  log "DOWNLOAD_CHECKSUM url=${sha_url}"
-  curl -fsSL --connect-timeout 30 --retry 5 -o "${cache_sha}.tmp" "$sha_url"
+  PHASE2_STAGE_PHASE="DOWNLOAD_BUNDLE"
+  log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
+  log "DOWNLOAD_CHECKSUM url=$(dp2_progress_sanitize_target "$sha_url")"
+  BUNDLE_DOWNLOAD_ATTEMPTED="YES"
+  if ! dp2_run_with_heartbeat phase2_bundle_checksum_fetch "$sha_url" -- \
+      curl -fsSL --connect-timeout 30 --retry 5 -o "${cache_sha}.tmp" "$sha_url"
+  then
+    die "bundle checksum download failed"
+  fi
   mv -f "${cache_sha}.tmp" "$cache_sha"
   local expected
   expected="$(read_hash "$cache_sha")"
   [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || die "bad remote bundle sha256"
 
+  # Best-effort Content-Length for progress (do not invent if unavailable)
+  bytes_total="$(curl -fsSI --connect-timeout 10 --max-time 15 "$bundle_url" 2>/dev/null \
+    | awk -F': ' 'BEGIN{IGNORECASE=1} /^Content-Length:/ {gsub(/\r/,"",$2); print $2; exit}')"
+  [[ "$bytes_total" =~ ^[0-9]+$ ]] || bytes_total="UNKNOWN"
+
   if [[ -f "$verified_marker" && -f "$cache_tar" ]]; then
-    local actual
-    actual="$(sha256sum "$cache_tar" | awk '{print $1}')"
+    PHASE2_STAGE_PHASE="VERIFY_BUNDLE_SHA256"
+    log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
+    local actual fsize
+    fsize="$(stat -c%s "$cache_tar" 2>/dev/null || echo 0)"
+    log "SHA256_FILE_SIZE_BYTES=${fsize}"
+    if ! dp2_run_with_heartbeat phase2_cached_bundle_sha256 "$cache_tar" -- \
+        bash -c "actual=\$(sha256sum \"$cache_tar\" | awk '{print \$1}'); printf '%s' \"\$actual\" >\"${cache_tar}.actual\""
+    then
+      die "cached bundle sha256 failed"
+    fi
+    actual="$(cat "${cache_tar}.actual")"
+    rm -f "${cache_tar}.actual"
     if [[ "${expected,,}" == "${actual,,}" ]]; then
       ARTIFACT_CACHE_RESULT="REUSED"
       ARTIFACT_CHECKSUM_RESULT="PASS"
@@ -704,8 +796,16 @@ ensure_verified_bundle() {
   fi
 
   if [[ -f "$cache_tar" ]]; then
+    PHASE2_STAGE_PHASE="VERIFY_BUNDLE_SHA256"
+    log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
     local actual
-    actual="$(sha256sum "$cache_tar" | awk '{print $1}')"
+    if ! dp2_run_with_heartbeat phase2_existing_bundle_sha256 "$cache_tar" -- \
+        bash -c "actual=\$(sha256sum \"$cache_tar\" | awk '{print \$1}'); printf '%s' \"\$actual\" >\"${cache_tar}.actual\""
+    then
+      die "existing bundle sha256 failed"
+    fi
+    actual="$(cat "${cache_tar}.actual")"
+    rm -f "${cache_tar}.actual"
     if [[ "${expected,,}" == "${actual,,}" ]]; then
       : >"$verified_marker"
       ARTIFACT_CACHE_RESULT="REUSED"
@@ -716,40 +816,51 @@ ensure_verified_bundle() {
     rm -f "$cache_tar"
   fi
 
-  # Resume partial if present; fall back to full download if server rejects ranges.
   ARTIFACT_CACHE_RESULT="DOWNLOADED"
-  log "DOWNLOAD_BUNDLE url=${bundle_url}"
-  local err
-  err="$(mktemp)"
   if [[ -f "$cache_part" && -s "$cache_part" ]]; then
     ARTIFACT_CACHE_RESULT="RESUMED"
+    mode="RESUME"
     log "ARTIFACT_CACHE_RESULT=RESUMED"
-    if ! curl -fsSL --connect-timeout 30 --retry 5 --retry-delay 5 \
-        --continue-at - -o "$cache_part" "$bundle_url" 2>"$err"; then
+    if ! dp2_run_download_with_progress phase2_bundle_download "$mode" "$cache_part" "$bytes_total" \
+        curl -fsSL --connect-timeout 30 --retry 5 --retry-delay 5 \
+        --continue-at - -o "$cache_part" "$bundle_url"
+    then
       log "RESUME_UNSUPPORTED=falling back to full download"
       rm -f "$cache_part"
       ARTIFACT_CACHE_RESULT="DOWNLOADED"
-      if ! curl -fsSL --connect-timeout 30 --retry 5 --retry-delay 5 \
-          -o "$cache_part" "$bundle_url" 2>"$err"; then
-        cat "$err" >&2 || true
-        rm -f "$err"
+      mode="FULL"
+      if ! dp2_run_download_with_progress phase2_bundle_download "$mode" "$cache_part" "$bytes_total" \
+          curl -fsSL --connect-timeout 30 --retry 5 --retry-delay 5 \
+          -o "$cache_part" "$bundle_url"
+      then
         die "bundle download failed"
       fi
     fi
   else
+    mode="FULL"
     log "ARTIFACT_CACHE_RESULT=DOWNLOADED"
-    if ! curl -fsSL --connect-timeout 30 --retry 5 --retry-delay 5 \
-        -o "$cache_part" "$bundle_url" 2>"$err"; then
-      cat "$err" >&2 || true
-      rm -f "$err"
+    if ! dp2_run_download_with_progress phase2_bundle_download "$mode" "$cache_part" "$bytes_total" \
+        curl -fsSL --connect-timeout 30 --retry 5 --retry-delay 5 \
+        -o "$cache_part" "$bundle_url"
+    then
       die "bundle download failed"
     fi
   fi
-  rm -f "$err"
   [[ -s "$cache_part" ]] || die "empty bundle download"
   is_probably_html "$cache_part" && die "bundle looks like HTML"
-  local actual
-  actual="$(sha256sum "$cache_part" | awk '{print $1}')"
+
+  PHASE2_STAGE_PHASE="VERIFY_BUNDLE_SHA256"
+  log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
+  local actual fsize
+  fsize="$(stat -c%s "$cache_part" 2>/dev/null || echo 0)"
+  log "SHA256_FILE_SIZE_BYTES=${fsize}"
+  if ! dp2_run_with_heartbeat phase2_downloaded_bundle_sha256 "$cache_part" -- \
+      bash -c "actual=\$(sha256sum \"$cache_part\" | awk '{print \$1}'); printf '%s' \"\$actual\" >\"${cache_part}.actual\""
+  then
+    die "downloaded bundle sha256 failed"
+  fi
+  actual="$(cat "${cache_part}.actual")"
+  rm -f "${cache_part}.actual"
   if [[ "${expected,,}" != "${actual,,}" ]]; then
     rm -f "$cache_part" "$verified_marker"
     die "bundle sha256 mismatch (cache discarded)"
@@ -1092,12 +1203,15 @@ BRINGUP_READY=${BRINGUP_READY}
 BRINGUP_EXECUTED=${BRINGUP_EXECUTED}
 ARTIFACT_DIR=${ARTIFACT_DIR}
 BRINGUP_SCRIPT=${BRINGUP_SCRIPT}
+AELLA_CLI_AVAILABLE_BEFORE_BRINGUP=NOT_REQUIRED
+AELLA_CLI_CHECK_EARLIEST_POINT=AFTER_BRINGUP_RESULT_PASS
 EOF
   if [[ "$BRINGUP_READY" == "YES" ]] \
     && [[ "$TIME_READINESS" == "PASS_SYNCED" || "$TIME_READINESS" == "PASS_WITH_WARNING" ]]; then
     cat <<EOF
 NEXT_COMMAND=sudo bash ${BRINGUP_SCRIPT} --version ${TARGET_DP_VERSION} --skip-download
-NEXT_COMMAND_NOTE=Only run after TIME_READINESS=PASS_SYNCED|PASS_WITH_WARNING and operator snapshot confirmation
+NEXT_COMMAND_BEHAVIOR=START_DETACHED_WORKER_AND_ATTACH_MONITOR
+NEXT_COMMAND_NOTE=Only run after TIME_READINESS=PASS_SYNCED|PASS_WITH_WARNING and operator snapshot confirmation. Default attaches a foreground monitor; use --detach to return after handoff. Do not check aella_cli until BRINGUP_RESULT=PASS.
 EOF
   else
     cat <<EOF
@@ -1107,8 +1221,61 @@ EOF
   fi
 }
 
+install_bringup_lifecycle_wrapper() {
+  PHASE2_STAGE_PHASE="PUBLISH_BRINGUP_SCRIPT"
+  log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
+  BRINGUP_INSTALL_ATTEMPTED="YES"
+  local wrapper_src vendor_src lib_dest
+  vendor_src="${STAGE_ROOT}/bringup_py3_dp_after_os_upgrade.sh"
+  wrapper_src="$LIFECYCLE_WRAPPER_SRC"
+  if [[ ! -f "$wrapper_src" ]]; then
+    # Fetch from mirror client tree when stage was downloaded alone
+    local wurl="${MIRROR_URL}/client/bringup_py3_dp_lifecycle.sh"
+    wrapper_src="$(mktemp)"
+    if ! curl -fsSL --connect-timeout 30 --retry 3 -o "$wrapper_src" "$wurl"; then
+      rm -f "$wrapper_src"
+      die "lifecycle wrapper missing locally and download failed from client/"
+    fi
+  fi
+
+  install -o "$AELLA_UID" -g "$AELLA_PRIMARY_GID" -m 0755 \
+    "$vendor_src" "$VENDOR_BRINGUP_INSTALLED"
+  install -o "$AELLA_UID" -g "$AELLA_PRIMARY_GID" -m 0644 \
+    "${STAGE_ROOT}/bringup_py3_dp_after_os_upgrade.sh.sha1" \
+    "${VENDOR_BRINGUP_INSTALLED}.sha1"
+  verify_sha1_pair "$VENDOR_BRINGUP_INSTALLED" "${VENDOR_BRINGUP_INSTALLED}.sha1"
+
+  install -o root -g root -m 0755 "$wrapper_src" "$BRINGUP_SCRIPT"
+  # Install lifecycle libs beside offline evidence for worker re-exec
+  lib_dest="/opt/aelladata/os-upgrade/offline/phase2-bringup/lib"
+  mkdir -p "$lib_dest"
+  chmod 0700 "$(dirname "$lib_dest")" "$lib_dest" 2>/dev/null || true
+  install -o root -g root -m 0600 \
+    "${_STAGE_LIB_DIR}/dp-phase2-bringup-lifecycle.sh" \
+    "${lib_dest}/dp-phase2-bringup-lifecycle.sh"
+  # Also place lib next to wrapper for SCRIPT_DIR/lib resolution
+  mkdir -p "${BRINGUP_DIR}/lib"
+  install -o root -g root -m 0644 \
+    "${_STAGE_LIB_DIR}/dp-phase2-bringup-lifecycle.sh" \
+    "${BRINGUP_DIR}/lib/dp-phase2-bringup-lifecycle.sh"
+
+  local bu bg
+  bu="$(stat -c '%u' "$VENDOR_BRINGUP_INSTALLED")"
+  bg="$(stat -c '%g' "$VENDOR_BRINGUP_INSTALLED")"
+  [[ "$bu" == "$AELLA_UID" && "$bg" == "$AELLA_PRIMARY_GID" ]] \
+    || die "vendor bringup ownership mismatch uid=${bu} gid=${bg}"
+  log "BRINGUP_LIFECYCLE_WRAPPER=INSTALLED path=${BRINGUP_SCRIPT}"
+  log "BRINGUP_VENDOR_SCRIPT=${VENDOR_BRINGUP_INSTALLED}"
+}
+
 stage_main() {
   parse_args "$@"
+
+  if [[ "$DIAGNOSE_SOURCE_VERSION" -eq 1 ]]; then
+    diagnose_source_version_main
+    return $?
+  fi
+
   require_root
   require_noble
   # Prove TARGET is not shadowed by os-release VERSION
@@ -1124,21 +1291,32 @@ stage_main() {
   require_dpkg_apt_clean
   require_no_active_os_upgrade
 
+  # Source version MUST resolve before any bundle/cache/artifact mutation.
+  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
   resolve_source_dp_version
   evaluate_version_compatibility
   load_release_env_from_mirror
 
-  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
   CACHE_DIR="/opt/aelladata/.dp-phase2-cache/${TARGET_DP_VERSION}"
   STAGE_ROOT="/opt/aelladata/.aelladeb_py3.stage.${RUN_ID}"
   acquire_stage_lock
   ensure_verified_bundle
 
+  ARTIFACT_MUTATION_ATTEMPTED="YES"
   mkdir -p "$STAGE_ROOT"
   local cache_tar="${CACHE_DIR}/bundle.tar"
   assert_safe_tar_list "$cache_tar"
-  tar -xf "$cache_tar" -C "$STAGE_ROOT"
 
+  PHASE2_STAGE_PHASE="EXTRACT_BUNDLE"
+  log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
+  if ! dp2_run_extract_with_progress phase2_tar_extract "$STAGE_ROOT" -- \
+      tar -xf "$cache_tar" -C "$STAGE_ROOT"
+  then
+    die "bundle extraction failed"
+  fi
+
+  PHASE2_STAGE_PHASE="VERIFY_EXTRACTED_ARTIFACTS"
+  log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
   local f
   for f in "${REQUIRED_BUNDLE_FILES[@]}"; do
     [[ -f "${STAGE_ROOT}/${f}" ]] || die "missing extracted file ${f}"
@@ -1153,38 +1331,47 @@ stage_main() {
     "${STAGE_ROOT}/images-${TARGET_DP_VERSION}.tar" \
     "${STAGE_ROOT}/images-${TARGET_DP_VERSION}.tar.sha256"
 
-  # Place bringup script using numeric UID/GID from runtime account (never literal group aella)
-  install -o "$AELLA_UID" -g "$AELLA_PRIMARY_GID" -m 0755 \
-    "${STAGE_ROOT}/bringup_py3_dp_after_os_upgrade.sh" \
-    "${BRINGUP_SCRIPT}"
-  install -o "$AELLA_UID" -g "$AELLA_PRIMARY_GID" -m 0644 \
-    "${STAGE_ROOT}/bringup_py3_dp_after_os_upgrade.sh.sha1" \
-    "${BRINGUP_SCRIPT}.sha1"
-  verify_sha1_pair "$BRINGUP_SCRIPT" "${BRINGUP_SCRIPT}.sha1"
-  local bu bg
-  bu="$(stat -c '%u' "$BRINGUP_SCRIPT")"
-  bg="$(stat -c '%g' "$BRINGUP_SCRIPT")"
-  [[ "$bu" == "$AELLA_UID" && "$bg" == "$AELLA_PRIMARY_GID" ]] \
-    || die "bringup ownership mismatch uid=${bu} gid=${bg}"
+  install_bringup_lifecycle_wrapper
 
+  PHASE2_STAGE_PHASE="PUBLISH_ARTIFACTS"
+  log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
   NEW_ART="${ARTIFACT_DIR}.new.${RUN_ID}"
   rm -rf "$NEW_ART"
   mkdir -p "$NEW_ART"
-  for f in "${ARTIFACT_FILES[@]}"; do
-    cp -a "${STAGE_ROOT}/${f}" "${NEW_ART}/${f}"
-  done
-  # Apply ownership to entire artifact tree
-  chown -R "${AELLA_UID}:${AELLA_PRIMARY_GID}" "$NEW_ART"
+  _phase2_copy_artifacts() {
+    local f
+    for f in "${ARTIFACT_FILES[@]}"; do
+      cp -a "${STAGE_ROOT}/${f}" "${NEW_ART}/${f}"
+    done
+  }
+  if ! dp2_run_with_heartbeat phase2_artifact_copy "$NEW_ART" -- _phase2_copy_artifacts; then
+    die "artifact copy failed"
+  fi
 
+  PHASE2_STAGE_PHASE="APPLY_OWNERSHIP"
+  log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
+  if ! dp2_run_with_heartbeat phase2_chown_artifacts "$NEW_ART" -- \
+      chown -R "${AELLA_UID}:${AELLA_PRIMARY_GID}" "$NEW_ART"
+  then
+    die "artifact chown failed"
+  fi
+
+  PHASE2_STAGE_PHASE="FINAL_VALIDATION"
+  log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
   if [[ ! -e "$ARTIFACT_DIR" ]]; then
     mv -f "$NEW_ART" "$ARTIFACT_DIR"
     NEW_ART=""
   else
     if [[ -d "$ARTIFACT_DIR" ]]; then
       local old_h new_h
-      if old_h="$(artifact_manifest_hash "$ARTIFACT_DIR" 2>/dev/null)" && \
-         new_h="$(artifact_manifest_hash "$NEW_ART" 2>/dev/null)" && \
-         [[ "$old_h" == "$new_h" ]]; then
+      old_h="$(artifact_manifest_hash "$ARTIFACT_DIR" 2>/dev/null || true)"
+      if ! dp2_run_with_heartbeat phase2_manifest_hash "$NEW_ART" -- \
+          du -sb "$NEW_ART"
+      then
+        die "manifest precheck failed"
+      fi
+      new_h="$(artifact_manifest_hash "$NEW_ART" 2>/dev/null || true)"
+      if [[ -n "$old_h" && -n "$new_h" && "$old_h" == "$new_h" ]]; then
         log "ARTIFACT_REUSE=PASS identical manifest"
         rm -rf "$NEW_ART"
         NEW_ART=""
@@ -1206,6 +1393,7 @@ stage_main() {
   # Re-verify final ownership on a sample artifact
   local sample="${ARTIFACT_DIR}/images-${TARGET_DP_VERSION}.tar"
   [[ -f "$sample" ]] || die "final artifact missing ${sample}"
+  local bu bg
   bu="$(stat -c '%u' "$sample")"
   bg="$(stat -c '%g' "$sample")"
   [[ "$bu" == "$AELLA_UID" && "$bg" == "$AELLA_PRIMARY_GID" ]] \
@@ -1222,7 +1410,8 @@ stage_main() {
     log "ARTIFACT_CACHE_CLEANUP=SKIPPED (--keep-cache)"
   fi
 
-  # Time readiness gates only NEXT_COMMAND/BRINGUP_READY. Artifact staging remains complete.
+  PHASE2_STAGE_PHASE="TIME_READINESS"
+  log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
   check_ntp_bringup_readiness || true
   PHASE2_STAGE_RESULT="PASS"
   BRINGUP_EXECUTED="NO"

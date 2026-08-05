@@ -94,6 +94,7 @@ UM_RUNTIME_CLIENT_FILES=(
   dp-postboot-readiness-policy.sh.inc
   stage-dp-phase2.sh
   stage-dp-phase2-6.5.0.sh
+  bringup_py3_dp_lifecycle.sh
   dp-client-command-runner.sh
 )
 
@@ -101,6 +102,11 @@ UM_RUNTIME_CLIENT_LIB_FILES=(
   dp-offline-destructive-confirmation.sh
   dp-offline-release-upgrade-reconciliation.sh
   dp-offline-apt-preflight-sandbox.sh
+  dp-offline-source-product-version.sh
+  dp-phase2-operation-progress.sh
+  dp-phase2-bringup-lifecycle.sh
+  dp-offline-durable-write.sh
+  dp-offline-lxd-inventory.sh
 )
 
 # Relative paths under the installed runtime root that must exist after install.
@@ -130,8 +136,12 @@ UM_RUNTIME_REQUIRED_RELATIVE_PATHS=(
   client/lib/dp-offline-destructive-confirmation.sh
   client/lib/dp-offline-release-upgrade-reconciliation.sh
   client/lib/dp-offline-apt-preflight-sandbox.sh
+  client/lib/dp-offline-source-product-version.sh
+  client/lib/dp-phase2-operation-progress.sh
+  client/lib/dp-phase2-bringup-lifecycle.sh
   client/dp-client-command-runner.sh
   client/dp-client-hop-launcher.sh.in
+  client/bringup_py3_dp_lifecycle.sh
   vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh
   vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1
   templates/nginx.conf

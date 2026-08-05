@@ -158,7 +158,7 @@ engine_ensure_phase2_helpers() {
   mkdir -p "$dest"
   stage="$(mktemp -d "${dest}.helpers.XXXXXX")"
   chmod 0755 "$stage"
-  for f in stage-dp-phase2.sh stage-dp-phase2-6.5.0.sh; do
+  for f in stage-dp-phase2.sh stage-dp-phase2-6.5.0.sh bringup_py3_dp_lifecycle.sh; do
     if [[ -f "${root}/client/${f}" ]]; then
       install -m 0755 "${root}/client/${f}" "${stage}/${f}"
       ( cd "$stage" && sha256sum "$f" >"${f}.sha256" )
