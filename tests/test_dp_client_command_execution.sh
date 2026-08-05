@@ -287,14 +287,16 @@ mal="${WORKDIR}/malformed.txt"
   echo "STEP 1 — PAUSE"
 } >"$mal"
 # Use a minimal FULL-looking file that fails hop-block validation
-if mm_wf_validate_os_hop_block_at "${WORKDIR}/cmd.sh" 1 240 >/dev/null; then
+# Production max physical line length is 360 (SUBSHELL_V2). Do not use 240:
+# ephemeral fixture ports can push line 1 over 240 without changing the contract.
+if mm_wf_validate_os_hop_block_at "${WORKDIR}/cmd.sh" 1 360 >/dev/null; then
   pass "valid three-line hop block accepted"
 else
   fail "valid hop block rejected"
 fi
 # Missing final line: only two lines
 head -2 "${WORKDIR}/cmd.sh" >"${WORKDIR}/two_lines.sh"
-if mm_wf_validate_os_hop_block_at "${WORKDIR}/two_lines.sh" 1 240 >/dev/null 2>&1; then
+if mm_wf_validate_os_hop_block_at "${WORKDIR}/two_lines.sh" 1 360 >/dev/null 2>&1; then
   fail "missing final line should fail validation"
 else
   pass "missing final line fails validation"
@@ -305,7 +307,7 @@ fi
   echo "  echo extra && \\"
 } >"${WORKDIR}/four_lines.sh"
 # validate starting at line 1 — fourth line after block is continuation
-if mm_wf_validate_os_hop_block_at "${WORKDIR}/four_lines.sh" 1 240 >/dev/null 2>&1; then
+if mm_wf_validate_os_hop_block_at "${WORKDIR}/four_lines.sh" 1 360 >/dev/null 2>&1; then
   fail "extra fourth continuation should fail"
 else
   pass "extra fourth line fails validation"

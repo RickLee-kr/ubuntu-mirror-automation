@@ -1,7 +1,90 @@
 # Clean Snapshot Retest
 
-Operator procedure after restoring a clean Ubuntu 24.04 Mirror Server snapshot.
+Operator procedure for Mirror Server lab retests using two snapshot classes.
 Follow every step in order. Stop on the first failure.
+
+See also [CLIENT_PIPELINE_STABILIZATION_AUDIT.md](CLIENT_PIPELINE_STABILIZATION_AUDIT.md)
+for architecture, provenance, and heavy-vs-client plane behavior.
+
+---
+
+## Mirror snapshots
+
+### Snapshot A — clean-before-download
+
+**Purpose:** exercise the full acquisition path from a clean disk.
+
+- R2 OS Core download and verification
+- OS mirror materialization and `selective/state/READY`
+- ACPS Phase 2 download, bundle creation, and verification
+- First-time client build/sign/publish
+
+**When to use:** validating download/network/disk behavior, first install on a
+fresh lab host, or after intentionally wiping `/var/spool/apt-mirror` and
+`/etc/ubuntu-mirror` selective/Phase 2 content.
+
+**Procedure:** follow sections 1–15 below from repository checkout through acceptance.
+This is the original clean-room retest flow.
+
+### Snapshot B — heavy-artifacts-verified
+
+**Purpose:** reuse verified heavy artifacts while recalculating the mutable client set.
+
+**Create Snapshot B after:**
+
+1. Menu 2 completed successfully once (OS Core verified, Phase 2 bundle verified)
+2. Temporary download artifacts cleaned (R2 package removed post-materialize;
+   ACPS cache/work temps cleaned per engine policy)
+3. **Prefer creating the snapshot before Menu 3 (HTTP enable)** so HTTP/nginx state
+   is not part of the baseline
+
+**What Snapshot B preserves:**
+
+- `/var/spool/apt-mirror/selective/` including `state/READY`
+- `/var/spool/apt-mirror/dp-phase2/6.5.0/` final bundle + sidecar + `release.env`
+- `/etc/ubuntu-mirror/client-signing/` local signing keypair
+- `/etc/ubuntu-mirror/dp-upgrade-workflow.state` and related upgrade state
+
+**What Snapshot B does not replace:** latest product code — always `git pull` and
+`sudo ./install.sh` after restore before running Menu 2.
+
+### After restoring Snapshot B
+
+1. Confirm the lab snapshot restored and the host rebooted (section 1).
+2. Repository clean check + pull latest `origin/main` (sections 2–4).
+3. `sudo ./install.sh` (section 5) — refreshes `/usr/local/lib/ubuntu-mirror` runtime.
+4. Menu 1 Configuration — confirm mode, Mirror IP, ACPS credentials (section 6).
+5. **Menu 2 Download and Prepare — DO NOT SKIP** (section 7).
+
+   Expected heavy-artifact behavior when inputs unchanged:
+
+   ```text
+   OS_CORE_ACTION=REUSE_VERIFIED
+   R2_DOWNLOAD_REQUIRED=NO
+   PHASE2_BUNDLE_ACTION=REUSE
+   ACPS_DOWNLOAD_REQUIRED=NO
+   PHASE2_BUNDLE_REBUILD_REQUIRED=NO
+   ```
+
+   Client set behavior is recalculated from build provenance:
+
+   ```text
+   CLIENT_SET_ACTION=REUSE_CURRENT          # when CLIENT_BUILD_INPUT_SHA256 matches
+   CLIENT_SET_ACTION=REBUILD_SIGN_PUBLISH   # when code/runtime inputs changed
+   ```
+
+6. Menu 3 → Menu 4 → Menu 7 (sections 8–11) only after Menu 2 PASS.
+
+**Explicit Snapshot B rules — do not:**
+
+- skip Menu 2 (it validates heavy artifacts and rebuilds stale clients)
+- delete selective / OS Core artifacts
+- delete Phase 2 bundle artifacts
+- delete or rotate the local signing key by hand
+- delete workflow state, READY markers, or command files
+- create `selective/state/READY` manually
+
+---
 
 ## Forbidden actions
 

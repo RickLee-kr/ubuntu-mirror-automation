@@ -78,6 +78,9 @@ TEST_LIST=(
   test_client_ready_circular_gate.sh
   test_os_core_selective_ready_provenance.sh
   test_client_finalization_local_fs_integration.sh
+  test_client_build_provenance.sh
+  test_phase2_existing_reuse_progress.sh
+  test_client_os_userspace_matrix.sh
 )
 
 # Integration tests required for FULL_SUITE=PASS (real builders, not mocked finalizer).
@@ -87,7 +90,7 @@ INTEGRATION_REQUIRED=(
 
 is_long_test() {
   case "$1" in
-    test_dp_offline_upgrade_*.sh|test_dp_os_upgrade.sh|test_selective_mirror.py|test_offline_mirror.sh|test_dp_upgrade_mirror_manager.sh|test_client_finalization_local_fs_integration.sh)
+    test_dp_offline_upgrade_*.sh|test_dp_os_upgrade.sh|test_selective_mirror.py|test_offline_mirror.sh|test_dp_upgrade_mirror_manager.sh|test_client_finalization_local_fs_integration.sh|test_client_os_userspace_matrix.sh)
       return 0
       ;;
     *)
