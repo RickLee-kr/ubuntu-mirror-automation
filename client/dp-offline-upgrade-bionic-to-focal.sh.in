@@ -987,6 +987,8 @@ is_critical_os_hold_package() {
 
 @@DURABLE_WRITE_HELPER@@
 
+@@SOURCE_PRODUCT_HELPER@@
+
 critical_holds_dir() {
   hostpath "${STATE_ROOT}/critical-holds"
 }
@@ -1692,6 +1694,32 @@ log_product_state_phase1() {
 
   dpver="${DP_VERSION:-}"
   role="${DP_TOPOLOGY:-}"
+
+
+  # Authoritative source DP version capture for Phase 2 (before destructive mutation).
+  # Failures here do not abort Phase 1 OS-only; Phase 2 recovers or fails closed.
+  if [[ "${DP_VERSION_DETECT_STATUS:-}" == "ok" && "${DP_VERSION_CONSISTENCY:-}" == "PASS" \
+      && -n "${DP_VERSION:-}" && "${DP_VERSION}" != "UNDETERMINED" ]]; then
+    if declare -F spv_persist_source_product_env >/dev/null 2>&1; then
+      local _spv_dest _spv_os _spv_code _spv_run
+      _spv_dest="$(hostpath "${STATE_ROOT}/source-product.env")"
+      _spv_os=""
+      _spv_code=""
+      if [[ -r /etc/os-release ]]; then
+        _spv_os="$(grep -E '^VERSION_ID=' /etc/os-release | head -1 | cut -d= -f2- | tr -d '"')"
+        _spv_code="$(grep -E '^VERSION_CODENAME=' /etc/os-release | head -1 | cut -d= -f2- | tr -d '"')"
+      fi
+      _spv_run="${RUN_ID:-}"
+      [[ -n "$_spv_run" ]] || _spv_run="$(utc_now 2>/dev/null || date -u +%Y%m%dT%H%M%SZ)"
+      if spv_persist_source_product_env "$_spv_dest" "$DP_VERSION" \
+          "${DP_VERSION_SOURCE:-}" "$_spv_os" "$_spv_code" "$_spv_run"; then
+        log INFO "SOURCE_PRODUCT_ENV=${SPV_SOURCE_VERSION_CAPTURE_STATUS} version=${SPV_SOURCE_DP_VERSION} origin=${SPV_SOURCE_DP_VERSION_ORIGIN}"
+      else
+        log WARN "SOURCE_PRODUCT_ENV_CAPTURE=${SPV_SOURCE_VERSION_CAPTURE_STATUS:-FAIL} (Phase 1 continues)"
+      fi
+    fi
+  fi
+
 
   log INFO "DP_INSTALL_STATE=${DP_INSTALL_STATE}"
   log INFO "DP_PRODUCT_STATE_ACTION=IGNORED_BY_PHASE1_POLICY"

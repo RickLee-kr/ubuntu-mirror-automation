@@ -572,6 +572,20 @@ def render_script(template_path, replacements):
     with open(durable_path, "r", encoding="utf-8") as fh:
         durable_body = fh.read().rstrip("\n") + "\n"
     body = body.replace(durable_token, durable_body)
+
+    source_token = "@@SOURCE_PRODUCT_HELPER@@"
+    if source_token in body:
+        source_path = os.path.join(
+            os.path.dirname(os.path.abspath(template_path)),
+            "lib",
+            "dp-offline-source-product-version.sh",
+        )
+        if not os.path.isfile(source_path):
+            raise BuildError("missing source-product helper: {}".format(source_path))
+        with open(source_path, "r", encoding="utf-8") as fh:
+            source_body = fh.read().rstrip("\n") + "\n"
+        body = body.replace(source_token, source_body)
+
     lxd_token = "@@LXD_INVENTORY_HELPER@@"
     if lxd_token in body:
         lxd_path = os.path.join(
