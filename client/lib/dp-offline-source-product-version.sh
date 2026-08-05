@@ -229,26 +229,47 @@ spv_validate_parsed_pass_record() {
   return 0
 }
 
-# Atomic root-only write. Bash-only (Xenial-safe); no python required.
+# Atomic root-only write. Prefer durable_atomic_write when available (python3);
+# otherwise Bash temp+rename with path-targeted sync only (never bare global sync).
+# Stdin is buffered once so a durable-write failure can still fall back safely.
 spv_atomic_write_file() {
   local dest="$1"
   local mode="${2:-0600}"
-  local parent tmp
+  local parent tmp content_file
   parent="$(dirname "$dest")"
   mkdir -p "$parent" || return 1
   chmod 0700 "$parent" 2>/dev/null || true
-  tmp="${dest}.tmp.$$.${RANDOM:-0}"
-  cat >"$tmp" || { rm -f "$tmp"; return 1; }
+
+  content_file="$(mktemp "${TMPDIR:-/tmp}/spv-content.XXXXXX")"
+  cat >"$content_file" || { rm -f "$content_file"; return 1; }
+
+  if declare -F durable_atomic_write >/dev/null 2>&1; then
+    if cat "$content_file" | durable_atomic_write "source_product_env" "$dest" "$mode"; then
+      rm -f "$content_file"
+      if [[ "$(id -u)" -eq 0 ]]; then
+        chown root:root "$dest" 2>/dev/null || true
+        chmod "$mode" "$dest" 2>/dev/null || true
+        chmod 0700 "$parent" 2>/dev/null || true
+      fi
+      return 0
+    fi
+    # Fall through to Bash path if durable write fails (e.g. missing python3).
+  fi
+
+  tmp="${parent}/.$(basename "$dest").tmp.$$.${RANDOM:-0}"
+  cat "$content_file" >"$tmp" || { rm -f "$content_file" "$tmp"; return 1; }
+  rm -f "$content_file"
   chmod "$mode" "$tmp" || { rm -f "$tmp"; return 1; }
   if [[ "$(id -u)" -eq 0 ]]; then
     chown root:root "$tmp" 2>/dev/null || true
   fi
+  # Path-targeted fsync only — never bare `sync`.
   if command -v sync >/dev/null 2>&1; then
-    sync "$tmp" 2>/dev/null || sync 2>/dev/null || true
+    sync "$tmp" 2>/dev/null || true
   fi
   mv -f "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
   if command -v sync >/dev/null 2>&1; then
-    sync "$(dirname "$dest")" 2>/dev/null || true
+    sync "$parent" 2>/dev/null || true
   fi
   if [[ "$(id -u)" -eq 0 ]]; then
     chown root:root "$dest" 2>/dev/null || true

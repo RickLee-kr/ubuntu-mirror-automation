@@ -77,8 +77,11 @@ p2b_pid_alive_and_matches() {
     *"${expect_token}"*) ;;
     *) return 1 ;;
   esac
-  start_file="$(p2b_dir)/worker-start-time"
+  start_file="$(p2b_dir)/worker-start-ticks"
   recorded_start="$(p2b_read_file "$start_file")"
+  if [[ -z "$recorded_start" ]]; then
+    recorded_start="$(p2b_read_file "$(p2b_dir)/worker-start-time")"
+  fi
   if [[ -n "$recorded_start" && -r "/proc/${pid}/stat" ]]; then
     # Field 22 is starttime (clock ticks); soft check only when recorded.
     proc_start="$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || true)"
@@ -317,8 +320,39 @@ p2b_status_snapshot() {
 
 p2b_print_status() {
   p2b_status_snapshot
+  local result="UNKNOWN"
+  local do_not="YES"
+  case "${BRINGUP_STATE}" in
+    RUNNING|STARTING)
+      result="IN_PROGRESS"
+      do_not="YES"
+      AELLA_CLI_AVAILABLE="${AELLA_CLI_AVAILABLE:-NOT_CHECKED}"
+      ;;
+    COMPLETED)
+      if [[ "${BRINGUP_COMPLETION_SENTINEL}" == "PASS" && "${AELLA_CLI_AVAILABLE}" == "YES" ]]; then
+        result="PASS"
+        do_not="NO"
+      elif [[ "${BRINGUP_COMPLETION_SENTINEL}" == "PASS" ]]; then
+        result="FAIL_POSTCONDITION"
+        do_not="NO"
+      else
+        result="PASS"
+        do_not="NO"
+      fi
+      ;;
+    FAILED|STALE_OR_UNKNOWN)
+      result="FAIL"
+      do_not="YES"
+      ;;
+    NOT_STARTED)
+      result="NOT_STARTED"
+      do_not="YES"
+      ;;
+  esac
+  BRINGUP_RESULT="$result"
   cat <<EOF
 BRINGUP_STATE=${BRINGUP_STATE}
+BRINGUP_RESULT=${BRINGUP_RESULT}
 BRINGUP_RUN_ID=${BRINGUP_RUN_ID}
 BRINGUP_WORKER_PID=${BRINGUP_WORKER_PID}
 BRINGUP_WORKER_ALIVE=${BRINGUP_WORKER_ALIVE}
@@ -333,6 +367,8 @@ IMAGE_IMPORT_STATE=${IMAGE_IMPORT_STATE:-UNKNOWN}
 IMAGE_IMPORT_PROGRESS=${IMAGE_IMPORT_PROGRESS:-}
 AELLA_CLI_AVAILABLE=${AELLA_CLI_AVAILABLE}
 AELLA_CLI_PATH=${AELLA_CLI_PATH:-}
+AELLA_CLI_READY=$([ "$do_not" = YES ] && echo NO || echo YES)
+DO_NOT_RUN_AELLA_CLI_YET=${do_not}
 BRINGUP_LOG=${BRINGUP_LOG}
 EOF
 }
@@ -371,11 +407,17 @@ p2b_worker_main() {
   started="$(p2b_read_file "${d}/started-at")"
   mkdir -p "$(dirname "$logf")" 2>/dev/null || true
 
+  # Record log byte offset so completion markers can be scoped to this run.
+  if [[ -f "$logf" ]]; then
+    printf '%s\n' "$(wc -c <"$logf" | tr -d ' ')" | p2b_atomic_write "${d}/log-start-offset"
+  else
+    printf '0\n' | p2b_atomic_write "${d}/log-start-offset"
+  fi
   p2b_write_state "RUNNING"
   printf '%s\n' "$$" | p2b_atomic_write "${d}/worker.pid"
   if [[ -r /proc/$$/stat ]]; then
     start_tick="$(awk '{print $22}' /proc/$$/stat)"
-    printf '%s\n' "$start_tick" | p2b_atomic_write "${d}/worker-start-time"
+    printf '%s\n' "$start_tick" | p2b_atomic_write "${d}/worker-start-ticks"
   fi
 
   export BRINGUP_DETACHED=1
@@ -558,6 +600,7 @@ EOF
     [[ "${BRINGUP_WORKER_ALIVE}" == "YES" && "${BRINGUP_PROCESS_IDENTITY_MATCH}" == "YES" ]] && worker_flag="ALIVE"
     cat <<EOF
 BRINGUP_PROGRESS run_id=${run_id} state=RUNNING elapsed_seconds=${elapsed} worker=${worker_flag} last_log_age_seconds=${last_log_age} current_phase=${CURRENT_PHASE:-UNKNOWN} current_operation=${CURRENT_OPERATION:-UNKNOWN}
+BRINGUP_RESULT=IN_PROGRESS
 AELLA_CLI_AVAILABLE=NOT_CHECKED
 AELLA_CLI_READY=NO
 DO_NOT_RUN_AELLA_CLI_YET=YES

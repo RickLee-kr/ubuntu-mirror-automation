@@ -1222,7 +1222,7 @@ EOF
 }
 
 install_bringup_lifecycle_wrapper() {
-  PHASE2_STAGE_PHASE="PUBLISH_BRINGUP_SCRIPT"
+  PHASE2_STAGE_PHASE="PUBLISH_BRINGUP_CONTROLLER"
   log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
   BRINGUP_INSTALL_ATTEMPTED="YES"
   local wrapper_src vendor_src lib_dest
