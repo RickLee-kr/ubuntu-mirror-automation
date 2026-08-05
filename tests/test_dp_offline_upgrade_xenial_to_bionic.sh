@@ -533,6 +533,7 @@ for _tok, _name in (
     ("@@RELEASE_UPGRADE_RECONCILIATION_HELPER@@", "dp-offline-release-upgrade-reconciliation.sh"),
     ("@@APT_PREFLIGHT_SANDBOX_HELPER@@", "dp-offline-apt-preflight-sandbox.sh"),
     ("@@DURABLE_WRITE_HELPER@@", "dp-offline-durable-write.sh"),
+    ("@@SOURCE_PRODUCT_HELPER@@", "dp-offline-source-product-version.sh"),
     ("@@LXD_INVENTORY_HELPER@@", "dp-offline-lxd-inventory.sh"),
 ):
     _hp = _lib / _name
@@ -2202,6 +2203,7 @@ for _tok, _name in (
     ("@@RELEASE_UPGRADE_RECONCILIATION_HELPER@@", "dp-offline-release-upgrade-reconciliation.sh"),
     ("@@APT_PREFLIGHT_SANDBOX_HELPER@@", "dp-offline-apt-preflight-sandbox.sh"),
     ("@@DURABLE_WRITE_HELPER@@", "dp-offline-durable-write.sh"),
+    ("@@SOURCE_PRODUCT_HELPER@@", "dp-offline-source-product-version.sh"),
     ("@@LXD_INVENTORY_HELPER@@", "dp-offline-lxd-inventory.sh"),
 ):
     _hp = _lib / _name

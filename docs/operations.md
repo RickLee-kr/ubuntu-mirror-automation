@@ -172,6 +172,26 @@ Phase 1 enables and validates **Ubuntu OS hops only** using the offline selectiv
 - On **Jammy (22.04)** intermediate hops, DP runtime / `aella_cli` unavailability and the known kubelet Docker API 1.40 vs daemon 1.44 mismatch are **expected** and must **not** abort Phase 1. Do not repair kubelet/Docker/containerd/Kubernetes in Phase 1.
 - After **Noble (24.04)** OS validation, create a **powered-off** VM snapshot before Phase 2. Phase 2 does **not** auto-start.
 
+## Mirror environments (do not confuse)
+
+Two active mirror environments exist. Neither is deprecated.
+
+| Role | URL | Purpose |
+|------|-----|---------|
+| Development mirror | `http://221.139.249.111` | Cursor / development publication and retest |
+| Stellar test mirror | `http://221.139.249.112` | Current field OS-upgrade / Phase 2 retest |
+
+Reusable product code must not hardcode either address. Runtime mirror
+configuration drives generated clients, launchers, manifests, Menu 7 commands,
+and readiness checks. Client generations, launcher SHA256 values, signed
+manifests, and public fingerprints must never be mixed between `.111` and `.112`.
+
+- Commands signed or generated on `.111` are for development retest only.
+- Stellar retest commands must be regenerated on `.112` via Menu 2 → 3 → 4 → 7.
+
+See [architecture-phase2-source-bringup.md](architecture-phase2-source-bringup.md)
+for Phase 2 source-version capture, staging progress, and bringup lifecycle.
+
 ### Phase 2 artifact staging (product bringup is separate)
 
 **Support contract**

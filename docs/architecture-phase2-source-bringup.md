@@ -103,6 +103,17 @@ Targeted regression scripts are:
 
 # Phase 2 source version and bringup lifecycle architecture
 
+## Mirror environments
+
+| Constant | Value | Notes |
+|----------|-------|-------|
+| DEVELOPMENT_MIRROR_URL | `http://221.139.249.111` | Cursor development mirror — **not deprecated** |
+| STELLAR_TEST_MIRROR_URL | `http://221.139.249.112` | Current Stellar field-test mirror |
+
+Reusable product source must not hardcode either IP. Environments sign and
+publish independent client generations. Never reuse a `.111` signed Menu 7
+command on `.112`.
+
 ## Root causes (production observations)
 
 ### Source version defect
@@ -159,10 +170,11 @@ Shared helper: `client/lib/dp-offline-source-product-version.sh`
 - Same version is idempotently reused
 - Xenial-compatible Bash (no python required for capture)
 
-OS-hop runtime clients are intentionally unchanged in this change set so the
-working OS-hop path remains byte-identical. Capture is exercised via the shared
-helper (and Jammy’s existing persist path remains compatible as a legacy reader).
-Historical Noble hosts recover via Phase 1 log evidence.
+OS-hop clients inject the shared helper via `@@SOURCE_PRODUCT_HELPER@@` and call
+`spv_persist_source_product_env` from `log_product_state_phase1` after a complete
+PASS detection, before destructive package mutation. Later hops preserve an
+existing PASS capture (idempotent same-version reuse; conflicting versions fail
+closed without overwrite).
 
 ### Historical recovery priority
 

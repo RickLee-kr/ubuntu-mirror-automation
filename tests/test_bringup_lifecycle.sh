@@ -37,7 +37,7 @@ WORKER_PID=$!
 write_file "$(p2b_dir)/state" RUNNING
 write_file "$(p2b_dir)/run-id" "$run_id"
 write_file "$(p2b_dir)/worker.pid" "$WORKER_PID"
-write_file "$(p2b_dir)/worker-start-time" "$(awk '{print $22}' "/proc/${WORKER_PID}/stat")"
+write_file "$(p2b_dir)/worker-start-ticks" "$(awk '{print $22}' "/proc/${WORKER_PID}/stat")"
 write_file "$(p2b_dir)/started-at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 write_file "$(p2b_dir)/log-path" "$PHASE2_BRINGUP_LOG_DEFAULT"
 cat >"$PHASE2_BRINGUP_LOG_DEFAULT" <<'EOF'
@@ -47,10 +47,13 @@ IMAGE_IMPORT_PROGRESS namespace=k8s.io progress=53%
 EOF
 rm -f "$(p2b_dir)/result.env"
 p2b_status_snapshot
+p2b_print_status >"${TMP}/status.running"
 [[ "$BRINGUP_STATE" == RUNNING ]] || fail "running fixture state=${BRINGUP_STATE}"
 [[ "$BRINGUP_COMPLETION_SENTINEL" == NOT_PRESENT ]] || fail "unexpected completion sentinel"
 [[ "$AELLA_CLI_AVAILABLE" == NOT_CHECKED ]] || fail "CLI was checked while running"
 [[ "$IMAGE_IMPORT_PROGRESS" == 53% ]] || fail "image progress=${IMAGE_IMPORT_PROGRESS}"
+grep -q '^BRINGUP_RESULT=IN_PROGRESS$' "${TMP}/status.running" || fail "missing IN_PROGRESS"
+grep -q '^DO_NOT_RUN_AELLA_CLI_YET=YES$' "${TMP}/status.running" || fail "missing DO_NOT_RUN"
 pass "running import status is non-terminal and read-only"
 
 # An exact sentinel and rc=0 for this run represents completion.
