@@ -178,10 +178,23 @@ dp2_run_download_with_progress() {
 }
 
 # Extraction progress: report extracted bytes + file count under a directory.
+# Usage: dp2_run_extract_with_progress <name> <dest_dir> <command...>
+# Or:    dp2_run_extract_with_progress <name> <dest_dir> -- <command...>
 dp2_run_extract_with_progress() {
   local name="$1"
   local dest_dir="$2"
   shift 2
+  # Keep the same optional command separator contract as
+  # dp2_run_with_heartbeat(). Without this, the literal `--` becomes argv[0]
+  # and Bash exits immediately with `--: command not found` before extraction.
+  if [[ "${1-}" == "--" ]]; then
+    shift
+  fi
+  if [[ "$#" -eq 0 ]]; then
+    printf 'OPERATION_START name=%s target=%s\n' "$name" "$(dp2_progress_sanitize_target "$dest_dir")"
+    printf 'OPERATION_END name=%s rc=2 elapsed_seconds=0\n' "$name"
+    return 2
+  fi
   local child_pid hb_pid start now elapsed rc=0 stop_file
   local extracted_bytes extracted_files
   stop_file="$(mktemp "${TMPDIR:-/tmp}/dp2-ex-stop.XXXXXX")"
