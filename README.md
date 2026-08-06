@@ -94,6 +94,16 @@ Re-open the GUI later (no git checkout required):
 sudo ubuntu-offline-mirror mirror-manager
 ```
 
+> **SSH reconnect / reopen rule:** do not run `sudo ./install.sh` merely to
+> reopen the GUI after an SSH disconnect. `install.sh` is a bootstrap/reinstall
+> operation, not a GUI launcher. A reinstall preserves valid large artifacts and
+> the local signing key, but it may rebuild and publish a new client generation,
+> intentionally stop/disable nginx, and invalidate the previous HTTP/readiness
+> generation. After a deliberate code update/reinstall, follow the next action
+> printed by the installer and complete the required **2 → 3 → 4 → 7** workflow
+> steps. To reopen an existing installation without changing workflow state, use
+> only `sudo ubuntu-offline-mirror mirror-manager`.
+
 ## Mirror Manager GUI
 
 ```
@@ -112,7 +122,7 @@ Progress: 3 of 4 workflow steps completed
 
 `[COMPLETED]` means the step is currently valid. The label is removed automatically if its configuration, artifacts, HTTP service, or readiness state is no longer valid. SHA256 verification displays a heartbeat every 30 seconds.
 
-Enable HTTP (3) before Verify Readiness (4). Menu 7 prints three-line DP hop command blocks and saves them to `/var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt`.
+Enable HTTP (3) before Verify Readiness (4). Menu 7 displays each OS-hop launcher as a three-physical-line, copyable command block for normal-width terminals. The first two lines end with `\`; copy all three lines together. The saved canonical command file remains one physical line per OS hop. Phase 2 staging remains its separate three-line `SUBSHELL_V2` block. Commands are saved to `/var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt`.
 
 ### 1. Configuration
 
@@ -163,7 +173,7 @@ Credentials are stored as root-owned mode `600` under `/etc/ubuntu-mirror/dp-upg
 
 **Full mode** downloads OS Core from R2, materializes the selective OS tree, then prepares the single DP 6.5.0 Phase 2 bundle. The R2 package is removed immediately after OS materialize. A valid existing 6.5.0 final bundle is reused (no ACPS re-download or rebuild).
 
-**Phase 2 Only** skips R2 and OS hops; it prepares or reuses the same single 6.5.0 Phase 2 bundle only.
+**Phase 2 Only** skips R2 and OS hops; it prepares or reuses the same single DP 6.5.0 Phase 2 bundle only.
 
 Mirror server disk requirement: **100 GB total including Ubuntu OS and mirror data** for the current 6.5.0 artifact set. This configuration is validated on the test Mirror Server; the projected fresh-prepare peak is approximately **70 GiB**, and the exact free-space preflight runs before the large download/build steps.
 
@@ -215,9 +225,11 @@ Root URL `/` returning 403/404 is ignored; use the concrete paths above.
 
 ## DP client usage
 
-Open Mirror Manager menu **7 Show DP Client Upgrade Commands** for the exact three-line hop command blocks (download + authenticate + execute) for this host’s mirror URL. Prefer those blocks over hand-written examples. Copy all three lines together, including trailing backslashes on the first two lines.
+Open Mirror Manager menu **7 Show DP Client Upgrade Commands** for the commands generated for this Mirror Server. In the Menu 7 viewer, each OS-hop `LAUNCHER_V1` command is displayed as **three physical lines** so that the full command is visible on a normal-width monitor. Copy all three lines together; the first two lines end with a trailing backslash. The three lines are one logical Bash command.
 
-Each OS hop is one logical Bash command shown on three physical lines that authenticates `dp-client-command-runner.sh`, then runs the hop client.
+The literal SHA256 shown in the block is the launcher trust anchor. The display does not use an HTTP `.sha256` sidecar and does not use `curl | bash`. After the launcher is verified, it authenticates the existing signed command runner, and the runner executes the hop client.
+
+The file `/var/log/ubuntu-mirror-automation/dp-client-upgrade-commands.txt` deliberately retains the canonical **one-physical-line** OS-hop representation used by workflow validation. Menu 7 reformats only the viewer copy; it does not alter the canonical file or trust semantics. The Phase 2 staging command remains a separate three-line `SUBSHELL_V2` block.
 
 ## Jammy (22.04) intermediate note
 
@@ -241,10 +253,11 @@ Take a full hypervisor snapshot of the DP VM before upgrade. Intermediate Ubuntu
 
 ## Re-run / failure recovery
 
-- `sudo ./install.sh` is idempotent (safe to re-run)
-- Re-run **Download and Prepare** after a failed download (R2 `.part` resume is supported)
-- Re-enter ACPS credentials in Configuration if needed
-- Check logs via GUI menu 6 or `/var/log/ubuntu-mirror-automation/`
+- `sudo ./install.sh` is idempotent, but it is **not** a no-op GUI reopen command. A deliberate reinstall can republish the client generation and disable HTTP until readiness is verified again.
+- After an SSH reconnect, reopen only with `sudo ubuntu-offline-mirror mirror-manager`.
+- Re-run **Download and Prepare** after a failed download (R2 `.part` resume is supported). Existing verified OS Core and Phase 2 artifacts must be reused; a routine reinstall/retry must not force their re-download.
+- Re-enter ACPS credentials in Configuration if needed.
+- Check logs via GUI menu 6 or `/var/log/ubuntu-mirror-automation/`.
 
 ## Status and logs
 
