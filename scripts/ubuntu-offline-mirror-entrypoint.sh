@@ -27,7 +27,7 @@ dst = Path(sys.argv[2])
 # Canonical LAUNCHER_V1 command written by gui_client_hop_command_line().
 # The formatter changes presentation only; it does not change the saved command
 # file or any trust decision.
-pat = re.compile(
+hop_pat = re.compile(
     r"^cd /home/aella && curl -fsSLo "
     r"(?P<launcher>dp-launch-[a-z0-9-]+\.sh)\.download "
     r"(?P<url>\S+) && printf '%s  %s\\n' "
@@ -37,67 +37,126 @@ pat = re.compile(
     r"bash \./(?P=launcher)$"
 )
 
-guidance = "Copy and paste the following entire line into the DP terminal:"
-replacement_guidance = [
+hop_guidance = "Copy and paste the following entire line into the DP terminal:"
+hop_replacement_guidance = [
     "Copy and paste all three physical lines below into the DP terminal.",
     "The first two lines end with a backslash (\\).",
+]
+phase2_guidance = "Copy all three lines of the following block into the DP terminal once:"
+phase2_replacement_guidance = [
+    "Copy and paste all three physical lines below into the DP terminal.",
+    "They download the Phase 2 script and both required helper libraries together.",
 ]
 
 lines = src.read_text(encoding="utf-8").splitlines()
 out: list[str] = []
-wrapped = 0
-for line in lines:
-    m = pat.match(line)
-    if not m:
-        if line == (
-            "OS-hop steps use one hash-pinned launcher command per hop "
-            "(DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1)."
-        ):
-            out.extend(
-                [
-                    "OS-hop steps use one hash-pinned launcher command per hop",
-                    "(DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1), displayed as three physical lines",
-                    "for normal-width terminals. Copy all three lines together.",
-                ]
-            )
-        else:
-            out.append(line)
+hop_wrapped = 0
+phase2_wrapped = 0
+i = 0
+while i < len(lines):
+    line = lines[i]
+    m = hop_pat.match(line)
+    if m:
+        # Replace only the guidance immediately preceding an OS-hop launcher.
+        for idx in range(len(out) - 1, max(-1, len(out) - 8), -1):
+            if out[idx] == hop_guidance:
+                out[idx : idx + 1] = hop_replacement_guidance
+                break
+
+        launcher = m.group("launcher")
+        url = m.group("url")
+        sha = m.group("sha").lower()
+        suffix = f"/client/{launcher}"
+        if not url.endswith(suffix):
+            raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=launcher_url_shape")
+        mirror = url[: -len(suffix)].rstrip("/")
+        if not mirror:
+            raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=mirror_url_empty")
+
+        # Three physical lines, one logical Bash command. The literal SHA256
+        # remains the operator trust anchor; no sidecar trust and no curl|bash.
+        out.extend(
+            [
+                f"cd /home/aella && L='{launcher}' && D=\"$L.download\" && \\",
+                f"  U='{mirror}' && H='{sha}' && curl -fsSLo \"$D\" \"$U/client/$L\" && \\",
+                "  printf '%s  %s\\n' \"$H\" \"$D\" | sha256sum -c - && "
+                "mv -f \"$D\" \"$L\" && bash \"./$L\"",
+            ]
+        )
+        hop_wrapped += 1
+        i += 1
         continue
 
-    # Replace only the guidance immediately preceding an OS-hop launcher. Other
-    # one-line commands (prerequisite checks and bringup) keep their own wording.
-    for idx in range(len(out) - 1, max(-1, len(out) - 8), -1):
-        if out[idx] == guidance:
-            out[idx : idx + 1] = replacement_guidance
-            break
+    # Canonical SUBSHELL_V2 Phase 2 block is three physical lines. The stage
+    # script now depends on two files under client/lib, so the viewer must fetch
+    # the complete executable unit into the same temporary directory.
+    if (
+        i + 2 < len(lines)
+        and line.startswith("( [[ ${BASH_SUBSHELL:-0} -gt 0 ]]")
+        and "SCRIPT='stage-dp-phase2.sh'" in line
+        and "$MIRROR/client/$SCRIPT" in lines[i + 1]
+        and 'sha256sum -c "$SCRIPT.sha256"' in lines[i + 2]
+        and 'sudo bash "./$SCRIPT"' in lines[i + 2]
+    ):
+        mirror_match = re.search(r"MIRROR='([^']+)'", line)
+        version_match = re.search(r"VER='([^']+)'", line)
+        script_match = re.search(r"SCRIPT='([^']+)'", line)
+        if not (mirror_match and version_match and script_match):
+            raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=phase2_parse")
+        mirror = mirror_match.group(1).rstrip("/")
+        version = version_match.group(1)
+        script = script_match.group(1)
+        if script != "stage-dp-phase2.sh" or not mirror:
+            raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=phase2_shape")
+        same_version = " --same-version-recovery" if "--same-version-recovery" in lines[i + 2] else ""
 
-    launcher = m.group("launcher")
-    url = m.group("url")
-    sha = m.group("sha").lower()
-    suffix = f"/client/{launcher}"
-    if not url.endswith(suffix):
-        raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=launcher_url_shape")
-    mirror = url[: -len(suffix)].rstrip("/")
-    if not mirror:
-        raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=mirror_url_empty")
+        for idx in range(len(out) - 1, max(-1, len(out) - 8), -1):
+            if out[idx] == phase2_guidance:
+                out[idx : idx + 1] = phase2_replacement_guidance
+                break
 
-    # Three physical lines, one logical Bash command. The literal SHA256 remains
-    # the operator trust anchor; no HTTP sidecar and no curl|bash are introduced.
-    out.extend(
-        [
-            f"cd /home/aella && L='{launcher}' && D=\"$L.download\" && \\",
-            f"  U='{mirror}' && H='{sha}' && curl -fsSLo \"$D\" \"$U/client/$L\" && \\",
-            "  printf '%s  %s\\n' \"$H\" \"$D\" | sha256sum -c - && "
-            "mv -f \"$D\" \"$L\" && bash \"./$L\"",
-        ]
+        client_base = f"{mirror}/client"
+        out.extend(
+            [
+                f"( C='{client_base}' S='{script}' W=$(mktemp -d); trap 'rm -rf \"$W\"' EXIT; cd \"$W\" && mkdir lib && \\",
+                "  curl --create-dirs -fsSLo '#1' \"$C/{stage-dp-phase2.sh,stage-dp-phase2.sh.sha256,lib/dp-offline-source-product-version.sh,lib/dp-phase2-operation-progress.sh}\" && \\",
+                f"  sha256sum -c \"$S.sha256\" && sudo bash \"./$S\" --target-version '{version}'{same_version} --mirror-url \"${{C%/client}}\" )",
+            ]
+        )
+        phase2_wrapped += 1
+        i += 3
+        continue
+
+    if line == (
+        "OS-hop steps use one hash-pinned launcher command per hop "
+        "(DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1)."
+    ):
+        out.extend(
+            [
+                "OS-hop steps use one hash-pinned launcher command per hop",
+                "(DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1), displayed as three physical lines",
+                "for normal-width terminals. Copy all three lines together.",
+            ]
+        )
+    else:
+        out.append(line)
+    i += 1
+
+if hop_wrapped not in (0, 4):
+    raise SystemExit(
+        f"MENU7_DISPLAY_FORMAT=FAIL reason=unexpected_launcher_count count={hop_wrapped}"
     )
-    wrapped += 1
-
-if wrapped not in (0, 4):
-    raise SystemExit(f"MENU7_DISPLAY_FORMAT=FAIL reason=unexpected_launcher_count count={wrapped}")
+if phase2_wrapped not in (0, 1):
+    raise SystemExit(
+        f"MENU7_DISPLAY_FORMAT=FAIL reason=unexpected_phase2_count count={phase2_wrapped}"
+    )
 
 dst.write_text("\n".join(out) + "\n", encoding="utf-8")
-print(f"MENU7_DISPLAY_FORMAT=PASS wrapped_launchers={wrapped}", file=sys.stderr)
+print(
+    f"MENU7_DISPLAY_FORMAT=PASS wrapped_launchers={hop_wrapped} "
+    f"wrapped_phase2={phase2_wrapped}",
+    file=sys.stderr,
+)
 PY
 }
 
