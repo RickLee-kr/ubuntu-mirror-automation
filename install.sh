@@ -15,6 +15,28 @@ source "${UM_PROJECT_ROOT}/lib/state.sh"
 # shellcheck source=lib/bootstrap.sh
 source "${UM_PROJECT_ROOT}/lib/bootstrap.sh"
 
+# Bootstrap installs the authoritative runtime first. Replace only the public
+# /usr/local/bin entrypoint afterward with the small Menu 7 presentation wrapper.
+# The core runtime remains under /usr/local/lib and all non-GUI commands delegate
+# to it unchanged.
+eval "$(
+  declare -f um_bootstrap_install_runtime \
+    | sed '1s/^um_bootstrap_install_runtime[[:space:]]*()/_um_bootstrap_install_runtime_core ()/'
+)"
+um_bootstrap_install_runtime() {
+  _um_bootstrap_install_runtime_core
+  local bindir="${INSTALL_BIN_DIR:-/usr/local/bin}"
+  local wrapper="${UM_PROJECT_ROOT}/scripts/ubuntu-offline-mirror-entrypoint.sh"
+  [[ -f "$wrapper" ]] || um_die "RUNTIME_SOURCE_FILE_MISSING=${wrapper}"
+  if [[ "${UM_DRY_RUN:-0}" == "1" ]]; then
+    um_dry "Would install Menu 7 normal-width entrypoint at ${bindir}/ubuntu-offline-mirror"
+    return 0
+  fi
+  rm -f "${bindir}/ubuntu-offline-mirror"
+  install -m 0755 "$wrapper" "${bindir}/ubuntu-offline-mirror"
+  um_ok "MENU7_NORMAL_WIDTH_ENTRYPOINT=PASS path=${bindir}/ubuntu-offline-mirror"
+}
+
 UM_DRY_RUN=0
 UM_FORCE=0
 UM_VERBOSE=0
@@ -138,7 +160,7 @@ main() {
         :
       elif [[ "${UM_DRY_RUN}" == "1" ]]; then
         um_dry "Would mount DATA_DEVICE=${DATA_DEVICE} at ${BASE_PATH} (no format)"
-      elif [[ -b "${DATA_DEVICE}" ]]; then
+      elif [[ -b "$DATA_DEVICE" ]]; then
         mkdir -p "$BASE_PATH"
         if ! mountpoint -q "$BASE_PATH" 2>/dev/null; then
           um_warn "DATA_DEVICE=${DATA_DEVICE} is set but not mounted; mount it manually before large downloads"
