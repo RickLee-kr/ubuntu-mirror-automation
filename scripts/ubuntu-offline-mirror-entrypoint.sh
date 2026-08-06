@@ -45,7 +45,7 @@ hop_replacement_guidance = [
 phase2_guidance = "Copy all three lines of the following block into the DP terminal once:"
 phase2_replacement_guidance = [
     "Copy and paste all three physical lines below into the DP terminal.",
-    "They download the Phase 2 script and both required helper libraries together.",
+    "The command downloads the stage script, checksum, and both required helper libraries.",
 ]
 
 lines = src.read_text(encoding="utf-8").splitlines()
@@ -87,9 +87,11 @@ while i < len(lines):
         i += 1
         continue
 
-    # Canonical SUBSHELL_V2 Phase 2 block is three physical lines. The stage
-    # script now depends on two files under client/lib, so the viewer must fetch
-    # the complete executable unit into the same temporary directory.
+    # The canonical SUBSHELL_V2 Phase 2 block downloads only the stage script.
+    # The stage script sources two helper libraries from ./lib, so Menu 7 must
+    # present a complete executable unit. Use a shell loop rather than curl URL
+    # globbing: curl's -o '#1' mapping varies by invocation shape and previously
+    # left ./lib empty on the DP.
     if (
         i + 2 < len(lines)
         and line.startswith("( [[ ${BASH_SUBSHELL:-0} -gt 0 ]]")
@@ -118,8 +120,8 @@ while i < len(lines):
         client_base = f"{mirror}/client"
         out.extend(
             [
-                f"( C='{client_base}' S='{script}' W=$(mktemp -d); trap 'rm -rf \"$W\"' EXIT; cd \"$W\" && mkdir lib && \\",
-                "  curl --create-dirs -fsSLo '#1' \"$C/{stage-dp-phase2.sh,stage-dp-phase2.sh.sha256,lib/dp-offline-source-product-version.sh,lib/dp-phase2-operation-progress.sh}\" && \\",
+                f"( C='{client_base}' S='{script}' W=$(mktemp -d); trap 'rm -rf \"$W\"' EXIT; cd \"$W\" && \\",
+                "  for F in \"$S\" \"$S.sha256\" lib/{dp-offline-source-product-version,dp-phase2-operation-progress}.sh; do mkdir -p \"$(dirname \"$F\")\" && curl -fsSLo \"$F\" \"$C/$F\" || exit; done && \\",
                 f"  sha256sum -c \"$S.sha256\" && sudo bash \"./$S\" --target-version '{version}'{same_version} --mirror-url \"${{C%/client}}\" )",
             ]
         )
