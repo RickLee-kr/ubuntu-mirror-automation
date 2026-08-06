@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installed CLI entrypoint. Delegates all normal commands to the authoritative
-# runtime and applies a display-only Menu 7 formatter for normal-width SSH
-# terminals. The canonical generated command file remains unchanged.
+# runtime and applies display/status compatibility fixes for operator workflows.
+# Canonical generated command files and artifact trust decisions remain unchanged.
 set -euo pipefail
 set +x
 
@@ -162,6 +162,177 @@ print(
 PY
 }
 
+# Artifact status values written by a successful reuse path are semantically
+# equivalent to PASS. Keep the accepted set deliberately narrow: FAIL, blank,
+# and unknown values must continue to fail closed.
+uom_status_success() {
+  case "${1:-}" in
+    PASS|REUSED) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Independent, cheap status checks used by the status screen. These avoid the
+# old all-or-nothing MM_WF_DOWNLOAD_COMPLETED coupling, where one OS status
+# mismatch incorrectly made the Phase 2 bundle appear NOT READY (and vice versa).
+uom_os_upgrade_files_completed() {
+  mm_configuration_completed || return 1
+  mm_is_phase2_only && return 0
+  engine_resolve_paths 2>/dev/null || true
+  [[ -d "${MM_SELECTIVE_ROOT}/ubuntu" || -L "${MM_SELECTIVE_ROOT}/ubuntu" ]] || return 1
+  uom_status_success "$(mm_status_get OS_MIRROR_READY)" || return 1
+  uom_status_success "$(mm_status_get R2_OS_CORE_CHECKSUM)" || return 1
+  mm_client_files_ready "${MM_CLIENT_ROOT}" || return 1
+  mm_client_set_current_source "${MM_CLIENT_ROOT}" >/dev/null 2>&1 || return 1
+  return 0
+}
+
+uom_phase2_bundle_completed() {
+  local bundle_ck entries
+  mm_configuration_completed || return 1
+  engine_resolve_paths 2>/dev/null || true
+  mm_phase2_paths
+  [[ -f "${MM_WF_PHASE2_RELEASE}" ]] || return 1
+  [[ -f "${MM_WF_PHASE2_BUNDLE}" ]] || return 1
+  [[ -f "${MM_WF_PHASE2_SIDECAR}" ]] || return 1
+  bundle_ck="$(mm_status_get PHASE2_BUNDLE_CHECKSUM)"
+  entries="$(mm_status_get PHASE2_BUNDLE_ENTRY_COUNT)"
+  uom_status_success "$bundle_ck" || return 1
+  [[ "$entries" == "9" ]] || return 1
+  mm_client_files_ready_phase2 "${MM_CLIENT_ROOT}" || return 1
+  return 0
+}
+
+# Replacement for the runtime's mm_download_completed(). The original accepted
+# only the literal value PASS for R2_OS_CORE_CHECKSUM, while successful reuse is
+# intentionally recorded as REUSED. That produced a false NOT READY dashboard
+# after snapshot restore/reinstall even though readiness and all generations
+# had passed. Preserve every other validation and fail-closed condition.
+uom_mm_download_completed() {
+  local stored_fp current_fp entries bundle_ck os_ready
+  mm_configuration_completed || return 1
+  engine_resolve_paths 2>/dev/null || true
+  mm_phase2_paths
+  [[ -f "${MM_WF_PHASE2_RELEASE}" ]] || return 1
+  [[ -f "${MM_WF_PHASE2_BUNDLE}" ]] || return 1
+  [[ -f "${MM_WF_PHASE2_SIDECAR}" ]] || return 1
+  bundle_ck="$(mm_status_get PHASE2_BUNDLE_CHECKSUM)"
+  entries="$(mm_status_get PHASE2_BUNDLE_ENTRY_COUNT)"
+  uom_status_success "$bundle_ck" || return 1
+  [[ "$entries" == "9" ]] || return 1
+  if mm_is_phase2_only; then
+    mm_client_files_ready_phase2 "${MM_CLIENT_ROOT}" || return 1
+  else
+    [[ -d "${MM_SELECTIVE_ROOT}/ubuntu" || -L "${MM_SELECTIVE_ROOT}/ubuntu" ]] || return 1
+    os_ready="$(mm_status_get OS_MIRROR_READY)"
+    uom_status_success "$os_ready" || return 1
+    uom_status_success "$(mm_status_get R2_OS_CORE_CHECKSUM)" || return 1
+    mm_client_files_ready "${MM_CLIENT_ROOT}" || return 1
+    mm_client_set_current_source "${MM_CLIENT_ROOT}" >/dev/null 2>&1 || return 1
+  fi
+  if ! uom_status_success "$(mm_status_get DOWNLOAD_PREPARE_RESULT)" \
+    && ! uom_status_success "$(mm_status_get LAST_EXECUTION_RESULT)" \
+    && ! uom_status_success "$(mm_status_get INSTALL_RESULT)"; then
+    return 1
+  fi
+  if mm_temps_present; then
+    return 1
+  fi
+  current_fp="$(mm_artifact_fingerprint)"
+  stored_fp="$(mm_status_get DOWNLOAD_ARTIFACT_FINGERPRINT)"
+  if [[ -z "$stored_fp" ]]; then
+    mm_status_set DOWNLOAD_ARTIFACT_FINGERPRINT "$current_fp"
+    mm_status_set DOWNLOAD_PREPARE_RESULT PASS
+    mm_status_set DOWNLOAD_VALIDATED_AT "$(mm_ts)"
+    mm_status_set PHASE2_BUNDLE_SIZE "$(mm_file_bytes "${MM_WF_PHASE2_BUNDLE}")"
+    mm_status_set PHASE2_BUNDLE_MTIME "$(stat -c '%Y' "${MM_WF_PHASE2_BUNDLE}" 2>/dev/null || echo 0)"
+    mm_status_set PHASE2_SIDECAR_MTIME "$(stat -c '%Y' "${MM_WF_PHASE2_SIDECAR}" 2>/dev/null || echo 0)"
+    return 0
+  fi
+  [[ "$stored_fp" == "$current_fp" ]] || return 1
+  return 0
+}
+
+# Replacement for gui_show_status(): compute OS Core and Phase 2 readiness
+# independently, while the overall progress/readiness still uses the generation-
+# bound workflow contract through mm_collect_workflow_status().
+uom_gui_show_status() {
+  load_mirror_defaults
+  mm_load_gui_config
+  mm_normalize_preparation_mode
+  mm_force_phase2_target
+  engine_resolve_paths
+  local tmp ver config_state os_state bundle_state http_state ready_state start_os final_os
+  ver="${PHASE2_TARGET_VERSION}"
+  mm_collect_workflow_status
+  if [[ "${MM_WF_CONFIG_COMPLETED}" == "1" ]]; then
+    config_state="PASS"
+  else
+    config_state="FAIL"
+  fi
+  if mm_is_phase2_only; then
+    start_os="Ubuntu 24.04"
+    final_os="Ubuntu 24.04"
+    os_state="NOT REQUIRED"
+  else
+    start_os="Ubuntu 16.04"
+    final_os="Ubuntu 24.04"
+    if uom_os_upgrade_files_completed; then
+      os_state="READY"
+    else
+      os_state="NOT READY"
+    fi
+  fi
+  if uom_phase2_bundle_completed; then
+    bundle_state="READY (9 files)"
+  else
+    bundle_state="NOT READY"
+  fi
+  if [[ "${MM_WF_HTTP_COMPLETED}" == "1" ]]; then
+    http_state="ENABLED"
+  else
+    http_state="$(mm_status_get HTTP_DISTRIBUTION)"
+    [[ -n "$http_state" ]] || http_state="DISABLED"
+    [[ "$http_state" == "ENABLED" ]] || http_state="DISABLED"
+  fi
+  ready_state="$(mm_upgrade_readiness_display)"
+  [[ -n "$ready_state" ]] || ready_state="NOT VERIFIED"
+  tmp="$(mktemp)"
+  cat >"$tmp" <<EOF_STATUS
+DP Upgrade Mirror Status
+========================
+
+Supported Starting DP Versions: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0
+Phase 2 Target: ${ver}
+Preparation Mode: $(mm_preparation_mode_label)
+Starting OS: ${start_os}
+Final OS: ${final_os}
+Configuration: ${config_state}
+OS Upgrade Files: ${os_state}
+DP ${ver} Bundle: ${bundle_state}
+HTTP Distribution: ${http_state}
+Upgrade Readiness: ${ready_state}
+Last Operation: $(mm_status_get LAST_EXECUTION_RESULT)
+Log File: $(mm_status_get LOG_PATH)
+
+$(mm_workflow_progress_text)
+EOF_STATUS
+  mm_whiptail_textbox "Current Status" "$tmp" || true
+  rm -f "$tmp"
+  return 0
+}
+
+uom_install_status_overrides() {
+  eval "$(
+    declare -f uom_mm_download_completed \
+      | sed '1s/^uom_mm_download_completed[[:space:]]*()/mm_download_completed ()/'
+  )"
+  eval "$(
+    declare -f uom_gui_show_status \
+      | sed '1s/^uom_gui_show_status[[:space:]]*()/gui_show_status ()/'
+  )"
+}
+
 uom_run_mirror_manager() {
   [[ -f "$UOM_MANAGER_ENTRY" ]] || {
     printf 'ERROR: Mirror Manager runtime is missing: %s\n' "$UOM_MANAGER_ENTRY" >&2
@@ -184,6 +355,8 @@ uom_run_mirror_manager() {
   source "$manager_lib"
   rm -f "$manager_lib"
   manager_lib=""
+
+  uom_install_status_overrides
 
   if ! declare -F mm_menu7_textbox >/dev/null 2>&1; then
     printf 'ERROR: Menu 7 viewer function is unavailable in installed runtime.\n' >&2
@@ -212,22 +385,28 @@ uom_run_mirror_manager() {
   main "$@"
 }
 
-case "${1:-mirror-manager}" in
-  --format-menu7)
-    [[ $# -eq 3 ]] || {
-      printf 'Usage: %s --format-menu7 INPUT OUTPUT\n' "$0" >&2
-      exit 2
-    }
-    uom_format_menu7_file "$2" "$3"
-    ;;
-  mirror-manager|install-menu)
-    uom_run_mirror_manager "$@"
-    ;;
-  *)
-    [[ -x "$UOM_CORE_ENTRY" || -f "$UOM_CORE_ENTRY" ]] || {
-      printf 'ERROR: Core runtime entrypoint is missing: %s\n' "$UOM_CORE_ENTRY" >&2
-      exit 1
-    }
-    exec bash "$UOM_CORE_ENTRY" "$@"
-    ;;
-esac
+uom_main() {
+  case "${1:-mirror-manager}" in
+    --format-menu7)
+      [[ $# -eq 3 ]] || {
+        printf 'Usage: %s --format-menu7 INPUT OUTPUT\n' "$0" >&2
+        exit 2
+      }
+      uom_format_menu7_file "$2" "$3"
+      ;;
+    mirror-manager|install-menu)
+      uom_run_mirror_manager "$@"
+      ;;
+    *)
+      [[ -x "$UOM_CORE_ENTRY" || -f "$UOM_CORE_ENTRY" ]] || {
+        printf 'ERROR: Core runtime entrypoint is missing: %s\n' "$UOM_CORE_ENTRY" >&2
+        exit 1
+      }
+      exec bash "$UOM_CORE_ENTRY" "$@"
+      ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  uom_main "$@"
+fi
