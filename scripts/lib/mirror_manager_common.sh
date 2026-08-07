@@ -1088,21 +1088,42 @@ mm_download_completed() {
   [[ -f "${MM_WF_PHASE2_SIDECAR}" ]] || return 1
   bundle_ck="$(mm_status_get PHASE2_BUNDLE_CHECKSUM)"
   entries="$(mm_status_get PHASE2_BUNDLE_ENTRY_COUNT)"
-  [[ "$bundle_ck" == "PASS" ]] || return 1
+  # PASS and REUSED are both successful validations (entrypoint uom_status_success).
+  case "$bundle_ck" in
+    PASS|REUSED) ;;
+    *) return 1 ;;
+  esac
   [[ "$entries" == "9" ]] || return 1
   if mm_is_phase2_only; then
     mm_client_files_ready_phase2 "${MM_CLIENT_ROOT}" || return 1
   else
     [[ -d "${MM_SELECTIVE_ROOT}/ubuntu" || -L "${MM_SELECTIVE_ROOT}/ubuntu" ]] || return 1
     os_ready="$(mm_status_get OS_MIRROR_READY)"
-    [[ "$os_ready" == "PASS" ]] || return 1
-    [[ "$(mm_status_get R2_OS_CORE_CHECKSUM)" == "PASS" ]] || return 1
+    case "$os_ready" in
+      PASS|REUSED) ;;
+      *) return 1 ;;
+    esac
+    case "$(mm_status_get R2_OS_CORE_CHECKSUM)" in
+      PASS|REUSED) ;;
+      *) return 1 ;;
+    esac
     mm_client_files_ready "${MM_CLIENT_ROOT}" || return 1
     mm_client_set_current_source "${MM_CLIENT_ROOT}" >/dev/null 2>&1 || return 1
   fi
-  [[ "$(mm_status_get DOWNLOAD_PREPARE_RESULT)" == "PASS" \
-    || "$(mm_status_get LAST_EXECUTION_RESULT)" == "PASS" \
-    || "$(mm_status_get INSTALL_RESULT)" == "PASS" ]] || return 1
+  case "$(mm_status_get DOWNLOAD_PREPARE_RESULT)" in
+    PASS|REUSED) ;;
+    *)
+      case "$(mm_status_get LAST_EXECUTION_RESULT)" in
+        PASS|REUSED) ;;
+        *)
+          case "$(mm_status_get INSTALL_RESULT)" in
+            PASS|REUSED) ;;
+            *) return 1 ;;
+          esac
+          ;;
+      esac
+      ;;
+  esac
   if mm_temps_present; then
     return 1
   fi

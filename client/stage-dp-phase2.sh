@@ -12,18 +12,77 @@ set +x
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Shared helpers (Phase 2 staging + source version + progress)
+# Peek --mirror-url before helper sourcing so older Menu 7 commands that only
+# fetched stage-dp-phase2.sh (+sha256) can still pull the required lib helpers.
+_STAGE_EARLY_MIRROR=""
+_stage_early_args=("$@")
+for ((_stage_i = 0; _stage_i < ${#_stage_early_args[@]}; _stage_i++)); do
+  if [[ "${_stage_early_args[_stage_i]}" == "--mirror-url" ]]; then
+    _STAGE_EARLY_MIRROR="${_stage_early_args[_stage_i + 1]:-}"
+    break
+  fi
+done
+_STAGE_EARLY_MIRROR="${_STAGE_EARLY_MIRROR%/}"
+
+_stage_fetch_helper_if_missing() {
+  local dest="$1"
+  local rel="$2"
+  local tmp url
+  if [[ -s "$dest" ]] \
+    && ! head -c 256 "$dest" | tr -d '\0' | grep -qiE '<!DOCTYPE[[:space:]]*html|<html[[:space:]]|<html>' \
+    && bash -n "$dest" >/dev/null 2>&1
+  then
+    return 0
+  fi
+  [[ -n "$_STAGE_EARLY_MIRROR" ]] || return 1
+  mkdir -p "$(dirname "$dest")"
+  tmp="$(mktemp "$(dirname "$dest")/.stage-helper.XXXXXX")"
+  url="${_STAGE_EARLY_MIRROR}/client/${rel}"
+  if ! curl -fsSL --connect-timeout 30 --retry 3 --retry-delay 2 -o "$tmp" "$url"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if [[ ! -s "$tmp" ]] \
+    || head -c 256 "$tmp" | tr -d '\0' | grep -qiE '<!DOCTYPE[[:space:]]*html|<html[[:space:]]|<html>' \
+    || ! bash -n "$tmp" >/dev/null 2>&1
+  then
+    rm -f "$tmp"
+    return 1
+  fi
+  chmod 0755 "$tmp"
+  mv -f "$tmp" "$dest"
+  return 0
+}
+
+# Shared helpers (Phase 2 staging + source version + progress). Prefer helpers
+# beside the downloaded stage script (Menu 7 temp tree / published client/).
 _STAGE_LIB_DIR="${SCRIPT_DIR}/lib"
-if [[ ! -f "${_STAGE_LIB_DIR}/dp-offline-source-product-version.sh" ]]; then
-  for _cand in \
-    "${SCRIPT_DIR}/../client/lib" \
-    /home/aella/ubuntu-mirror-automation/client/lib
-  do
-    if [[ -f "${_cand}/dp-offline-source-product-version.sh" ]]; then
-      _STAGE_LIB_DIR="$_cand"
-      break
+mkdir -p "${_STAGE_LIB_DIR}"
+for _rel in \
+  dp-offline-source-product-version.sh \
+  dp-phase2-operation-progress.sh
+do
+  if [[ ! -s "${_STAGE_LIB_DIR}/${_rel}" ]]; then
+    if ! _stage_fetch_helper_if_missing "${_STAGE_LIB_DIR}/${_rel}" "lib/${_rel}"; then
+      # Fall back to a local checkout path when present (dev/test hosts).
+      for _cand in \
+        "${SCRIPT_DIR}/../client/lib" \
+        /home/aella/ubuntu-mirror-automation/client/lib
+      do
+        if [[ -s "${_cand}/${_rel}" ]]; then
+          cp -a "${_cand}/${_rel}" "${_STAGE_LIB_DIR}/${_rel}"
+          break
+        fi
+      done
     fi
-  done
+  fi
+done
+if [[ ! -s "${_STAGE_LIB_DIR}/dp-offline-source-product-version.sh" \
+  || ! -s "${_STAGE_LIB_DIR}/dp-phase2-operation-progress.sh" ]]
+then
+  printf 'ERROR: missing Phase 2 helper libraries under %s (and mirror fetch failed)\n' \
+    "${_STAGE_LIB_DIR}" >&2
+  exit 1
 fi
 # shellcheck source=/dev/null
 source "${_STAGE_LIB_DIR}/dp-offline-source-product-version.sh"

@@ -257,19 +257,9 @@ EMPTY="${WORKDIR}/empty-client"; mkdir -p "$EMPTY"
 MM_CLIENT_ROOT="$EMPTY"
 if mm_client_files_ready "$EMPTY"; then fail "empty client dir READY"; else pass "empty client dir rejected"; fi
 GOOD="${WORKDIR}/good-client"
-mkdir -p "$GOOD"
-for f in \
-  dp-offline-upgrade-xenial-to-bionic.sh \
-  dp-offline-upgrade-bionic-to-focal.sh \
-  dp-offline-upgrade-focal-to-jammy.sh \
-  dp-offline-upgrade-jammy-to-noble.sh \
-  stage-dp-phase2.sh
-do
-  cp -f "${ROOT}/client/${f}" "${GOOD}/${f}"
-  (cd "$GOOD" && sha256sum "$f" >"${f}.sha256")
-done
-# Binary gpgv keyring required for CLIENT_FILES_READY after publication contract update.
-printf 'x' >"${GOOD}/public-keyring.gpg"
+# shellcheck source=lib/seed_complete_client_http_set.sh
+source "${ROOT}/tests/lib/seed_complete_client_http_set.sh"
+seed_complete_client_http_set "$GOOD" "http://192.0.2.10" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 if mm_client_files_ready "$GOOD"; then pass "client files READY"; else fail "client files READY"; fi
 rm -f "${GOOD}/stage-dp-phase2.sh.sha256"
 if mm_client_files_ready "$GOOD"; then fail "missing checksum still READY"; else pass "missing checksum rejected"; fi
@@ -326,16 +316,7 @@ mkdir -p "${HTTP_ROOT}/selective/hops/jammy-to-noble/ubuntu" \
   "${HTTP_ROOT}/client" \
   "${HTTP_ROOT}/dp-phase2/6.5.0"
 ln -sfn hops/jammy-to-noble/ubuntu "${HTTP_ROOT}/selective/ubuntu"
-for f in \
-  dp-offline-upgrade-xenial-to-bionic.sh \
-  dp-offline-upgrade-bionic-to-focal.sh \
-  dp-offline-upgrade-focal-to-jammy.sh \
-  dp-offline-upgrade-jammy-to-noble.sh \
-  stage-dp-phase2.sh
-do
-  cp -f "${ROOT}/client/${f}" "${HTTP_ROOT}/client/${f}"
-  (cd "${HTTP_ROOT}/client" && sha256sum "$f" >"${f}.sha256")
-done
+seed_complete_client_http_set "${HTTP_ROOT}/client" "http://192.0.2.10" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 printf 'TARGET_DP_VERSION=6.5.0\n' >"${HTTP_ROOT}/dp-phase2/6.5.0/release.env"
 # Minimal valid-looking bundle + sha for layout check
 tar -cf "${HTTP_ROOT}/dp-phase2/6.5.0/dp_bundle_6.5.0-current.tar" -C "${HTTP_ROOT}/dp-phase2/6.5.0" release.env

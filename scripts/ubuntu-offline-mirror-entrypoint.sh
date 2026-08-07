@@ -44,8 +44,9 @@ hop_replacement_guidance = [
 ]
 phase2_guidance = "Copy all three lines of the following block into the DP terminal once:"
 phase2_replacement_guidance = [
-    "Copy and paste all three physical lines below into the DP terminal.",
-    "The command downloads the stage script, checksum, and both required helper libraries.",
+    "Copy and paste all four physical lines below into the DP terminal.",
+    "The command downloads the complete Phase 2 client helper unit",
+    "(stage script, checksum, lifecycle wrapper, and required lib helpers).",
 ]
 
 lines = src.read_text(encoding="utf-8").splitlines()
@@ -118,10 +119,14 @@ while i < len(lines):
                 break
 
         client_base = f"{mirror}/client"
+        # Four physical lines, one logical Bash command. Explicit per-file
+        # downloads (no curl URL globbing) land the complete helper unit in the
+        # same temp tree: stage + sidecar + lifecycle wrapper + three lib helpers.
         out.extend(
             [
                 f"( C='{client_base}' S='{script}' W=$(mktemp -d); trap 'rm -rf \"$W\"' EXIT; cd \"$W\" && \\",
-                "  for F in \"$S\" \"$S.sha256\" lib/{dp-offline-source-product-version,dp-phase2-operation-progress}.sh; do mkdir -p \"$(dirname \"$F\")\" && curl -fsSLo \"$F\" \"$C/$F\" || exit; done && \\",
+                "  mkdir -p lib && for F in \"$S\"{,.sha256} bringup_py3_dp_lifecycle.sh \\",
+                "    lib/dp-{offline-source-product-version,phase2-operation-progress,phase2-bringup-lifecycle}.sh; do curl -fsSLo \"$F\" \"$C/$F\" || exit; done && \\",
                 f"  sha256sum -c \"$S.sha256\" && sudo bash \"./$S\" --target-version '{version}'{same_version} --mirror-url \"${{C%/client}}\" )",
             ]
         )

@@ -20,6 +20,7 @@ cleanup() {
 trap cleanup EXIT
 
 export DP_PHASE2_STAGE_LIB_ONLY=1
+export DP_PHASE2_HEARTBEAT_SECONDS=1
 # shellcheck disable=SC1090
 source "$HELPER"
 

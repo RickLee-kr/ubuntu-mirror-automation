@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/seed_complete_client_http_set.sh
+source "${ROOT}/tests/lib/seed_complete_client_http_set.sh"
 INSTALLER="${ROOT}/scripts/install-dp-upgrade-mirror.sh"
 COMMON="${ROOT}/scripts/lib/mirror_manager_common.sh"
 OS_CORE_PY="${ROOT}/scripts/lib/os_core_package.py"
@@ -39,8 +41,9 @@ make_selective_fixture() {
     printf 'pkg-%s\n' "$hop" >"${root}/published/hops/${hop}/ubuntu/pool/hello.deb"
     printf 'Release-%s\n' "$hop" >"${root}/published/hops/${hop}/ubuntu/dists/Release"
   done
-  mkdir -p "${root}/published/shared/offline"
+  mkdir -p "${root}/published/shared/offline" "${root}/keys"
   printf 'meta\n' >"${root}/published/shared/offline/meta-release-lts"
+  printf 'TEST-SELECTIVE-PUBLIC-KEY\n' >"${root}/keys/ubuntu-mirror-selective.gpg"
   ln -sfn hops/jammy-to-noble/ubuntu "${root}/published/ubuntu"
 }
 
@@ -241,9 +244,12 @@ write_gui_config() {
 PREPARATION_MODE=FULL
 ACPS_USERNAME=testuser
 ACPS_PASSWORD=testpass
+MIRROR_SERVER_IP=192.0.2.10
+MIRROR_HTTP_URL=http://192.0.2.10
 EOF
   chmod 600 "$path"
 }
+export SKIP_MIRROR_HOST_VALIDATE=1
 
 setup_project_shadow_if_needed() {
   if [[ "${USE_WORKDIR_VENDOR:-0}" != "1" ]]; then
@@ -254,6 +260,7 @@ setup_project_shadow_if_needed() {
   mkdir -p "$SHADOW_ROOT/vendor"
   ln -sfn "${ROOT}/scripts" "${SHADOW_ROOT}/scripts"
   ln -sfn "${ROOT}/client" "${SHADOW_ROOT}/client"
+  ln -sfn "${ROOT}/lib" "${SHADOW_ROOT}/lib"
   ln -sfn "${ROOT}/config" "${SHADOW_ROOT}/config"
   ln -sfn "${ROOT}/mirror.conf" "${SHADOW_ROOT}/mirror.conf" 2>/dev/null || true
   cp -a "${WORKDIR}/vendor/dp-phase2" "${SHADOW_ROOT}/vendor/dp-phase2"
@@ -261,18 +268,7 @@ setup_project_shadow_if_needed() {
 
 seed_client_files() {
   local dest="${1:-${MM_CLIENT_ROOT}}"
-  mkdir -p "$dest"
-  local f
-  for f in \
-    dp-offline-upgrade-xenial-to-bionic.sh \
-    dp-offline-upgrade-bionic-to-focal.sh \
-    dp-offline-upgrade-focal-to-jammy.sh \
-    dp-offline-upgrade-jammy-to-noble.sh \
-    stage-dp-phase2.sh
-  do
-    cp -f "${ROOT}/client/${f}" "${dest}/${f}"
-    (cd "$dest" && sha256sum "$f" >"${f}.sha256")
-  done
+  seed_complete_client_http_set "$dest" "http://192.0.2.10"     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 }
 
 common_env() {
@@ -296,8 +292,11 @@ common_env() {
   export DP_PHASE2_ROOT="${WORKDIR}/mirror/dp-phase2"
   export DP_PHASE2_SKIP_ROOT_CHECK=1
   export DP_PHASE2_MIN_FREE_GIB=0
-  export ACPS_PROGRESS_INTERVAL_SEC=30
-  export R2_PROGRESS_INTERVAL_SEC=30
+  export ACPS_PROGRESS_INTERVAL_SEC=1
+  export R2_PROGRESS_INTERVAL_SEC=1
+  export MM_LONG_STEP_HEARTBEAT_SEC=1
+  export DP_PHASE2_HEARTBEAT_SECONDS=1
+  export MM_ENABLE_HTTP_SHA_HEARTBEAT_INTERVAL=1
   export ACPS_INSECURE_TLS=0
   mkdir -p "$MM_LOG_DIR" "$MM_STATE_ROOT" "$MM_CLIENT_ROOT" "$MM_CONFIG_DIR"
   seed_client_files "$MM_CLIENT_ROOT"
@@ -1166,10 +1165,10 @@ fi
 
 # /offline/ directory GET is 403 with autoindex off; smoke must probe a file.
 if awk '
-  /^engine_validate_http_layout\(\)/ { in_fn=1 }
+  /^engine_http_smoke_urls\(\)/ { in_fn=1 }
   in_fn && /\/offline\/meta-release-lts/ { file=1 }
   # Exact bare directory URL only (not a prefix of meta-release-lts).
-  in_fn && /"\$\{base\}\/offline\/"/ && $0 !~ /meta-release-lts/ { bare=1 }
+  in_fn && /\/offline\/"/ && $0 !~ /meta-release-lts/ { bare=1 }
   in_fn && /^}/ { exit((file && !bare) ? 0 : 1) }
 ' "$ENGINE"; then
   pass "T offline smoke probes meta-release-lts (not bare /offline/)"

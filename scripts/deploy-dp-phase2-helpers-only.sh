@@ -251,7 +251,18 @@ verify_release_env_http() {
 
 verify_helpers_http() {
   local u code name src_sha http_sha side_sha
-  for name in stage-dp-phase2.sh "stage-dp-phase2-${TARGET_DP_VERSION}.sh"; do
+  # Complete Phase 2 client unit: stage scripts + lifecycle + sourced libs.
+  local -a unit_scripts=(
+    stage-dp-phase2.sh
+    "stage-dp-phase2-${TARGET_DP_VERSION}.sh"
+    bringup_py3_dp_lifecycle.sh
+  )
+  local -a unit_libs=(
+    lib/dp-offline-source-product-version.sh
+    lib/dp-phase2-operation-progress.sh
+    lib/dp-phase2-bringup-lifecycle.sh
+  )
+  for name in "${unit_scripts[@]}"; do
     for u in \
       "${MIRROR_LOCAL}/client/${name}" \
       "${MIRROR_LOCAL}/client/${name}.sha256" \
@@ -269,6 +280,22 @@ verify_helpers_http() {
     side_sha="$(curl -fsS --max-time 15 "${MIRROR_LOCAL}/client/${name}.sha256" | awk '{print $1}')"
     [[ "$src_sha" == "$http_sha" && "$src_sha" == "$side_sha" ]] \
       || fail_step "helpers_sha_${name}"
+    echo "HELPER_HTTP_VERIFY=PASS name=${name} sha256=${src_sha}"
+  done
+  for name in "${unit_libs[@]}"; do
+    for u in \
+      "${MIRROR_LOCAL}/client/${name}" \
+      "${MIRROR_BASE}/client/${name}"
+    do
+      code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$u" || true)"
+      [[ "$code" == "200" ]] || {
+        echo "HTTP ${code} ${u}" >&2
+        fail_step "helpers_http_${name}"
+      }
+    done
+    src_sha="$(sha256sum "${ROOT}/client/${name}" | awk '{print $1}')"
+    http_sha="$(curl -fsS --max-time 15 "${MIRROR_LOCAL}/client/${name}" | sha256sum | awk '{print $1}')"
+    [[ "$src_sha" == "$http_sha" ]] || fail_step "helpers_sha_${name}"
     echo "HELPER_HTTP_VERIFY=PASS name=${name} sha256=${src_sha}"
   done
   HELPERS_HTTP_VERIFY="PASS"

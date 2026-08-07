@@ -6,6 +6,47 @@
 
 DP_PHASE2_HEARTBEAT_SECONDS="${DP_PHASE2_HEARTBEAT_SECONDS:-30}"
 
+# Interruptible heartbeat delay: long `sleep N` cannot be relied on to exit
+# promptly after SIGTERM on all Bash builds, which made short operations report
+# elapsed_seconds≈N and timed out hermetic tests. Sleep 1s slices and re-check
+# stop_file / child liveness between slices.
+dp2_progress_interruptible_sleep() {
+  local total="${1:-${DP_PHASE2_HEARTBEAT_SECONDS}}"
+  local stop_file="${2:-}"
+  local child_pid="${3:-}"
+  local n=0
+  [[ "$total" =~ ^[0-9]+$ ]] || total=1
+  [[ "$total" -ge 1 ]] || total=1
+  while [[ "$n" -lt "$total" ]]; do
+    if [[ -n "$stop_file" && -f "$stop_file" ]]; then
+      return 0
+    fi
+    if [[ -n "$child_pid" ]] && ! kill -0 "$child_pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1 || return 0
+    n=$((n + 1))
+  done
+  return 0
+}
+
+dp2_hb_reap() {
+  local hb_pid="${1:-}"
+  local stop_file="${2:-}"
+  local i
+  [[ -n "$stop_file" ]] && : >"$stop_file" 2>/dev/null || true
+  if [[ -n "$hb_pid" ]]; then
+    kill "$hb_pid" 2>/dev/null || true
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$hb_pid" 2>/dev/null || break
+      sleep 0.05 2>/dev/null || sleep 1
+    done
+    kill -9 "$hb_pid" 2>/dev/null || true
+    wait "$hb_pid" 2>/dev/null || true
+  fi
+  [[ -n "$stop_file" ]] && rm -f "$stop_file"
+}
+
 dp2_progress_sanitize_target() {
   local t="${1-}"
   # Strip credentials and query parameters from URLs.
@@ -48,7 +89,7 @@ dp2_run_with_heartbeat() {
       if ! kill -0 "$child_pid" 2>/dev/null; then
         exit 0
       fi
-      sleep "${DP_PHASE2_HEARTBEAT_SECONDS}"
+      dp2_progress_interruptible_sleep "$DP_PHASE2_HEARTBEAT_SECONDS" "$stop_file" "$child_pid"
       if [[ -f "$stop_file" ]]; then
         exit 0
       fi
@@ -62,19 +103,12 @@ dp2_run_with_heartbeat() {
   ) &
   hb_pid=$!
 
-  _dp2_hb_cleanup() {
-    : >"$stop_file" 2>/dev/null || true
-    kill "$hb_pid" 2>/dev/null || true
-    wait "$hb_pid" 2>/dev/null || true
-    rm -f "$stop_file"
-  }
-
   if wait "$child_pid"; then
     rc=0
   else
     rc=$?
   fi
-  _dp2_hb_cleanup
+  dp2_hb_reap "$hb_pid" "$stop_file"
   now="$(dp2_progress_now)"
   elapsed=$((now - start))
   printf 'OPERATION_END name=%s rc=%s elapsed_seconds=%s\n' "$name" "$rc" "$elapsed"
@@ -112,7 +146,7 @@ dp2_run_download_with_progress() {
     while true; do
       if [[ -f "$stop_file" ]]; then exit 0; fi
       if ! kill -0 "$child_pid" 2>/dev/null; then exit 0; fi
-      sleep "${DP_PHASE2_HEARTBEAT_SECONDS}"
+      dp2_progress_interruptible_sleep "$DP_PHASE2_HEARTBEAT_SECONDS" "$stop_file" "$child_pid"
       if [[ -f "$stop_file" ]]; then exit 0; fi
       if ! kill -0 "$child_pid" 2>/dev/null; then exit 0; fi
       now="$(dp2_progress_now)"
@@ -151,10 +185,7 @@ dp2_run_download_with_progress() {
   else
     rc=$?
   fi
-  : >"$stop_file" 2>/dev/null || true
-  kill "$hb_pid" 2>/dev/null || true
-  wait "$hb_pid" 2>/dev/null || true
-  rm -f "$stop_file"
+  dp2_hb_reap "$hb_pid" "$stop_file"
 
   now="$(dp2_progress_now)"
   elapsed=$((now - start))
@@ -177,11 +208,12 @@ dp2_run_download_with_progress() {
   return "$rc"
 }
 
-# Ensure the complete bringup controller unit is present before starting the
-# expensive extraction. Menu 7 normally downloads these files together, but the
-# stage script also supports standalone execution and older generated commands.
-# This compatibility preflight prevents a late failure after a 30 GB download,
-# checksum, tar validation, and extraction.
+# Ensure the complete Phase 2 client helper unit is present before starting the
+# expensive extraction. Current Menu 7 downloads the full unit up front; this
+# preflight remains for standalone execution and older generated commands that
+# only fetched a subset. Already-present valid files are reported as REUSED.
+# Trust boundary: payloads are checked non-empty / non-HTML / bash -n only.
+# Stage script integrity remains anchored on stage-dp-phase2.sh.sha256.
 dp2_prepare_bringup_controller_dependencies() {
   local lib_dir="${_STAGE_LIB_DIR:-}"
   local mirror="${MIRROR_URL:-}"
@@ -193,10 +225,15 @@ dp2_prepare_bringup_controller_dependencies() {
 
   for rel in \
     bringup_py3_dp_lifecycle.sh \
-    lib/dp-phase2-bringup-lifecycle.sh
+    lib/dp-phase2-bringup-lifecycle.sh \
+    lib/dp-offline-source-product-version.sh \
+    lib/dp-phase2-operation-progress.sh
   do
     dest="${stage_dir}/${rel}"
-    if [[ -s "$dest" ]]; then
+    if [[ -s "$dest" ]] \
+      && ! head -c 256 "$dest" | tr -d '\0' | grep -qiE '<!DOCTYPE[[:space:]]*html|<html[[:space:]]|<html>' \
+      && bash -n "$dest" >/dev/null 2>&1
+    then
       printf 'PHASE2_CONTROLLER_DEPENDENCY=REUSED path=%s\n' "$rel"
       continue
     fi
@@ -213,7 +250,8 @@ dp2_prepare_bringup_controller_dependencies() {
         "$rel" "$(dp2_progress_sanitize_target "$url")" >&2
       return 1
     fi
-    if [[ ! -s "$tmp" ]] || grep -qiE '<!doctype[[:space:]]+html|<html' "$tmp" \
+    if [[ ! -s "$tmp" ]] \
+      || head -c 256 "$tmp" | tr -d '\0' | grep -qiE '<!DOCTYPE[[:space:]]*html|<html[[:space:]]|<html>' \
       || ! bash -n "$tmp" >/dev/null 2>&1
     then
       rm -f "$tmp"
@@ -221,7 +259,7 @@ dp2_prepare_bringup_controller_dependencies() {
         "$rel" >&2
       return 1
     fi
-    chmod 0644 "$tmp"
+    chmod 0755 "$tmp"
     mv -f "$tmp" "$dest"
     printf 'PHASE2_CONTROLLER_DEPENDENCY=%s path=%s\n' "$action" "$rel"
   done
@@ -270,7 +308,7 @@ dp2_run_extract_with_progress() {
     while true; do
       if [[ -f "$stop_file" ]]; then exit 0; fi
       if ! kill -0 "$child_pid" 2>/dev/null; then exit 0; fi
-      sleep "${DP_PHASE2_HEARTBEAT_SECONDS}"
+      dp2_progress_interruptible_sleep "$DP_PHASE2_HEARTBEAT_SECONDS" "$stop_file" "$child_pid"
       if [[ -f "$stop_file" ]]; then exit 0; fi
       if ! kill -0 "$child_pid" 2>/dev/null; then exit 0; fi
       now="$(dp2_progress_now)"
@@ -292,10 +330,7 @@ dp2_run_extract_with_progress() {
   else
     rc=$?
   fi
-  : >"$stop_file" 2>/dev/null || true
-  kill "$hb_pid" 2>/dev/null || true
-  wait "$hb_pid" 2>/dev/null || true
-  rm -f "$stop_file"
+  dp2_hb_reap "$hb_pid" "$stop_file"
   now="$(dp2_progress_now)"
   elapsed=$((now - start))
   printf 'OPERATION_END name=%s rc=%s elapsed_seconds=%s\n' "$name" "$rc" "$elapsed"

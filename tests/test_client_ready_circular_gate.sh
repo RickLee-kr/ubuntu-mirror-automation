@@ -5,6 +5,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/seed_complete_client_http_set.sh
+source "${ROOT}/tests/lib/seed_complete_client_http_set.sh"
 COMMON="${ROOT}/scripts/lib/mirror_manager_common.sh"
 ENGINE="${ROOT}/scripts/lib/mirror_install_engine.sh"
 DP2="${ROOT}/scripts/lib/dp-phase2-common.sh"
@@ -65,6 +67,7 @@ TARGET_DP_VERSION=6.5.0
 ACPS_USERNAME=testuser
 ACPS_PASSWORD=testpass
 OS_CORE_R2_URL=http://127.0.0.1:9/os-core.tar
+MIRROR_SERVER_IP=192.0.2.10
 MIRROR_HTTP_URL=http://192.0.2.10
 EOF
 chmod 600 "$MM_CONFIG_FILE"
@@ -218,29 +221,7 @@ REBUILD_FLAG="${TMP}/rebuild.called"
 : >"$REBUILD_FLAG"
 engine_rebuild_publish_local_client_set() {
   printf '1\n' >"$REBUILD_FLAG"
-  # Publish a synthetic complete set matching mm_client_files_ready.
-  local f
-  for f in \
-    dp-offline-upgrade-xenial-to-bionic.sh \
-    dp-offline-upgrade-bionic-to-focal.sh \
-    dp-offline-upgrade-focal-to-jammy.sh \
-    dp-offline-upgrade-jammy-to-noble.sh \
-    stage-dp-phase2.sh
-  do
-    cat >"${MM_CLIENT_ROOT}/${f}" <<EOF
-#!/bin/bash
-PIN_MIRROR_BASE='http://192.0.2.10'
-PIN_SAMPLE_DEB_URL='http://192.0.2.10/pool/main/x.deb'
-PIN_META_B64='$(printf 'http://192.0.2.10/offline/meta' | base64 -w0)'
-PIN_MANIFEST_B64='$(printf 'http://192.0.2.10/manifest' | base64 -w0)'
-echo stub
-EOF
-    chmod +x "${MM_CLIENT_ROOT}/${f}"
-    (cd "$MM_CLIENT_ROOT" && sha256sum "$f" >"${f}.sha256")
-  done
-  printf 'PUB\n' >"${MM_CLIENT_ROOT}/public.gpg"
-  # Minimal non-empty binary-looking keyring placeholder for readiness gate.
-  printf '\x99\x02\x00' >"${MM_CLIENT_ROOT}/public-keyring.gpg"
+  seed_complete_client_http_set "$MM_CLIENT_ROOT" "http://192.0.2.10"     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
   return 0
 }
 
@@ -296,17 +277,11 @@ engine_assess_client_set_for_finalize
 
 # --- 5/6. Rebuild failure → prepare FAIL, old complete set unchanged ---
 # Seed a complete old set, then make rebuild fail.
-for f in \
-  dp-offline-upgrade-xenial-to-bionic.sh \
-  dp-offline-upgrade-bionic-to-focal.sh \
-  dp-offline-upgrade-focal-to-jammy.sh \
-  dp-offline-upgrade-jammy-to-noble.sh \
-  stage-dp-phase2.sh
-do
-  printf '#!/bin/bash\necho OLD_%s\n' "$f" >"${MM_CLIENT_ROOT}/${f}"
-  chmod +x "${MM_CLIENT_ROOT}/${f}"
-  (cd "$MM_CLIENT_ROOT" && sha256sum "$f" >"${f}.sha256")
-done
+seed_complete_client_http_set "$MM_CLIENT_ROOT" "http://192.0.2.10"   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+# Mark as OLD so we can detect mutation
+printf '#!/bin/bash\necho OLD_xenial\n' >"${MM_CLIENT_ROOT}/dp-offline-upgrade-xenial-to-bionic.sh"
+chmod +x "${MM_CLIENT_ROOT}/dp-offline-upgrade-xenial-to-bionic.sh"
+(cd "$MM_CLIENT_ROOT" && sha256sum dp-offline-upgrade-xenial-to-bionic.sh >dp-offline-upgrade-xenial-to-bionic.sh.sha256)
 OLD_SHA="$(sha256sum "${MM_CLIENT_ROOT}/dp-offline-upgrade-xenial-to-bionic.sh" | awk '{print $1}')"
 engine_rebuild_publish_local_client_set() {
   printf 'fail\n' >"$REBUILD_FLAG"
