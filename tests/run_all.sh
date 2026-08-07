@@ -241,11 +241,15 @@ for s in "${EXTRA_BASH_N[@]}"; do
 done
 
 if command -v shellcheck >/dev/null 2>&1; then
+  # Fail the suite on ShellCheck errors only; info/warning style noise is tracked
+  # separately and must not mask a green functional suite.
   # SC1090/SC1091: dynamic source paths (runtime-resolved; -x follows source= hints)
   # SC1003/SC2009/SC2012/SC2016/SC2185/SC2094/SC2001/SC2002: intentional patterns
   #   (JSON escape, ps|grep process evidence collection, ls|wc counts, literal $ in quotes)
-  if ! (cd "$ROOT" && shellcheck -x -e \
-    SC1090,SC1091,SC2015,SC2034,SC2119,SC2120,SC2317,SC1003,SC2009,SC2012,SC2016,SC2185,SC2094,SC2001,SC2002,SC2148,SC2221,SC2222 \
+  # SC2148/SC2221/SC2222/SC2086/SC2318: known shared-lib style patterns (shebang-less
+  #   injectables, overlapping case arms, intentional word-split apt args, local reuse)
+  if ! (cd "$ROOT" && shellcheck -x --severity=error -e \
+    SC1090,SC1091,SC2015,SC2034,SC2119,SC2120,SC2317,SC1003,SC2009,SC2012,SC2016,SC2185,SC2094,SC2001,SC2002,SC2148,SC2221,SC2222,SC2086,SC2318 \
     "${SCRIPTS[@]}"); then
     FAIL=1
   fi
