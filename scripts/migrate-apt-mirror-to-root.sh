@@ -449,12 +449,19 @@ get_unit_active_state() {
 }
 
 assert_no_sync_processes() {
-  local pat
-  # Do not match this migration script itself.
-  if pgrep -af 'ubuntu-offline-mirror\.sh|materialize-selective|apt-mirror ' 2>/dev/null \
-    | grep -v "migrate-apt-mirror-to-root" \
-    | grep -vq grep; then
-    pgrep -af 'ubuntu-offline-mirror\.sh|materialize-selective|apt-mirror ' 2>/dev/null || true
+  local hits
+  # Match real sync/materialize executables — not fixture HTTP servers whose
+  # argv merely contains a path segment like /var/spool/apt-mirror.
+  hits="$(
+    {
+      pgrep -af '(^|[[:space:]/])ubuntu-offline-mirror\.sh([[:space:]]|$)' 2>/dev/null || true
+      pgrep -af '(^|[[:space:]/])materialize-selective([[:space:]]|$)' 2>/dev/null || true
+      pgrep -x apt-mirror 2>/dev/null || true
+      pgrep -af '/usr/bin/apt-mirror([[:space:]]|$)' 2>/dev/null || true
+    } | grep -v "migrate-apt-mirror-to-root" | grep -v grep || true
+  )"
+  if [[ -n "$(printf '%s' "$hits" | tr -d '[:space:]')" ]]; then
+    printf '%s\n' "$hits"
     die "Active materialize/sync process detected"
   fi
   if pgrep -af '[r]sync.*(apt-mirror|migrate-apt-mirror)' 2>/dev/null \

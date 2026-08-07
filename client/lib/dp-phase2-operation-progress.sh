@@ -6,6 +6,47 @@
 
 DP_PHASE2_HEARTBEAT_SECONDS="${DP_PHASE2_HEARTBEAT_SECONDS:-30}"
 
+# Interruptible heartbeat delay: long `sleep N` cannot be relied on to exit
+# promptly after SIGTERM on all Bash builds, which made short operations report
+# elapsed_seconds≈N and timed out hermetic tests. Sleep 1s slices and re-check
+# stop_file / child liveness between slices.
+dp2_progress_interruptible_sleep() {
+  local total="${1:-${DP_PHASE2_HEARTBEAT_SECONDS}}"
+  local stop_file="${2:-}"
+  local child_pid="${3:-}"
+  local n=0
+  [[ "$total" =~ ^[0-9]+$ ]] || total=1
+  [[ "$total" -ge 1 ]] || total=1
+  while [[ "$n" -lt "$total" ]]; do
+    if [[ -n "$stop_file" && -f "$stop_file" ]]; then
+      return 0
+    fi
+    if [[ -n "$child_pid" ]] && ! kill -0 "$child_pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1 || return 0
+    n=$((n + 1))
+  done
+  return 0
+}
+
+dp2_hb_reap() {
+  local hb_pid="${1:-}"
+  local stop_file="${2:-}"
+  local i
+  [[ -n "$stop_file" ]] && : >"$stop_file" 2>/dev/null || true
+  if [[ -n "$hb_pid" ]]; then
+    kill "$hb_pid" 2>/dev/null || true
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$hb_pid" 2>/dev/null || break
+      sleep 0.05 2>/dev/null || sleep 1
+    done
+    kill -9 "$hb_pid" 2>/dev/null || true
+    wait "$hb_pid" 2>/dev/null || true
+  fi
+  [[ -n "$stop_file" ]] && rm -f "$stop_file"
+}
+
 dp2_progress_sanitize_target() {
   local t="${1-}"
   # Strip credentials and query parameters from URLs.
@@ -48,7 +89,7 @@ dp2_run_with_heartbeat() {
       if ! kill -0 "$child_pid" 2>/dev/null; then
         exit 0
       fi
-      sleep "${DP_PHASE2_HEARTBEAT_SECONDS}"
+      dp2_progress_interruptible_sleep "$DP_PHASE2_HEARTBEAT_SECONDS" "$stop_file" "$child_pid"
       if [[ -f "$stop_file" ]]; then
         exit 0
       fi
@@ -62,19 +103,12 @@ dp2_run_with_heartbeat() {
   ) &
   hb_pid=$!
 
-  _dp2_hb_cleanup() {
-    : >"$stop_file" 2>/dev/null || true
-    kill "$hb_pid" 2>/dev/null || true
-    wait "$hb_pid" 2>/dev/null || true
-    rm -f "$stop_file"
-  }
-
   if wait "$child_pid"; then
     rc=0
   else
     rc=$?
   fi
-  _dp2_hb_cleanup
+  dp2_hb_reap "$hb_pid" "$stop_file"
   now="$(dp2_progress_now)"
   elapsed=$((now - start))
   printf 'OPERATION_END name=%s rc=%s elapsed_seconds=%s\n' "$name" "$rc" "$elapsed"
@@ -112,7 +146,7 @@ dp2_run_download_with_progress() {
     while true; do
       if [[ -f "$stop_file" ]]; then exit 0; fi
       if ! kill -0 "$child_pid" 2>/dev/null; then exit 0; fi
-      sleep "${DP_PHASE2_HEARTBEAT_SECONDS}"
+      dp2_progress_interruptible_sleep "$DP_PHASE2_HEARTBEAT_SECONDS" "$stop_file" "$child_pid"
       if [[ -f "$stop_file" ]]; then exit 0; fi
       if ! kill -0 "$child_pid" 2>/dev/null; then exit 0; fi
       now="$(dp2_progress_now)"
@@ -151,10 +185,7 @@ dp2_run_download_with_progress() {
   else
     rc=$?
   fi
-  : >"$stop_file" 2>/dev/null || true
-  kill "$hb_pid" 2>/dev/null || true
-  wait "$hb_pid" 2>/dev/null || true
-  rm -f "$stop_file"
+  dp2_hb_reap "$hb_pid" "$stop_file"
 
   now="$(dp2_progress_now)"
   elapsed=$((now - start))
@@ -277,7 +308,7 @@ dp2_run_extract_with_progress() {
     while true; do
       if [[ -f "$stop_file" ]]; then exit 0; fi
       if ! kill -0 "$child_pid" 2>/dev/null; then exit 0; fi
-      sleep "${DP_PHASE2_HEARTBEAT_SECONDS}"
+      dp2_progress_interruptible_sleep "$DP_PHASE2_HEARTBEAT_SECONDS" "$stop_file" "$child_pid"
       if [[ -f "$stop_file" ]]; then exit 0; fi
       if ! kill -0 "$child_pid" 2>/dev/null; then exit 0; fi
       now="$(dp2_progress_now)"
@@ -299,10 +330,7 @@ dp2_run_extract_with_progress() {
   else
     rc=$?
   fi
-  : >"$stop_file" 2>/dev/null || true
-  kill "$hb_pid" 2>/dev/null || true
-  wait "$hb_pid" 2>/dev/null || true
-  rm -f "$stop_file"
+  dp2_hb_reap "$hb_pid" "$stop_file"
   now="$(dp2_progress_now)"
   elapsed=$((now - start))
   printf 'OPERATION_END name=%s rc=%s elapsed_seconds=%s\n' "$name" "$rc" "$elapsed"
