@@ -24,6 +24,7 @@ if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import client_build_repository as cbr
 import client_build_provenance as cbp
+import assert_client_executable_shebang as aces
 
 
 HOP = "xenial-to-bionic"
@@ -929,6 +930,7 @@ def main(argv=None):
     }
 
     script_body = render_script(template, replacements)
+    aces.assert_client_executable_shebangs(script_body, 'xenial-to-bionic')
     script_name = "dp-offline-upgrade-xenial-to-bionic.sh"
     script_path = os.path.join(out_dir, script_name)
     # also place under hop dir; production signed builds also refresh client/

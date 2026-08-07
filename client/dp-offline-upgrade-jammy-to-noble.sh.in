@@ -7723,7 +7723,10 @@ state_user_message() {
     FAILED|FAILED_PRE_DRO|FAILED_BEFORE_PACKAGE_TRANSITION|FAILED_AFTER_PACKAGE_TRANSITION|FAILED_PRE_DRO_STALE|FAILED_POST_TRANSACTION)
       printf '%s' "The background upgrade reported a failure. Do not rerun the client."
       ;;
-    SUCCESS|COMPLETED_NOBLE|POST_BOOT_VERIFY)
+    POST_BOOT_VERIFY)
+      printf '%s' "Post-boot validation is in progress."
+      ;;
+    SUCCESS|COMPLETED_NOBLE)
       printf '%s' "The background upgrade completed successfully."
       ;;
     *)
@@ -7732,9 +7735,34 @@ state_user_message() {
   esac
 }
 
+# Terminal success only after postboot validation records COMPLETED_*.
+# REBOOT_PENDING / REBOOTING / POST_BOOT_VERIFY are transitional — never success.
 state_is_terminal_success() {
   case "${1:-}" in
-    REBOOT_PENDING|REBOOTING|POST_BOOT_VERIFY|COMPLETED_NOBLE|SUCCESS)
+    COMPLETED_NOBLE|SUCCESS)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Reboot handoff: monitor may exit cleanly (SSH disconnect expected).
+state_is_reboot_handoff() {
+  case "${1:-}" in
+    REBOOT_PENDING|REBOOTING)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+state_is_postboot_pending() {
+  case "${1:-}" in
+    POST_BOOT_VERIFY)
       return 0
       ;;
     *)
@@ -7767,6 +7795,76 @@ state_is_active_progress() {
       return 1
       ;;
   esac
+}
+
+# Invariant: no state may be both upgrade-running and terminal-success.
+assert_state_classification_disjoint() {
+  local st
+  for st in REBOOT_PENDING REBOOTING POST_BOOT_VERIFY \
+      UPGRADING_JAMMY_TO_NOBLE POST_UPGRADE_VERIFY CONFIGURING PREPARING_JAMMY \
+      COMPLETED_NOBLE SUCCESS FAILED; do
+    if state_is_upgrade_running "$st" && state_is_terminal_success "$st"; then
+      log ERROR "STATE_CLASSIFICATION_CONTRADICTION=${st}"
+      return 1
+    fi
+    if state_is_reboot_handoff "$st" && state_is_terminal_success "$st"; then
+      log ERROR "STATE_CLASSIFICATION_CONTRADICTION=${st}"
+      return 1
+    fi
+    if state_is_postboot_pending "$st" && state_is_terminal_success "$st"; then
+      log ERROR "STATE_CLASSIFICATION_CONTRADICTION=${st}"
+      return 1
+    fi
+  done
+  return 0
+}
+
+# Fail closed when reboot/postboot transition is stuck and postboot did not complete.
+# Never claim BACKGROUND_UPGRADE_RUNNING or allow the next hop to download packages.
+reject_incomplete_reboot_or_postboot() {
+  local st="${1:-}"
+  case "$st" in
+    REBOOT_PENDING|REBOOTING|POST_BOOT_VERIFY) ;;
+    *) return 0 ;;
+  esac
+
+  local postboot_active=""
+  if allow_live_systemctl; then
+    postboot_active="$(systemctl_show_prop ActiveState "$POSTBOOT_UNIT_NAME" || true)"
+  fi
+
+  # Failed postboot always fail-closes — do not let host /proc noise claim "still running".
+  if [[ "$postboot_active" == "failed" ]]; then
+    log ERROR "POSTBOOT_VALIDATION_COMPLETED=NO"
+    log ERROR "PREVIOUS_OS_HOP_POSTBOOT_INCOMPLETE=YES"
+    log ERROR "POSTBOOT_UNIT_NAME=${POSTBOOT_UNIT_NAME}"
+    log ERROR "POSTBOOT_UNIT_ACTIVE_STATE=failed"
+    log ERROR "CURRENT_STATE=${st}"
+    log ERROR "NEXT_HOP_BLOCKED=YES"
+    log ERROR "NEXT_HOP_DOWNLOAD_SKIPPED=YES"
+    log ERROR "BACKGROUND_UPGRADE_RUNNING=NO"
+    die "$EC_STATE" "postboot validation incomplete (state=${st}; ${POSTBOOT_UNIT_NAME}=failed); refusing to proceed"
+  fi
+
+  # Postboot actively running → in-progress; caller may monitor.
+  if [[ "$postboot_active" == "activating" || "$postboot_active" == "active" ]]; then
+    return 0
+  fi
+
+  # Live upgrade runner/service still present → in-progress; caller may monitor.
+  if allow_live_systemctl && live_upgrade_evidence_present; then
+    return 0
+  fi
+
+  log ERROR "POSTBOOT_VALIDATION_COMPLETED=NO"
+  log ERROR "PREVIOUS_OS_HOP_POSTBOOT_INCOMPLETE=YES"
+  log ERROR "POSTBOOT_UNIT_NAME=${POSTBOOT_UNIT_NAME}"
+  log ERROR "POSTBOOT_UNIT_ACTIVE_STATE=${postboot_active:-unknown}"
+  log ERROR "CURRENT_STATE=${st}"
+  log ERROR "NEXT_HOP_BLOCKED=YES"
+  log ERROR "NEXT_HOP_DOWNLOAD_SKIPPED=YES"
+  log ERROR "BACKGROUND_UPGRADE_RUNNING=NO"
+  die "$EC_STATE" "reboot/postboot transition incomplete (state=${st}; no live upgrade runner); refusing to proceed"
 }
 
 log_has_terminal_failure_marker() {
@@ -8141,7 +8239,18 @@ monitor_upgrade_progress() {
       log INFO "MONITOR_EXIT_REASON=TERMINAL_SUCCESS_STATE"
       log INFO "MONITOR_RESULT=TERMINAL_SUCCESS"
       log INFO "UPGRADE_SERVICE_STOP_REQUESTED=NO"
-      if [[ "$reboot_announced" -eq 0 ]] && [[ "$cur_state" == "REBOOT_PENDING" || "$cur_state" == "REBOOTING" ]]; then
+      trap - INT TERM
+      return 0
+    fi
+
+    if state_is_reboot_handoff "$cur_state"; then
+      MONITOR_EXIT_REASON="REBOOT_HANDOFF_STATE"
+      MONITOR_RESULT="REBOOT_HANDOFF"
+      log INFO "MONITOR_TERMINAL_STATE_DETECTED=${cur_state}"
+      log INFO "MONITOR_EXIT_REASON=REBOOT_HANDOFF_STATE"
+      log INFO "MONITOR_RESULT=REBOOT_HANDOFF"
+      log INFO "UPGRADE_SERVICE_STOP_REQUESTED=NO"
+      if [[ "$reboot_announced" -eq 0 ]]; then
         print_reboot_starting_banner
         reboot_announced=1
       fi
@@ -8176,7 +8285,9 @@ monitor_upgrade_progress() {
 
     # Runner disappeared and state is neither terminal nor active progress.
     if [[ "$runner_status" == "GONE" ]] && ! state_is_terminal_state "$cur_state" \
-       && ! state_is_active_progress "$cur_state"; then
+       && ! state_is_active_progress "$cur_state" \
+       && ! state_is_reboot_handoff "$cur_state" \
+       && ! state_is_postboot_pending "$cur_state"; then
       dro_pid="$(find_dro_pid_via_ps || true)"
       sleep 1
       new_pid="$(monitor_resolve_runner_pid "$runner_pid" || true)"
@@ -8233,6 +8344,8 @@ monitor_upgrade_progress() {
 refuse_duplicate_upgrade() {
   local st pid
   st="$(read_state)"
+  # Stuck reboot/postboot with no live runner must fail closed (not MONITOR_ONLY success).
+  reject_incomplete_reboot_or_postboot "$st"
   # Prefer D-Bus-free resolution when attaching monitor.
   pid="$(monitor_resolve_runner_pid "${UPGRADE_RUNNER_PID:-0}" 2>/dev/null || true)"
   if [[ -z "$pid" || "$pid" == "0" ]]; then

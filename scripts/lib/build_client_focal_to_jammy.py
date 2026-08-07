@@ -24,6 +24,7 @@ if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import client_build_repository as cbr
 import client_build_provenance as cbp
+import assert_client_executable_shebang as aces
 
 
 HOP = "focal-to-jammy"
@@ -950,6 +951,7 @@ def main(argv=None):
     }
 
     script_body = render_script(template, replacements)
+    aces.assert_client_executable_shebangs(script_body, 'focal-to-jammy')
     assert_no_b2f_residuals("rendered script", script_body)
     assert_no_b2f_residuals("meta-release", meta_text)
     # Local-fs trust root is selective key + InRelease gpgv (already done).

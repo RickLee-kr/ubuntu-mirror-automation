@@ -54,6 +54,7 @@ UM_RUNTIME_SCRIPT_LIB_SHELL=(
 UM_RUNTIME_SCRIPT_LIB_PYTHON_MODULES=(
   client_build_repository.py
   client_build_provenance.py
+  assert_client_executable_shebang.py
 )
 
 # ---------------------------------------------------------------------------
@@ -127,6 +128,7 @@ UM_RUNTIME_REQUIRED_RELATIVE_PATHS=(
   scripts/lib/os_core_package.py
   scripts/lib/client_build_repository.py
   scripts/lib/client_build_provenance.py
+  scripts/lib/assert_client_executable_shebang.py
   scripts/lib/atomic_dir_swap.py
   scripts/lib/build_client_xenial_to_bionic.py
   scripts/lib/build_client_bionic_to_focal.py
@@ -152,6 +154,8 @@ UM_RUNTIME_REQUIRED_RELATIVE_PATHS=(
 # shellcheck disable=SC2034
 UM_RUNTIME_PYTHON_IMPORT_MODULES=(
   client_build_repository
+  client_build_provenance
+  assert_client_executable_shebang
   atomic_dir_swap
 )
 
@@ -411,7 +415,12 @@ def import_module(name):
     return mod
 
 try:
-    for name in ("client_build_repository", "client_build_provenance", "atomic_dir_swap"):
+    for name in (
+        "client_build_repository",
+        "client_build_provenance",
+        "assert_client_executable_shebang",
+        "atomic_dir_swap",
+    ):
         import_module(name)
         print("RUNTIME_MODULE_IMPORT=PASS module=" + name)
     hop_map = {

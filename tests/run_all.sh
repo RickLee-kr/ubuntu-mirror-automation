@@ -45,6 +45,7 @@ TEST_LIST=(
   test_ntp_dns_postboot_policy.sh
   test_dns_time_readiness_policy.sh
   test_dp_offline_upgrade_xenial_to_bionic.sh
+  test_postboot_shebang_and_state_machine.sh
   test_durable_write_and_lxd_coldstart.sh
   test_dp_offline_upgrade_bionic_to_focal.sh
   test_dp_offline_upgrade_focal_to_jammy.sh

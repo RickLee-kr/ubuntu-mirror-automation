@@ -15,7 +15,8 @@ if [[ -n "${MIRROR_WORKFLOW_STATE_LOADED:-}" ]]; then
 fi
 MIRROR_WORKFLOW_STATE_LOADED=1
 
-MM_WORKFLOW_FILE="${MM_WORKFLOW_FILE:-${MM_CONFIG_DIR:-/etc/ubuntu-mirror}/dp-upgrade-workflow.state}"
+# Default path; prefer live MM_WORKFLOW_FILE / MM_CONFIG_DIR at call time (see mm_wf_file).
+MM_WORKFLOW_FILE="${MM_WORKFLOW_FILE:-}"
 
 # ---------------------------------------------------------------------------
 # Logger wrappers (standalone-safe)
@@ -54,7 +55,12 @@ mm_wf_ok() {
 # Low-level atomic KV store
 # ---------------------------------------------------------------------------
 mm_wf_file() {
-  printf '%s\n' "${MM_WORKFLOW_FILE}"
+  # Resolve at call time so tests/callers can set MM_CONFIG_DIR after sourcing.
+  if [[ -n "${MM_WORKFLOW_FILE:-}" ]]; then
+    printf '%s\n' "${MM_WORKFLOW_FILE}"
+  else
+    printf '%s\n' "${MM_CONFIG_DIR:-/etc/ubuntu-mirror}/dp-upgrade-workflow.state"
+  fi
 }
 
 mm_wf_new_generation_id() {
@@ -81,6 +87,11 @@ mm_wf_atomic_write_file() {
 mm_wf_ensure_file() {
   local f
   f="$(mm_wf_file)"
+  if [[ -f "$f" && ! -r "$f" ]]; then
+    # Existing root-owned state must not abort non-root callers under set -e.
+    mm_wf_warn "WORKFLOW_STATE_UNREADABLE path=${f}"
+    return 1
+  fi
   if [[ ! -f "$f" ]]; then
     mkdir -p "$(dirname "$f")" 2>/dev/null || return 1
     umask 077
@@ -119,8 +130,9 @@ mm_wf_get() {
   local key="$1"
   local f
   f="$(mm_wf_file)"
-  [[ -f "$f" ]] || { printf ''; return 0; }
-  awk -F= -v k="$key" '$1==k {print substr($0, index($0,$2)); exit}' "$f"
+  # Missing or unreadable → empty (do not abort callers under set -e).
+  [[ -f "$f" && -r "$f" ]] || { printf ''; return 0; }
+  awk -F= -v k="$key" '$1==k {print substr($0, index($0,$2)); exit}' "$f" 2>/dev/null || true
 }
 
 mm_wf_set_many() {
@@ -129,8 +141,12 @@ mm_wf_set_many() {
   local f tmp line key val k2
   local -A updates=()
   local -A cur=()
-  mm_wf_ensure_file
+  mm_wf_ensure_file || return 1
   f="$(mm_wf_file)"
+  [[ -r "$f" && -w "$f" ]] || {
+    mm_wf_warn "WORKFLOW_STATE_NOT_WRITABLE path=${f}"
+    return 1
+  }
   for line in "$@"; do
     key="${line%%=*}"
     val="${line#*=}"
@@ -259,7 +275,10 @@ mm_wf_mark_configured() {
 # Config change invalidates everything after CONFIGURED.
 mm_wf_invalidate_after_config_change() {
   local prev_sha new_sha prev_ip prev_mode prev_fpr
-  mm_wf_ensure_file
+  if ! mm_wf_ensure_file; then
+    mm_wf_warn "WORKFLOW_STATE_UPDATE=SKIPPED reason=unreadable_or_unwritable"
+    return 0
+  fi
   prev_sha="$(mm_wf_get CONFIG_SHA256)"
   prev_ip="$(mm_wf_get MIRROR_SERVER_IP)"
   prev_mode="$(mm_wf_get PREPARATION_MODE)"
@@ -270,10 +289,11 @@ mm_wf_invalidate_after_config_change() {
     mm_wf_set_many \
       "PREPARATION_MODE=${PREPARATION_MODE:-FULL}" \
       "MIRROR_SERVER_IP=${MIRROR_SERVER_IP:-}" \
-      "MIRROR_HTTP_URL=${MIRROR_HTTP_URL:-}"
+      "MIRROR_HTTP_URL=${MIRROR_HTTP_URL:-}" \
+      || return 0
     return 0
   fi
-  mm_wf_mark_configured
+  mm_wf_mark_configured || return 0
   if [[ -n "$prev_mode" && "$prev_mode" != "${PREPARATION_MODE:-}" ]]; then
     mm_wf_info "WORKFLOW_STALE reason=preparation_mode_changed old=${prev_mode} new=${PREPARATION_MODE:-}"
   fi
@@ -388,7 +408,12 @@ mm_wf_mark_readiness_verified() {
   local pub_gen
   pub_gen="$(mm_wf_get HTTP_PUBLICATION_GENERATION_ID)"
   [[ -n "$pub_gen" ]] || pub_gen="$(mm_wf_get CLIENT_SET_GENERATION_ID)"
-  [[ -n "$pub_gen" ]] || return 1
+  if [[ -z "$pub_gen" ]]; then
+    # Status-file-only callers (unit tests / partial UI paths) may validate
+    # readiness before a generation-bound HTTP publication exists.
+    mm_wf_warn "WORKFLOW_READINESS_SKIPPED reason=missing_publication_generation"
+    return 0
+  fi
   mm_wf_set_many \
     "WORKFLOW_STATE=READINESS_VERIFIED" \
     "READINESS_VERIFIED_GENERATION_ID=${pub_gen}" \

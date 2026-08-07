@@ -4,6 +4,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORKDIR="$(mktemp -d)"
+trap 'rm -rf "$WORKDIR"' EXIT
+# Isolate workflow state from host /etc/ubuntu-mirror (may be root-only 0600).
+# Must be set before sourcing mirror_manager_common → mirror_workflow_state.
+export MM_CONFIG_DIR="${WORKDIR}/etc-ubuntu-mirror"
+export MM_WORKFLOW_FILE="${MM_CONFIG_DIR}/dp-upgrade-workflow.state"
+mkdir -p "$MM_CONFIG_DIR"
 # shellcheck source=../lib/common.sh
 source "${ROOT}/lib/common.sh"
 # shellcheck source=../lib/config.sh
@@ -22,9 +29,6 @@ source "${ROOT}/scripts/lib/mirror_install_engine.sh"
 FAIL=0
 pass() { echo "  PASS: $*"; }
 fail() { echo "  FAIL: $*"; FAIL=1; }
-
-WORKDIR="$(mktemp -d)"
-trap 'rm -rf "$WORKDIR"' EXIT
 
 echo "======== A. install --help ========"
 HELP="$(bash "${ROOT}/install.sh" --help)"
@@ -287,6 +291,7 @@ grep -q 'passwordbox' "$INST" && pass "passwordbox present" || fail "passwordbox
 # Config save + redaction
 export MM_CONFIG_FILE="${WORKDIR}/gui.conf"
 export MM_STATUS_FILE="${WORKDIR}/status.env"
+export MM_WORKFLOW_FILE="${WORKDIR}/dp-upgrade-workflow.state"
 TARGET_DP_VERSION=6.5.0
 ACPS_USERNAME=demo
 ACPS_PASSWORD='s3cret-value'
@@ -340,6 +345,7 @@ export MM_SYSTEMCTL_BIN="${MOCKBIN}/systemctl"
 export TARGET_DP_VERSION=6.5.0
 export MM_STATUS_FILE="${WORKDIR}/http-status.env"
 export MM_CONFIG_FILE="${WORKDIR}/http-gui.conf"
+export MM_WORKFLOW_FILE="${WORKDIR}/http-workflow.state"
 mkdir -p "$(dirname "$MM_NGINX_SITE_AVAIL")" "$(dirname "$MM_NGINX_SITE_ENABLED")"
 # Exercise default-site removal under the same sites-enabled as $site_en
 ln -sfn /dev/null "${WORKDIR}/nginx/sites-enabled/default"
@@ -369,6 +375,7 @@ run_enable_http() {
     TARGET_DP_VERSION=6.5.0 \
     MM_STATUS_FILE="$MM_STATUS_FILE" \
     MM_CONFIG_FILE="$MM_CONFIG_FILE" \
+    MM_WORKFLOW_FILE="$MM_WORKFLOW_FILE" \
     PATH="$PATH" \
     bash -c '
       set -euo pipefail

@@ -24,6 +24,7 @@ if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import client_build_repository as cbr
 import client_build_provenance as cbp
+import assert_client_executable_shebang as aces
 
 
 HOP = "jammy-to-noble"
@@ -1007,6 +1008,7 @@ def main(argv=None):
     }
 
     script_body = render_script(template, replacements)
+    aces.assert_client_executable_shebangs(script_body, 'jammy-to-noble')
     if "@@POSTBOOT_POLICY_LIB@@" in script_body:
         raise BuildError("postboot policy placeholder was not rendered")
     assert_no_f2j_residuals("rendered script", script_body)

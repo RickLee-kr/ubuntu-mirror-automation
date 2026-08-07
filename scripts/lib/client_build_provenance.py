@@ -39,6 +39,7 @@ CATEGORY_PATTERNS = {
     "builders": (
         "scripts/lib/client_build_repository.py",
         "scripts/lib/client_build_provenance.py",
+        "scripts/lib/assert_client_executable_shebang.py",
         "scripts/lib/build_client_xenial_to_bionic.py",
         "scripts/lib/build_client_bionic_to_focal.py",
         "scripts/lib/build_client_focal_to_jammy.py",
