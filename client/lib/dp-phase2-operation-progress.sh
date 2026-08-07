@@ -177,11 +177,12 @@ dp2_run_download_with_progress() {
   return "$rc"
 }
 
-# Ensure the complete bringup controller unit is present before starting the
-# expensive extraction. Menu 7 normally downloads these files together, but the
-# stage script also supports standalone execution and older generated commands.
-# This compatibility preflight prevents a late failure after a 30 GB download,
-# checksum, tar validation, and extraction.
+# Ensure the complete Phase 2 client helper unit is present before starting the
+# expensive extraction. Current Menu 7 downloads the full unit up front; this
+# preflight remains for standalone execution and older generated commands that
+# only fetched a subset. Already-present valid files are reported as REUSED.
+# Trust boundary: payloads are checked non-empty / non-HTML / bash -n only.
+# Stage script integrity remains anchored on stage-dp-phase2.sh.sha256.
 dp2_prepare_bringup_controller_dependencies() {
   local lib_dir="${_STAGE_LIB_DIR:-}"
   local mirror="${MIRROR_URL:-}"
@@ -193,10 +194,15 @@ dp2_prepare_bringup_controller_dependencies() {
 
   for rel in \
     bringup_py3_dp_lifecycle.sh \
-    lib/dp-phase2-bringup-lifecycle.sh
+    lib/dp-phase2-bringup-lifecycle.sh \
+    lib/dp-offline-source-product-version.sh \
+    lib/dp-phase2-operation-progress.sh
   do
     dest="${stage_dir}/${rel}"
-    if [[ -s "$dest" ]]; then
+    if [[ -s "$dest" ]] \
+      && ! head -c 256 "$dest" | tr -d '\0' | grep -qiE '<!DOCTYPE[[:space:]]*html|<html[[:space:]]|<html>' \
+      && bash -n "$dest" >/dev/null 2>&1
+    then
       printf 'PHASE2_CONTROLLER_DEPENDENCY=REUSED path=%s\n' "$rel"
       continue
     fi
@@ -213,7 +219,8 @@ dp2_prepare_bringup_controller_dependencies() {
         "$rel" "$(dp2_progress_sanitize_target "$url")" >&2
       return 1
     fi
-    if [[ ! -s "$tmp" ]] || grep -qiE '<!doctype[[:space:]]+html|<html' "$tmp" \
+    if [[ ! -s "$tmp" ]] \
+      || head -c 256 "$tmp" | tr -d '\0' | grep -qiE '<!DOCTYPE[[:space:]]*html|<html[[:space:]]|<html>' \
       || ! bash -n "$tmp" >/dev/null 2>&1
     then
       rm -f "$tmp"
@@ -221,7 +228,7 @@ dp2_prepare_bringup_controller_dependencies() {
         "$rel" >&2
       return 1
     fi
-    chmod 0644 "$tmp"
+    chmod 0755 "$tmp"
     mv -f "$tmp" "$dest"
     printf 'PHASE2_CONTROLLER_DEPENDENCY=%s path=%s\n' "$action" "$rel"
   done

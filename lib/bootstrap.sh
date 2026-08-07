@@ -388,7 +388,7 @@ um_bootstrap_publish_phase2_helpers_only() {
   mkdir -p "$dest"
   stage="$(mktemp -d "${dest}.helpers.XXXXXX")"
   chmod 0755 "$stage"
-  for f in stage-dp-phase2.sh stage-dp-phase2-6.5.0.sh; do
+  for f in stage-dp-phase2.sh stage-dp-phase2-6.5.0.sh bringup_py3_dp_lifecycle.sh; do
     if [[ -f "${src_root}/client/${f}" ]]; then
       install -m 0755 "${src_root}/client/${f}" "${stage}/${f}"
       um_bootstrap_write_sha256_sidecar "${stage}/${f}"
@@ -397,7 +397,16 @@ um_bootstrap_publish_phase2_helpers_only() {
   if [[ -d "${src_root}/client/lib" ]]; then
     mkdir -p "${stage}/lib"
     chmod 0755 "${stage}/lib"
-    cp -a "${src_root}/client/lib/." "${stage}/lib/"
+    # Publish the Phase 2 helper libraries required by Menu 7 / stage preflight.
+    for f in \
+      dp-offline-source-product-version.sh \
+      dp-phase2-operation-progress.sh \
+      dp-phase2-bringup-lifecycle.sh
+    do
+      if [[ -f "${src_root}/client/lib/${f}" ]]; then
+        install -m 0755 "${src_root}/client/lib/${f}" "${stage}/lib/${f}"
+      fi
+    done
   fi
   if [[ -n "${LOCAL_SIGNING_PUBLIC_KEY:-}" && -f "${LOCAL_SIGNING_PUBLIC_KEY}" ]]; then
     if ! local_signing_stage_http_public_artifacts "$stage" \

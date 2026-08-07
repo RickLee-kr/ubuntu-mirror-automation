@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Verify Menu 7 display-only wrapping for normal-width terminals, including a
-# real loopback fetch of the Phase 2 stage script and both helper libraries.
+# real loopback fetch of the complete Phase 2 client helper unit.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -72,17 +72,22 @@ canonical_after="$(sha256sum "$CANONICAL" | awk '{print $1}')"
 
 grep -q 'MENU7_DISPLAY_FORMAT=PASS wrapped_launchers=4 wrapped_phase2=1' "$FORMAT_LOG"
 grep -q 'Copy and paste all three physical lines below into the DP terminal.' "$DISPLAY"
+grep -q 'Copy and paste all four physical lines below into the DP terminal.' "$DISPLAY"
+grep -q 'complete Phase 2 client helper unit' "$DISPLAY"
 [[ "$(grep -c '^cd /home/aella && L=' "$DISPLAY")" -eq 4 ]]
 [[ "$(grep -c '^  U=' "$DISPLAY")" -eq 4 ]]
 [[ "$(grep -c "^  printf '%s  %s" "$DISPLAY")" -eq 4 ]]
 [[ "$(grep -c '^( C=' "$DISPLAY")" -eq 1 ]]
-[[ "$(grep -c 'stage script, checksum, and both required helper libraries' "$DISPLAY")" -eq 1 ]]
 
-grep -Fq 'lib/{dp-offline-source-product-version,dp-phase2-operation-progress}.sh' "$DISPLAY"
+grep -Fq 'bringup_py3_dp_lifecycle.sh' "$DISPLAY"
+grep -Fq 'lib/dp-{offline-source-product-version,phase2-operation-progress,phase2-bringup-lifecycle}.sh' "$DISPLAY"
 grep -Fq 'curl -fsSLo "$F" "$C/$F"' "$DISPLAY"
 grep -Fq -- "--target-version '6.5.0' --same-version-recovery" "$DISPLAY"
 grep -Fq 'sha256sum -c "$S.sha256"' "$DISPLAY"
 ! grep -Fq -- "--create-dirs -fsSLo '#1'" "$DISPLAY"
+! grep -Eq 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)' "$DISPLAY"
+# No whitespace after line-continuation backslashes.
+! grep -Eq '\\[[:space:]]+$' "$DISPLAY"
 
 max_line="$(awk '{ if (length > max) max=length } END { print max+0 }' "$DISPLAY")"
 [[ "$max_line" -le 190 ]]
@@ -106,23 +111,32 @@ phase2_block="${TMP}/phase2.sh"
 awk '
   /^\( C=/ { p=1; n=0 }
   p { print; n++ }
-  p && n==3 { exit }
+  p && n==4 { exit }
 ' "$DISPLAY" >"$phase2_block"
-[[ "$(wc -l <"$phase2_block" | tr -d ' ')" -eq 3 ]]
-[[ "$(grep -c '\\$' "$phase2_block")" -eq 2 ]]
+[[ "$(wc -l <"$phase2_block" | tr -d ' ')" -eq 4 ]]
+[[ "$(grep -c '\\$' "$phase2_block")" -eq 3 ]]
 ! grep -Eq 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)' "$phase2_block"
+! grep -Eq '\\[[:space:]]+$' "$phase2_block"
 bash -n "$phase2_block"
 
-# Hermetic end-to-end check of the exact displayed Phase 2 command. The stage
-# stub refuses to run unless both helper files landed under ./lib.
+# Hermetic end-to-end check of the exact displayed Phase 2 command.
 HTTP_ROOT="${TMP}/http"
 CLIENT_ROOT="${HTTP_ROOT}/client"
 mkdir -p "${CLIENT_ROOT}/lib" "${TMP}/fakebin"
 cat >"${CLIENT_ROOT}/stage-dp-phase2.sh" <<'STAGE'
 #!/usr/bin/env bash
 set -euo pipefail
-source "$(cd "$(dirname "$0")" && pwd)/lib/dp-offline-source-product-version.sh"
-source "$(cd "$(dirname "$0")" && pwd)/lib/dp-phase2-operation-progress.sh"
+here="$(cd "$(dirname "$0")" && pwd)"
+for req in \
+  lib/dp-offline-source-product-version.sh \
+  lib/dp-phase2-operation-progress.sh \
+  lib/dp-phase2-bringup-lifecycle.sh \
+  bringup_py3_dp_lifecycle.sh
+do
+  [[ -s "${here}/${req}" ]] || { printf 'MISSING=%s\n' "$req"; exit 1; }
+done
+source "${here}/lib/dp-offline-source-product-version.sh"
+source "${here}/lib/dp-phase2-operation-progress.sh"
 printf 'PHASE2_HELPER_FETCH_E2E=PASS\n'
 printf 'PHASE2_STUB_ARGS=%s\n' "$*"
 STAGE
@@ -134,6 +148,14 @@ cat >"${CLIENT_ROOT}/lib/dp-phase2-operation-progress.sh" <<'HELPER2'
 #!/usr/bin/env bash
 PROGRESS_HELPER_LOADED=YES
 HELPER2
+cat >"${CLIENT_ROOT}/lib/dp-phase2-bringup-lifecycle.sh" <<'HELPER3'
+#!/usr/bin/env bash
+LIFECYCLE_LIB_LOADED=YES
+HELPER3
+cat >"${CLIENT_ROOT}/bringup_py3_dp_lifecycle.sh" <<'HELPER4'
+#!/usr/bin/env bash
+LIFECYCLE_WRAPPER_LOADED=YES
+HELPER4
 (
   cd "$CLIENT_ROOT"
   sha256sum stage-dp-phase2.sh >stage-dp-phase2.sh.sha256
@@ -155,6 +177,50 @@ PATH="${TMP}/fakebin:${PATH}" bash "$phase2_block" >"${TMP}/phase2.out"
 grep -q '^stage-dp-phase2.sh: OK$' "${TMP}/phase2.out"
 grep -q '^PHASE2_HELPER_FETCH_E2E=PASS$' "${TMP}/phase2.out"
 grep -q -- '--target-version 6.5.0 --same-version-recovery --mirror-url' "${TMP}/phase2.out"
+
+# Backward compatibility: old Menu 7 command (stage+sha256 only) still works
+# because stage prefetches missing helpers via --mirror-url.
+printf 'HTTP_SOURCE_HELPER=YES\n' >"${CLIENT_ROOT}/lib/dp-offline-source-product-version.sh"
+printf 'HTTP_PROGRESS_HELPER=YES\n' >"${CLIENT_ROOT}/lib/dp-phase2-operation-progress.sh"
+# Use a stage copy whose only recovery path is the early mirror fetch (no
+# absolute checkout fallback), so this fixture cannot silently reuse the repo.
+python3 - "${ROOT}/client/stage-dp-phase2.sh" "${CLIENT_ROOT}/stage-dp-phase2.sh" <<'PY'
+from pathlib import Path
+import sys
+src, dst = Path(sys.argv[1]), Path(sys.argv[2])
+text = src.read_text(encoding="utf-8")
+text = text.replace("/home/aella/ubuntu-mirror-automation/client/lib", "/nonexistent/ubuntu-mirror-automation/client/lib")
+text = text.replace('"${SCRIPT_DIR}/../client/lib"', '"/nonexistent/relative/client/lib"')
+dst.write_text(text, encoding="utf-8")
+PY
+(
+  cd "$CLIENT_ROOT"
+  sha256sum stage-dp-phase2.sh >stage-dp-phase2.sh.sha256
+)
+OLD_WORK="${TMP}/old-work"
+mkdir -p "$OLD_WORK"
+curl -fsSLo "${OLD_WORK}/stage-dp-phase2.sh" "${MIRROR}/client/stage-dp-phase2.sh"
+rm -rf "${OLD_WORK}/lib"
+PATH="${TMP}/fakebin:${PATH}" bash "${OLD_WORK}/stage-dp-phase2.sh" \
+  --help --mirror-url "${MIRROR}" >/dev/null
+grep -qx 'HTTP_SOURCE_HELPER=YES' "${OLD_WORK}/lib/dp-offline-source-product-version.sh"
+grep -qx 'HTTP_PROGRESS_HELPER=YES' "${OLD_WORK}/lib/dp-phase2-operation-progress.sh"
+bash -n "${OLD_WORK}/lib/dp-offline-source-product-version.sh"
+bash -n "${OLD_WORK}/lib/dp-phase2-operation-progress.sh"
+echo "PHASE2_OLD_MENU7_HELPER_PREFETCH=PASS"
+
+# Invalid HTML payload must fail closed before helpers are sourced.
+printf '<html>nope</html>\n' >"${CLIENT_ROOT}/lib/dp-phase2-operation-progress.sh"
+BAD_WORK="${TMP}/bad-work"
+mkdir -p "$BAD_WORK"
+curl -fsSLo "${BAD_WORK}/stage-dp-phase2.sh" "${MIRROR}/client/stage-dp-phase2.sh"
+set +e
+PATH="${TMP}/fakebin:${PATH}" bash "${BAD_WORK}/stage-dp-phase2.sh" \
+  --help --mirror-url "${MIRROR}" >"${TMP}/bad.out" 2>&1
+BAD_RC=$?
+set -e
+[[ "$BAD_RC" -ne 0 ]]
+grep -Eiq 'missing Phase 2 helper|ERROR:' "${TMP}/bad.out"
 
 echo "MENU7_NORMAL_WIDTH_DISPLAY=PASS"
 echo "PHASE2_HELPER_FETCH_E2E=PASS"

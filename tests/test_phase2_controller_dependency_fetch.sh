@@ -35,6 +35,14 @@ cat >"${CLIENT_ROOT}/lib/dp-phase2-bringup-lifecycle.sh" <<'LIB'
 set -euo pipefail
 phase2_lifecycle_test_marker() { :; }
 LIB
+cat >"${CLIENT_ROOT}/lib/dp-offline-source-product-version.sh" <<'LIB'
+#!/usr/bin/env bash
+SOURCE_HELPER_LOADED=YES
+LIB
+cat >"${CLIENT_ROOT}/lib/dp-phase2-operation-progress.sh" <<'LIB'
+#!/usr/bin/env bash
+PROGRESS_HELPER_LOADED=YES
+LIB
 
 PORT="$(python3 - <<'PY'
 import socket
@@ -64,10 +72,14 @@ dp2_run_extract_with_progress phase2_tar_extract "${TMP}/extract" -- \
 
 grep -q '^PHASE2_CONTROLLER_DEPENDENCY=DOWNLOAD path=bringup_py3_dp_lifecycle.sh$' "$OUT"
 grep -q '^PHASE2_CONTROLLER_DEPENDENCY=DOWNLOAD path=lib/dp-phase2-bringup-lifecycle.sh$' "$OUT"
+grep -q '^PHASE2_CONTROLLER_DEPENDENCY=DOWNLOAD path=lib/dp-offline-source-product-version.sh$' "$OUT"
+grep -q '^PHASE2_CONTROLLER_DEPENDENCY=DOWNLOAD path=lib/dp-phase2-operation-progress.sh$' "$OUT"
 grep -q '^PHASE2_CONTROLLER_DEPENDENCIES=PASS$' "$OUT"
 grep -q '^OPERATION_END name=phase2_tar_extract rc=0 ' "$OUT"
 test -s "${WORK_ROOT}/bringup_py3_dp_lifecycle.sh"
 test -s "${WORK_ROOT}/lib/dp-phase2-bringup-lifecycle.sh"
+test -s "${WORK_ROOT}/lib/dp-offline-source-product-version.sh"
+test -s "${WORK_ROOT}/lib/dp-phase2-operation-progress.sh"
 bash -n "${WORK_ROOT}/bringup_py3_dp_lifecycle.sh"
 bash -n "${WORK_ROOT}/lib/dp-phase2-bringup-lifecycle.sh"
 grep -q '^extracted$' "${TMP}/extract/payload.txt"
@@ -79,6 +91,8 @@ dp2_run_extract_with_progress phase2_tar_extract "${TMP}/extract" -- \
   >"$REUSE_OUT" 2>&1
 grep -q '^PHASE2_CONTROLLER_DEPENDENCY=REUSED path=bringup_py3_dp_lifecycle.sh$' "$REUSE_OUT"
 grep -q '^PHASE2_CONTROLLER_DEPENDENCY=REUSED path=lib/dp-phase2-bringup-lifecycle.sh$' "$REUSE_OUT"
+grep -q '^PHASE2_CONTROLLER_DEPENDENCY=REUSED path=lib/dp-offline-source-product-version.sh$' "$REUSE_OUT"
+grep -q '^PHASE2_CONTROLLER_DEPENDENCY=REUSED path=lib/dp-phase2-operation-progress.sh$' "$REUSE_OUT"
 grep -q '^reused$' "${TMP}/extract/reused.txt"
 
 # Invalid controller payload must fail before extraction begins.

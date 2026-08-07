@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# Atomic publish of Phase 2 client helpers (+ sha256) to /var/spool/apt-mirror/client/
-# Deploys both:
-#   stage-dp-phase2.sh              (canonical)
-#   stage-dp-phase2-6.5.0.sh        (compatibility wrapper)
-# Does NOT touch selective READY, OS upgrade client manifests, or nginx reload
-# unless HTTP verify requires an already-published /client/ location.
+# Atomic publish of the complete Phase 2 client helper unit to
+# /var/spool/apt-mirror/client/ (or DEST_ROOT).
+#
+# Publishes:
+#   stage-dp-phase2.sh (+ .sha256)
+#   stage-dp-phase2-6.5.0.sh (+ .sha256)
+#   bringup_py3_dp_lifecycle.sh (+ .sha256)
+#   lib/dp-offline-source-product-version.sh
+#   lib/dp-phase2-operation-progress.sh
+#   lib/dp-phase2-bringup-lifecycle.sh
+#
+# Does NOT touch selective READY, OS upgrade client manifests, Phase 2 bundles,
+# or nginx reload unless HTTP verify requires an already-published /client/.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,9 +27,16 @@ if [[ -z "$MIRROR_BASE" && "$SKIP_HTTP_VERIFY" != "1" ]]; then
   MIRROR_BASE="${RESOLVED_MIRROR_BASE_URL%/}"
 fi
 
-HELPERS=(
+# Relative paths under client/. Scripts with sidecars first; lib helpers follow.
+PHASE2_CLIENT_UNIT_SCRIPTS=(
   stage-dp-phase2.sh
   stage-dp-phase2-6.5.0.sh
+  bringup_py3_dp_lifecycle.sh
+)
+PHASE2_CLIENT_UNIT_LIBS=(
+  lib/dp-offline-source-product-version.sh
+  lib/dp-phase2-operation-progress.sh
+  lib/dp-phase2-bringup-lifecycle.sh
 )
 
 [[ "$(id -u)" -eq 0 || "${DP_PHASE2_SKIP_ROOT_CHECK:-0}" == "1" ]] || {
@@ -30,7 +44,7 @@ HELPERS=(
   exit 1
 }
 
-deploy_one() {
+deploy_script_with_sidecar() {
   local name="$1"
   local src="${ROOT}/client/${name}"
   [[ -f "$src" ]] || { echo "missing ${src}" >&2; exit 1; }
@@ -108,12 +122,61 @@ PY
   echo "ARTIFACT_SHA256=${sha} name=${name}"
 }
 
+deploy_lib_helper() {
+  local rel="$1"
+  local src="${ROOT}/client/${rel}"
+  local dest="${DEST_ROOT}/${rel}"
+  local tmp stamp
+  [[ -f "$src" ]] || { echo "missing ${src}" >&2; exit 1; }
+  if [[ ! -s "$src" ]]; then
+    echo "REFUSE: empty payload: ${rel}" >&2
+    exit 1
+  fi
+  # Reject HTTP error pages; inspect only the file head so shell source that
+  # mentions HTML detectors is not false-positive rejected.
+  if head -c 256 "$src" | tr -d '\0' | grep -qiE '<!DOCTYPE[[:space:]]*html|<html[[:space:]]|<html>'; then
+    echo "REFUSE: invalid shell payload: ${rel}" >&2
+    exit 1
+  fi
+  bash -n "$src" || { echo "bash -n failed: ${rel}" >&2; exit 1; }
+  mkdir -p "$(dirname "$dest")"
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  if [[ -f "$dest" ]]; then
+    cp -a "$dest" "${dest}.bak-${stamp}"
+  fi
+  tmp="${dest}.tmp.$$"
+  cp -a "$src" "$tmp"
+  chmod 0755 "$tmp"
+  python3 - "$tmp" "$dest" <<'PY'
+import os, sys
+tmp, dest = sys.argv[1:3]
+with open(tmp, "rb") as fh:
+    os.fsync(fh.fileno())
+os.replace(tmp, dest)
+parent = os.path.dirname(dest) or "."
+dirfd = os.open(parent, os.O_RDONLY)
+try:
+    os.fsync(dirfd)
+finally:
+    os.close(dirfd)
+print("ATOMIC_DEPLOY=PASS")
+print("DEST=" + dest)
+PY
+  echo "ARTIFACT_SHA256=$(sha256sum "$dest" | awk '{print $1}') name=${rel}"
+}
+
 READY_BEFORE=""
 [[ -f "$READY_PATH" ]] && READY_BEFORE="$(sha256sum "$READY_PATH" | awk '{print $1}')"
 
-for h in "${HELPERS[@]}"; do
-  deploy_one "$h"
+for h in "${PHASE2_CLIENT_UNIT_SCRIPTS[@]}"; do
+  deploy_script_with_sidecar "$h"
 done
+for h in "${PHASE2_CLIENT_UNIT_LIBS[@]}"; do
+  deploy_lib_helper "$h"
+done
+
+# Leave no partial temp files behind.
+find "$DEST_ROOT" -maxdepth 3 -type f \( -name '*.tmp.*' -o -name '.dp2-*.XXXXXX' \) -delete 2>/dev/null || true
 
 READY_AFTER=""
 [[ -f "$READY_PATH" ]] && READY_AFTER="$(sha256sum "$READY_PATH" | awk '{print $1}')"
@@ -122,6 +185,7 @@ if [[ -n "$READY_BEFORE" && "$READY_BEFORE" != "$READY_AFTER" ]]; then
   exit 1
 fi
 echo "READY_UNCHANGED=YES"
+echo "PHASE2_CLIENT_UNIT_DEPLOY=PASS"
 
 if [[ "$SKIP_HTTP_VERIFY" == "1" ]]; then
   echo "HTTP_VERIFY=SKIPPED"
@@ -130,7 +194,7 @@ fi
 
 TMPD="$(mktemp -d)"
 trap 'rm -rf "$TMPD"' EXIT
-for h in "${HELPERS[@]}"; do
+for h in "${PHASE2_CLIENT_UNIT_SCRIPTS[@]}"; do
   local_sha="$(sha256sum "${DEST_ROOT}/${h}" | awk '{print $1}')"
   curl -fsS -o "${TMPD}/${h}" "${MIRROR_BASE}/client/${h}"
   http_sha="$(sha256sum "${TMPD}/${h}" | awk '{print $1}')"
@@ -138,5 +202,12 @@ for h in "${HELPERS[@]}"; do
   curl -fsS -o "${TMPD}/${h}.sha256" "${MIRROR_BASE}/client/${h}.sha256"
   http_side="$(awk '{print $1}' "${TMPD}/${h}.sha256")"
   [[ "$http_side" == "$local_sha" ]] || { echo "HTTP sidecar mismatch for ${h}" >&2; exit 1; }
+  echo "HTTP_VERIFY=PASS name=${h} sha256=${http_sha}"
+done
+for h in "${PHASE2_CLIENT_UNIT_LIBS[@]}"; do
+  local_sha="$(sha256sum "${DEST_ROOT}/${h}" | awk '{print $1}')"
+  curl -fsS -o "${TMPD}/$(basename "$h")" "${MIRROR_BASE}/client/${h}"
+  http_sha="$(sha256sum "${TMPD}/$(basename "$h")" | awk '{print $1}')"
+  [[ "$http_sha" == "$local_sha" ]] || { echo "HTTP SHA mismatch for ${h}" >&2; exit 1; }
   echo "HTTP_VERIFY=PASS name=${h} sha256=${http_sha}"
 done
