@@ -1267,6 +1267,8 @@ engine_http_probe_url() {
     return 1
   fi
   if ! [[ "$bytes" =~ ^[0-9]+$ ]] || [[ "$bytes" -le 0 ]]; then
+    # Stable reason token for operators + regression greps (empty_body).
+    mm_error "HTTP_PROBE=FAIL reason=empty_body url=$(basename "$u" 2>/dev/null || printf '%s' "$u")"
     printf '%s\n' "$code"
     return 1
   fi
@@ -1713,19 +1715,28 @@ engine_enable_http_distribution() {
       engine_ensure_phase2_helpers || true
     fi
   else
-    engine_assess_client_set_for_finalize
-    mm_info "CLIENT_SET_STATE=${CLIENT_SET_STATE}"
-    mm_info "CLIENT_SET_ACTION=${CLIENT_SET_ACTION}"
-    if [[ "$CLIENT_SET_ACTION" == "REUSE_CURRENT" || "$CLIENT_SET_ACTION" == "REUSE_VERIFIED" ]]; then
-      clients_on_disk=1
-      engine_bind_reused_client_set_workflow \
-        || mm_die "HTTP_DISTRIBUTION=FAIL client workflow binding"
-    elif [[ -f "${MM_SELECTIVE_ROOT}/state/READY" ]]; then
-      mm_info "CLIENT_FILES_ON_DISK_READY=STALE_OR_MISSING — rebuilding current source"
-      mm_info "DOWNLOAD_PREPARE_USES_AUTHORITATIVE_CLIENT_FINALIZER=YES"
-      engine_rebuild_publish_local_client_set 1 \
-        || mm_die "HTTP_DISTRIBUTION=FAIL client rebuild"
-      clients_on_disk=1
+    # Keep Enable HTTP aligned with Download-and-Prepare: verify-only fixtures
+    # ship complete on-disk clients without selective hop trees for a rebuild.
+    if [[ "${MM_CLIENT_FINALIZATION_MODE:-full}" == "verify-only" ]]; then
+      mm_info "CLIENT_FINALIZATION_MODE=verify-only"
+      if mm_client_files_ready "${MM_CLIENT_ROOT}"; then
+        clients_on_disk=1
+      fi
+    else
+      engine_assess_client_set_for_finalize
+      mm_info "CLIENT_SET_STATE=${CLIENT_SET_STATE}"
+      mm_info "CLIENT_SET_ACTION=${CLIENT_SET_ACTION}"
+      if [[ "$CLIENT_SET_ACTION" == "REUSE_CURRENT" || "$CLIENT_SET_ACTION" == "REUSE_VERIFIED" ]]; then
+        clients_on_disk=1
+        engine_bind_reused_client_set_workflow \
+          || mm_die "HTTP_DISTRIBUTION=FAIL client workflow binding"
+      elif [[ -f "${MM_SELECTIVE_ROOT}/state/READY" ]]; then
+        mm_info "CLIENT_FILES_ON_DISK_READY=STALE_OR_MISSING — rebuilding current source"
+        mm_info "DOWNLOAD_PREPARE_USES_AUTHORITATIVE_CLIENT_FINALIZER=YES"
+        engine_rebuild_publish_local_client_set 1 \
+          || mm_die "HTTP_DISTRIBUTION=FAIL client rebuild"
+        clients_on_disk=1
+      fi
     fi
   fi
   if [[ "$clients_on_disk" -eq 1 ]]; then
