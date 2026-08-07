@@ -1575,7 +1575,7 @@ engine_download_and_prepare() {
       mm_state_set ACPS_CONNECTION FAIL
       mm_die "ACPS_CONNECTION=FAIL"
     fi
-    ACPS_EXPECTED_BYTES="$(acps_expected_bytes_hint "${ACPS_EFFECTIVE_BASE}")"
+    ACPS_EXPECTED_BYTES="$(acps_expected_bytes_hint "${ACPS_EFFECTIVE_BASE:-}")"
     ACPS_EXPECTED_BYTES="${ACPS_EXPECTED_BYTES:-0}"
   fi
   engine_verify_disk_space

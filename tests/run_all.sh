@@ -82,6 +82,14 @@ TEST_LIST=(
   test_client_build_provenance.sh
   test_phase2_existing_reuse_progress.sh
   test_client_os_userspace_matrix.sh
+  test_menu7_normal_width_display.sh
+  test_phase2_extract_progress_separator.sh
+  test_phase2_controller_dependency_fetch.sh
+  test_reused_artifact_status.sh
+  test_mirror_workflow_state_without_logger.sh
+  test_current_hop_env_path_runner.sh
+  test_phase2_complete_client_unit_publish.sh
+  test_dashboard_workflow_status_cases.sh
 )
 
 # Integration tests required for FULL_SUITE=PASS (real builders, not mocked finalizer).
