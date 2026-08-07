@@ -1,4 +1,5 @@
 # Shared durable atomic write helpers for offline OS-upgrade clients.
+# shellcheck shell=bash
 # Injected at build time via the DURABLE_WRITE_HELPER template token.
 # Prefer targeted file+directory fsync over unbounded global `sync`.
 # Bash 4.3+/4.4 safe; requires python3 (standard on Bionic+ upgrade hosts).
