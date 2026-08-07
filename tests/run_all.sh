@@ -90,6 +90,7 @@ TEST_LIST=(
   test_current_hop_env_path_runner.sh
   test_phase2_complete_client_unit_publish.sh
   test_dashboard_workflow_status_cases.sh
+  test_acps_effective_base_setu.sh
 )
 
 # Integration tests required for FULL_SUITE=PASS (real builders, not mocked finalizer).

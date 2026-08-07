@@ -6,6 +6,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/seed_complete_client_http_set.sh
+source "${ROOT}/tests/lib/seed_complete_client_http_set.sh"
 COMMON="${ROOT}/scripts/lib/mirror_manager_common.sh"
 ENGINE="${ROOT}/scripts/lib/mirror_install_engine.sh"
 OS_CORE_PY="${ROOT}/scripts/lib/os_core_package.py"
@@ -137,19 +139,7 @@ fi
 echo "=== 3. finalize must not die with SELECTIVE_READY=MISSING ==="
 # Mock rebuild: only prove finalization gate passes when READY is present.
 engine_rebuild_publish_local_client_set() {
-  local f
-  for f in \
-    dp-offline-upgrade-xenial-to-bionic.sh \
-    dp-offline-upgrade-bionic-to-focal.sh \
-    dp-offline-upgrade-focal-to-jammy.sh \
-    dp-offline-upgrade-jammy-to-noble.sh \
-    stage-dp-phase2.sh
-  do
-    printf '#!/bin/bash\necho %s\n' "$f" >"${MM_CLIENT_ROOT}/${f}"
-    chmod +x "${MM_CLIENT_ROOT}/${f}"
-    (cd "$MM_CLIENT_ROOT" && sha256sum "$f" >"${f}.sha256")
-  done
-  printf 'PUB\n' >"${MM_CLIENT_ROOT}/public.gpg"
+  seed_complete_client_http_set "$MM_CLIENT_ROOT" "http://192.0.2.10"     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
   return 0
 }
 mm_status_set OS_MIRROR_READY PASS

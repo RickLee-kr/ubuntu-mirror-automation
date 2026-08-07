@@ -31,22 +31,16 @@ mkdir -p \
   "${SEL_ROOT}/state" \
   "${SEL_ROOT}/current/shared/offline/release-upgraders/bionic" \
   "${PROJ}/config/client-signing" \
-  "${PROJ}/client/lib" \
-  "${PROJ}/scripts/lib" \
   "${PROJ}/artifacts/client" \
   "${HTTP_ROOT}/hops/xenial-to-bionic/ubuntu/dists/xenial/main/binary-amd64" \
   "${HTTP_ROOT}/hops/xenial-to-bionic/ubuntu/dists/bionic/main/binary-amd64" \
   "${HTTP_ROOT}/hops/xenial-to-bionic/ubuntu/pool/main/a/hello"
 
-cp "$BUILD_PY" "${PROJ}/scripts/lib/"
-cp "${ROOT}/scripts/lib/client_build_repository.py" "${PROJ}/scripts/lib/"
-cp "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh.in" "${PROJ}/client/"
-cp "${ROOT}/client/lib/dp-offline-destructive-confirmation.sh" "${PROJ}/client/lib/"
-cp "${ROOT}/client/lib/dp-offline-release-upgrade-reconciliation.sh" "${PROJ}/client/lib/"
-cp "${ROOT}/client/lib/dp-offline-apt-preflight-sandbox.sh" "${PROJ}/client/lib/"
-# Tracked client script fingerprint (must stay unchanged by builds)
-cp "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh" "${PROJ}/client/" 2>/dev/null || \
-  printf '#!/bin/sh\necho stub\n' >"${PROJ}/client/dp-offline-upgrade-xenial-to-bionic.sh"
+# Full source trees required by builders + provenance (isolated under WORKDIR).
+cp -a "${ROOT}/client" "${PROJ}/client"
+cp -a "${ROOT}/scripts" "${PROJ}/scripts"
+cp -a "${ROOT}/lib" "${PROJ}/lib"
+mkdir -p "${PROJ}/artifacts/client"
 PROD_ARTIFACT="${PROJ}/artifacts/client/dp-offline-upgrade-xenial-to-bionic.sh"
 printf '#!/bin/sh\necho prod-stub\n' >"$PROD_ARTIFACT"
 
@@ -219,9 +213,10 @@ fi
 
 # 2) signing key absent → production build FAIL
 NOKEY_ROOT="${WORKDIR}/nokey-project"
-mkdir -p "${NOKEY_ROOT}/client/lib" "${NOKEY_ROOT}/scripts/lib" "${NOKEY_ROOT}/config"
-cp "$BUILD_PY" "${NOKEY_ROOT}/scripts/lib/"
-cp "${ROOT}/scripts/lib/client_build_repository.py" "${NOKEY_ROOT}/scripts/lib/"
+mkdir -p "${NOKEY_ROOT}/config" "${NOKEY_ROOT}/artifacts/client"
+cp -a "${ROOT}/client" "${NOKEY_ROOT}/client"
+cp -a "${ROOT}/scripts" "${NOKEY_ROOT}/scripts"
+cp -a "${ROOT}/lib" "${NOKEY_ROOT}/lib"
 cp "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh.in" "${NOKEY_ROOT}/client/"
 cp "${ROOT}/client/lib/dp-offline-destructive-confirmation.sh" "${NOKEY_ROOT}/client/lib/"
 cp "${ROOT}/client/lib/dp-offline-release-upgrade-reconciliation.sh" "${NOKEY_ROOT}/client/lib/"

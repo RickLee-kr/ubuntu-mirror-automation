@@ -17,6 +17,8 @@ source "${ROOT}/scripts/lib/mirror_manager_common.sh"
 source "${ROOT}/scripts/lib/dp-phase2-common.sh"
 
 export MM_SKIP_ROOT_CHECK=1
+# shellcheck source=lib/seed_complete_client_http_set.sh
+source "${ROOT}/tests/lib/seed_complete_client_http_set.sh"
 export MM_MIRROR_ROOT="${TMP}/mirror"
 export MM_SELECTIVE_ROOT="${MM_MIRROR_ROOT}/selective"
 export MM_DP_PHASE2_ROOT="${MM_MIRROR_ROOT}/dp-phase2"
@@ -50,6 +52,7 @@ seed_config() {
 PREPARATION_MODE=FULL
 ACPS_USERNAME=demo
 ACPS_PASSWORD=secret
+MIRROR_SERVER_IP=127.0.0.1
 MIRROR_HTTP_URL=http://127.0.0.1
 EOF
   chmod 600 "$MM_CONFIG_FILE"
@@ -57,18 +60,9 @@ EOF
 }
 
 seed_client_files() {
-  local f
-  mkdir -p "$MM_CLIENT_ROOT"
-  for f in \
-    dp-offline-upgrade-xenial-to-bionic.sh \
-    dp-offline-upgrade-bionic-to-focal.sh \
-    dp-offline-upgrade-focal-to-jammy.sh \
-    dp-offline-upgrade-jammy-to-noble.sh \
-    stage-dp-phase2.sh
-  do
-    printf '#!/bin/bash\necho %s\n' "$f" >"${MM_CLIENT_ROOT}/${f}"
-    (cd "$MM_CLIENT_ROOT" && sha256sum "$f" >"${f}.sha256")
-  done
+  seed_complete_client_http_set "$MM_CLIENT_ROOT" "${MIRROR_HTTP_URL:-http://127.0.0.1}"     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  # Menu label tests exercise download fingerprint/status, not signing provenance.
+  mm_client_set_current_source() { return 0; }
 }
 
 seed_artifacts() {

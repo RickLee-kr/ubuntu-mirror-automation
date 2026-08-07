@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/seed_complete_client_http_set.sh
+source "${ROOT}/tests/lib/seed_complete_client_http_set.sh"
 COMMON="${ROOT}/scripts/lib/mirror_manager_common.sh"
 ENGINE="${ROOT}/scripts/lib/mirror_install_engine.sh"
 DP2="${ROOT}/scripts/lib/dp-phase2-common.sh"
@@ -44,17 +46,7 @@ export OS_CORE_R2_URL='http://127.0.0.1:9/os-core.tar'
 export PREPARATION_MODE=PHASE2_ONLY
 
 mkdir -p "$MM_CLIENT_ROOT" "$MM_CACHE_ROOT" "$MM_DP_PHASE2_ROOT" "$MM_LOG_DIR" "$MM_STATE_ROOT" "$MM_CONFIG_DIR"
-for f in \
-  dp-offline-upgrade-xenial-to-bionic.sh \
-  dp-offline-upgrade-bionic-to-focal.sh \
-  dp-offline-upgrade-focal-to-jammy.sh \
-  dp-offline-upgrade-jammy-to-noble.sh \
-  stage-dp-phase2.sh
-do
-  printf '#!/bin/bash\necho %s\n' "$f" >"${MM_CLIENT_ROOT}/${f}"
-  chmod +x "${MM_CLIENT_ROOT}/${f}"
-  (cd "$MM_CLIENT_ROOT" && sha256sum "$f" >"${f}.sha256")
-done
+seed_complete_client_http_set "$MM_CLIENT_ROOT" "http://192.0.2.10"   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 write_cfg() {
   local mode="$1"
@@ -64,9 +56,12 @@ TARGET_DP_VERSION=6.5.0
 ACPS_USERNAME=testuser
 ACPS_PASSWORD=testpass
 OS_CORE_R2_URL=http://127.0.0.1:9/os-core.tar
+MIRROR_SERVER_IP=192.0.2.10
+MIRROR_HTTP_URL=http://192.0.2.10
 EOF
   chmod 600 "$MM_CONFIG_FILE"
 }
+export SKIP_MIRROR_HOST_VALIDATE=1
 write_cfg PHASE2_ONLY
 
 # shellcheck source=../scripts/lib/mirror_manager_common.sh
@@ -81,6 +76,22 @@ source "$R2"
 source "$ENGINE"
 
 dp2_set_version 6.5.0
+
+# This suite validates Phase 2 bundle REUSE / disk accounting. Client rebuild is
+# out of scope — keep a complete on-disk set and skip provenance rebuild.
+engine_rebuild_publish_local_client_set() {
+  seed_complete_client_http_set "$MM_CLIENT_ROOT" "http://192.0.2.10" \
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  return 0
+}
+engine_finalize_local_client_set() {
+  seed_complete_client_http_set "$MM_CLIENT_ROOT" "http://192.0.2.10" \
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  mm_status_set CLIENT_FILES_READY PASS
+  mm_ok "CLIENT_SET_FINALIZATION=PASS (phase2-reuse fixture)"
+  return 0
+}
+mm_client_set_current_source() { return 0; }
 
 make_acps_work_tree() {
   local work="$1"
@@ -205,7 +216,12 @@ engine_verify_os_core_package() {
 }
 engine_materialize_os_mirror() {
   bump materialize
-  mkdir -p "${MM_SELECTIVE_ROOT}/hops/xenial-to-bionic"
+  mkdir -p "${MM_SELECTIVE_ROOT}/hops/xenial-to-bionic" "${MM_SELECTIVE_ROOT}/state"
+  cat >"${MM_SELECTIVE_ROOT}/state/READY" <<EOF
+selective_plan_checksum=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+discovery_artifact_checksum=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+os_core_provenance_source=PACKAGE_MANIFEST_AND_PAYLOAD_SHA256
+EOF
   mm_status_set OS_MIRROR_READY PASS
   mm_state_set OS_MIRROR_READY PASS
   return 0
