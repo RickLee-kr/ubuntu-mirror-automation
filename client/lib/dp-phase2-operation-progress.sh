@@ -177,6 +177,58 @@ dp2_run_download_with_progress() {
   return "$rc"
 }
 
+# Ensure the complete bringup controller unit is present before starting the
+# expensive extraction. Menu 7 normally downloads these files together, but the
+# stage script also supports standalone execution and older generated commands.
+# This compatibility preflight prevents a late failure after a 30 GB download,
+# checksum, tar validation, and extraction.
+dp2_prepare_bringup_controller_dependencies() {
+  local lib_dir="${_STAGE_LIB_DIR:-}"
+  local mirror="${MIRROR_URL:-}"
+  local stage_dir rel dest tmp url action
+
+  # Outside the Phase 2 stage script these globals are intentionally absent.
+  [[ -n "$lib_dir" && -n "$mirror" ]] || return 0
+  stage_dir="$(dirname "$lib_dir")"
+
+  for rel in \
+    bringup_py3_dp_lifecycle.sh \
+    lib/dp-phase2-bringup-lifecycle.sh
+  do
+    dest="${stage_dir}/${rel}"
+    if [[ -s "$dest" ]]; then
+      printf 'PHASE2_CONTROLLER_DEPENDENCY=REUSED path=%s\n' "$rel"
+      continue
+    fi
+
+    mkdir -p "$(dirname "$dest")"
+    tmp="$(mktemp "$(dirname "$dest")/.dp2-controller.XXXXXX")"
+    url="${mirror%/}/client/${rel}"
+    action="DOWNLOAD"
+    if ! curl -fsSL --connect-timeout 30 --retry 3 --retry-delay 2 \
+        -o "$tmp" "$url"
+    then
+      rm -f "$tmp"
+      printf 'PHASE2_CONTROLLER_DEPENDENCY=FAIL path=%s reason=download_failed url=%s\n' \
+        "$rel" "$(dp2_progress_sanitize_target "$url")" >&2
+      return 1
+    fi
+    if [[ ! -s "$tmp" ]] || grep -qiE '<!doctype[[:space:]]+html|<html' "$tmp" \
+      || ! bash -n "$tmp" >/dev/null 2>&1
+    then
+      rm -f "$tmp"
+      printf 'PHASE2_CONTROLLER_DEPENDENCY=FAIL path=%s reason=invalid_shell_payload\n' \
+        "$rel" >&2
+      return 1
+    fi
+    chmod 0644 "$tmp"
+    mv -f "$tmp" "$dest"
+    printf 'PHASE2_CONTROLLER_DEPENDENCY=%s path=%s\n' "$action" "$rel"
+  done
+  printf 'PHASE2_CONTROLLER_DEPENDENCIES=PASS\n'
+  return 0
+}
+
 # Extraction progress: report extracted bytes + file count under a directory.
 # Usage: dp2_run_extract_with_progress <name> <dest_dir> <command...>
 # Or:    dp2_run_extract_with_progress <name> <dest_dir> -- <command...>
@@ -195,6 +247,15 @@ dp2_run_extract_with_progress() {
     printf 'OPERATION_END name=%s rc=2 elapsed_seconds=0\n' "$name"
     return 2
   fi
+
+  if [[ "$name" == "phase2_tar_extract" ]]; then
+    if ! dp2_prepare_bringup_controller_dependencies; then
+      printf 'OPERATION_START name=%s target=%s\n' "$name" "$(dp2_progress_sanitize_target "$dest_dir")"
+      printf 'OPERATION_END name=%s rc=1 elapsed_seconds=0\n' "$name"
+      return 1
+    fi
+  fi
+
   local child_pid hb_pid start now elapsed rc=0 stop_file
   local extracted_bytes extracted_files
   stop_file="$(mktemp "${TMPDIR:-/tmp}/dp2-ex-stop.XXXXXX")"
