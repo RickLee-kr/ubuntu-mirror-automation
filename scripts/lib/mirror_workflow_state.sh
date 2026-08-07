@@ -18,6 +18,39 @@ MIRROR_WORKFLOW_STATE_LOADED=1
 MM_WORKFLOW_FILE="${MM_WORKFLOW_FILE:-${MM_CONFIG_DIR:-/etc/ubuntu-mirror}/dp-upgrade-workflow.state}"
 
 # ---------------------------------------------------------------------------
+# Logger wrappers (standalone-safe)
+# ---------------------------------------------------------------------------
+# This module may be sourced before mirror_manager logging helpers exist
+# (rebuild-publish-clients, isolated tests, etc.). Logging must never turn a
+# successful workflow mutation into rc=127 / WORKFLOW_STATE_UPDATE=SKIPPED.
+mm_wf_info() {
+  if declare -F mm_info >/dev/null 2>&1; then
+    mm_info "$@"
+    return 0
+  fi
+  printf 'INFO: %s\n' "$*"
+  return 0
+}
+
+mm_wf_warn() {
+  if declare -F mm_warn >/dev/null 2>&1; then
+    mm_warn "$@"
+    return 0
+  fi
+  printf 'WARN: %s\n' "$*" >&2
+  return 0
+}
+
+mm_wf_ok() {
+  if declare -F mm_ok >/dev/null 2>&1; then
+    mm_ok "$@"
+    return 0
+  fi
+  printf 'OK: %s\n' "$*"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # Low-level atomic KV store
 # ---------------------------------------------------------------------------
 mm_wf_file() {
@@ -220,7 +253,7 @@ mm_wf_mark_configured() {
     mm_status_set READINESS_RESULT ""
     mm_status_set CLIENT_COMMANDS_MODE ""
   fi
-  mm_info "WORKFLOW_STATE=CONFIGURED WORKFLOW_GENERATION_ID=${gen} CONFIG_SHA256=${sha}"
+  mm_wf_info "WORKFLOW_STATE=CONFIGURED WORKFLOW_GENERATION_ID=${gen} CONFIG_SHA256=${sha}"
 }
 
 # Config change invalidates everything after CONFIGURED.
@@ -242,13 +275,13 @@ mm_wf_invalidate_after_config_change() {
   fi
   mm_wf_mark_configured
   if [[ -n "$prev_mode" && "$prev_mode" != "${PREPARATION_MODE:-}" ]]; then
-    mm_info "WORKFLOW_STALE reason=preparation_mode_changed old=${prev_mode} new=${PREPARATION_MODE:-}"
+    mm_wf_info "WORKFLOW_STALE reason=preparation_mode_changed old=${prev_mode} new=${PREPARATION_MODE:-}"
   fi
   if [[ -n "$prev_ip" && "$prev_ip" != "${MIRROR_SERVER_IP:-}" ]]; then
-    mm_info "WORKFLOW_STALE reason=mirror_server_ip_changed"
+    mm_wf_info "WORKFLOW_STALE reason=mirror_server_ip_changed"
   fi
   if [[ -n "$prev_fpr" ]]; then
-    mm_info "WORKFLOW_STALE reason=config_identity_changed clearing_client_http_readiness_commands"
+    mm_wf_info "WORKFLOW_STALE reason=config_identity_changed clearing_client_http_readiness_commands"
   fi
 }
 
@@ -278,7 +311,7 @@ mm_wf_mark_prepared() {
     mm_status_set PHASE2_GENERATION_ID "$p2_gen"
     mm_status_set UPGRADE_READINESS FAIL
   fi
-  mm_info "WORKFLOW_STATE=PREPARED OS_CORE_GENERATION_ID=${os_gen} PHASE2_GENERATION_ID=${p2_gen}"
+  mm_wf_info "WORKFLOW_STATE=PREPARED OS_CORE_GENERATION_ID=${os_gen} PHASE2_GENERATION_ID=${p2_gen}"
 }
 
 mm_wf_mark_client_set_published() {
@@ -310,7 +343,7 @@ mm_wf_mark_client_set_published() {
     mm_status_set CLIENT_BUILD_INPUT_SHA256 "$input_sha"
     mm_status_set UPGRADE_READINESS FAIL
   fi
-  mm_info "WORKFLOW_STATE=CLIENT_SET_PUBLISHED CLIENT_SET_GENERATION_ID=${client_gen} CLIENT_BUILD_INPUT_SHA256=${input_sha}"
+  mm_wf_info "WORKFLOW_STATE=CLIENT_SET_PUBLISHED CLIENT_SET_GENERATION_ID=${client_gen} CLIENT_BUILD_INPUT_SHA256=${input_sha}"
 }
 
 mm_wf_mark_http_enabled() {
@@ -331,7 +364,7 @@ mm_wf_mark_http_enabled() {
     mm_status_set HTTP_DISTRIBUTION ENABLED
     mm_status_set UPGRADE_READINESS FAIL
   fi
-  mm_info "WORKFLOW_STATE=HTTP_ENABLED HTTP_PUBLICATION_GENERATION_ID=${pub_gen}"
+  mm_wf_info "WORKFLOW_STATE=HTTP_ENABLED HTTP_PUBLICATION_GENERATION_ID=${pub_gen}"
 }
 
 mm_wf_mark_http_disabled() {
@@ -348,7 +381,7 @@ mm_wf_mark_http_disabled() {
     mm_status_set UPGRADE_READINESS FAIL
     mm_status_set HTTP_REENABLE_REQUIRED YES
   fi
-  mm_warn "WORKFLOW_HTTP_DISABLED reason=${reason:-unspecified} HTTP_REENABLE_REQUIRED=YES"
+  mm_wf_warn "WORKFLOW_HTTP_DISABLED reason=${reason:-unspecified} HTTP_REENABLE_REQUIRED=YES"
 }
 
 mm_wf_mark_readiness_verified() {
@@ -367,7 +400,7 @@ mm_wf_mark_readiness_verified() {
     mm_status_set UPGRADE_READINESS PASS
     mm_status_set READINESS_RESULT PASS
   fi
-  mm_ok "UPGRADE_READINESS=PASS READINESS_VERIFIED_GENERATION_ID=${pub_gen}"
+  mm_wf_ok "UPGRADE_READINESS=PASS READINESS_VERIFIED_GENERATION_ID=${pub_gen}"
 }
 
 mm_wf_mark_commands_generated() {
@@ -385,7 +418,7 @@ mm_wf_mark_commands_generated() {
     mm_status_set CLIENT_COMMANDS_MODE "${PREPARATION_MODE:-FULL}"
     mm_status_set CLIENT_COMMANDS_GENERATED_AT "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   fi
-  mm_info "WORKFLOW_STATE=COMMANDS_GENERATED COMMAND_FILE_GENERATION_ID=${cmd_gen} DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2"
+  mm_wf_info "WORKFLOW_STATE=COMMANDS_GENERATED COMMAND_FILE_GENERATION_ID=${cmd_gen} DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2"
 }
 
 # Invalidate HTTP/readiness/commands after client republish or signing change.
