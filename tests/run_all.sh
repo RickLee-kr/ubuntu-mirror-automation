@@ -56,6 +56,7 @@ TEST_LIST=(
   test_dp_phase2_version_compat.sh
   test_dp_phase2_ownership.sh
   test_dp_phase2_cache_resume.sh
+  test_acps_resume_disk_preflight.sh
   test_dp_phase2_process_detect.sh
   test_dp_upgrade_mirror_manager.sh
   test_gui_client_commands.sh
