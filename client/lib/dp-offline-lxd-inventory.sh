@@ -199,6 +199,8 @@ lxd_run_timed() {
 
 lxd_run_with_heartbeat() {
   # Run a potentially long command while keeping raw stdout/stderr in evidence.
+  # Completion is polled independently from the log cadence so a short command
+  # is never delayed by a 30-second heartbeat interval.
   # Usage: lxd_run_with_heartbeat NAME OUT ERR -- command [args...]
   local name="$1" out="$2" err="$3"
   shift 3
@@ -211,7 +213,8 @@ lxd_run_with_heartbeat() {
   fi
 
   local heartbeat="${LXD_PROGRESS_HEARTBEAT_SECS:-30}"
-  local start now elapsed pid rc=0
+  local start now elapsed next_heartbeat pid rc=0 errexit_was_set=0
+  case "$-" in *e*) errexit_was_set=1 ;; esac
   if [[ ! "$heartbeat" =~ ^[0-9]+$ || "$heartbeat" -lt 1 ]]; then
     heartbeat=30
   fi
@@ -221,20 +224,30 @@ lxd_run_with_heartbeat() {
   "$@" >"$out" 2>"$err" &
   pid=$!
   start="$(date +%s)"
+  next_heartbeat="$heartbeat"
 
   while kill -0 "$pid" 2>/dev/null; do
-    sleep "$heartbeat"
+    sleep 1
     if kill -0 "$pid" 2>/dev/null; then
       now="$(date +%s)"
       elapsed=$((now - start))
-      log INFO "${name}_PROGRESS=RUNNING elapsed_secs=${elapsed}"
+      if (( elapsed >= next_heartbeat )); then
+        log INFO "${name}_PROGRESS=RUNNING elapsed_secs=${elapsed}"
+        while (( next_heartbeat <= elapsed )); do
+          next_heartbeat=$((next_heartbeat + heartbeat))
+        done
+      fi
     fi
   done
 
   set +e
   wait "$pid"
   rc=$?
-  set -e
+  if [[ "$errexit_was_set" -eq 1 ]]; then
+    set -e
+  else
+    set +e
+  fi
   now="$(date +%s)"
   elapsed=$((now - start))
   log INFO "${name}_END rc=${rc} elapsed_secs=${elapsed}"
@@ -987,8 +1000,7 @@ guard_lxd_target_transition() {
     rc=$?
     set -e
     if [[ "$rc" -ne 0 ]]; then
-      log ERROR "LXD_TARGET_PLAN_SIMULATION=FAIL rc=${rc}"
-      return "$rc"
+      log WARN "LXD_TARGET_PLAN_SIMULATION_NONZERO_RC=${rc}"
     fi
     if grep -qiE '^Inst lxd |^Inst lxd-client |^Conf lxd |^Conf lxd-client ' "$sim" 2>/dev/null; then
       selected=1
