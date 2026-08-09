@@ -58,6 +58,9 @@ CATEGORY_PATTERNS = {
         "client/lib/dp-offline-destructive-confirmation.sh",
         "client/lib/dp-offline-release-upgrade-reconciliation.sh",
         "client/lib/dp-offline-apt-preflight-sandbox.sh",
+        "client/lib/dp-offline-durable-write.sh",
+        "client/lib/dp-offline-source-product-version.sh",
+        "client/lib/dp-offline-lxd-inventory.sh",
     ),
     "runner": ("client/dp-client-command-runner.sh",),
     "command_generators": (

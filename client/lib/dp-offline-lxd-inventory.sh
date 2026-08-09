@@ -6,6 +6,7 @@ LXD_INVENTORY_MAX_ATTEMPTS="${DP_OFFLINE_LXD_INVENTORY_MAX_ATTEMPTS:-${LXD_INVEN
 LXD_INVENTORY_TIMEOUT_SECS="${LXD_COMMAND_TIMEOUT_SECS}"
 LXD_INVENTORY_BACKOFF_SECS="${DP_OFFLINE_LXD_INVENTORY_BACKOFF_SECS:-${LXD_INVENTORY_BACKOFF_SECS:-2}}"
 LXD_INVENTORY_WALL_CLOCK_SECS="${DP_OFFLINE_LXD_INVENTORY_WALL_CLOCK_SECS:-${LXD_INVENTORY_WALL_CLOCK_SECS:-300}}"
+LXD_PROGRESS_HEARTBEAT_SECS="${DP_OFFLINE_LXD_PROGRESS_HEARTBEAT_SECS:-${LXD_PROGRESS_HEARTBEAT_SECS:-30}}"
 LXD_PREFLIGHT_CLASS="${LXD_PREFLIGHT_CLASS:-}"
 LXD_OFFLINE_UPGRADE_POLICY="${LXD_OFFLINE_UPGRADE_POLICY:-}"
 LXD_INVENTORY_EVIDENCE="${LXD_INVENTORY_EVIDENCE:-}"
@@ -16,11 +17,12 @@ _LXD_SERVICE_INITIAL_ENABLED=0
 
 lxd_validate_inventory_timeouts() {
   local n
-  for n in LXD_WAITREADY_TIMEOUT_SECS LXD_COMMAND_TIMEOUT_SECS LXD_INVENTORY_MAX_ATTEMPTS LXD_INVENTORY_WALL_CLOCK_SECS; do
+  for n in LXD_WAITREADY_TIMEOUT_SECS LXD_COMMAND_TIMEOUT_SECS LXD_INVENTORY_MAX_ATTEMPTS LXD_INVENTORY_WALL_CLOCK_SECS LXD_PROGRESS_HEARTBEAT_SECS; do
     [[ "${!n}" =~ ^[0-9]+$ ]] || case "$n" in
       LXD_WAITREADY_TIMEOUT_SECS) printf -v "$n" '%s' 120 ;;
       LXD_COMMAND_TIMEOUT_SECS) printf -v "$n" '%s' 30 ;;
       LXD_INVENTORY_MAX_ATTEMPTS) printf -v "$n" '%s' 2 ;;
+      LXD_PROGRESS_HEARTBEAT_SECS) printf -v "$n" '%s' 30 ;;
       *) printf -v "$n" '%s' 300 ;;
     esac
   done
@@ -33,6 +35,8 @@ lxd_validate_inventory_timeouts() {
   if (( LXD_INVENTORY_MAX_ATTEMPTS > 3 )); then LXD_INVENTORY_MAX_ATTEMPTS=3; fi
   if (( LXD_INVENTORY_WALL_CLOCK_SECS < 60 )); then LXD_INVENTORY_WALL_CLOCK_SECS=60; fi
   if (( LXD_INVENTORY_WALL_CLOCK_SECS > 900 )); then LXD_INVENTORY_WALL_CLOCK_SECS=900; fi
+  if (( LXD_PROGRESS_HEARTBEAT_SECS < 1 )); then LXD_PROGRESS_HEARTBEAT_SECS=1; fi
+  if (( LXD_PROGRESS_HEARTBEAT_SECS > 300 )); then LXD_PROGRESS_HEARTBEAT_SECS=300; fi
   LXD_INVENTORY_TIMEOUT_SECS="$LXD_COMMAND_TIMEOUT_SECS"
 }
 
@@ -191,6 +195,63 @@ lxd_run_timed() {
   else
     "$@" >"$out" 2>&1
   fi
+}
+
+lxd_run_with_heartbeat() {
+  # Run a potentially long command while keeping raw stdout/stderr in evidence.
+  # Completion is polled independently from the log cadence so a short command
+  # is never delayed by a 30-second heartbeat interval.
+  # Usage: lxd_run_with_heartbeat NAME OUT ERR -- command [args...]
+  local name="$1" out="$2" err="$3"
+  shift 3
+  if [[ "${1:-}" == "--" ]]; then
+    shift
+  fi
+  if [[ "$#" -eq 0 ]]; then
+    log ERROR "${name}_END rc=2 elapsed_secs=0"
+    return 2
+  fi
+
+  local heartbeat="${LXD_PROGRESS_HEARTBEAT_SECS:-30}"
+  local start now elapsed next_heartbeat pid rc=0 errexit_was_set=0
+  case "$-" in *e*) errexit_was_set=1 ;; esac
+  if [[ ! "$heartbeat" =~ ^[0-9]+$ || "$heartbeat" -lt 1 ]]; then
+    heartbeat=30
+  fi
+
+  mkdir -p "$(dirname "$out")" "$(dirname "$err")"
+  log INFO "${name}_BEGIN"
+  "$@" >"$out" 2>"$err" &
+  pid=$!
+  start="$(date +%s)"
+  next_heartbeat="$heartbeat"
+
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 1
+    if kill -0 "$pid" 2>/dev/null; then
+      now="$(date +%s)"
+      elapsed=$((now - start))
+      if (( elapsed >= next_heartbeat )); then
+        log INFO "${name}_PROGRESS=RUNNING elapsed_secs=${elapsed}"
+        while (( next_heartbeat <= elapsed )); do
+          next_heartbeat=$((next_heartbeat + heartbeat))
+        done
+      fi
+    fi
+  done
+
+  set +e
+  wait "$pid"
+  rc=$?
+  if [[ "$errexit_was_set" -eq 1 ]]; then
+    set -e
+  else
+    set +e
+  fi
+  now="$(date +%s)"
+  elapsed=$((now - start))
+  log INFO "${name}_END rc=${rc} elapsed_secs=${elapsed}"
+  return "$rc"
 }
 
 lxd_trim() {
@@ -918,7 +979,7 @@ guard_lxd_target_transition() {
   # Verify target plan will not select Focal transitional lxd.
   local evid="$1"
   local sim="${evid}/target-plan-sim.txt"
-  local selected=0
+  local selected=0 rc=0
   local force_selected="${DP_OFFLINE_FAKE_LXD_TARGET_SELECTED:-}"
 
   mkdir -p "$evid"
@@ -934,8 +995,13 @@ guard_lxd_target_transition() {
     printf 'TEST_ROOT_DEFAULT_SELECTED=NO\n' >"$sim"
   else
     set +e
-    DEBIAN_FRONTEND=noninteractive apt-get -s -y dist-upgrade >"$sim" 2>"${evid}/target-plan-sim.err"
+    lxd_run_with_heartbeat LXD_TARGET_PLAN_SIMULATION "$sim" "${evid}/target-plan-sim.err" -- \
+      env DEBIAN_FRONTEND=noninteractive apt-get -s -y dist-upgrade
+    rc=$?
     set -e
+    if [[ "$rc" -ne 0 ]]; then
+      log WARN "LXD_TARGET_PLAN_SIMULATION_NONZERO_RC=${rc}"
+    fi
     if grep -qiE '^Inst lxd |^Inst lxd-client |^Conf lxd |^Conf lxd-client ' "$sim" 2>/dev/null; then
       selected=1
     fi
@@ -999,8 +1065,8 @@ remove_unused_lxd_before_dro() {
   fi
 
   set +e
-  DEBIAN_FRONTEND=noninteractive apt-get -y remove $LXD_REMOVAL_TARGETS \
-    >"${evid}/removal.out" 2>"${evid}/removal.err"
+  lxd_run_with_heartbeat LXD_REMOVAL_EXEC "${evid}/removal.out" "${evid}/removal.err" -- \
+    env DEBIAN_FRONTEND=noninteractive apt-get -y remove $LXD_REMOVAL_TARGETS
   rc=$?
   set -e
   if [[ "$rc" -ne 0 ]]; then
