@@ -47,6 +47,7 @@ TEST_LIST=(
   test_dp_offline_upgrade_xenial_to_bionic.sh
   test_postboot_shebang_and_state_machine.sh
   test_durable_write_and_lxd_coldstart.sh
+  test_lxd_long_operation_heartbeat.sh
   test_dp_offline_upgrade_bionic_to_focal.sh
   test_dp_offline_upgrade_focal_to_jammy.sh
   test_dp_offline_upgrade_jammy_to_noble.sh
