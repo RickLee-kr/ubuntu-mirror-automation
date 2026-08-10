@@ -6,6 +6,8 @@ Prepare one HTTP mirror server for Stellar Cyber DP upgrades:
 
 The Mirror Server downloads what it needs from Cloudflare R2 and ACPS. **DP hosts download only from the Mirror Server over HTTP**; DP hosts do not need direct access to R2 or ACPS.
 
+**User and operations guide:** https://dpos.xdr.ooo/
+
 ---
 
 ## Quick Start
@@ -77,6 +79,36 @@ In **Configuration**, set all of the following:
 The GUI may suggest a detected IP address, but auto-detection is only a suggestion. You must confirm an active IPv4 address that the DP hosts can actually reach.
 
 Do not start the DP upgrade until **Menu 4 — Verify Upgrade Readiness** reports `PASS`. Then use **Menu 7** as the authoritative source for the DP-side commands.
+
+---
+
+## Operational notes
+
+### Moving a prepared Mirror Server to a dark site
+
+If the Mirror Server was fully prepared and tested in an Internet-connected environment, use this procedure after moving it to the dark site:
+
+1. Boot the Mirror Server and configure its final dark-site IP address.
+2. Run `sudo ubuntu-offline-mirror mirror-manager`.
+3. In **Menu 1 — Configuration**, update the **Mirror Server IP** and save.
+4. Run **Menu 2 → Menu 3 → Menu 4 → Menu 7**.
+5. Confirm **Menu 4 = PASS**, then use the newly generated **Menu 7** commands on the DP.
+
+Menu 2 reuses the prepared local artifacts and rebuilds the DP client files for the new Mirror Server IP. Do not reuse Menu 7 commands generated before the IP change.
+
+### After an SSH disconnect
+
+If SSH disconnects, reconnect and reopen the existing Mirror Manager:
+
+```bash
+sudo ubuntu-offline-mirror mirror-manager
+```
+
+Do **not** repeat steps that already completed successfully. Continue from the first incomplete step.
+
+- If Menu 2 is still running, do not start another copy; wait for the existing job to finish.
+- If Menu 2 completed with `DOWNLOAD_AND_PREPARE=PASS`, continue with **Menu 3 → Menu 4 → Menu 7**.
+- If all required steps were already completed and the Mirror Server IP did not change, no rerun is required. Re-running Menu 4 before the DP upgrade is recommended as a final readiness check.
 
 ---
 
@@ -422,6 +454,10 @@ sudo ubuntu-offline-mirror mirror-manager
 ---
 
 ## Design and developer documentation
+
+For the complete user and operations guide, see:
+
+- https://dpos.xdr.ooo/
 
 Detailed design:
 
