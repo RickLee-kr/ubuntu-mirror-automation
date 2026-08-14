@@ -127,6 +127,8 @@ pass "Configuration uses Preparation Mode + exact footer"
 config_text="Preparation Mode: Full OS Upgrade + Phase 2
 ACPS Username: configured
 ACPS Password: configured
+DL Worker IPs: 192.168.124.23,192.168.124.25
+DA Worker IPs: 192.168.124.24,192.168.124.26
 Worker SSH Password (aella): configured
 ACPS Server: Fixed
 OS Core Source: Cloudflare R2
@@ -137,13 +139,13 @@ config_text_lines="$(printf '%b' "$config_text" | wc -l)"
 # mm_term_size normally overwrites HEIGHT/WIDTH via tput; pin sizes for this check.
 mm_term_size() { :; }
 HEIGHT=50 WIDTH=140
-read -r cfg_h cfg_w cfg_list <<<"$(mm_calc_menu_size 7 74 8 "${config_text_lines}")"
+read -r cfg_h cfg_w cfg_list <<<"$(mm_calc_menu_size 9 74 8 "${config_text_lines}")"
 # Whiptail text rows ≈ dialog_height - list_height - chrome(10).
 cfg_text_rows=$((cfg_h - cfg_list - 10))
 [[ "$cfg_text_rows" -ge "$config_text_lines" ]] \
   || fail "config menu text rows ${cfg_text_rows} < footer block ${config_text_lines} (h=${cfg_h} list=${cfg_list})"
 HEIGHT=40 WIDTH=100
-read -r cfg_h cfg_w cfg_list <<<"$(mm_calc_menu_size 7 74 8 "${config_text_lines}")"
+read -r cfg_h cfg_w cfg_list <<<"$(mm_calc_menu_size 9 74 8 "${config_text_lines}")"
 cfg_text_rows=$((cfg_h - cfg_list - 10))
 [[ "$cfg_text_rows" -ge "$config_text_lines" ]] \
   || fail "mid-term config menu clips footer (rows=${cfg_text_rows} need=${config_text_lines} h=${cfg_h} list=${cfg_list})"

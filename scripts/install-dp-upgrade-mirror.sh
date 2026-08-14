@@ -545,7 +545,7 @@ May be left empty for single DP / AIO / master without workers.")" || continue
             "Enter ACPS Username and ACPS Password first.
 
 Use menu items 3 and 4, then Test again.
-Use 7) Save Configuration to persist them."
+Use 9) Save Configuration to persist them."
           continue
         fi
         ACPS_BASE_URL="$ACPS_BASE_URL_FIXED"
