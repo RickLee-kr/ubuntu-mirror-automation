@@ -218,11 +218,14 @@ mm_wf_config_sha256() {
     else
       printf 'ACPS_PASSWORD_SHA256=\n'
     fi
-    # Include only when set so existing AIO configs keep their identity hash.
+    # Include cluster command-routing inputs only when set so existing AIO
+    # configs keep their identity hash.
     if [[ -n "${WORKER_SSH_PASSWORD:-}" ]]; then
       printf 'WORKER_SSH_PASSWORD_SHA256=%s\n' \
         "$(printf '%s' "${WORKER_SSH_PASSWORD}" | sha256sum | awk '{print $1}')"
     fi
+    [[ -n "${DL_WORKER_IPS:-}" ]] && printf 'DL_WORKER_IPS=%s\n' "${DL_WORKER_IPS}"
+    [[ -n "${DA_WORKER_IPS:-}" ]] && printf 'DA_WORKER_IPS=%s\n' "${DA_WORKER_IPS}"
   ) | sha256sum | awk '{print $1}'
 }
 
@@ -794,11 +797,11 @@ mm_wf_validate_command_file_content() {
         printf 'COMMAND_FILE_PHASE2_STAGE_COUNT=%s\n' "$stage_count"
         return 1
       }
-      [[ "$bringup_count" -eq 1 ]] || {
+      if [[ "$bringup_count" -lt 1 || "$bringup_count" -gt 2 ]]; then
         printf 'COMMAND_FILE_BUILD=FAIL\n'
         printf 'COMMAND_FILE_BRINGUP_COUNT=%s\n' "$bringup_count"
         return 1
-      }
+      fi
       # Phase 2 still uses sudo bash; OS-hop operator command must not.
       grep -q "sudo bash" "$file" || {
         printf 'COMMAND_FILE_BUILD=FAIL\n'
@@ -865,11 +868,11 @@ mm_wf_validate_command_file_content() {
         printf 'COMMAND_FILE_PHASE2_STAGE_COUNT=%s\n' "$stage_count"
         return 1
       }
-      [[ "$bringup_count" -eq 1 ]] || {
+      if [[ "$bringup_count" -lt 1 || "$bringup_count" -gt 2 ]]; then
         printf 'COMMAND_FILE_BUILD=FAIL\n'
         printf 'COMMAND_FILE_BRINGUP_COUNT=%s\n' "$bringup_count"
         return 1
-      }
+      fi
       max_block_lines=3
       # Validate phase2 stage continuation if present.
       local stage_start

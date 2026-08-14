@@ -241,6 +241,14 @@ Required operator inputs:
 - ACPS Username
 - ACPS Password
 
+Cluster configuration is also entered here once:
+
+- **DL Worker IP addresses** — worker IPs only; do not include the DL master
+- **DA Worker IP addresses** — worker IPs only; do not include the DA master
+- **Worker SSH Password (aella)** — required when either worker list is configured
+
+Leave both worker-IP fields empty for a single DP / AIO / master without workers.
+
 Read-only/fixed values:
 
 - Phase 2 target: **6.5.0**
@@ -292,14 +300,14 @@ FAIL
 
 ### 7. Show DP Client Upgrade Commands
 
-Menu 7 asks whether the target is:
+Menu 7 uses the DL/DA worker lists saved in **Configuration**; it no longer asks for worker IPs again.
 
-- **Single DP / AIO / master without workers**, or
-- **Cluster master with workers**
+For clustered deployments, **STEPS 0–6 are the same commands for all required DL/DA masters and workers**. After STEP 6 is complete everywhere, STEP 7 prints two separate bringup commands:
 
-For a cluster, enter **worker IP addresses only**. Do not include the master IP and do not mix DL and DA worker IPs in one command. Management IPs or cluster IPs can be used; cluster IPs are recommended when reachable from the master.
+- **STEP 7A — DL CLUSTER MASTER** — uses only the configured DL worker IPs
+- **STEP 7B — DA CLUSTER MASTER** — uses only the configured DA worker IPs
 
-For clustered deployments, complete the DL cluster first, then run the corresponding process on the DA master with the DA worker IPs.
+Run STEP 7A on the DL master and STEP 7B on the DA master. Do not run STEP 7 manually on workers; each master uses `--worker-ips` to start bringup on its own workers.
 
 **Cluster Phase 2 execution rule:**
 

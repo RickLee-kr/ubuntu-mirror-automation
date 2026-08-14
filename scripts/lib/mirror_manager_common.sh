@@ -63,6 +63,8 @@ PREPARATION_MODE="${PREPARATION_MODE:-FULL}"
 ACPS_USERNAME="${ACPS_USERNAME:-}"
 ACPS_PASSWORD="${ACPS_PASSWORD:-}"
 WORKER_SSH_PASSWORD="${WORKER_SSH_PASSWORD:-}"
+DL_WORKER_IPS="${DL_WORKER_IPS:-}"
+DA_WORKER_IPS="${DA_WORKER_IPS:-}"
 
 # Bash-safe quoting for generated operator commands (passwords with $ ! @ # & etc.).
 mm_shell_quote() {
@@ -615,6 +617,8 @@ mm_load_gui_config() {
   ACPS_USERNAME="${ACPS_USERNAME:-}"
   ACPS_PASSWORD="${ACPS_PASSWORD:-}"
   WORKER_SSH_PASSWORD="${WORKER_SSH_PASSWORD:-}"
+  DL_WORKER_IPS="${DL_WORKER_IPS:-}"
+  DA_WORKER_IPS="${DA_WORKER_IPS:-}"
   MIRROR_HTTP_URL="${MIRROR_HTTP_URL:-}"
   MIRROR_SERVER_IP="${MIRROR_SERVER_IP:-}"
   if [[ -f "${MM_CONFIG_FILE}" ]]; then
@@ -631,6 +635,8 @@ mm_load_gui_config() {
   ACPS_USERNAME="${ACPS_USERNAME:-${ACPS_USER:-}}"
   ACPS_PASSWORD="${ACPS_PASSWORD:-${ACPS_PASS:-}}"
   WORKER_SSH_PASSWORD="${WORKER_SSH_PASSWORD:-}"
+  DL_WORKER_IPS="${DL_WORKER_IPS:-}"
+  DA_WORKER_IPS="${DA_WORKER_IPS:-}"
   MIRROR_HTTP_URL="${MIRROR_HTTP_URL:-}"
   MIRROR_SERVER_IP="${MIRROR_SERVER_IP:-}"
   # Derive missing field from the other when only one is present.
@@ -648,10 +654,12 @@ mm_save_gui_config() {
   local mem_user="${ACPS_USERNAME:-}"
   local mem_pass="${ACPS_PASSWORD:-}"
   local mem_worker_pass="${WORKER_SSH_PASSWORD:-}"
+  local mem_dl_worker_ips="${DL_WORKER_IPS:-}"
+  local mem_da_worker_ips="${DA_WORKER_IPS:-}"
   local mem_mirror="${MIRROR_HTTP_URL:-}"
   local mem_ip="${MIRROR_SERVER_IP:-}"
   local mem_mode="${PREPARATION_MODE:-}"
-  local disk_user="" disk_pass="" disk_worker_pass="" disk_mirror="" disk_ip=""
+  local disk_user="" disk_pass="" disk_worker_pass="" disk_dl_worker_ips="" disk_da_worker_ips="" disk_mirror="" disk_ip=""
 
   if [[ -f "${MM_CONFIG_FILE}" ]]; then
     prev_mode="$(awk -F= '/^PREPARATION_MODE=/{print substr($0,index($0,"=")+1); exit}' "${MM_CONFIG_FILE}" 2>/dev/null || true)"
@@ -665,6 +673,8 @@ mm_save_gui_config() {
       printf 'disk_user=%s\n' "$(printf '%q' "${ACPS_USERNAME:-}")"
       printf 'disk_pass=%s\n' "$(printf '%q' "${ACPS_PASSWORD:-}")"
       printf 'disk_worker_pass=%s\n' "$(printf '%q' "${WORKER_SSH_PASSWORD:-}")"
+      printf 'disk_dl_worker_ips=%s\n' "$(printf '%q' "${DL_WORKER_IPS:-}")"
+      printf 'disk_da_worker_ips=%s\n' "$(printf '%q' "${DA_WORKER_IPS:-}")"
       printf 'disk_mirror=%s\n' "$(printf '%q' "${MIRROR_HTTP_URL:-}")"
       printf 'disk_ip=%s\n' "$(printf '%q' "${MIRROR_SERVER_IP:-}")"
     )"
@@ -674,6 +684,8 @@ mm_save_gui_config() {
   ACPS_USERNAME="${mem_user:-$disk_user}"
   ACPS_PASSWORD="${mem_pass:-$disk_pass}"
   WORKER_SSH_PASSWORD="${mem_worker_pass:-$disk_worker_pass}"
+  DL_WORKER_IPS="${mem_dl_worker_ips:-$disk_dl_worker_ips}"
+  DA_WORKER_IPS="${mem_da_worker_ips:-$disk_da_worker_ips}"
   MIRROR_HTTP_URL="${mem_mirror:-$disk_mirror}"
   MIRROR_SERVER_IP="${mem_ip:-$disk_ip}"
   PREPARATION_MODE="${mem_mode:-${prev_mode:-FULL}}"
@@ -701,6 +713,8 @@ mm_save_gui_config() {
     printf 'ACPS_USERNAME=%s\n' "$(printf '%q' "${ACPS_USERNAME}")"
     printf 'ACPS_PASSWORD=%s\n' "$(printf '%q' "${ACPS_PASSWORD}")"
     printf 'WORKER_SSH_PASSWORD=%s\n' "$(printf '%q' "${WORKER_SSH_PASSWORD:-}")"
+    printf 'DL_WORKER_IPS=%s\n' "$(printf '%q' "${DL_WORKER_IPS:-}")"
+    printf 'DA_WORKER_IPS=%s\n' "$(printf '%q' "${DA_WORKER_IPS:-}")"
     printf 'MIRROR_SERVER_IP=%s\n' "$(printf '%q' "${MIRROR_SERVER_IP:-}")"
     printf 'MIRROR_HTTP_URL=%s\n' "$(printf '%q' "${MIRROR_HTTP_URL:-}")"
   } >"$tmp"

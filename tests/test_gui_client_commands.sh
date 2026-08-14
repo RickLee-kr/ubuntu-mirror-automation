@@ -71,11 +71,19 @@ ACPS_USERNAME=u
 ACPS_PASSWORD=p
 MIRROR_HTTP_URL="http://192.0.2.10"
 WORKER_SSH_PASSWORD='customer-password'
+DL_WORKER_IPS='192.168.124.23,192.168.124.25'
+DA_WORKER_IPS='192.168.124.24,192.168.124.26'
 mm_save_gui_config >/dev/null
 grep -q 'WORKER_SSH_PASSWORD=' "$MM_CONFIG_FILE" || fail "WORKER_SSH_PASSWORD not written"
+grep -q 'DL_WORKER_IPS=' "$MM_CONFIG_FILE" || fail "DL_WORKER_IPS not written"
+grep -q 'DA_WORKER_IPS=' "$MM_CONFIG_FILE" || fail "DA_WORKER_IPS not written"
 WORKER_SSH_PASSWORD=""
+DL_WORKER_IPS=""
+DA_WORKER_IPS=""
 mm_load_gui_config
 [[ "$WORKER_SSH_PASSWORD" == "customer-password" ]] || fail "worker password not reloaded: ${WORKER_SSH_PASSWORD}"
+[[ "$DL_WORKER_IPS" == '192.168.124.23,192.168.124.25' ]] || fail "DL worker IPs not reloaded"
+[[ "$DA_WORKER_IPS" == '192.168.124.24,192.168.124.26' ]] || fail "DA worker IPs not reloaded"
 WORKER_SSH_PASSWORD='Abc$123!'
 mm_save_gui_config >/dev/null
 WORKER_SSH_PASSWORD=""
@@ -95,7 +103,9 @@ pass "worker SSH password save/reload/update"
 
 # --- Configuration: Preparation Mode only; no DP version fields ---
 grep -q '"1" "Preparation Mode"' "$INSTALLER" || fail "Preparation Mode menu missing"
-grep -q '"5" "Worker SSH Password (aella)"' "$INSTALLER" \
+grep -q '"5" "DL Worker IP addresses"' "$INSTALLER" || fail "DL Worker IP menu item missing"
+grep -q '"6" "DA Worker IP addresses"' "$INSTALLER" || fail "DA Worker IP menu item missing"
+grep -q '"7" "Worker SSH Password (aella)"' "$INSTALLER" \
   || fail "Worker SSH Password menu item missing"
 grep -q 'Password used by DL/DA masters to access worker nodes during Phase 2' "$INSTALLER" \
   || fail "Worker SSH Password help text missing"
@@ -266,7 +276,7 @@ pass "forbidden strings absent"
 CLUSTER_OUT="$TMP/cluster-dl.txt"
 PREPARATION_MODE=FULL
 WORKER_SSH_PASSWORD='customer-password'
-gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23,192.168.124.25" \
+gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23,192.168.124.25" "" \
   "customer-password" >"$CLUSTER_OUT"
 grep -q -- '--worker-ips "192.168.124.23,192.168.124.25"' "$CLUSTER_OUT" || fail "DL worker ips missing"
 grep -q -- '--worker-password' "$CLUSTER_OUT" || fail "DL --worker-password missing"
@@ -306,12 +316,25 @@ pass "DL worker-ips/password argv verified"
 
 # DA master workers use the same configured password
 DA_OUT="$TMP/cluster-da.txt"
-gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.24,192.168.124.26" \
+gui_build_client_commands "http://192.0.2.10" "cluster" "" "192.168.124.24,192.168.124.26" \
   "customer-password" >"$DA_OUT"
 grep -q -- '--worker-ips "192.168.124.24,192.168.124.26"' "$DA_OUT" || fail "DA worker ips missing"
 da_line="$(grep -E 'bringup_py3_dp_after_os_upgrade\.sh' "$DA_OUT" | head -1)"
 assert_bringup_argv "$da_line" "192.168.124.24,192.168.124.26" "customer-password"
 pass "DA worker-ips/password argv verified"
+
+# DL and DA cluster commands are emitted together from one configuration.
+DUAL_OUT="$TMP/cluster-dual.txt"
+gui_build_client_commands "http://192.0.2.10" "cluster" \
+  "192.168.124.23,192.168.124.25" "192.168.124.24,192.168.124.26" \
+  "customer-password" >"$DUAL_OUT"
+[[ "$(grep -c 'bringup_py3_dp_after_os_upgrade.sh' "$DUAL_OUT")" -eq 2 ]] \
+  || fail "dual cluster output must contain exactly two bringup commands"
+grep -q 'STEP 7A — DL CLUSTER MASTER' "$DUAL_OUT" || fail "STEP 7A missing"
+grep -q 'STEP 7B — DA CLUSTER MASTER' "$DUAL_OUT" || fail "STEP 7B missing"
+grep -q -- '--worker-ips "192.168.124.23,192.168.124.25"' "$DUAL_OUT" || fail "dual DL worker list missing"
+grep -q -- '--worker-ips "192.168.124.24,192.168.124.26"' "$DUAL_OUT" || fail "dual DA worker list missing"
+pass "dual DL/DA cluster bringup commands"
 
 # No workers: no --worker-ips / --worker-password
 SINGLE_BRINGUP="$(grep -E 'bringup_py3_dp_after_os_upgrade\.sh' "$OUT" | head -1)"
@@ -320,7 +343,7 @@ pass "single-node bringup omits worker flags"
 
 # Cluster without password is rejected
 set +e
-gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23" "" \
+gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23" "" "" \
   >"$TMP/cluster-nopass.txt" 2>"$TMP/cluster-nopass.err"
 nopass_rc=$?
 set -e
@@ -332,7 +355,7 @@ pass "cluster without password rejected"
 # Special-character passwords survive generated command eval
 for spec_pass in 'Test123!' 'Abc$123!' 'worker@Pass#2026' 'A&b!c$123'; do
   spec_out="$TMP/cluster-spec.txt"
-  gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23" \
+  gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23" "" \
     "$spec_pass" >"$spec_out"
   spec_line="$(grep -E 'bringup_py3_dp_after_os_upgrade\.sh' "$spec_out" | head -1)"
   assert_bringup_argv "$spec_line" "192.168.124.23" "$spec_pass"
@@ -377,7 +400,7 @@ mm_save_gui_config >/dev/null
 [[ ! -f "$(mm_client_commands_file)" ]] || fail "stale command file not removed on mode change"
 pass "mode change invalidates client commands file"
 
-# Menu 7: topology first; version input count=0; full instructions textbox direct
+# Menu 7: consumes saved DL/DA worker configuration; no topology/IP prompt.
 PREPARATION_MODE=FULL
 MIRROR_HTTP_URL="http://192.0.2.10"
 MIRROR_SERVER_IP="192.0.2.10"
@@ -431,11 +454,7 @@ mm_whiptail_input() {
 # NOTE: $(mm_whiptail_menu) runs in a subshell — do not rely on call counters.
 mm_whiptail_menu() {
   printf 'MENU\t%s\n' "$1" >>"$MENU7_TRACE"
-  case "$1" in
-    "DP deployment type") printf '1\n' ;;  # single
-    *" — view"*) fail "secondary viewer menu must not appear: $1" ;;
-    *) fail "unexpected menu after topology: $1" ;;
-  esac
+  fail "Menu 7 must not ask topology or worker IPs: $1"
 }
 mm_whiptail_textbox() {
   TEXTBOX_COUNT=$((TEXTBOX_COUNT + 1))
@@ -457,7 +476,7 @@ rm -f "$(mm_client_commands_file)"
 gui_client_instructions
 [[ "$INPUTBOX_COUNT" -eq 0 ]] || fail "menu7 version inputbox count=${INPUTBOX_COUNT}"
 [[ "$MENU7_TEXTBOX_COUNT" -eq 1 ]] || fail "menu7 expected exactly one menu7 textbox, got ${MENU7_TEXTBOX_COUNT}"
-grep -q $'MENU\tDP deployment type' "$MENU7_TRACE" || fail "first menu7 prompt not topology"
+grep -q $'MENU\tDP deployment type' "$MENU7_TRACE" && fail "Menu 7 still asks topology" || true
 grep -q ' — view' "$MENU7_TRACE" && fail "secondary viewer menu still present" || true
 grep -q 'Show complete instructions' "$INSTALLER" && fail "Show complete instructions string still in installer" || true
 grep -q 'Show Step 2 command block' "$INSTALLER" && fail "Show Step submenu still in installer" || true

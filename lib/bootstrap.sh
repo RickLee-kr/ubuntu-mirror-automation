@@ -330,12 +330,14 @@ um_bootstrap_persist_local_mirror_url() {
   local confdir="${INSTALL_CONF_DIR:-/etc/ubuntu-mirror}"
   local conf="${confdir}/dp-upgrade-mirror.conf"
   local mirror_base="${1:-}"
-  local tmp prep user pass worker_pass server_ip
+  local tmp prep user pass worker_pass dl_worker_ips da_worker_ips server_ip
   mkdir -p "$confdir"
   prep="FULL"
   user=""
   pass=""
   worker_pass=""
+  dl_worker_ips=""
+  da_worker_ips=""
   server_ip=""
   if [[ -f "$conf" ]]; then
     # shellcheck disable=SC1090
@@ -347,6 +349,8 @@ um_bootstrap_persist_local_mirror_url() {
     user="${ACPS_USERNAME:-}"
     pass="${ACPS_PASSWORD:-}"
     worker_pass="${WORKER_SSH_PASSWORD:-}"
+    dl_worker_ips="${DL_WORKER_IPS:-}"
+    da_worker_ips="${DA_WORKER_IPS:-}"
     server_ip="${MIRROR_SERVER_IP:-}"
   fi
   if [[ -n "$mirror_base" ]]; then
@@ -360,6 +364,8 @@ PREPARATION_MODE=$(printf '%q' "${prep}")
 ACPS_USERNAME=$(printf '%q' "${user}")
 ACPS_PASSWORD=$(printf '%q' "${pass}")
 WORKER_SSH_PASSWORD=$(printf '%q' "${worker_pass}")
+DL_WORKER_IPS=$(printf '%q' "${dl_worker_ips}")
+DA_WORKER_IPS=$(printf '%q' "${da_worker_ips}")
 MIRROR_SERVER_IP=$(printf '%q' "${server_ip}")
 MIRROR_HTTP_URL=$(printf '%q' "${mirror_base}")
 EOF
