@@ -1,4 +1,4 @@
-name: Run dual cluster configuration patch
+name: Finalize dual cluster GUI validation
 
 on:
   push:
@@ -9,49 +9,79 @@ permissions:
   contents: write
 
 jobs:
-  patch:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Apply patch and tests
-        id: apply
+      - name: Apply final consistency fixes
         shell: bash
         run: |
-          set +e
-          {
-            python3 .github/scripts/dual_cluster_patch.py
-            rc=$?
-            if [ "$rc" -ne 0 ]; then exit "$rc"; fi
-            bash -n scripts/install-dp-upgrade-mirror.sh
-            bash -n scripts/lib/mirror_manager_common.sh
-            bash -n scripts/lib/mirror_workflow_state.sh
-            bash -n lib/bootstrap.sh
-            git diff --check
-            bash tests/test_gui_client_commands.sh
-            bash tests/test_menu7_normal_width_display.sh
-          } > /tmp/dual-cluster-patch.log 2>&1
-          rc=$?
-          cat /tmp/dual-cluster-patch.log
-          if [ "$rc" -ne 0 ]; then
-            cp /tmp/dual-cluster-patch.log .github/dual-cluster-debug.txt
-            git config user.name "Rick Lee"
-            git config user.email "rick@rick.kr"
-            git add .github/dual-cluster-debug.txt
-            git commit -m "chore: capture dual cluster patch failure" || true
-            git push || true
-            exit "$rc"
-          fi
+          python3 - <<'PY'
+          from pathlib import Path
 
-      - name: Commit production changes
+          p = Path('scripts/install-dp-upgrade-mirror.sh')
+          s = p.read_text()
+          old = 'Use 7) Save Configuration to persist them.'
+          new = 'Use 9) Save Configuration to persist them.'
+          if s.count(old) != 1:
+              raise SystemExit(f'expected one stale Save Configuration reference, got {s.count(old)}')
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path('tests/test_gui_client_commands.sh')
+          s = p.read_text()
+          old = '''config_text="Preparation Mode: Full OS Upgrade + Phase 2
+ACPS Username: configured
+ACPS Password: configured
+Worker SSH Password (aella): configured
+ACPS Server: Fixed
+OS Core Source: Cloudflare R2
+'''
+          new = '''config_text="Preparation Mode: Full OS Upgrade + Phase 2
+Mirror Server IP: 192.0.2.10
+ACPS Username: configured
+ACPS Password: configured
+DL Worker IPs: 192.168.124.23,192.168.124.25
+DA Worker IPs: 192.168.124.24,192.168.124.26
+Worker SSH Password (aella): configured
+ACPS Server: Fixed
+OS Core Source: Cloudflare R2
+'''
+          if s.count(old) != 1:
+              raise SystemExit(f'expected one config_text fixture, got {s.count(old)}')
+          s = s.replace(old, new, 1)
+          if s.count('mm_calc_menu_size 7 74 8 "${config_text_lines}"') != 2:
+              raise SystemExit('expected two old 7-item config menu size checks')
+          s = s.replace('mm_calc_menu_size 7 74 8 "${config_text_lines}"',
+                        'mm_calc_menu_size 9 74 8 "${config_text_lines}"')
+          p.write_text(s)
+          PY
+
+      - name: Validate implementation
         shell: bash
         run: |
-          git config user.name "Rick Lee"
-          git config user.email "rick@rick.kr"
-          rm -f .github/dual-cluster-debug.txt
-          git add README.md lib/bootstrap.sh scripts/install-dp-upgrade-mirror.sh scripts/lib/mirror_manager_common.sh scripts/lib/mirror_workflow_state.sh tests/test_gui_client_commands.sh
-          git add -u .github/dual-cluster-debug.txt 2>/dev/null || true
-          git commit -m "feat(gui): configure DL and DA worker lists separately"
+          set -euo pipefail
+          bash -n scripts/install-dp-upgrade-mirror.sh
+          bash -n scripts/lib/mirror_manager_common.sh
+          bash -n scripts/lib/mirror_workflow_state.sh
+          bash -n lib/bootstrap.sh
+          git diff --check
+          bash tests/test_gui_client_commands.sh
+          bash tests/test_menu7_normal_width_display.sh
+          bash tests/test_mirror_manager_menu_status.sh
+
+      - name: Commit final fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'No final consistency changes required'
+            exit 0
+          fi
+          git config user.name 'Rick Lee'
+          git config user.email 'rick@rick.kr'
+          git add scripts/install-dp-upgrade-mirror.sh tests/test_gui_client_commands.sh
+          git commit -m 'test(gui): align dual worker configuration guidance'
           git push
