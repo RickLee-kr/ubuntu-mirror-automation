@@ -378,6 +378,8 @@ sed -i 's/^BRINGUP_PATCHED_SHA1=.*/BRINGUP_PATCHED_SHA1=deadbeefdeadbeefdeadbeef
 engine_assess_phase2_final 6.5.0
 [[ "$PHASE2_EXISTING_BUNDLE" == "INVALID" ]] \
   || fail "stale patched bringup SHA should be INVALID got=${PHASE2_EXISTING_BUNDLE}"
+[[ "${PHASE2_EXISTING_INVALID_REASON}" == "patched_bringup_changed" ]] \
+  || fail "stale SHA reason want=patched_bringup_changed got=${PHASE2_EXISTING_INVALID_REASON}"
 pass "stale BRINGUP_PATCHED_SHA1 invalidates existing bundle"
 
 make_valid_final
@@ -387,9 +389,99 @@ mv -f "${TMP}/release.env.nosha" "${MM_DP_PHASE2_ROOT}/6.5.0/release.env"
 engine_assess_phase2_final 6.5.0
 [[ "$PHASE2_EXISTING_BUNDLE" == "INVALID" ]] \
   || fail "missing patched bringup SHA should be INVALID got=${PHASE2_EXISTING_BUNDLE}"
+[[ "${PHASE2_EXISTING_INVALID_REASON}" == "patched_bringup_sha_missing" ]] \
+  || fail "missing SHA reason want=patched_bringup_sha_missing got=${PHASE2_EXISTING_INVALID_REASON}"
 pass "missing BRINGUP_PATCHED_SHA1 invalidates existing bundle"
 
 [[ "$PHASE2_TARGET_VERSION" == "6.5.0" ]] || fail "phase2 target"
 pass "13 workflow markers (target 6.5.0 fixed)"
+
+# --- 100GB-class EXISTING_FINAL local-rebuild disk preflight ---
+# Production case: ~100GB filesystem, ~30GiB existing final, no ACPS cache,
+# stale BRINGUP_PATCHED_SHA1, verified final eligible for local rebuild.
+# Peak must be one extra copy + metadata + 10GiB safety — not
+# existing + ACPS download + extracted source + new final.
+make_valid_final
+sed -i 's/^BRINGUP_PATCHED_SHA1=.*/BRINGUP_PATCHED_SHA1=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef/' \
+  "${MM_DP_PHASE2_ROOT}/6.5.0/release.env"
+engine_assess_phase2_final 6.5.0
+[[ "$PHASE2_EXISTING_BUNDLE" == "INVALID" ]] \
+  || fail "100GB stale bundle not INVALID got=${PHASE2_EXISTING_BUNDLE}"
+[[ "${PHASE2_EXISTING_INVALID_REASON}" == "patched_bringup_changed" ]] \
+  || fail "100GB reason want=patched_bringup_changed got=${PHASE2_EXISTING_INVALID_REASON}"
+[[ "${PHASE2_EXISTING_FINAL_INTEGRITY}" == "PASS" ]] \
+  || fail "100GB verified final integrity want=PASS got=${PHASE2_EXISTING_FINAL_INTEGRITY}"
+engine_phase2_existing_final_reusable \
+  || fail "100GB verified stale-bringup final should be a local rebuild source"
+rm -rf "${MM_CACHE_ROOT}/acps"
+[[ ! -e "${MM_CACHE_ROOT}/acps" ]] || fail "ACPS cache must be absent for 100GB regression"
+
+REAL_SOURCE=30307553280
+GIB=$((1024 * 1024 * 1024))
+METADATA_OH=$((512 * 1024 * 1024))
+SAFETY=$((10 * GIB))
+BUNDLE_100="${MM_DP_PHASE2_ROOT}/6.5.0/dp_bundle_6.5.0-current.tar"
+truncate -s "$REAL_SOURCE" "$BUNDLE_100"
+[[ "$(mm_file_bytes "$BUNDLE_100")" -eq "$REAL_SOURCE" ]] \
+  || fail "sparse existing final size want=${REAL_SOURCE} got=$(mm_file_bytes "$BUNDLE_100")"
+
+write_cfg PHASE2_ONLY
+PREPARATION_MODE=PHASE2_ONLY
+PHASE2_BUNDLE_ACTION=REBUILD
+PHASE2_REBUILD_REQUIRED=YES
+PHASE2_REBUILD_SOURCE=EXISTING_FINAL
+ACPS_DOWNLOAD_REQUIRED=NO
+PHASE2_EXISTING_FINAL_BYTES="$REAL_SOURCE"
+ACPS_EXPECTED_BYTES="$REAL_SOURCE"
+MM_MOCK_AVAILABLE_BYTES=$((80 * GIB))
+MM_MOCK_FS_SIZE_BYTES=$((100 * 1000 * 1000 * 1000))
+MM_MOCK_SAFETY_RESERVE_BYTES=$SAFETY
+export PHASE2_BUNDLE_ACTION PHASE2_REBUILD_REQUIRED PHASE2_REBUILD_SOURCE
+export ACPS_DOWNLOAD_REQUIRED PHASE2_EXISTING_FINAL_BYTES ACPS_EXPECTED_BYTES
+export PREPARATION_MODE
+
+mm_calc_disk_requirements >/dev/null
+[[ "$PHASE2_REBUILD_SOURCE" == "EXISTING_FINAL" ]] \
+  || fail "disk preflight mutated PHASE2_REBUILD_SOURCE=${PHASE2_REBUILD_SOURCE}"
+[[ "$ACPS_DOWNLOAD_REQUIRED" == "NO" ]] \
+  || fail "disk preflight mutated ACPS_DOWNLOAD_REQUIRED=${ACPS_DOWNLOAD_REQUIRED}"
+[[ "$PHASE2_ACPS_SOURCE_REQUIRED_BYTES" -eq 0 ]] \
+  || fail "EXISTING_FINAL must not reserve ACPS download got=${PHASE2_ACPS_SOURCE_REQUIRED_BYTES}"
+[[ "$DISK_PREFLIGHT_ACPS_SOURCE_BYTES" -eq 0 ]] \
+  || fail "DISK_PREFLIGHT_ACPS_SOURCE_BYTES want=0 got=${DISK_PREFLIGHT_ACPS_SOURCE_BYTES}"
+[[ "$DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES" -eq "$REAL_SOURCE" ]] \
+  || fail "bundle output want=${REAL_SOURCE} got=${DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES}"
+[[ "$PHASE2_BUNDLE_OUTPUT_REQUIRED_BYTES" -eq "$REAL_SOURCE" ]] \
+  || fail "PHASE2_BUNDLE_OUTPUT_REQUIRED_BYTES want=${REAL_SOURCE} got=${PHASE2_BUNDLE_OUTPUT_REQUIRED_BYTES}"
+[[ "$DISK_PREFLIGHT_EXISTING_FINAL_BYTES" -eq "$REAL_SOURCE" ]] \
+  || fail "existing final bytes want=${REAL_SOURCE} got=${DISK_PREFLIGHT_EXISTING_FINAL_BYTES}"
+correct_stage=$((REAL_SOURCE + METADATA_OH))
+[[ "$DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES" -eq "$correct_stage" ]] \
+  || fail "stage extra want=${correct_stage} got=${DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES}"
+[[ "$DISK_PREFLIGHT_SEQUENTIAL_STAGE_PEAK_BYTES" -eq "$correct_stage" ]] \
+  || fail "sequential peak want=${correct_stage} got=${DISK_PREFLIGHT_SEQUENTIAL_STAGE_PEAK_BYTES}"
+[[ "$DISK_PREFLIGHT_SAFETY_RESERVE_BYTES" -eq "$SAFETY" ]] \
+  || fail "safety reserve weakened want=${SAFETY} got=${DISK_PREFLIGHT_SAFETY_RESERVE_BYTES}"
+correct_required=$((correct_stage + SAFETY))
+[[ "$TOTAL_REQUIRED_BYTES" -eq "$correct_required" ]] \
+  || fail "required want=${correct_required} got=${TOTAL_REQUIRED_BYTES}"
+[[ "$CURRENT_AVAILABLE_BASED_REQUIRED_BYTES" -eq "$correct_required" ]] \
+  || fail "available-based required want=${correct_required} got=${CURRENT_AVAILABLE_BASED_REQUIRED_BYTES}"
+[[ "$DISK_PREFLIGHT_RESULT" == "PASS" ]] \
+  || fail "100GB-class EXISTING_FINAL preflight want=PASS got=${DISK_PREFLIGHT_RESULT}"
+[[ "$AVAILABLE_BYTES" -ge "$TOTAL_REQUIRED_BYTES" ]] \
+  || fail "100GB-class available ${AVAILABLE_BYTES} < required ${TOTAL_REQUIRED_BYTES}"
+# Naive four-copy reservation: existing + ACPS download + extracted + new final.
+wrong_required=$((REAL_SOURCE * 4 + METADATA_OH + SAFETY))
+[[ "$wrong_required" -gt "$AVAILABLE_BYTES" ]] \
+  || fail "naive four-copy required ${wrong_required} should exceed 80GiB available"
+[[ "$TOTAL_REQUIRED_BYTES" -lt "$wrong_required" ]] \
+  || fail "production required ${TOTAL_REQUIRED_BYTES} must be below four-copy ${wrong_required}"
+echo "DISK_100GB_EXISTING_FINAL_STAGE_BYTES=${DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES}"
+echo "DISK_100GB_EXISTING_FINAL_REQUIRED_BYTES=${TOTAL_REQUIRED_BYTES}"
+echo "DISK_100GB_EXISTING_FINAL_WRONG_FOUR_COPY_BYTES=${wrong_required}"
+echo "ACPS_DOWNLOAD_REQUIRED=${ACPS_DOWNLOAD_REQUIRED}"
+echo "PHASE2_REBUILD_SOURCE=${PHASE2_REBUILD_SOURCE}"
+pass "100GB-class EXISTING_FINAL disk preflight accounts one extra copy only"
 
 echo "ALL PHASE2 BUNDLE REUSE / DISK TESTS PASSED"

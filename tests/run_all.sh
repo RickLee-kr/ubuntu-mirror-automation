@@ -63,8 +63,11 @@ TEST_LIST=(
   test_gui_client_commands.sh
   test_bringup_worker_password.sh
   test_bringup_acps_sha_policy.sh
+  test_bringup_lifecycle_failed_retry.sh
   test_mirror_download_and_space_regressions.sh
   test_phase2_bundle_reuse_disk.sh
+  test_phase2_stale_bringup_bundle.sh
+  test_phase2_stale_bringup_no_acps_redownload.sh
   test_mirror_long_step_progress.sh
   test_mirror_manager_menu_status.sh
   test_bringup_image_import_heartbeat.sh

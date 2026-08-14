@@ -506,6 +506,102 @@ engine_stage_acps_work_from_cache() {
   done
 }
 
+# Inner checksums for payloads reused from an existing final. Bringup is excluded
+# because it will be replaced. Always verify images-*.tar against its sidecar;
+# a matching outer bundle hash does not prove inner payload checksums.
+engine_verify_reused_final_payloads() {
+  local files_dir="$1"
+  local ver="${2:-$DP_PHASE2_VERSION}"
+  local f
+  for f in \
+    aelladeb_py3_common.tar.gz \
+    aelladeb_py3_common.tar.gz.sha1 \
+    "aella-uvp-2404_${ver}ubuntu1_amd64.deb" \
+    "aella-uvp-2404_${ver}ubuntu1_amd64.deb.sha1" \
+    "images-${ver}.list" \
+    "images-${ver}.tar" \
+    "images-${ver}.tar.sha256"
+  do
+    [[ -f "${files_dir}/${f}" ]] || return 1
+    dp2_reject_bad_payload "${files_dir}/${f}" "$f" || return 1
+  done
+  mm_verify_sha1_pair_logged \
+    "${files_dir}/aelladeb_py3_common.tar.gz" \
+    "${files_dir}/aelladeb_py3_common.tar.gz.sha1" \
+    || return 1
+  mm_verify_sha1_pair_logged \
+    "${files_dir}/aella-uvp-2404_${ver}ubuntu1_amd64.deb" \
+    "${files_dir}/aella-uvp-2404_${ver}ubuntu1_amd64.deb.sha1" \
+    || return 1
+  mm_verify_sha256_pair_logged \
+    "${files_dir}/images-${ver}.tar" \
+    "${files_dir}/images-${ver}.tar.sha256" \
+    "ACPS_CHECKSUM_VERIFY" \
+    "Still verifying reused images-${ver}.tar SHA256..." \
+    || return 1
+  return 0
+}
+
+# Extract unchanged ACPS payloads from a verified existing final. Never mutates
+# the old tar in place. Caller replaces bringup, then releases the old final
+# before writing .new so peak stays at two large copies.
+engine_stage_work_from_existing_final() {
+  local ver="$1"
+  local work="$2"
+  local dest bundle sidecar
+  dp2_set_version "$ver"
+  dest="$(engine_phase2_final_dir "$ver")"
+  bundle="${dest}/$(dp2_stable_bundle_name)"
+  sidecar="${bundle}.sha256"
+
+  [[ -f "$bundle" && ! -L "$bundle" ]] \
+    || mm_die "PHASE2_EXISTING_FINAL_SOURCE=FAIL bundle_missing"
+  [[ -f "$sidecar" && ! -L "$sidecar" ]] \
+    || mm_die "PHASE2_EXISTING_FINAL_SOURCE=FAIL sidecar_missing"
+
+  mm_info "PHASE2_REBUILD_SOURCE=EXISTING_FINAL"
+  mm_set_phase "Validating Existing Phase 2 Bundle For Rebuild"
+  if [[ "${PHASE2_EXISTING_FINAL_INTEGRITY:-}" != "PASS" ]]; then
+    if ! mm_verify_sha256_pair_logged \
+      "$bundle" "$sidecar" "PHASE2_EXISTING_SHA256_VERIFY" \
+      "Still verifying the existing Phase 2 bundle SHA256..."
+    then
+      mm_die "PHASE2_EXISTING_FINAL_SOURCE=FAIL sha256"
+    fi
+  fi
+  if ! dp2_assert_safe_tar_list "$bundle" >/dev/null; then
+    mm_die "PHASE2_EXISTING_FINAL_SOURCE=FAIL tar_entries"
+  fi
+
+  rm -rf "$work"
+  mkdir -p "$work" || mm_die "PHASE2_EXISTING_FINAL_EXTRACT=FAIL mkdir"
+  mm_set_phase "Extracting Phase 2 Payloads For Local Rebuild"
+  mm_human_lines \
+    "Extracting unchanged ACPS payloads from the existing Phase 2 bundle." \
+    "Only the patched bringup script will be replaced." \
+    "This does not download ACPS over the network."
+  if ! mm_run_with_heartbeat \
+    "PHASE2_EXISTING_FINAL_EXTRACT" \
+    "bundle=$(basename "$bundle") dest=${work}" \
+    "Still extracting unchanged Phase 2 payloads from the existing final bundle..." \
+    -- tar -xf "$bundle" -C "$work"
+  then
+    rm -rf "$work"
+    mm_die "PHASE2_EXISTING_FINAL_EXTRACT=FAIL"
+  fi
+  if ! dp2_assert_exact_files_dir "$work"; then
+    rm -rf "$work"
+    mm_die "PHASE2_EXISTING_FINAL_EXTRACT=FAIL file_set"
+  fi
+  rm -f "${work}/bringup_py3_dp_after_os_upgrade.sh" \
+    "${work}/bringup_py3_dp_after_os_upgrade.sh.sha1"
+  if ! engine_verify_reused_final_payloads "$work" "$ver"; then
+    rm -rf "$work"
+    mm_die "PHASE2_EXISTING_FINAL_PAYLOADS=FAIL"
+  fi
+  mm_ok "PHASE2_EXISTING_FINAL_EXTRACT=PASS"
+}
+
 engine_cleanup_phase2_sources() {
   # Drop ACPS source/work as soon as the verified bundle .new no longer needs them.
   local ver="${1:-${TARGET_DP_VERSION:-}}"
@@ -915,102 +1011,135 @@ engine_phase2_final_dir() {
   printf '%s/%s\n' "${MM_DP_PHASE2_ROOT}" "$ver"
 }
 
-engine_assess_phase2_final() {
-  # Sets PHASE2_EXISTING_BUNDLE=VALID|INVALID|ABSENT for the fixed 6.5.0 final.
-  local ver="${1:-${TARGET_DP_VERSION:-${PHASE2_TARGET_VERSION}}}"
-  local dest envf bundle sidecar stable
-  local target_field artifact_field stable_field
-  PHASE2_EXISTING_BUNDLE=ABSENT
-  dp2_set_version "$ver"
-  dest="$(engine_phase2_final_dir "$ver")"
-  stable="$(dp2_stable_bundle_name)"
-  envf="${dest}/release.env"
-  bundle="${dest}/${stable}"
-  sidecar="${dest}/${stable}.sha256"
+engine_phase2_mark_existing() {
+  local state="$1"
+  local reason="${2:-}"
+  PHASE2_EXISTING_BUNDLE="$state"
+  case "$state" in
+    VALID)
+      PHASE2_EXISTING_INVALID_REASON=""
+      mm_info "PHASE2_EXISTING_BUNDLE=VALID"
+      ;;
+    ABSENT)
+      PHASE2_EXISTING_INVALID_REASON=""
+      mm_info "PHASE2_EXISTING_BUNDLE=ABSENT"
+      ;;
+    INVALID)
+      PHASE2_EXISTING_INVALID_REASON="$reason"
+      mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=${reason}"
+      mm_info "PHASE2_EXISTING_INVALID_REASON=${reason}"
+      ;;
+    *)
+      PHASE2_EXISTING_INVALID_REASON=""
+      mm_info "PHASE2_EXISTING_BUNDLE=${state}"
+      ;;
+  esac
+}
 
-  if [[ ! -e "$dest" ]]; then
-    PHASE2_EXISTING_BUNDLE=ABSENT
-    mm_info "PHASE2_EXISTING_BUNDLE=ABSENT"
-    return 0
+# Stale patched-bringup generations may reuse a fully verified existing final.
+# Integrity/layout failures must not.
+engine_phase2_existing_final_reusable() {
+  case "${PHASE2_EXISTING_INVALID_REASON:-}" in
+    patched_bringup_changed|patched_bringup_sha_missing)
+      [[ "${PHASE2_EXISTING_FINAL_INTEGRITY:-}" == "PASS" ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Inner SHA1 pairs + images tar SHA256 from an existing final, without trusting
+# the outer bundle hash. Small files are extracted to a temp dir; the ~30GiB
+# images tar is stream-hashed so assess does not need another on-disk copy.
+engine_phase2_verify_inner_payloads_in_bundle() {
+  local bundle="$1"
+  local ver="${2:-$DP_PHASE2_VERSION}"
+  local tmp expected actual
+  local common="aelladeb_py3_common.tar.gz"
+  local uvp="aella-uvp-2404_${ver}ubuntu1_amd64.deb"
+  local img="images-${ver}.tar"
+  PHASE2_EXISTING_INTEGRITY_FAIL_REASON=""
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/phase2-inner-verify.XXXXXX")" || {
+    PHASE2_EXISTING_INTEGRITY_FAIL_REASON=inner_payload_extract
+    return 1
+  }
+  if ! tar -xf "$bundle" -C "$tmp" \
+    "$common" "${common}.sha1" \
+    "$uvp" "${uvp}.sha1" \
+    "${img}.sha256"
+  then
+    rm -rf "$tmp"
+    PHASE2_EXISTING_INTEGRITY_FAIL_REASON=inner_payload_extract
+    mm_error "PHASE2_INNER_PAYLOAD_VERIFY=FAIL reason=extract"
+    return 1
   fi
-  if [[ ! -d "$dest" ]]; then
-    PHASE2_EXISTING_BUNDLE=INVALID
-    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=not_directory"
-    return 0
+  if ! mm_verify_sha1_pair_logged "${tmp}/${common}" "${tmp}/${common}.sha1"; then
+    rm -rf "$tmp"
+    PHASE2_EXISTING_INTEGRITY_FAIL_REASON=inner_sha1
+    mm_error "PHASE2_INNER_PAYLOAD_VERIFY=FAIL reason=inner_sha1 file=${common}"
+    return 1
   fi
-  # Obsolete generation layouts are never treated as a valid single-final bundle.
-  if [[ -e "${dest}/releases" || -e "${dest}/current" || -e "${dest}/previous" \
-    || -e "${dest}/files" || -e "${dest}/.staging" ]]; then
-    PHASE2_EXISTING_BUNDLE=INVALID
-    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=obsolete_generation_layout"
-    return 0
+  if ! mm_verify_sha1_pair_logged "${tmp}/${uvp}" "${tmp}/${uvp}.sha1"; then
+    rm -rf "$tmp"
+    PHASE2_EXISTING_INTEGRITY_FAIL_REASON=inner_sha1
+    mm_error "PHASE2_INNER_PAYLOAD_VERIFY=FAIL reason=inner_sha1 file=${uvp}"
+    return 1
   fi
-  if [[ ! -f "$envf" || -L "$envf" ]]; then
-    PHASE2_EXISTING_BUNDLE=INVALID
-    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=release_env"
-    return 0
+  expected="$(dp2_read_hash_field "${tmp}/${img}.sha256" | tr '[:upper:]' '[:lower:]')"
+  if ! dp2_validate_sha256_hex "$expected"; then
+    rm -rf "$tmp"
+    PHASE2_EXISTING_INTEGRITY_FAIL_REASON=inner_images_sha256
+    mm_error "PHASE2_INNER_PAYLOAD_VERIFY=FAIL reason=bad_inner_hash_format"
+    return 1
   fi
-  if [[ ! -f "$bundle" || -L "$bundle" ]]; then
-    PHASE2_EXISTING_BUNDLE=INVALID
-    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=bundle_missing_or_symlink"
-    return 0
+  mm_info "PHASE2_INNER_IMAGES_SHA256_VERIFY_START file=${img} algorithm=SHA256"
+  mm_human_lines \
+    "Verifying SHA256 checksum of ${img} inside the existing Phase 2 bundle." \
+    "Outer bundle SHA256 is not sufficient for local rebuild reuse."
+  if ! mm_bg_with_heartbeat \
+    "PHASE2_INNER_IMAGES_SHA256_VERIFY" \
+    "file=${img} algorithm=SHA256" \
+    "Still verifying inner ${img} SHA256..." \
+    -- bash -c 'tar -xOf "$1" "$2" | sha256sum' _ "$bundle" "$img"
+  then
+    rm -rf "$tmp"
+    PHASE2_EXISTING_INTEGRITY_FAIL_REASON=inner_images_sha256
+    mm_error "PHASE2_INNER_PAYLOAD_VERIFY=FAIL reason=inner_images_sha256"
+    return 1
   fi
-  if [[ ! -f "$sidecar" || -L "$sidecar" ]]; then
-    PHASE2_EXISTING_BUNDLE=INVALID
-    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=sidecar_missing_or_symlink"
-    return 0
+  actual="$(printf '%s\n' "${MM_LONG_STEP_LAST_STDOUT:-}" | awk '{print $1; exit}' | tr '[:upper:]' '[:lower:]')"
+  if [[ "$expected" != "$actual" ]]; then
+    mm_error "SHA256_VERIFY=FAIL file=${img} expected=${expected} actual=${actual}"
+    mm_error "PHASE2_INNER_IMAGES_SHA256=FAIL"
+    mm_error "PHASE2_INNER_PAYLOAD_VERIFY=FAIL reason=inner_images_sha256"
+    PHASE2_EXISTING_INTEGRITY_FAIL_REASON=inner_images_sha256
+    rm -rf "$tmp"
+    return 1
   fi
-  target_field="$(grep -E '^TARGET_DP_VERSION=' "$envf" | head -1 | cut -d= -f2- || true)"
-  artifact_field="$(grep -E '^PHASE2_ARTIFACT_VERSION=' "$envf" | head -1 | cut -d= -f2- || true)"
-  stable_field="$(grep -E '^STABLE_BUNDLE_NAME=' "$envf" | head -1 | cut -d= -f2- || true)"
-  if [[ "$target_field" != "$ver" || "$artifact_field" != "$ver" ]]; then
-    PHASE2_EXISTING_BUNDLE=INVALID
-    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=version_mismatch"
-    return 0
-  fi
-  if [[ "$stable_field" != "$stable" ]]; then
-    PHASE2_EXISTING_BUNDLE=INVALID
-    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=stable_name_mismatch"
-    return 0
-  fi
-  if dp2_release_has_secret "$envf"; then
-    PHASE2_EXISTING_BUNDLE=INVALID
-    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=release_env_secret"
-    return 0
-  fi
-  # Final-bundle reuse is only valid when the published patched bringup is the
-  # current local patch generation. Version + outer tar SHA are not enough:
-  # the client lifecycle wrapper can be rebuilt independently of the 30GiB bundle.
-  local current_patched published_patched
-  current_patched="$(engine_current_patched_bringup_sha1 2>/dev/null || true)"
-  published_patched="$(grep -E '^BRINGUP_PATCHED_SHA1=' "$envf" | head -1 | cut -d= -f2- || true)"
-  published_patched="$(printf '%s' "$published_patched" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-  current_patched="$(printf '%s' "$current_patched" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-  if [[ -z "$current_patched" ]]; then
-    PHASE2_EXISTING_BUNDLE=INVALID
-    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=local_patched_bringup_missing"
-    return 0
-  fi
-  if [[ -z "$published_patched" ]]; then
-    PHASE2_EXISTING_BUNDLE=INVALID
-    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=patched_bringup_sha_missing"
-    mm_info "CURRENT_PATCHED_BRINGUP_SHA1=${current_patched}"
-    return 0
-  fi
-  if [[ "$published_patched" != "$current_patched" ]]; then
-    PHASE2_EXISTING_BUNDLE=INVALID
-    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=patched_bringup_changed"
-    mm_info "PUBLISHED_PATCHED_BRINGUP_SHA1=${published_patched}"
-    mm_info "CURRENT_PATCHED_BRINGUP_SHA1=${current_patched}"
-    return 0
-  fi
-  mm_info "PATCHED_BRINGUP_SHA1_MATCH=YES sha1=${current_patched}"
+  mm_ok "SHA256_VERIFY=PASS file=${img}"
+  mm_ok "PHASE2_INNER_PAYLOAD_VERIFY=PASS"
+  rm -rf "$tmp"
+  return 0
+}
+
+# Outer SHA256 + exact safe tar list. Does not mark the generation VALID.
+# store_valid_cache=1 records the VALID-reuse fingerprint after a full hash.
+engine_phase2_verify_existing_final_integrity() {
+  local ver="$1"
+  local bundle="$2"
+  local sidecar="$3"
+  local envf="$4"
+  local store_valid_cache="${5:-0}"
   local reuse_fp expected_hash cached_fp cached_hash tar_helper schema="1"
+  PHASE2_EXISTING_FINAL_INTEGRITY=FAIL
+  PHASE2_EXISTING_INTEGRITY_FAIL_REASON=""
   expected_hash="$(dp2_read_hash_field "$sidecar" | tr '[:upper:]' '[:lower:]')"
   reuse_fp="schema=${schema}|$(mm_file_fingerprint "$bundle" 2>/dev/null || true)|$(mm_file_fingerprint "$sidecar" 2>/dev/null || true)|$(mm_file_fingerprint "$envf" 2>/dev/null || true)|sha=${expected_hash}"
   cached_fp="$(mm_status_get PHASE2_REUSE_VERIFIED_FINGERPRINT)"
   cached_hash="$(mm_status_get PHASE2_REUSE_VERIFIED_SHA256)"
-  if [[ -n "$reuse_fp" && "$reuse_fp" == "$cached_fp" && "$expected_hash" == "$cached_hash"     && "$(mm_status_get PHASE2_BUNDLE_CHECKSUM)" == "PASS" ]]; then
+  if [[ -n "$reuse_fp" && "$reuse_fp" == "$cached_fp" && "$expected_hash" == "$cached_hash" \
+    && "$(mm_status_get PHASE2_BUNDLE_CHECKSUM)" == "PASS" ]]; then
     mm_info "PHASE2_BUNDLE_VERIFY_MODE=VERIFIED_METADATA_REUSE"
     mm_info "PHASE2_BUNDLE_FULL_HASH_REQUIRED=NO"
     mm_info "PHASE2_BUNDLE_VERIFICATION_RECORD_MATCH=YES"
@@ -1020,26 +1149,139 @@ engine_assess_phase2_final() {
     mm_info "PHASE2_BUNDLE_FULL_HASH_REQUIRED=YES"
     mm_info "PHASE2_BUNDLE_VERIFICATION_RECORD_MATCH=NO"
     mm_info "PHASE2_EXISTING_VERIFY_CACHE=MISS"
-    if ! mm_verify_sha256_pair_logged       "$bundle" "$sidecar" "PHASE2_EXISTING_SHA256_VERIFY"       "Still verifying the existing Phase 2 bundle SHA256..."
+    if ! mm_verify_sha256_pair_logged \
+      "$bundle" "$sidecar" "PHASE2_EXISTING_SHA256_VERIFY" \
+      "Still verifying the existing Phase 2 bundle SHA256..."
     then
-      PHASE2_EXISTING_BUNDLE=INVALID
-      mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=sha256"
-      return 0
+      PHASE2_EXISTING_INTEGRITY_FAIL_REASON=sha256
+      return 1
     fi
     tar_helper="${MM_PROJECT_ROOT}/scripts/lib/dp-phase2-common.sh"
-    if ! mm_run_with_heartbeat       "PHASE2_EXISTING_TAR_VERIFY"       "bundle=$(basename "$bundle")"       "Still validating the existing Phase 2 bundle file list..."       -- bash -c 'source "$1"; dp2_set_version "$2"; dp2_assert_safe_tar_list "$3" >/dev/null'       _ "$tar_helper" "$ver" "$bundle"
+    if ! mm_run_with_heartbeat \
+      "PHASE2_EXISTING_TAR_VERIFY" \
+      "bundle=$(basename "$bundle")" \
+      "Still validating the existing Phase 2 bundle file list..." \
+      -- bash -c 'source "$1"; dp2_set_version "$2"; dp2_assert_safe_tar_list "$3" >/dev/null' \
+      _ "$tar_helper" "$ver" "$bundle"
     then
-      PHASE2_EXISTING_BUNDLE=INVALID
-      mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=tar_entries"
+      PHASE2_EXISTING_INTEGRITY_FAIL_REASON=tar_entries
+      return 1
+    fi
+    if [[ "$store_valid_cache" == "1" ]]; then
+      mm_status_set PHASE2_REUSE_VERIFIED_FINGERPRINT "$reuse_fp"
+      mm_status_set PHASE2_REUSE_VERIFIED_SHA256 "$expected_hash"
+      mm_status_set PHASE2_BUNDLE_CHECKSUM PASS
+      mm_info "PHASE2_EXISTING_VERIFY_CACHE=STORED"
+    fi
+  fi
+  PHASE2_EXISTING_FINAL_INTEGRITY=PASS
+  return 0
+}
+
+engine_assess_phase2_final() {
+  # Sets PHASE2_EXISTING_BUNDLE=VALID|INVALID|ABSENT for the fixed 6.5.0 final.
+  # PHASE2_EXISTING_INVALID_REASON names the INVALID cause. Stale patched
+  # bringup still runs outer SHA256 + tar validation so a verified final can
+  # be the local rebuild source without another ACPS download.
+  local ver="${1:-${TARGET_DP_VERSION:-${PHASE2_TARGET_VERSION}}}"
+  local dest envf bundle sidecar stable
+  local target_field artifact_field stable_field
+  local current_patched published_patched bringup_invalid_reason="" store_cache=0
+  PHASE2_EXISTING_BUNDLE=ABSENT
+  PHASE2_EXISTING_INVALID_REASON=""
+  PHASE2_EXISTING_FINAL_INTEGRITY=""
+  PHASE2_EXISTING_INTEGRITY_FAIL_REASON=""
+  dp2_set_version "$ver"
+  dest="$(engine_phase2_final_dir "$ver")"
+  stable="$(dp2_stable_bundle_name)"
+  envf="${dest}/release.env"
+  bundle="${dest}/${stable}"
+  sidecar="${dest}/${stable}.sha256"
+
+  if [[ ! -e "$dest" ]]; then
+    engine_phase2_mark_existing ABSENT
+    return 0
+  fi
+  if [[ ! -d "$dest" ]]; then
+    engine_phase2_mark_existing INVALID not_directory
+    return 0
+  fi
+  # Obsolete generation layouts are never treated as a valid single-final bundle.
+  if [[ -e "${dest}/releases" || -e "${dest}/current" || -e "${dest}/previous" \
+    || -e "${dest}/files" || -e "${dest}/.staging" ]]; then
+    engine_phase2_mark_existing INVALID obsolete_generation_layout
+    return 0
+  fi
+  if [[ ! -f "$envf" || -L "$envf" ]]; then
+    engine_phase2_mark_existing INVALID release_env
+    return 0
+  fi
+  if [[ ! -f "$bundle" || -L "$bundle" ]]; then
+    engine_phase2_mark_existing INVALID bundle_missing_or_symlink
+    return 0
+  fi
+  if [[ ! -f "$sidecar" || -L "$sidecar" ]]; then
+    engine_phase2_mark_existing INVALID sidecar_missing_or_symlink
+    return 0
+  fi
+  target_field="$(grep -E '^TARGET_DP_VERSION=' "$envf" | head -1 | cut -d= -f2- || true)"
+  artifact_field="$(grep -E '^PHASE2_ARTIFACT_VERSION=' "$envf" | head -1 | cut -d= -f2- || true)"
+  stable_field="$(grep -E '^STABLE_BUNDLE_NAME=' "$envf" | head -1 | cut -d= -f2- || true)"
+  if [[ "$target_field" != "$ver" || "$artifact_field" != "$ver" ]]; then
+    engine_phase2_mark_existing INVALID version_mismatch
+    return 0
+  fi
+  if [[ "$stable_field" != "$stable" ]]; then
+    engine_phase2_mark_existing INVALID stable_name_mismatch
+    return 0
+  fi
+  if dp2_release_has_secret "$envf"; then
+    engine_phase2_mark_existing INVALID release_env_secret
+    return 0
+  fi
+  # Final-bundle reuse is only valid when the published patched bringup is the
+  # current local patch generation. Version + outer tar SHA are not enough:
+  # the client lifecycle wrapper can be rebuilt independently of the 30GiB bundle.
+  current_patched="$(engine_current_patched_bringup_sha1 2>/dev/null || true)"
+  published_patched="$(grep -E '^BRINGUP_PATCHED_SHA1=' "$envf" | head -1 | cut -d= -f2- || true)"
+  published_patched="$(printf '%s' "$published_patched" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  current_patched="$(printf '%s' "$current_patched" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  if [[ -z "$current_patched" ]]; then
+    engine_phase2_mark_existing INVALID local_patched_bringup_missing
+    return 0
+  fi
+  if [[ -z "$published_patched" ]]; then
+    bringup_invalid_reason=patched_bringup_sha_missing
+    mm_info "CURRENT_PATCHED_BRINGUP_SHA1=${current_patched}"
+  elif [[ "$published_patched" != "$current_patched" ]]; then
+    bringup_invalid_reason=patched_bringup_changed
+    mm_info "PUBLISHED_PATCHED_BRINGUP_SHA1=${published_patched}"
+    mm_info "CURRENT_PATCHED_BRINGUP_SHA1=${current_patched}"
+  else
+    mm_info "PATCHED_BRINGUP_SHA1_MATCH=YES sha1=${current_patched}"
+  fi
+  # Integrity is required both to mark VALID and to allow stale-bringup local
+  # rebuild from this final. Fail closed: outer sha256/tar_entries and inner
+  # payload checksums win over a stale patched-bringup SHA.
+  [[ -z "$bringup_invalid_reason" ]] && store_cache=1
+  if ! engine_phase2_verify_existing_final_integrity \
+    "$ver" "$bundle" "$sidecar" "$envf" "$store_cache"
+  then
+    engine_phase2_mark_existing INVALID \
+      "${PHASE2_EXISTING_INTEGRITY_FAIL_REASON:-sha256}"
+    return 0
+  fi
+  if [[ -n "$bringup_invalid_reason" ]]; then
+    if ! engine_phase2_verify_inner_payloads_in_bundle "$bundle" "$ver"; then
+      PHASE2_EXISTING_FINAL_INTEGRITY=FAIL
+      engine_phase2_mark_existing INVALID \
+        "${PHASE2_EXISTING_INTEGRITY_FAIL_REASON:-inner_images_sha256}"
       return 0
     fi
-    mm_status_set PHASE2_REUSE_VERIFIED_FINGERPRINT "$reuse_fp"
-    mm_status_set PHASE2_REUSE_VERIFIED_SHA256 "$expected_hash"
-    mm_status_set PHASE2_BUNDLE_CHECKSUM PASS
-    mm_info "PHASE2_EXISTING_VERIFY_CACHE=STORED"
+    engine_phase2_mark_existing INVALID "$bringup_invalid_reason"
+    return 0
   fi
-  PHASE2_EXISTING_BUNDLE=VALID
-  mm_info "PHASE2_EXISTING_BUNDLE=VALID"
+  engine_phase2_mark_existing VALID
   return 0
 }
 
@@ -1066,6 +1308,19 @@ engine_remove_invalid_phase2_final() {
   find "${MM_CACHE_ROOT}" -type f \( -name '*.download' -o -name '*.new.*' \) \
     -delete 2>/dev/null || true
   mm_ok "INVALID_FINAL_REMOVED=YES"
+}
+
+# After payloads are extracted into work, drop the old final so .new does not
+# create a third ~30GiB copy. HTTP/readiness stay invalid until publish.
+engine_release_phase2_final_after_extract() {
+  local ver="${1:-${TARGET_DP_VERSION:-${PHASE2_TARGET_VERSION}}}"
+  local dest
+  dest="$(engine_phase2_final_dir "$ver")"
+  engine_disable_http_and_readiness
+  mm_info "PHASE2_EXISTING_FINAL_RELEASED_AFTER_EXTRACT=YES path=${dest}"
+  rm -rf "$dest"
+  find "${MM_DP_PHASE2_ROOT}" -maxdepth 1 \( -name "${ver}.new.*" -o -name "${ver}.old.*" \) \
+    -exec rm -rf {} + 2>/dev/null || true
 }
 
 engine_mark_phase2_reused() {
@@ -1586,7 +1841,7 @@ engine_write_install_report() {
 }
 
 engine_download_and_prepare() {
-  local cache work
+  local cache work dest stable
   mm_load_gui_config
   mm_normalize_preparation_mode
   mm_force_phase2_target
@@ -1654,34 +1909,60 @@ engine_download_and_prepare() {
       PHASE2_BUNDLE_ACTION=REUSE
       PHASE2_REBUILD_REQUIRED=NO
       ACPS_DOWNLOAD_REQUIRED=NO
+      PHASE2_REBUILD_SOURCE=NONE
+      ACPS_REDOWNLOAD_AVOIDED=NO
       ;;
     INVALID)
       PHASE2_BUNDLE_ACTION=REBUILD
       PHASE2_REBUILD_REQUIRED=YES
-      # Rebuild the small final bundle. Reuse a verified ACPS cache so a patched
-      # bringup change does not re-download the ~30GiB image tar.
-      if declare -F acps_is_verified_cache >/dev/null 2>&1 \
-        && acps_is_verified_cache "$(acps_cache_dir "$TARGET_DP_VERSION")" 2>/dev/null; then
+      mm_info "PHASE2_EXISTING_INVALID_REASON=${PHASE2_EXISTING_INVALID_REASON:-}"
+      engine_disable_http_and_readiness
+      if engine_phase2_existing_final_reusable; then
+        # Keep the verified final until payloads are extracted. Do not claim
+        # verified_cache_reuse — the source is the existing final bundle.
+        PHASE2_REBUILD_SOURCE=EXISTING_FINAL
         ACPS_DOWNLOAD_REQUIRED=NO
-        mm_info "ACPS_DOWNLOAD_REQUIRED=NO reason=verified_cache_reuse"
+        ACPS_REDOWNLOAD_AVOIDED=YES
+        dest="$(engine_phase2_final_dir "$TARGET_DP_VERSION")"
+        stable="$(dp2_stable_bundle_name)"
+        PHASE2_EXISTING_FINAL_BYTES="$(mm_file_bytes "${dest}/${stable}" 2>/dev/null || echo 0)"
+        mm_info "PHASE2_REBUILD_SOURCE=EXISTING_FINAL"
+        mm_info "ACPS_DOWNLOAD_REQUIRED=NO reason=existing_final_reuse"
+        mm_info "ACPS_REDOWNLOAD_AVOIDED=YES"
+        mm_info "MAX_LARGE_ARTIFACT_COPIES=2"
       else
-        ACPS_DOWNLOAD_REQUIRED=YES
+        PHASE2_REBUILD_SOURCE=ACPS
+        ACPS_REDOWNLOAD_AVOIDED=NO
+        if declare -F acps_is_verified_cache >/dev/null 2>&1 \
+          && acps_is_verified_cache "$(acps_cache_dir "$TARGET_DP_VERSION")" 2>/dev/null; then
+          ACPS_DOWNLOAD_REQUIRED=NO
+          mm_info "ACPS_DOWNLOAD_REQUIRED=NO reason=verified_cache_reuse"
+        else
+          ACPS_DOWNLOAD_REQUIRED=YES
+          mm_info "ACPS_DOWNLOAD_REQUIRED=YES"
+        fi
+        mm_info "PHASE2_REBUILD_SOURCE=ACPS"
+        engine_remove_invalid_phase2_final "$TARGET_DP_VERSION"
+        mm_info "MAX_LARGE_ARTIFACT_COPIES=2"
       fi
-      engine_remove_invalid_phase2_final "$TARGET_DP_VERSION"
-      mm_info "MAX_LARGE_ARTIFACT_COPIES=2"
       ;;
     *)
       PHASE2_BUNDLE_ACTION=CREATE
       PHASE2_REBUILD_REQUIRED=YES
       ACPS_DOWNLOAD_REQUIRED=YES
+      PHASE2_REBUILD_SOURCE=ACPS
+      ACPS_REDOWNLOAD_AVOIDED=NO
       PHASE2_EXISTING_BUNDLE=ABSENT
       mm_info "PHASE2_EXISTING_BUNDLE=ABSENT"
       mm_info "PHASE2_BUNDLE_ACTION=CREATE"
+      mm_info "PHASE2_REBUILD_SOURCE=ACPS"
       mm_info "MAX_LARGE_ARTIFACT_COPIES=2"
       ;;
   esac
   mm_info "PHASE2_BUNDLE_ACTION=${PHASE2_BUNDLE_ACTION}"
   export PHASE2_BUNDLE_ACTION PHASE2_REBUILD_REQUIRED ACPS_DOWNLOAD_REQUIRED
+  export PHASE2_REBUILD_SOURCE ACPS_REDOWNLOAD_AVOIDED
+  export PHASE2_EXISTING_INVALID_REASON PHASE2_EXISTING_FINAL_BYTES
 
   if mm_is_phase2_only; then
     # PHASE2_ONLY must never download R2 OS Core.
@@ -1713,6 +1994,11 @@ engine_download_and_prepare() {
 
   if [[ "${PHASE2_BUNDLE_ACTION}" == "REUSE" ]]; then
     ACPS_EXPECTED_BYTES=0
+  elif [[ "${PHASE2_REBUILD_SOURCE}" == "EXISTING_FINAL" ]]; then
+    ACPS_EXPECTED_BYTES=0
+    mm_info "ACPS_CONNECTION=NOT_REQUIRED reason=existing_final_reuse"
+    mm_status_set ACPS_CONNECTION REUSED
+    mm_state_set ACPS_CONNECTION REUSED
   else
     if [[ -z "${DP_PHASE2_SOURCE_BASE:-}" ]]; then
       ACPS_BASE_URL="$ACPS_BASE_URL_FIXED"
@@ -1770,20 +2056,33 @@ engine_download_and_prepare() {
   # CREATE/REBUILD: remeasure free space after R2 cleanup + invalid final removal.
   engine_verify_disk_space
 
-  acps_acquire_all "$TARGET_DP_VERSION"
-  cache="$(acps_cache_dir "$TARGET_DP_VERSION")"
-  [[ -d "$cache" ]] || mm_die "ACPS_CACHE_MISSING"
-
-  engine_verify_acps_upstream_bringup "$cache"
-
   work="${MM_CACHE_ROOT}/acps-work/${TARGET_DP_VERSION}/$(mm_run_id)"
-  # Unchanged large ACPS files are hard-linked (same inode); only patched
-  # bringup is written as a new small file. No cache→work full tree copy.
-  engine_stage_acps_work_from_cache "$cache" "$work"
-  engine_apply_local_bringup_patch "$work"
-  engine_assert_work_ready_for_bundle "$cache" "$work" "$TARGET_DP_VERSION" \
-    || mm_die "ACPS_WORK_VALIDATE=FAIL"
-  engine_place_dp_phase2_final "$work" "$TARGET_DP_VERSION"
+  if [[ "${PHASE2_REBUILD_SOURCE}" == "EXISTING_FINAL" ]]; then
+    engine_stage_work_from_existing_final "$TARGET_DP_VERSION" "$work"
+    engine_apply_local_bringup_patch "$work"
+    # Release the old final before writing .new (peak = work + new tar).
+    engine_release_phase2_final_after_extract "$TARGET_DP_VERSION"
+    engine_place_dp_phase2_final "$work" "$TARGET_DP_VERSION"
+    mm_status_set ACPS_PHASE2_DOWNLOADED REUSED
+    mm_status_set ACPS_CHECKSUM REUSED
+    mm_status_set UPSTREAM_BRINGUP_DRIFT NO
+    mm_state_set ACPS_PHASE2_DOWNLOADED REUSED
+    mm_state_set ACPS_CHECKSUM REUSED
+  else
+    acps_acquire_all "$TARGET_DP_VERSION"
+    cache="$(acps_cache_dir "$TARGET_DP_VERSION")"
+    [[ -d "$cache" ]] || mm_die "ACPS_CACHE_MISSING"
+
+    engine_verify_acps_upstream_bringup "$cache"
+
+    # Unchanged large ACPS files are hard-linked (same inode); only patched
+    # bringup is written as a new small file. No cache→work full tree copy.
+    engine_stage_acps_work_from_cache "$cache" "$work"
+    engine_apply_local_bringup_patch "$work"
+    engine_assert_work_ready_for_bundle "$cache" "$work" "$TARGET_DP_VERSION" \
+      || mm_die "ACPS_WORK_VALIDATE=FAIL"
+    engine_place_dp_phase2_final "$work" "$TARGET_DP_VERSION"
+  fi
 
   engine_cleanup_temps
 

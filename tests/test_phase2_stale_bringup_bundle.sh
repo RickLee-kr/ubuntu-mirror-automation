@@ -137,12 +137,16 @@ publish_bundle_from_work "$OLD_WORK" "$OLD_SHA"
 engine_assess_phase2_final 6.5.0
 [[ "$PHASE2_EXISTING_BUNDLE" == "INVALID" ]] \
   || fail "old patched SHA bundle reusable got=${PHASE2_EXISTING_BUNDLE}"
+[[ "${PHASE2_EXISTING_INVALID_REASON}" == "patched_bringup_changed" ]] \
+  || fail "reason want=patched_bringup_changed got=${PHASE2_EXISTING_INVALID_REASON}"
 pass "reuse assessment rejects old-vendor Phase 2 bundle"
 
 publish_bundle_from_work "$OLD_WORK" ""
 engine_assess_phase2_final 6.5.0
 [[ "$PHASE2_EXISTING_BUNDLE" == "INVALID" ]] \
   || fail "bundle missing BRINGUP_PATCHED_SHA1 still VALID"
+[[ "${PHASE2_EXISTING_INVALID_REASON}" == "patched_bringup_sha_missing" ]] \
+  || fail "reason want=patched_bringup_sha_missing got=${PHASE2_EXISTING_INVALID_REASON}"
 pass "reuse assessment rejects bundle without BRINGUP_PATCHED_SHA1"
 
 # Rebuild using current patched bringup; large image payload is the small fixture.

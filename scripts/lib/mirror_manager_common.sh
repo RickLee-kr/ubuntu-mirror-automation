@@ -1488,7 +1488,7 @@ mm_calc_disk_requirements() {
   local os_pkg_bytes payload_bytes acps_bytes ver existing_bundle
   local reserve_floor_bytes reserve_pct_bytes fs_size_bytes metadata_oh
   local stage_peak_bytes current_used_bytes existing_final_bytes
-  local reuse_phase2=0
+  local reuse_phase2=0 one_copy=0
   os_pkg_bytes="${OS_CORE_PACKAGE_BYTES:-0}"
   payload_bytes="${OS_CORE_PAYLOAD_BYTES:-0}"
   acps_bytes="${ACPS_EXPECTED_BYTES:-0}"
@@ -1499,6 +1499,8 @@ mm_calc_disk_requirements() {
 
   if [[ "${PHASE2_BUNDLE_ACTION:-}" == "REUSE" || "${PHASE2_REBUILD_REQUIRED:-}" == "NO" ]]; then
     reuse_phase2=1
+    acps_bytes=0
+  elif [[ "${PHASE2_REBUILD_SOURCE:-}" == "EXISTING_FINAL" ]]; then
     acps_bytes=0
   fi
 
@@ -1530,6 +1532,19 @@ mm_calc_disk_requirements() {
   if [[ "$reuse_phase2" -eq 1 ]]; then
     # Valid final reuse: Phase 2 adds only metadata-level free-space need.
     DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES=$metadata_oh
+  elif [[ "${PHASE2_REBUILD_SOURCE:-}" == "EXISTING_FINAL" ]]; then
+    # Local rebuild from the existing final: extract one extra copy, then
+    # delete the old final before writing .new. Never three simultaneous copies.
+    one_copy="${PHASE2_EXISTING_FINAL_BYTES:-0}"
+    [[ "$one_copy" =~ ^[0-9]+$ ]] || one_copy=0
+    if [[ "$one_copy" -eq 0 ]]; then
+      one_copy=$existing_final_bytes
+    fi
+    DISK_PREFLIGHT_ACPS_SOURCE_BYTES=0
+    DISK_PREFLIGHT_BUNDLE_OUTPUT_BYTES=$one_copy
+    PHASE2_ACPS_SOURCE_REQUIRED_BYTES=0
+    PHASE2_BUNDLE_OUTPUT_REQUIRED_BYTES=$one_copy
+    DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES=$((one_copy + metadata_oh))
   else
     DISK_PREFLIGHT_PHASE2_STAGE_EXTRA_BYTES=$((
       DISK_PREFLIGHT_ACPS_SOURCE_BYTES

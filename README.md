@@ -73,10 +73,13 @@ In **Configuration**, set all of the following:
 2. **Mirror Server IP**
 3. **ACPS Username**
 4. **ACPS Password**
-5. **Test ACPS Connection**
-6. **Save Configuration**
+5. **DL Worker IP addresses**
+6. **DA Worker IP addresses**
+7. **Worker SSH Password (aella)**
+8. **Test ACPS Connection**
+9. **Save Configuration**
 
-For a DL/DA cluster, also set **DL Worker IP addresses**, **DA Worker IP addresses**, and one common **Worker SSH Password (aella)**. Leave both worker-IP lists empty for AIO/single-node.
+For a DL/DA cluster, set the worker IP lists and one common **Worker SSH Password (aella)**. Leave both worker-IP lists empty for AIO/single-node; the worker password is not required in that case.
 
 The GUI may suggest a detected IP address, but auto-detection is only a suggestion. You must confirm an active IPv4 address that the DP hosts can actually reach.
 
