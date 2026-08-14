@@ -1,0 +1,57 @@
+name: Run dual cluster configuration patch
+
+on:
+  push:
+    paths:
+      - '.github/workflows/run-dual-cluster-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply patch and tests
+        id: apply
+        shell: bash
+        run: |
+          set +e
+          {
+            python3 .github/scripts/dual_cluster_patch.py
+            rc=$?
+            if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+            bash -n scripts/install-dp-upgrade-mirror.sh
+            bash -n scripts/lib/mirror_manager_common.sh
+            bash -n scripts/lib/mirror_workflow_state.sh
+            bash -n lib/bootstrap.sh
+            git diff --check
+            bash tests/test_gui_client_commands.sh
+            bash tests/test_menu7_normal_width_display.sh
+          } > /tmp/dual-cluster-patch.log 2>&1
+          rc=$?
+          cat /tmp/dual-cluster-patch.log
+          if [ "$rc" -ne 0 ]; then
+            cp /tmp/dual-cluster-patch.log .github/dual-cluster-debug.txt
+            git config user.name "Rick Lee"
+            git config user.email "rick@rick.kr"
+            git add .github/dual-cluster-debug.txt
+            git commit -m "chore: capture dual cluster patch failure" || true
+            git push || true
+            exit "$rc"
+          fi
+
+      - name: Commit production changes
+        shell: bash
+        run: |
+          git config user.name "Rick Lee"
+          git config user.email "rick@rick.kr"
+          rm -f .github/dual-cluster-debug.txt
+          git add README.md lib/bootstrap.sh scripts/install-dp-upgrade-mirror.sh scripts/lib/mirror_manager_common.sh scripts/lib/mirror_workflow_state.sh tests/test_gui_client_commands.sh
+          git add -u .github/dual-cluster-debug.txt 2>/dev/null || true
+          git commit -m "feat(gui): configure DL and DA worker lists separately"
+          git push
