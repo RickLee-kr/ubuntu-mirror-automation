@@ -2197,16 +2197,12 @@ grep -q 'FAILED_PRE_DRO' "$SCRIPT_IN" \
   && pass "FAILED_PRE_DRO terminal state" || fail "FAILED_PRE_DRO missing"
 grep -q "ENV_DEFAULT_FILE=\"/etc/default/stellar-offline-os-upgrade\"" "$SCRIPT_IN" \
   && pass "ENV_DEFAULT_FILE path" || fail "ENV_DEFAULT_FILE path missing"
-# Forbid client-side nohup/disown. Trailing `&` is allowed only for the
-# detached-runner package transition watcher subshell (`) &`), not client bypass.
-if grep -nE '^\s*nohup |disown' "$SCRIPT_IN"; then
-  fail "nohup/disown bypass present"
-elif grep -nE '&\s*$' "$SCRIPT_IN" \
-  | grep -vE '^[0-9]+:[[:space:]]*\)[[:space:]]*&[[:space:]]*$|grep|#|forbidden|금지|nohup/background|PACKAGE_TRANSITION_WATCHER'; then
-  fail "unexpected background bypass present"
-else
-  pass "no client nohup/disown; watcher-only background allowed"
-fi
+# Forbid client-side nohup/disown and arbitrary trailing `&`.
+# Allowed: package-transition watcher `) &`, and lxd_run_with_heartbeat's
+# PID-tracked background child (wait + return rc). See test helper.
+# shellcheck source=lib/assert_controlled_background.sh
+source "${ROOT}/tests/lib/assert_controlled_background.sh"
+assert_offline_hop_background_policy "$SCRIPT_IN"
 grep -q 'UPGRADE_ALREADY_RUNNING=YES' "$SCRIPT_IN" && pass "duplicate-run marker" || fail "duplicate-run marker missing"
 grep -q 'DBUS_DISCONNECT_CLASS=EXPECTED_CONTROL_CONNECTION_LOSS' "$SCRIPT_IN" \
   && pass "expected D-Bus loss classification" || fail "D-Bus loss classification missing"
