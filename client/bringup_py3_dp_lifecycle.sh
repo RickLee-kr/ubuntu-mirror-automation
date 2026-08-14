@@ -205,12 +205,26 @@ start_or_monitor() {
   fi
 
   if [[ "${BRINGUP_STATE}" == "FAILED" ]]; then
+    if [[ "${BRINGUP_WORKER_ALIVE}" == "YES" && "${BRINGUP_PROCESS_IDENTITY_MATCH}" == "YES" ]]; then
+      echo "BRINGUP_ALREADY_RUNNING=YES"
+      echo "ACTION=MONITOR_EXISTING"
+      echo "BRINGUP_WORKER_PID=${BRINGUP_WORKER_PID}"
+      echo "BRINGUP_RUN_ID=${BRINGUP_RUN_ID}"
+      p2b_release_lock
+      trap - EXIT
+      if [[ "$ATTACH_MONITOR" -eq 1 ]]; then
+        p2b_emit_handoff "${BRINGUP_RUN_ID}" "${BRINGUP_WORKER_PID}" "${BRINGUP_LOG}"
+        p2b_monitor_loop "${BRINGUP_RUN_ID}"
+        return $?
+      fi
+      return 0
+    fi
     echo "BRINGUP_PREVIOUS_FAILED=YES"
-    echo "ACTION=DIAGNOSE"
-    p2b_print_status
-    echo "NEXT_ACTION=sudo bash ${P2B_WRAPPER_PATH} --diagnose"
-    echo "NOTE=State preserved; not auto-restarting. Re-run without --status after review if retry is intended."
-    return 1
+    echo "ACTION=RETRY"
+    echo "BRINGUP_RETRY=YES"
+    echo "BRINGUP_PREVIOUS_RUN_ID=${BRINGUP_RUN_ID}"
+    p2b_archive_failed_run
+    echo "BRINGUP_PREVIOUS_FAILED_ARCHIVED=$(p2b_dir)/previous-failed"
   fi
 
   [[ -n "$TARGET_VERSION" ]] || { echo "ERROR: --version is required to start bringup" >&2; exit 1; }
@@ -315,7 +329,8 @@ main() {
     exit $?
   fi
 
-  [[ "${EUID}" -eq 0 ]] || { echo "ERROR: must run as root" >&2; exit 1; }
+  [[ "${EUID}" -eq 0 || "${PHASE2_BRINGUP_ALLOW_NONROOT:-0}" == "1" ]] \
+    || { echo "ERROR: must run as root" >&2; exit 1; }
 
   # Default attach monitor for interactive; honor --detach
   if [[ ! -t 0 || ! -t 1 ]]; then

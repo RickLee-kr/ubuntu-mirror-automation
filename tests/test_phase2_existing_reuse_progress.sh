@@ -104,6 +104,7 @@ TARGET_DP_VERSION=6.5.0
 PHASE2_ARTIFACT_VERSION=6.5.0
 STABLE_BUNDLE_NAME=${stable}
 PHASE2_BUNDLE_ENTRY_COUNT=9
+BRINGUP_PATCHED_SHA1=$(sha1sum "${ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')
 EOF
 }
 

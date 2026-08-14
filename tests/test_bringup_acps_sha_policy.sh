@@ -77,6 +77,7 @@ write_broken_patched() {
 # BEGIN_IMAGE_IMPORT_HEARTBEAT
 run_image_import_with_heartbeat() { :; }
 emit_dp_resume_notice_line() { :; }
+--worker-password
 if then
 EOF
 }

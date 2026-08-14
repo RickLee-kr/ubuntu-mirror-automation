@@ -136,6 +136,7 @@ NTP_SELECTED_PEER=""
 INTERNAL_NTP_REQUIREMENT=""
 BRINGUP_READY="NO"
 BRINGUP_EXECUTED="NO"
+BRINGUP_VENDOR_COMPAT=""
 
 RUN_ID=""
 STAGE_ROOT=""
@@ -198,7 +199,9 @@ cleanup() {
   fi
   return "$rc"
 }
-trap cleanup EXIT
+if [[ "${DP_PHASE2_STAGE_LIB_ONLY:-0}" != "1" ]]; then
+  trap cleanup EXIT
+fi
 
 normalize_dp_version() {
   local raw="${1-}"
@@ -1260,6 +1263,7 @@ INTERNAL_NTP_REQUIREMENT=${INTERNAL_NTP_REQUIREMENT}
 NTP_BRINGUP_READINESS=${NTP_BRINGUP_READINESS}
 BRINGUP_READY=${BRINGUP_READY}
 BRINGUP_EXECUTED=${BRINGUP_EXECUTED}
+BRINGUP_VENDOR_COMPAT=${BRINGUP_VENDOR_COMPAT}
 ARTIFACT_DIR=${ARTIFACT_DIR}
 BRINGUP_SCRIPT=${BRINGUP_SCRIPT}
 AELLA_CLI_AVAILABLE_BEFORE_BRINGUP=NOT_REQUIRED
@@ -1327,6 +1331,38 @@ install_bringup_lifecycle_wrapper() {
   log "BRINGUP_VENDOR_SCRIPT=${VENDOR_BRINGUP_INSTALLED}"
 }
 
+# Static compatibility check: installed vendor must accept the current
+# --worker-password contract used by Menu 7 and the lifecycle wrapper.
+# Never executes bringup.
+verify_installed_bringup_vendor_compat() {
+  local vendor="$VENDOR_BRINGUP_INSTALLED"
+  local wrapper="$BRINGUP_SCRIPT"
+  BRINGUP_VENDOR_COMPAT="FAIL"
+  if [[ ! -f "$vendor" ]]; then
+    log "BRINGUP_VENDOR_COMPAT=FAIL reason=vendor_missing"
+    return 1
+  fi
+  if [[ ! -f "$wrapper" ]]; then
+    log "BRINGUP_VENDOR_COMPAT=FAIL reason=wrapper_missing"
+    return 1
+  fi
+  if ! grep -q -- '--worker-password' "$wrapper"; then
+    log "BRINGUP_VENDOR_COMPAT=FAIL reason=wrapper_missing_worker_password"
+    return 1
+  fi
+  if ! grep -q -- '--worker-password' "$vendor"; then
+    log "BRINGUP_VENDOR_COMPAT=FAIL reason=vendor_missing_worker_password"
+    return 1
+  fi
+  if ! grep -q 'WORKER_IPS requires --worker-password\|--worker-ips requires --worker-password' "$vendor"; then
+    log "BRINGUP_VENDOR_COMPAT=FAIL reason=vendor_missing_worker_password_validation"
+    return 1
+  fi
+  BRINGUP_VENDOR_COMPAT="PASS"
+  log "BRINGUP_VENDOR_COMPAT=PASS"
+  return 0
+}
+
 stage_main() {
   parse_args "$@"
 
@@ -1391,6 +1427,13 @@ stage_main() {
     "${STAGE_ROOT}/images-${TARGET_DP_VERSION}.tar.sha256"
 
   install_bringup_lifecycle_wrapper
+  if ! verify_installed_bringup_vendor_compat; then
+    BRINGUP_READY="NO"
+    PHASE2_STAGE_RESULT="FAIL"
+    log "BRINGUP_READY=NO"
+    log "PHASE2_STAGE_RESULT=FAIL"
+    die "installed vendor bringup is incompatible with --worker-password"
+  fi
 
   PHASE2_STAGE_PHASE="PUBLISH_ARTIFACTS"
   log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"

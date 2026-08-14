@@ -478,7 +478,8 @@ Choose an address that exists on this host."
       5)
         local dl_in dl_clean
         dl_in="$(mm_whiptail_input "DL Worker IP addresses" \
-          "Enter DL worker IP addresses only. Do not include the DL master IP.
+          "Enter worker IP addresses belonging to the DL cluster.
+Do not include the DL master IP.
 
 Management IP addresses or cluster IP addresses can be used.
 Cluster IP addresses are recommended when reachable from the DL master.
@@ -503,7 +504,8 @@ Do not include the DL master IP, trailing commas, duplicates, or shell metachara
       6)
         local da_in da_clean
         da_in="$(mm_whiptail_input "DA Worker IP addresses" \
-          "Enter DA worker IP addresses only. Do not include the DA master IP.
+          "Enter worker IP addresses belonging to the DA cluster.
+Do not include the DA master IP.
 
 Management IP addresses or cluster IP addresses can be used.
 Cluster IP addresses are recommended when reachable from the DA master.
@@ -528,10 +530,10 @@ Do not include the DA master IP, trailing commas, duplicates, or shell metachara
       7)
         local wp
         wp="$(mm_whiptail_password "Worker SSH Password (aella)" \
-          "Password used by DL/DA masters to access worker nodes during Phase 2.
+          "Common aella SSH password used by each cluster master to access its workers.
 
 Required when DL Worker IPs or DA Worker IPs are configured.
-May be left empty for single DP / AIO / master without workers.")" || continue
+May be left empty for AIO/single-node deployments.")" || continue
         WORKER_SSH_PASSWORD="$wp"
         ;;
       8)
@@ -1114,6 +1116,89 @@ gui_phase2_stage_command_block() {
   gui_phase2_stage_command_line "$@"
 }
 
+# Highly visible cluster execution banner for Menu 7 (FULL and PHASE2_ONLY).
+gui_cluster_execution_rule() {
+  local common_label="$1"
+  local bringup_label="$2"
+  local a_label="$3"
+  local b_label="$4"
+  cat <<EOF
+CLUSTER EXECUTION RULE
+======================
+
+${common_label}:
+Run the same steps on every DP node being upgraded:
+DL master, all DL workers, DA master, and all DA workers.
+
+${bringup_label}:
+Run only on the cluster masters.
+
+- ${a_label}: DL master only
+- ${b_label}: DA master only
+
+Do not run ${bringup_label} manually on workers.
+Each master uses --worker-ips to start bringup on its own workers.
+EOF
+}
+
+gui_cluster_stage_guidance() {
+  local step="$1"
+  local next="$2"
+  cat <<EOF
+CLUSTER:
+Run ${step} on the DL master, every DL worker,
+the DA master, and every DA worker.
+
+Complete ${step} on ALL cluster nodes before starting ${next}.
+
+Use the SAME staging command on every node.
+EOF
+}
+
+gui_aio_stage_guidance() {
+  local step="$1"
+  cat <<EOF
+AIO/single node:
+Run ${step} on that DP only.
+EOF
+}
+
+# STEP 7A/7B (FULL) and STEP 3A/3B (PHASE2_ONLY) master bringup section.
+gui_emit_cluster_master_bringup() {
+  local step_id="$1"
+  local role="$2"
+  local worker_ips="$3"
+  local bringup_cmd="$4"
+  cat <<EOF
+------------------------------------------------------------------------
+${step_id} — ${role} CLUSTER MASTER
+------------------------------------------------------------------------
+
+EOF
+  if [[ -n "$bringup_cmd" ]]; then
+    cat <<EOF
+Run this command on the ${role} MASTER ONLY.
+
+Configured ${role} workers:
+${worker_ips}
+
+Do NOT run this command manually on ${role} workers.
+The ${role} master starts worker bringup automatically.
+
+Copy and paste the following entire line into the ${role} master terminal:
+
+${bringup_cmd}
+
+EOF
+  else
+    cat <<EOF
+${role} cluster bringup command was not generated because
+${role} Worker IPs are not configured.
+
+EOF
+  fi
+}
+
 gui_build_client_commands() {
   # Writes command text to stdout.
   # Args: mirror topology dl_worker_ips da_worker_ips [worker_password]
@@ -1130,6 +1215,7 @@ gui_build_client_commands() {
   local ver="${PHASE2_TARGET_VERSION}"
   local snap_line stage_cmd bringup_cmd dl_bringup_cmd="" da_bringup_cmd="" prereq_cmd hop2 hop3 hop4 hop5
   local copy_block_guide hop_copy_guide
+  local cluster_rule="" step6_where step2_where
   if [[ "$topology" == "cluster" ]]; then
     snap_line="Create a full hypervisor snapshot of every DP VM."
   else
@@ -1176,6 +1262,19 @@ Each Phase 2 executable block below is one logical Bash command (DP_COMMAND_BLOC
 Do not copy only one or two lines.
 Do not include borders, status text, or the next section heading.'
 
+  if [[ "$topology" == "cluster" ]]; then
+    if mm_is_phase2_only; then
+      cluster_rule="$(gui_cluster_execution_rule "STEPS 1–2" "STEP 3" "STEP 3A" "STEP 3B")"
+    else
+      cluster_rule="$(gui_cluster_execution_rule "STEPS 1–6" "STEP 7" "STEP 7A" "STEP 7B")"
+    fi
+    step6_where="$(gui_cluster_stage_guidance "STEP 6" "STEP 7")"
+    step2_where="$(gui_cluster_stage_guidance "STEP 2" "STEP 3")"
+  else
+    step6_where="$(gui_aio_stage_guidance "STEP 6")"
+    step2_where="$(gui_aio_stage_guidance "STEP 2")"
+  fi
+
   if mm_is_phase2_only; then
     cat <<EOF
 DP Phase 2 Upgrade Commands
@@ -1198,6 +1297,8 @@ If DP ${ver} is already healthy on Ubuntu 24.04, do not run these commands.
 Commands saved to:
 $(mm_client_commands_file)
 
+${cluster_rule}
+
 ${copy_block_guide}
 
 STEP 0 — SNAPSHOT
@@ -1216,6 +1317,8 @@ ${prereq_cmd}
 STEP 2 — STAGE DP ${ver} FILES
 ------------------------------------------------------------------------
 
+${step2_where}
+
 Copy all three lines of the following block into the DP terminal once:
 
 ${stage_cmd}
@@ -1227,24 +1330,14 @@ EOF
 STEP 3 — RUN DP ${ver} BRINGUP ON CLUSTER MASTERS
 ------------------------------------------------------------------------
 
-STEP 2 is identical for DL and DA: run it on every master and worker first.
-Run the bringup commands below on the corresponding cluster MASTER ONLY.
-Do NOT run these bringup commands manually on workers.
+After STEP 2 has completed on ALL cluster nodes, run only the master commands below.
 
 Management IP addresses or cluster IP addresses can be used for \`--worker-ips\`.
 Cluster IP addresses are recommended when reachable from each master.
 
-STEP 3A — DL CLUSTER MASTER
----------------------------
-${dl_bringup_cmd:+Copy and paste the following entire line into the DL master terminal:}
-${dl_bringup_cmd:-DL worker IPs are not configured; no DL cluster bringup command was generated.}
-
-STEP 3B — DA CLUSTER MASTER
----------------------------
-${da_bringup_cmd:+Copy and paste the following entire line into the DA master terminal:}
-${da_bringup_cmd:-DA worker IPs are not configured; no DA cluster bringup command was generated.}
-
 EOF
+      gui_emit_cluster_master_bringup "STEP 3A" "DL" "$dl_worker_ips" "$dl_bringup_cmd"
+      gui_emit_cluster_master_bringup "STEP 3B" "DA" "$da_worker_ips" "$da_bringup_cmd"
     else
       cat <<EOF
 ------------------------------------------------------------------------
@@ -1306,6 +1399,8 @@ $(mm_client_commands_file)
 OS-hop steps use one hash-pinned launcher command per hop (DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1).
 The Phase 2 staging step remains a three-line SUBSHELL_V2 block.
 
+${cluster_rule}
+
 STEP 0 — SNAPSHOT
 -----------------
 
@@ -1366,9 +1461,7 @@ Do not resume the DP during the intermediate OS upgrades.
 STEP 6 — STAGE DP ${ver} FILES
 ------------------------------------------------------------------------
 
-CLUSTER: Run STEP 6 on the master AND every worker.
-Complete STEP 6 on all cluster nodes before starting STEP 7.
-AIO/single node: run STEP 6 on that DP only.
+${step6_where}
 
 ${copy_block_guide}
 
@@ -1383,24 +1476,14 @@ EOF
 STEP 7 — RUN DP ${ver} BRINGUP ON CLUSTER MASTERS
 ------------------------------------------------------------------------
 
-STEPS 0–6 are shared: run the same commands on every required DL/DA master and worker.
-After STEP 6 has completed on all cluster nodes, run only the two master commands below.
-Do NOT run STEP 7 manually on workers. Each master SSHes to its own configured workers.
+After STEP 6 has completed on ALL cluster nodes, run only the master commands below.
 
 Management IP addresses or cluster IP addresses can be used for \`--worker-ips\`.
 Cluster IP addresses are recommended when reachable from each master.
 
-STEP 7A — DL CLUSTER MASTER
----------------------------
-${dl_bringup_cmd:+Copy and paste the following entire line into the DL master terminal:}
-${dl_bringup_cmd:-DL worker IPs are not configured; no DL cluster bringup command was generated.}
-
-STEP 7B — DA CLUSTER MASTER
----------------------------
-${da_bringup_cmd:+Copy and paste the following entire line into the DA master terminal:}
-${da_bringup_cmd:-DA worker IPs are not configured; no DA cluster bringup command was generated.}
-
 EOF
+      gui_emit_cluster_master_bringup "STEP 7A" "DL" "$dl_worker_ips" "$dl_bringup_cmd"
+      gui_emit_cluster_master_bringup "STEP 7B" "DA" "$da_worker_ips" "$da_bringup_cmd"
     else
       cat <<EOF
 ------------------------------------------------------------------------

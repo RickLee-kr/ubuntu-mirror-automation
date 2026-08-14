@@ -114,6 +114,7 @@ make_valid_final() {
   local work="${TMP}/valid-work"
   local dest="${MM_DP_PHASE2_ROOT}/6.5.0"
   local stable="dp_bundle_6.5.0-current.tar"
+  local patched_sha
   rm -rf "$dest" "$work"
   make_acps_work_tree "$work"
   mkdir -p "$dest"
@@ -128,11 +129,13 @@ make_valid_final() {
     images-6.5.0.tar \
     images-6.5.0.tar.sha256
   (cd "$dest" && sha256sum "$stable" >"${stable}.sha256")
+  patched_sha="$(sha1sum "$PATCHED_BRINGUP" | awk '{print $1}')"
   cat >"${dest}/release.env" <<EOF
 TARGET_DP_VERSION=6.5.0
 PHASE2_ARTIFACT_VERSION=6.5.0
 STABLE_BUNDLE_NAME=${stable}
 PHASE2_BUNDLE_ENTRY_COUNT=9
+BRINGUP_PATCHED_SHA1=${patched_sha}
 EOF
   [[ -f "${dest}/${stable}" ]] || fail "make_valid_final missing bundle"
 }
@@ -367,6 +370,24 @@ mm_calc_disk_requirements >/dev/null
 [[ "$PHASE2_ACPS_SOURCE_REQUIRED_BYTES" -eq 0 ]] || fail "REUSE phase2 acps bytes"
 [[ "$PHASE2_BUNDLE_OUTPUT_REQUIRED_BYTES" -eq 0 ]] || fail "REUSE phase2 bundle bytes"
 pass "REUSE disk preflight Phase2 required bytes=0"
+
+# --- patched bringup generation mismatch invalidates reuse ---
+make_valid_final
+sed -i 's/^BRINGUP_PATCHED_SHA1=.*/BRINGUP_PATCHED_SHA1=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef/' \
+  "${MM_DP_PHASE2_ROOT}/6.5.0/release.env"
+engine_assess_phase2_final 6.5.0
+[[ "$PHASE2_EXISTING_BUNDLE" == "INVALID" ]] \
+  || fail "stale patched bringup SHA should be INVALID got=${PHASE2_EXISTING_BUNDLE}"
+pass "stale BRINGUP_PATCHED_SHA1 invalidates existing bundle"
+
+make_valid_final
+grep -v '^BRINGUP_PATCHED_SHA1=' "${MM_DP_PHASE2_ROOT}/6.5.0/release.env" \
+  >"${TMP}/release.env.nosha"
+mv -f "${TMP}/release.env.nosha" "${MM_DP_PHASE2_ROOT}/6.5.0/release.env"
+engine_assess_phase2_final 6.5.0
+[[ "$PHASE2_EXISTING_BUNDLE" == "INVALID" ]] \
+  || fail "missing patched bringup SHA should be INVALID got=${PHASE2_EXISTING_BUNDLE}"
+pass "missing BRINGUP_PATCHED_SHA1 invalidates existing bundle"
 
 [[ "$PHASE2_TARGET_VERSION" == "6.5.0" ]] || fail "phase2 target"
 pass "13 workflow markers (target 6.5.0 fixed)"

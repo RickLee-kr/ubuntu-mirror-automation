@@ -57,9 +57,13 @@ EOF_HOP
 
 STEP 6 — STAGE DP 6.5.0 FILES
 
-CLUSTER: Run STEP 6 on the master AND every worker.
-Complete STEP 6 on all cluster nodes before starting STEP 7.
-AIO/single node: run STEP 6 on that DP only.
+CLUSTER:
+Run STEP 6 on the DL master, every DL worker,
+the DA master, and every DA worker.
+
+Complete STEP 6 on ALL cluster nodes before starting STEP 7.
+
+Use the SAME staging command on every node.
 
 Copy all three lines of the following block into the DP terminal once:
 
@@ -78,8 +82,10 @@ grep -q 'MENU7_DISPLAY_FORMAT=PASS wrapped_launchers=4 wrapped_phase2=1' "$FORMA
 grep -q 'Copy and paste all three physical lines below into the DP terminal.' "$DISPLAY"
 grep -q 'Copy and paste all four physical lines below into the DP terminal.' "$DISPLAY"
 grep -q 'complete Phase 2 client helper unit' "$DISPLAY"
-grep -Fq 'CLUSTER: Run STEP 6 on the master AND every worker.' "$DISPLAY"
-grep -Fq 'Complete STEP 6 on all cluster nodes before starting STEP 7.' "$DISPLAY"
+grep -Fq 'CLUSTER:' "$DISPLAY"
+grep -Fq 'Run STEP 6 on the DL master, every DL worker,' "$DISPLAY"
+grep -Fq 'Complete STEP 6 on ALL cluster nodes before starting STEP 7.' "$DISPLAY"
+grep -Fq 'Use the SAME staging command on every node.' "$DISPLAY"
 [[ "$(grep -c '^cd /home/aella && L=' "$DISPLAY")" -eq 4 ]]
 [[ "$(grep -c '^  U=' "$DISPLAY")" -eq 4 ]]
 [[ "$(grep -c "^  printf '%s  %s" "$DISPLAY")" -eq 4 ]]

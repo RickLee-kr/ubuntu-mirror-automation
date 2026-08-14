@@ -113,9 +113,9 @@ for spec_pass in 'something' 'Test123!' 'Abc$123!' 'worker@Pass#2026' 'A&b!c$123
       --worker-ips "192.168.124.23" --worker-password "$spec_pass"
   if [[ "$PARSE_RC" -eq 0 ]]; then
     echo "$PARSE_OUT" | grep -Fxq "WORKER_PASSWORD=${spec_pass}" \
-      || fail "parsed password mismatch for ${spec_pass}: ${PARSE_OUT}"
+      || fail "parsed password mismatch for special-character case"
   else
-    fail "parse failed for password ${spec_pass}: ${PARSE_ERR}"
+    fail "parse failed for special-character password case: ${PARSE_ERR}"
   fi
 done
 pass "parse_args preserves --worker-password including special characters"
@@ -199,7 +199,7 @@ set -e
 if grep -Fxq 'Abc$123!' "$SSHPASS_PASS_FILE"; then
   pass "orchestrate_workers passed configured password to sshpass"
 else
-  fail "sshpass did not receive configured password: $(cat "$SSHPASS_PASS_FILE")"
+  fail "sshpass did not receive configured password"
 fi
 if grep -Fxq 'aelladata' "$SSHPASS_PASS_FILE"; then
   fail "orchestrate_workers still used hardcoded aelladata"
@@ -241,7 +241,7 @@ set -e
 if grep -Fxq 'worker@Pass#2026' "$SSHPASS_PASS_FILE"; then
   pass "overlay2 worker sweep used configured password"
 else
-  fail "overlay2 sweep password missing: $(cat "$SSHPASS_PASS_FILE")"
+  fail "overlay2 sweep password missing"
 fi
 
 if [[ "$FAIL" -eq 0 ]]; then

@@ -76,6 +76,8 @@ In **Configuration**, set all of the following:
 5. **Test ACPS Connection**
 6. **Save Configuration**
 
+For a DL/DA cluster, also set **DL Worker IP addresses**, **DA Worker IP addresses**, and one common **Worker SSH Password (aella)**. Leave both worker-IP lists empty for AIO/single-node.
+
 The GUI may suggest a detected IP address, but auto-detection is only a suggestion. You must confirm an active IPv4 address that the DP hosts can actually reach.
 
 Do not start the DP upgrade until **Menu 4 — Verify Upgrade Readiness** reports `PASS`. Then use **Menu 7** as the authoritative source for the DP-side commands.
@@ -243,9 +245,9 @@ Required operator inputs:
 
 Cluster configuration is also entered here once:
 
-- **DL Worker IP addresses** — worker IPs only; do not include the DL master
-- **DA Worker IP addresses** — worker IPs only; do not include the DA master
-- **Worker SSH Password (aella)** — required when either worker list is configured
+- **DL Worker IP addresses** — worker IPs belonging to the DL cluster; do not include the DL master
+- **DA Worker IP addresses** — worker IPs belonging to the DA cluster; do not include the DA master
+- **Worker SSH Password (aella)** — one common password each cluster master uses to SSH to its workers; required when either worker list is configured
 
 Leave both worker-IP fields empty for a single DP / AIO / master without workers.
 
@@ -300,23 +302,25 @@ FAIL
 
 ### 7. Show DP Client Upgrade Commands
 
-Menu 7 uses the DL/DA worker lists saved in **Configuration**; it no longer asks for worker IPs again.
+Menu 7 uses the DL/DA worker lists and Worker SSH Password saved in **Configuration**; it does not ask for worker IPs again.
 
-For clustered deployments, **STEPS 0–6 are the same commands for all required DL/DA masters and workers**. After STEP 6 is complete everywhere, STEP 7 prints two separate bringup commands:
+For clustered deployments, **STEPS 1–6 are one common procedure** on every DP node being upgraded. Only STEP 7 is role-specific:
 
-- **STEP 7A — DL CLUSTER MASTER** — uses only the configured DL worker IPs
-- **STEP 7B — DA CLUSTER MASTER** — uses only the configured DA worker IPs
-
-Run STEP 7A on the DL master and STEP 7B on the DA master. Do not run STEP 7 manually on workers; each master uses `--worker-ips` to start bringup on its own workers.
-
-**Cluster Phase 2 execution rule:**
-
-| Step | Where to run |
+| Steps | Execution target |
 | --- | --- |
-| **STEP 6 — STAGE DP 6.5.0 FILES** | Run on the **cluster master and every worker** |
-| **STEP 7 — RUN DP 6.5.0 BRINGUP** | Run on the **cluster master only** |
+| **STEP 1–6** | DL master + all DL workers + DA master + all DA workers |
+| **STEP 7A** | DL master only |
+| **STEP 7B** | DA master only |
 
-Complete STEP 6 on the master and all workers before starting STEP 7. When STEP 7 uses `--worker-ips`, do **not** run STEP 7 manually on the workers; the master SSHes to its workers and starts worker bringup automatically. For an AIO/single-node DP, run both steps on that DP.
+- Enter DL worker IPs in Configuration (not the DL master IP)
+- Enter DA worker IPs in Configuration (not the DA master IP)
+- Use one common Worker SSH Password (aella)
+- Run the same STEP 1–6 commands on every node
+- Run **STEP 7A** on the DL master only (uses `DL_WORKER_IPS`)
+- Run **STEP 7B** on the DA master only (uses `DA_WORKER_IPS`)
+- Never run STEP 7 manually on workers; each master uses `--worker-ips` to start bringup on its own workers
+
+Complete STEP 6 on **all** cluster nodes before starting STEP 7. For an AIO/single-node DP, run STEP 1–7 on that DP; no `--worker-ips` or `--worker-password` is added.
 
 The generated commands are also saved at:
 
@@ -341,14 +345,14 @@ Menu 7 guides the operator through the required sequence, which is conceptually:
    - 18.04 → 20.04
    - 20.04 → 22.04
    - 22.04 → 24.04
-4. Stage DP 6.5.0 Phase 2 on the master **and every worker**
-5. Run `bringup_py3` using `--skip-download` on the **cluster master only**
+4. Stage DP 6.5.0 Phase 2 on **every** DL/DA master and worker (same STEP 6 command)
+5. Run STEP 7A on the **DL master only** and STEP 7B on the **DA master only**
 6. Resume DP services
 7. Verify DP/cluster status
 
 ### Phase 2 Only
 
-For a DP already on Ubuntu 24.04, Menu 7 skips the OS-hop commands and provides the 24.04 prerequisite check, Phase 2 staging, bringup, and final status steps.
+For a DP already on Ubuntu 24.04, Menu 7 skips the OS-hop commands. Common staging/prerequisite steps still run on every target node; bringup remains DL-master (`STEP 3A`) / DA-master (`STEP 3B`) only.
 
 ### Ubuntu 22.04 intermediate state
 

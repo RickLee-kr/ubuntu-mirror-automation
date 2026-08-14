@@ -756,7 +756,15 @@ engine_bringup_required_patch_result_markers() {
   printf '%s\n' \
     '# BEGIN_IMAGE_IMPORT_HEARTBEAT' \
     'run_image_import_with_heartbeat' \
-    'emit_dp_resume_notice_line'
+    'emit_dp_resume_notice_line' \
+    '--worker-password'
+}
+
+# SHA1 of the current locally patched bringup that must be inside the final bundle.
+engine_current_patched_bringup_sha1() {
+  local patched="${MM_PROJECT_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh"
+  [[ -f "$patched" ]] || return 1
+  sha1sum "$patched" | awk '{print $1}'
 }
 
 engine_bringup_fail() {
@@ -970,6 +978,33 @@ engine_assess_phase2_final() {
     mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=release_env_secret"
     return 0
   fi
+  # Final-bundle reuse is only valid when the published patched bringup is the
+  # current local patch generation. Version + outer tar SHA are not enough:
+  # the client lifecycle wrapper can be rebuilt independently of the 30GiB bundle.
+  local current_patched published_patched
+  current_patched="$(engine_current_patched_bringup_sha1 2>/dev/null || true)"
+  published_patched="$(grep -E '^BRINGUP_PATCHED_SHA1=' "$envf" | head -1 | cut -d= -f2- || true)"
+  published_patched="$(printf '%s' "$published_patched" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  current_patched="$(printf '%s' "$current_patched" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  if [[ -z "$current_patched" ]]; then
+    PHASE2_EXISTING_BUNDLE=INVALID
+    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=local_patched_bringup_missing"
+    return 0
+  fi
+  if [[ -z "$published_patched" ]]; then
+    PHASE2_EXISTING_BUNDLE=INVALID
+    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=patched_bringup_sha_missing"
+    mm_info "CURRENT_PATCHED_BRINGUP_SHA1=${current_patched}"
+    return 0
+  fi
+  if [[ "$published_patched" != "$current_patched" ]]; then
+    PHASE2_EXISTING_BUNDLE=INVALID
+    mm_warn "PHASE2_EXISTING_BUNDLE=INVALID reason=patched_bringup_changed"
+    mm_info "PUBLISHED_PATCHED_BRINGUP_SHA1=${published_patched}"
+    mm_info "CURRENT_PATCHED_BRINGUP_SHA1=${current_patched}"
+    return 0
+  fi
+  mm_info "PATCHED_BRINGUP_SHA1_MATCH=YES sha1=${current_patched}"
   local reuse_fp expected_hash cached_fp cached_hash tar_helper schema="1"
   expected_hash="$(dp2_read_hash_field "$sidecar" | tr '[:upper:]' '[:lower:]')"
   reuse_fp="schema=${schema}|$(mm_file_fingerprint "$bundle" 2>/dev/null || true)|$(mm_file_fingerprint "$sidecar" 2>/dev/null || true)|$(mm_file_fingerprint "$envf" 2>/dev/null || true)|sha=${expected_hash}"
@@ -1140,6 +1175,15 @@ engine_place_dp_phase2_final() {
   # Sidecar was just produced from this exact .new file; skip an immediate
   # second full read. Final published bytes are verified after atomic rename.
 
+  # Validate patched bringup inside the file set that was just tarred.
+  actual="$(sha1sum "${files_src}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
+  want="$(sha1sum "${MM_PROJECT_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
+  if [[ "${actual,,}" != "${want,,}" ]]; then
+    rm -rf "$dest_tmp"
+    mm_die "VALIDATE_DP=FAIL patched_bringup_sha1"
+  fi
+  BRINGUP_PATCHED_SHA1="$actual"
+
   local created_at commit
   created_at="$(mm_ts)"
   commit="$(git -C "${MM_PROJECT_ROOT}" rev-parse HEAD 2>/dev/null || echo UNKNOWN)"
@@ -1157,20 +1201,12 @@ SOURCE_PATH=provision
 VERIFICATION_RESULT=PASS
 SOURCE_REPOSITORY_COMMIT=${commit}
 BRINGUP_UPSTREAM_SHA1=${BRINGUP_UPSTREAM_SHA1:-}
-BRINGUP_PATCHED_SHA1=${BRINGUP_PATCHED_SHA1:-}
+BRINGUP_PATCHED_SHA1=${BRINGUP_PATCHED_SHA1}
 ACPS_SOURCE_VERSION=${ver}
 EOF
   if dp2_release_has_secret "${dest_tmp}/release.env"; then
     rm -rf "$dest_tmp"
     mm_die "RELEASE_ENV_SECRET=FAIL"
-  fi
-
-  # Validate patched bringup inside bundle entries
-  actual="$(sha1sum "${files_src}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
-  want="$(sha1sum "${MM_PROJECT_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
-  if [[ "${actual,,}" != "${want,,}" ]]; then
-    rm -rf "$dest_tmp"
-    mm_die "VALIDATE_DP=FAIL patched_bringup_sha1"
   fi
 
   # .new is fully built — free ACPS source/work before rename so peak is only
@@ -1622,7 +1658,15 @@ engine_download_and_prepare() {
     INVALID)
       PHASE2_BUNDLE_ACTION=REBUILD
       PHASE2_REBUILD_REQUIRED=YES
-      ACPS_DOWNLOAD_REQUIRED=YES
+      # Rebuild the small final bundle. Reuse a verified ACPS cache so a patched
+      # bringup change does not re-download the ~30GiB image tar.
+      if declare -F acps_is_verified_cache >/dev/null 2>&1 \
+        && acps_is_verified_cache "$(acps_cache_dir "$TARGET_DP_VERSION")" 2>/dev/null; then
+        ACPS_DOWNLOAD_REQUIRED=NO
+        mm_info "ACPS_DOWNLOAD_REQUIRED=NO reason=verified_cache_reuse"
+      else
+        ACPS_DOWNLOAD_REQUIRED=YES
+      fi
       engine_remove_invalid_phase2_final "$TARGET_DP_VERSION"
       mm_info "MAX_LARGE_ARTIFACT_COPIES=2"
       ;;

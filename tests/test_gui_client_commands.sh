@@ -81,14 +81,14 @@ WORKER_SSH_PASSWORD=""
 DL_WORKER_IPS=""
 DA_WORKER_IPS=""
 mm_load_gui_config
-[[ "$WORKER_SSH_PASSWORD" == "customer-password" ]] || fail "worker password not reloaded: ${WORKER_SSH_PASSWORD}"
+[[ "$WORKER_SSH_PASSWORD" == "customer-password" ]] || fail "worker password not reloaded"
 [[ "$DL_WORKER_IPS" == '192.168.124.23,192.168.124.25' ]] || fail "DL worker IPs not reloaded"
 [[ "$DA_WORKER_IPS" == '192.168.124.24,192.168.124.26' ]] || fail "DA worker IPs not reloaded"
 WORKER_SSH_PASSWORD='Abc$123!'
 mm_save_gui_config >/dev/null
 WORKER_SSH_PASSWORD=""
 mm_load_gui_config
-[[ "$WORKER_SSH_PASSWORD" == 'Abc$123!' ]] || fail "updated worker password not reloaded: ${WORKER_SSH_PASSWORD}"
+[[ "$WORKER_SSH_PASSWORD" == 'Abc$123!' ]] || fail "updated worker password not reloaded"
 # Empty password remains allowed when no worker IPs are configured.
 WORKER_SSH_PASSWORD=""
 rm -f "$MM_CONFIG_FILE"
@@ -100,6 +100,9 @@ WORKER_SSH_PASSWORD="stale"
 mm_load_gui_config
 [[ -z "${WORKER_SSH_PASSWORD}" ]] || fail "empty worker password not reloaded as empty"
 pass "worker SSH password save/reload/update"
+echo "DL_WORKER_IP_PERSISTENCE=PASS"
+echo "DA_WORKER_IP_PERSISTENCE=PASS"
+echo "WORKER_PASSWORD_PERSISTENCE=PASS"
 
 # --- Configuration: Preparation Mode only; no DP version fields ---
 grep -q '"1" "Preparation Mode"' "$INSTALLER" || fail "Preparation Mode menu missing"
@@ -107,7 +110,7 @@ grep -q '"5" "DL Worker IP addresses"' "$INSTALLER" || fail "DL Worker IP menu i
 grep -q '"6" "DA Worker IP addresses"' "$INSTALLER" || fail "DA Worker IP menu item missing"
 grep -q '"7" "Worker SSH Password (aella)"' "$INSTALLER" \
   || fail "Worker SSH Password menu item missing"
-grep -q 'Password used by DL/DA masters to access worker nodes during Phase 2' "$INSTALLER" \
+grep -q 'Common aella SSH password used by each cluster master to access its workers' "$INSTALLER" \
   || fail "Worker SSH Password help text missing"
 grep -qE 'Current DP Version|Starting DP Version"|Target DP Version|"DP Version"' "$INSTALLER" \
   && fail "DP version config fields still present" || true
@@ -305,7 +308,7 @@ EOF
     [[ "${ARGV[3]}" == "--worker-ips" ]] || fail "argv --worker-ips missing: ${ARGV[*]}"
     [[ "${ARGV[4]}" == "$expect_ips" ]] || fail "argv worker csv not one arg: ${ARGV[4]}"
     [[ "${ARGV[5]}" == "--worker-password" ]] || fail "argv --worker-password missing: ${ARGV[*]}"
-    [[ "${ARGV[6]}" == "$expect_pass" ]] || fail "argv password mismatch: ${ARGV[6]}"
+    [[ "${ARGV[6]}" == "$expect_pass" ]] || fail "argv password mismatch"
   else
     printf '%s\n' "${ARGV[@]}" | grep -qx -- '--worker-ips' && fail "unexpected --worker-ips" || true
     printf '%s\n' "${ARGV[@]}" | grep -qx -- '--worker-password' && fail "unexpected --worker-password" || true
@@ -544,5 +547,173 @@ set -e
 [[ "$NONROOT_RC" -ne 0 ]] || fail "non-root mirror-manager should fail"
 grep -q 'This command requires sudo.' "$NONROOT_OUT" || fail "non-root missing sudo guidance"
 pass "non-root prints clear sudo guidance"
+
+# ---------------------------------------------------------------------------
+# Required cluster workflow regression markers (distinct DL/DA IP lists).
+# Never print the raw worker password in test output.
+# ---------------------------------------------------------------------------
+REG_DL_IPS='10.10.10.21,10.10.10.22'
+REG_DA_IPS='10.20.20.21,10.20.20.22'
+REG_PW='Sp3c#Pw!x9Q'
+
+grep -q '"5" "DL Worker IP addresses"' "$INSTALLER" \
+  || fail "CONFIG_HAS_DL_WORKER_IP_FIELD missing"
+echo "CONFIG_HAS_DL_WORKER_IP_FIELD=YES"
+grep -q '"6" "DA Worker IP addresses"' "$INSTALLER" \
+  || fail "CONFIG_HAS_DA_WORKER_IP_FIELD missing"
+echo "CONFIG_HAS_DA_WORKER_IP_FIELD=YES"
+grep -q '"7" "Worker SSH Password (aella)"' "$INSTALLER" \
+  || fail "CONFIG_HAS_COMMON_WORKER_PASSWORD missing"
+echo "CONFIG_HAS_COMMON_WORKER_PASSWORD=YES"
+
+if sed -n '/^gui_client_instructions()/,/^cmd_mirror_manager()/p' "$INSTALLER" \
+  | grep -q 'mm_whiptail_input'; then
+  fail "MENU7_REPROMPTS_FOR_WORKER_IPS: Menu 7 still prompts"
+else
+  echo "MENU7_REPROMPTS_FOR_WORKER_IPS=NO"
+fi
+
+PREPARATION_MODE=FULL
+REG_DUAL="$TMP/reg-dual-full.txt"
+gui_build_client_commands "http://192.0.2.10" "cluster" \
+  "$REG_DL_IPS" "$REG_DA_IPS" "$REG_PW" >"$REG_DUAL"
+
+for n in 1 2 3 4 5 6; do
+  step_count="$(grep -cE "^STEP ${n} —" "$REG_DUAL" || true)"
+  [[ "$step_count" -eq 1 ]] || fail "STEP ${n} header count=${step_count} (expected 1 common step)"
+done
+grep -q 'CLUSTER EXECUTION RULE' "$REG_DUAL" || fail "CLUSTER EXECUTION RULE missing"
+grep -q 'Run the same steps on every DP node being upgraded' "$REG_DUAL" \
+  || fail "common all-nodes guidance missing"
+grep -q 'DL master, all DL workers, DA master, and all DA workers' "$REG_DUAL" \
+  || fail "all-nodes target list missing"
+echo "MENU7_COMMON_STEPS_1_TO_6=PASS"
+
+[[ "$(grep -cE '^STEP 6 — STAGE DP' "$REG_DUAL")" -eq 1 ]] \
+  || fail "STEP 6 heading not unique"
+[[ "$(grep -c "SCRIPT='stage-dp-phase2.sh'" "$REG_DUAL")" -eq 1 ]] \
+  || fail "expected exactly one common stage command"
+grep -q 'Use the SAME staging command on every node' "$REG_DUAL" \
+  || fail "same staging command guidance missing"
+grep -qE 'STEP 6A|STEP 6B|DL STAGE|DA STAGE' "$REG_DUAL" \
+  && fail "duplicated DL/DA STEP 6 commands present" || true
+echo "MENU7_STEP6_SINGLE_COMMON_COMMAND=PASS"
+
+grep -q 'STEP 7A — DL CLUSTER MASTER' "$REG_DUAL" || fail "MENU7_DL_COMMAND_PRESENT"
+grep -q 'STEP 7B — DA CLUSTER MASTER' "$REG_DUAL" || fail "MENU7_DA_COMMAND_PRESENT"
+echo "MENU7_DL_COMMAND_PRESENT=PASS"
+echo "MENU7_DA_COMMAND_PRESENT=PASS"
+
+REG_DL_SEC="$TMP/reg-dl-sec.txt"
+REG_DA_SEC="$TMP/reg-da-sec.txt"
+awk '/STEP 7A — DL CLUSTER MASTER/,/STEP 7B — DA CLUSTER MASTER/' "$REG_DUAL" \
+  >"$REG_DL_SEC"
+awk '/STEP 7B — DA CLUSTER MASTER/,/^STEP 8 —/' "$REG_DUAL" \
+  >"$REG_DA_SEC"
+grep -q -- "--worker-ips \"${REG_DL_IPS}\"" "$REG_DL_SEC" \
+  || fail "MENU7_DL_COMMAND_USES_ONLY_DL_WORKERS"
+grep -q -- "--worker-ips \"${REG_DA_IPS}\"" "$REG_DA_SEC" \
+  || fail "MENU7_DA_COMMAND_USES_ONLY_DA_WORKERS"
+echo "MENU7_DL_COMMAND_USES_ONLY_DL_WORKERS=PASS"
+echo "MENU7_DA_COMMAND_USES_ONLY_DA_WORKERS=PASS"
+grep -F "$REG_DA_IPS" "$REG_DL_SEC" \
+  && fail "MENU7_DL_COMMAND_DOES_NOT_CONTAIN_DA_WORKERS" || true
+grep -F "$REG_DL_IPS" "$REG_DA_SEC" \
+  && fail "MENU7_DA_COMMAND_DOES_NOT_CONTAIN_DL_WORKERS" || true
+echo "MENU7_DL_COMMAND_DOES_NOT_CONTAIN_DA_WORKERS=PASS"
+echo "MENU7_DA_COMMAND_DOES_NOT_CONTAIN_DL_WORKERS=PASS"
+
+grep -q 'Run this command on the DL MASTER ONLY' "$REG_DUAL" \
+  || fail "DL master-only guidance missing"
+grep -q 'Run this command on the DA MASTER ONLY' "$REG_DUAL" \
+  || fail "DA master-only guidance missing"
+grep -q 'STEP 7A: DL master only' "$REG_DUAL" || fail "rule missing STEP 7A master-only"
+grep -q 'STEP 7B: DA master only' "$REG_DUAL" || fail "rule missing STEP 7B master-only"
+echo "MENU7_STEP7_MASTER_ONLY_GUIDANCE=PASS"
+grep -q 'Do NOT run this command manually on DL workers' "$REG_DUAL" \
+  || fail "DL worker STEP 7 prohibition missing"
+grep -q 'Do NOT run this command manually on DA workers' "$REG_DUAL" \
+  || fail "DA worker STEP 7 prohibition missing"
+grep -q 'Do not run STEP 7 manually on workers' "$REG_DUAL" \
+  || fail "cluster rule missing worker STEP 7 prohibition"
+echo "MENU7_WORKER_MANUAL_STEP7_PROHIBITED=PASS"
+
+reg_dl_line="$(grep -E 'bringup_py3_dp_after_os_upgrade\.sh' "$REG_DL_SEC" | head -1)"
+reg_da_line="$(grep -E 'bringup_py3_dp_after_os_upgrade\.sh' "$REG_DA_SEC" | head -1)"
+assert_bringup_argv "$reg_dl_line" "$REG_DL_IPS" "$REG_PW"
+assert_bringup_argv "$reg_da_line" "$REG_DA_IPS" "$REG_PW"
+echo "SPECIAL_CHARACTER_WORKER_PASSWORD=PASS"
+
+redacted="$(printf 'WORKER_SSH_PASSWORD=%s extra\n' "$REG_PW" | mm_redact)"
+printf '%s\n' "$redacted" | grep -Fq "$REG_PW" && fail "mm_redact leaked worker password" || true
+[[ "$redacted" == *'WORKER_SSH_PASSWORD=***'* ]] || fail "WORKER_SSH_PASSWORD not redacted"
+if grep -v 'bringup_py3_dp_after_os_upgrade.sh' "$REG_DUAL" | grep -Fq "$REG_PW"; then
+  fail "worker password appeared outside bringup command"
+fi
+logged="$(mm_log INFO "WORKER_SSH_PASSWORD=${REG_PW} DL_WORKER_IPS=${REG_DL_IPS}")"
+printf '%s\n' "$logged" | grep -Fq "$REG_PW" && fail "mm_log leaked worker password" || true
+echo "WORKER_PASSWORD_NOT_LOGGED=PASS"
+
+PREPARATION_MODE=FULL
+gui_build_client_commands "http://192.0.2.10" "single" "" "" "" >"$TMP/reg-single.txt"
+reg_single_line="$(grep -E 'bringup_py3_dp_after_os_upgrade\.sh' "$TMP/reg-single.txt" | head -1)"
+assert_bringup_argv "$reg_single_line" "" ""
+grep -q -- '--worker-ips' "$TMP/reg-single.txt" && fail "SINGLE_NODE_HAS_WORKER_IP_ARG" || true
+grep -q -- '--worker-password' "$TMP/reg-single.txt" && fail "SINGLE_NODE_HAS_WORKER_PASSWORD_ARG" || true
+echo "SINGLE_NODE_HAS_WORKER_IP_ARG=NO"
+echo "SINGLE_NODE_HAS_WORKER_PASSWORD_ARG=NO"
+
+REG_DL_ONLY="$TMP/reg-dl-only.txt"
+gui_build_client_commands "http://192.0.2.10" "cluster" \
+  "$REG_DL_IPS" "" "$REG_PW" >"$REG_DL_ONLY"
+grep -q -- "--worker-ips \"${REG_DL_IPS}\"" "$REG_DL_ONLY" || fail "DL-only missing DL workers"
+grep -F "$REG_DA_IPS" "$REG_DL_ONLY" && fail "DL-only contains DA workers" || true
+grep -q 'DA cluster bringup command was not generated because' "$REG_DL_ONLY" \
+  || fail "DL-only missing DA not-configured message"
+grep -q 'DA Worker IPs are not configured' "$REG_DL_ONLY" \
+  || fail "DL-only missing DA Worker IPs reason"
+[[ "$(grep -c 'bringup_py3_dp_after_os_upgrade.sh' "$REG_DL_ONLY")" -eq 1 ]] \
+  || fail "DL-only should emit exactly one bringup command"
+echo "DL_ONLY_CONFIGURATION=PASS"
+
+REG_DA_ONLY="$TMP/reg-da-only.txt"
+gui_build_client_commands "http://192.0.2.10" "cluster" \
+  "" "$REG_DA_IPS" "$REG_PW" >"$REG_DA_ONLY"
+grep -q -- "--worker-ips \"${REG_DA_IPS}\"" "$REG_DA_ONLY" || fail "DA-only missing DA workers"
+grep -F "$REG_DL_IPS" "$REG_DA_ONLY" && fail "DA-only contains DL workers" || true
+grep -q 'DL cluster bringup command was not generated because' "$REG_DA_ONLY" \
+  || fail "DA-only missing DL not-configured message"
+grep -q 'DL Worker IPs are not configured' "$REG_DA_ONLY" \
+  || fail "DA-only missing DL Worker IPs reason"
+[[ "$(grep -c 'bringup_py3_dp_after_os_upgrade.sh' "$REG_DA_ONLY")" -eq 1 ]] \
+  || fail "DA-only should emit exactly one bringup command"
+echo "DA_ONLY_CONFIGURATION=PASS"
+
+PREPARATION_MODE=PHASE2_ONLY
+REG_P2="$TMP/reg-dual-p2.txt"
+gui_build_client_commands "http://192.0.2.10" "cluster" \
+  "$REG_DL_IPS" "$REG_DA_IPS" "$REG_PW" >"$REG_P2"
+grep -q 'CLUSTER EXECUTION RULE' "$REG_P2" || fail "PHASE2 cluster rule missing"
+grep -q 'STEP 3A: DL master only' "$REG_P2" || fail "PHASE2 missing STEP 3A master-only"
+grep -q 'STEP 3B: DA master only' "$REG_P2" || fail "PHASE2 missing STEP 3B master-only"
+grep -q 'Use the SAME staging command on every node' "$REG_P2" \
+  || fail "PHASE2 missing shared stage command guidance"
+[[ "$(grep -c "SCRIPT='stage-dp-phase2.sh'" "$REG_P2")" -eq 1 ]] \
+  || fail "PHASE2 expected exactly one stage command"
+awk '/STEP 3A — DL CLUSTER MASTER/,/STEP 3B — DA CLUSTER MASTER/' "$REG_P2" \
+  | grep -q -- "--worker-ips \"${REG_DL_IPS}\"" \
+  || fail "PHASE2 DL command missing DL workers"
+awk '/STEP 3A — DL CLUSTER MASTER/,/STEP 3B — DA CLUSTER MASTER/' "$REG_P2" \
+  | grep -F "$REG_DA_IPS" \
+  && fail "PHASE2 DL command contains DA workers" || true
+awk '/STEP 3B — DA CLUSTER MASTER/,/^STEP 4 —/' "$REG_P2" \
+  | grep -q -- "--worker-ips \"${REG_DA_IPS}\"" \
+  || fail "PHASE2 DA command missing DA workers"
+awk '/STEP 3B — DA CLUSTER MASTER/,/^STEP 4 —/' "$REG_P2" \
+  | grep -F "$REG_DL_IPS" \
+  && fail "PHASE2 DA command contains DL workers" || true
+pass "PHASE2_ONLY cluster routing matches FULL"
+
+unset REG_PW REG_DL_IPS REG_DA_IPS
 
 echo "ALL test_gui_client_commands checks passed"

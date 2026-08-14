@@ -373,6 +373,22 @@ BRINGUP_LOG=${BRINGUP_LOG}
 EOF
 }
 
+p2b_archive_failed_run() {
+  local d dest f
+  d="$(p2b_dir)"
+  dest="${d}/previous-failed"
+  rm -rf "$dest"
+  mkdir -p "$dest"
+  chmod 0700 "$dest" 2>/dev/null || true
+  for f in state result.env completion.sentinel run-id exit-code \
+    completed-at started-at log-path worker.pid worker-start-ticks target-version
+  do
+    if [[ -f "${d}/${f}" ]]; then
+      cp -a "${d}/${f}" "${dest}/${f}" 2>/dev/null || true
+    fi
+  done
+}
+
 p2b_acquire_lock() {
   local d lockfd
   d="$(p2b_dir)"
