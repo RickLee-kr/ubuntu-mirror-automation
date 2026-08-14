@@ -1,0 +1,740 @@
+name: Apply dual cluster worker configuration
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-dual-cluster-worker-config.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply worker configuration and command changes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f"{path}: expected exactly one match, got {text.count(old)} for:\n{old[:200]}")
+              p.write_text(text.replace(old, new, 1))
+
+          # -----------------------------------------------------------------
+          # Common config persistence
+          # -----------------------------------------------------------------
+          path = 'scripts/lib/mirror_manager_common.sh'
+          replace_once(path,
+          '''ACPS_USERNAME="${ACPS_USERNAME:-}"
+          ACPS_PASSWORD="${ACPS_PASSWORD:-}"
+          WORKER_SSH_PASSWORD="${WORKER_SSH_PASSWORD:-}"
+          ''',
+          '''ACPS_USERNAME="${ACPS_USERNAME:-}"
+          ACPS_PASSWORD="${ACPS_PASSWORD:-}"
+          WORKER_SSH_PASSWORD="${WORKER_SSH_PASSWORD:-}"
+          DL_WORKER_IPS="${DL_WORKER_IPS:-}"
+          DA_WORKER_IPS="${DA_WORKER_IPS:-}"
+          ''')
+
+          replace_once(path,
+          '''  WORKER_SSH_PASSWORD="${WORKER_SSH_PASSWORD:-}"
+            MIRROR_HTTP_URL="${MIRROR_HTTP_URL:-}"
+            MIRROR_SERVER_IP="${MIRROR_SERVER_IP:-}"
+            if [[ -f "${MM_CONFIG_FILE}" ]]; then
+          ''',
+          '''  WORKER_SSH_PASSWORD="${WORKER_SSH_PASSWORD:-}"
+            DL_WORKER_IPS="${DL_WORKER_IPS:-}"
+            DA_WORKER_IPS="${DA_WORKER_IPS:-}"
+            MIRROR_HTTP_URL="${MIRROR_HTTP_URL:-}"
+            MIRROR_SERVER_IP="${MIRROR_SERVER_IP:-}"
+            if [[ -f "${MM_CONFIG_FILE}" ]]; then
+          ''')
+
+          replace_once(path,
+          '''  WORKER_SSH_PASSWORD="${WORKER_SSH_PASSWORD:-}"
+            MIRROR_HTTP_URL="${MIRROR_HTTP_URL:-}"
+            MIRROR_SERVER_IP="${MIRROR_SERVER_IP:-}"
+            # Derive missing field from the other when only one is present.
+          ''',
+          '''  WORKER_SSH_PASSWORD="${WORKER_SSH_PASSWORD:-}"
+            DL_WORKER_IPS="${DL_WORKER_IPS:-}"
+            DA_WORKER_IPS="${DA_WORKER_IPS:-}"
+            MIRROR_HTTP_URL="${MIRROR_HTTP_URL:-}"
+            MIRROR_SERVER_IP="${MIRROR_SERVER_IP:-}"
+            # Derive missing field from the other when only one is present.
+          ''')
+
+          replace_once(path,
+          '''  local mem_worker_pass="${WORKER_SSH_PASSWORD:-}"
+            local mem_mirror="${MIRROR_HTTP_URL:-}"
+            local mem_ip="${MIRROR_SERVER_IP:-}"
+            local mem_mode="${PREPARATION_MODE:-}"
+            local disk_user="" disk_pass="" disk_worker_pass="" disk_mirror="" disk_ip=""
+          ''',
+          '''  local mem_worker_pass="${WORKER_SSH_PASSWORD:-}"
+            local mem_dl_worker_ips="${DL_WORKER_IPS:-}"
+            local mem_da_worker_ips="${DA_WORKER_IPS:-}"
+            local mem_mirror="${MIRROR_HTTP_URL:-}"
+            local mem_ip="${MIRROR_SERVER_IP:-}"
+            local mem_mode="${PREPARATION_MODE:-}"
+            local disk_user="" disk_pass="" disk_worker_pass="" disk_dl_worker_ips="" disk_da_worker_ips="" disk_mirror="" disk_ip=""
+          ''')
+
+          replace_once(path,
+          '''      printf 'disk_worker_pass=%s\\n' "$(printf '%q' "${WORKER_SSH_PASSWORD:-}")"
+                printf 'disk_mirror=%s\\n' "$(printf '%q' "${MIRROR_HTTP_URL:-}")"
+          ''',
+          '''      printf 'disk_worker_pass=%s\\n' "$(printf '%q' "${WORKER_SSH_PASSWORD:-}")"
+                printf 'disk_dl_worker_ips=%s\\n' "$(printf '%q' "${DL_WORKER_IPS:-}")"
+                printf 'disk_da_worker_ips=%s\\n' "$(printf '%q' "${DA_WORKER_IPS:-}")"
+                printf 'disk_mirror=%s\\n' "$(printf '%q' "${MIRROR_HTTP_URL:-}")"
+          ''')
+
+          replace_once(path,
+          '''  WORKER_SSH_PASSWORD="${mem_worker_pass:-$disk_worker_pass}"
+            MIRROR_HTTP_URL="${mem_mirror:-$disk_mirror}"
+          ''',
+          '''  WORKER_SSH_PASSWORD="${mem_worker_pass:-$disk_worker_pass}"
+            DL_WORKER_IPS="${mem_dl_worker_ips:-$disk_dl_worker_ips}"
+            DA_WORKER_IPS="${mem_da_worker_ips:-$disk_da_worker_ips}"
+            MIRROR_HTTP_URL="${mem_mirror:-$disk_mirror}"
+          ''')
+
+          replace_once(path,
+          '''    printf 'WORKER_SSH_PASSWORD=%s\\n' "$(printf '%q' "${WORKER_SSH_PASSWORD:-}")"
+                printf 'MIRROR_SERVER_IP=%s\\n' "$(printf '%q' "${MIRROR_SERVER_IP:-}")"
+          ''',
+          '''    printf 'WORKER_SSH_PASSWORD=%s\\n' "$(printf '%q' "${WORKER_SSH_PASSWORD:-}")"
+                printf 'DL_WORKER_IPS=%s\\n' "$(printf '%q' "${DL_WORKER_IPS:-}")"
+                printf 'DA_WORKER_IPS=%s\\n' "$(printf '%q' "${DA_WORKER_IPS:-}")"
+                printf 'MIRROR_SERVER_IP=%s\\n' "$(printf '%q' "${MIRROR_SERVER_IP:-}")"
+          ''')
+
+          # -----------------------------------------------------------------
+          # Bootstrap must preserve the two worker lists on reinstall.
+          # -----------------------------------------------------------------
+          path = 'lib/bootstrap.sh'
+          replace_once(path,
+          '''  local tmp prep user pass worker_pass server_ip
+            mkdir -p "$confdir"
+            prep="FULL"
+            user=""
+            pass=""
+            worker_pass=""
+            server_ip=""
+          ''',
+          '''  local tmp prep user pass worker_pass dl_worker_ips da_worker_ips server_ip
+            mkdir -p "$confdir"
+            prep="FULL"
+            user=""
+            pass=""
+            worker_pass=""
+            dl_worker_ips=""
+            da_worker_ips=""
+            server_ip=""
+          ''')
+          replace_once(path,
+          '''    worker_pass="${WORKER_SSH_PASSWORD:-}"
+                server_ip="${MIRROR_SERVER_IP:-}"
+          ''',
+          '''    worker_pass="${WORKER_SSH_PASSWORD:-}"
+                dl_worker_ips="${DL_WORKER_IPS:-}"
+                da_worker_ips="${DA_WORKER_IPS:-}"
+                server_ip="${MIRROR_SERVER_IP:-}"
+          ''')
+          replace_once(path,
+          '''WORKER_SSH_PASSWORD=$(printf '%q' "${worker_pass}")
+          MIRROR_SERVER_IP=$(printf '%q' "${server_ip}")
+          ''',
+          '''WORKER_SSH_PASSWORD=$(printf '%q' "${worker_pass}")
+          DL_WORKER_IPS=$(printf '%q' "${dl_worker_ips}")
+          DA_WORKER_IPS=$(printf '%q' "${da_worker_ips}")
+          MIRROR_SERVER_IP=$(printf '%q' "${server_ip}")
+          ''')
+
+          # -----------------------------------------------------------------
+          # Configuration GUI
+          # -----------------------------------------------------------------
+          path = 'scripts/install-dp-upgrade-mirror.sh'
+          replace_once(path,
+          '''ACPS Username: $(mm_configured_label "$ACPS_USERNAME")
+          ACPS Password: $(mm_configured_label "$ACPS_PASSWORD")
+          Worker SSH Password (aella): $(mm_configured_label "$WORKER_SSH_PASSWORD")
+          ACPS Server: Fixed
+          ''',
+          '''ACPS Username: $(mm_configured_label "$ACPS_USERNAME")
+          ACPS Password: $(mm_configured_label "$ACPS_PASSWORD")
+          DL Worker IPs: ${DL_WORKER_IPS:-(not set)}
+          DA Worker IPs: ${DA_WORKER_IPS:-(not set)}
+          Worker SSH Password (aella): $(mm_configured_label "$WORKER_SSH_PASSWORD")
+          ACPS Server: Fixed
+          ''')
+          replace_once(path,
+          '''      "5" "Worker SSH Password (aella)" \\
+                "6" "Test ACPS Connection" \\
+                "7" "Save Configuration" \\
+                "0" "Back")" || return 0
+          ''',
+          '''      "5" "DL Worker IP addresses" \\
+                "6" "DA Worker IP addresses" \\
+                "7" "Worker SSH Password (aella)" \\
+                "8" "Test ACPS Connection" \\
+                "9" "Save Configuration" \\
+                "0" "Back")" || return 0
+          ''')
+          replace_once(path,
+          '''      5)
+                local wp
+                wp="$(mm_whiptail_password "Worker SSH Password (aella)" \\
+                  "Password used by DL/DA masters to access worker nodes during Phase 2.
+          
+          Required when generating cluster Phase 2 commands with worker IPs.
+          May be left empty for single DP / AIO / master without workers.")" || continue
+                WORKER_SSH_PASSWORD="$wp"
+                ;;
+              6)
+                # Use in-memory credentials from this Configuration session.
+          ''',
+          '''      5)
+                local dl_in dl_clean
+                dl_in="$(mm_whiptail_input "DL Worker IP addresses" \\
+                  "Enter DL worker IP addresses only. Do not include the DL master IP.
+          
+          Management IP addresses or cluster IP addresses can be used.
+          Cluster IP addresses are recommended when reachable from the DL master.
+          
+          Separate multiple IP addresses with commas.
+          Leave empty if there are no DL workers.
+          
+          Example:
+          192.168.124.23,192.168.124.24" \\
+                  "${DL_WORKER_IPS:-}")" || continue
+                dl_clean="$(printf '%s' "$dl_in" | tr -d '[:space:]')"
+                if [[ -n "$dl_clean" ]]; then
+                  dl_clean="$(mm_validate_worker_ips "$dl_clean")" || {
+                    mm_whiptail_msg "Invalid DL Worker IPs" \\
+                      "Provide a comma-separated list of valid IPv4 addresses.
+          Do not include the DL master IP, trailing commas, duplicates, or shell metacharacters."
+                    continue
+                  }
+                fi
+                DL_WORKER_IPS="$dl_clean"
+                ;;
+              6)
+                local da_in da_clean
+                da_in="$(mm_whiptail_input "DA Worker IP addresses" \\
+                  "Enter DA worker IP addresses only. Do not include the DA master IP.
+          
+          Management IP addresses or cluster IP addresses can be used.
+          Cluster IP addresses are recommended when reachable from the DA master.
+          
+          Separate multiple IP addresses with commas.
+          Leave empty if there are no DA workers.
+          
+          Example:
+          192.168.124.25,192.168.124.26" \\
+                  "${DA_WORKER_IPS:-}")" || continue
+                da_clean="$(printf '%s' "$da_in" | tr -d '[:space:]')"
+                if [[ -n "$da_clean" ]]; then
+                  da_clean="$(mm_validate_worker_ips "$da_clean")" || {
+                    mm_whiptail_msg "Invalid DA Worker IPs" \\
+                      "Provide a comma-separated list of valid IPv4 addresses.
+          Do not include the DA master IP, trailing commas, duplicates, or shell metacharacters."
+                    continue
+                  }
+                fi
+                DA_WORKER_IPS="$da_clean"
+                ;;
+              7)
+                local wp
+                wp="$(mm_whiptail_password "Worker SSH Password (aella)" \\
+                  "Password used by DL/DA masters to access worker nodes during Phase 2.
+          
+          Required when DL Worker IPs or DA Worker IPs are configured.
+          May be left empty for single DP / AIO / master without workers.")" || continue
+                WORKER_SSH_PASSWORD="$wp"
+                ;;
+              8)
+                # Use in-memory credentials from this Configuration session.
+          ''')
+          replace_once(path,
+          '''      7)
+                mm_force_phase2_target
+          ''',
+          '''      9)
+                local normalized_dl="" normalized_da=""
+                if [[ -n "${DL_WORKER_IPS:-}" ]]; then
+                  normalized_dl="$(mm_validate_worker_ips "${DL_WORKER_IPS}")" || {
+                    mm_whiptail_msg "Configuration" "DL Worker IP addresses are invalid. Re-enter them with menu 5."
+                    continue
+                  }
+                fi
+                if [[ -n "${DA_WORKER_IPS:-}" ]]; then
+                  normalized_da="$(mm_validate_worker_ips "${DA_WORKER_IPS}")" || {
+                    mm_whiptail_msg "Configuration" "DA Worker IP addresses are invalid. Re-enter them with menu 6."
+                    continue
+                  }
+                fi
+                DL_WORKER_IPS="$normalized_dl"
+                DA_WORKER_IPS="$normalized_da"
+                if [[ -n "${DL_WORKER_IPS}${DA_WORKER_IPS}" ]] \\
+                  && ! mm_validate_worker_ssh_password "${WORKER_SSH_PASSWORD:-}" "${DL_WORKER_IPS}${DA_WORKER_IPS}"; then
+                  mm_whiptail_msg "Configuration" \\
+                    "Worker SSH Password (aella) is required when DL or DA worker IPs are configured.
+          
+          Set it with menu 7 before saving."
+                  continue
+                fi
+                mm_force_phase2_target
+          ''')
+
+          # -----------------------------------------------------------------
+          # Command generator: one shared sequence, two cluster-master bringups.
+          # -----------------------------------------------------------------
+          replace_once(path,
+          '''  # Writes command text to stdout. Args: mirror topology worker_ips [worker_password]
+            # Uses PREPARATION_MODE from config (FULL or PHASE2_ONLY).
+            # OS-hop commands are one physical LAUNCHER_V1 line each.
+            # Phase 2 stage remains a three-line SUBSHELL_V2 block.
+            local mirror="$1" topology="$2" worker_ips="${3:-}"
+            local worker_password="${WORKER_SSH_PASSWORD:-}"
+            if [[ $# -ge 4 ]]; then
+              worker_password="$4"
+            fi
+          ''',
+          '''  # Writes command text to stdout.
+            # Args: mirror topology dl_worker_ips da_worker_ips [worker_password]
+            # Uses PREPARATION_MODE from config (FULL or PHASE2_ONLY).
+            # OS-hop commands are one physical LAUNCHER_V1 line each.
+            # Phase 2 stage is shared by DL/DA and remains one SUBSHELL_V2 block.
+            local mirror="$1" topology="$2" dl_worker_ips="${3:-}" da_worker_ips="${4:-}"
+            local worker_password="${WORKER_SSH_PASSWORD:-}"
+            if [[ $# -ge 5 ]]; then
+              worker_password="$5"
+            fi
+          ''')
+          replace_once(path,
+          '''  local snap_line stage_cmd bringup_cmd prereq_cmd hop2 hop3 hop4 hop5
+          ''',
+          '''  local snap_line stage_cmd bringup_cmd dl_bringup_cmd="" da_bringup_cmd="" prereq_cmd hop2 hop3 hop4 hop5
+          ''')
+          replace_once(path,
+          '''  if [[ "$topology" == "cluster" ]]; then
+              if ! mm_validate_worker_ssh_password "$worker_password" "$worker_ips"; then
+                echo "WORKER_SSH_PASSWORD_REQUIRED=YES" >&2
+                return 1
+              fi
+              bringup_cmd="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download --worker-ips \\\"${worker_ips}\\\" --worker-password $(mm_shell_quote "$worker_password")"
+            else
+              bringup_cmd="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download"
+            fi
+          ''',
+          '''  if [[ "$topology" == "cluster" ]]; then
+              if [[ -z "$dl_worker_ips" && -z "$da_worker_ips" ]]; then
+                echo "CLUSTER_WORKER_IPS_REQUIRED=YES" >&2
+                return 1
+              fi
+              if ! mm_validate_worker_ssh_password "$worker_password" "${dl_worker_ips}${da_worker_ips}"; then
+                echo "WORKER_SSH_PASSWORD_REQUIRED=YES" >&2
+                return 1
+              fi
+              if [[ -n "$dl_worker_ips" ]]; then
+                dl_bringup_cmd="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download --worker-ips \\\"${dl_worker_ips}\\\" --worker-password $(mm_shell_quote "$worker_password")"
+              fi
+              if [[ -n "$da_worker_ips" ]]; then
+                da_bringup_cmd="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download --worker-ips \\\"${da_worker_ips}\\\" --worker-password $(mm_shell_quote "$worker_password")"
+              fi
+            else
+              bringup_cmd="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download"
+            fi
+          ''')
+
+          old_cluster_p2 = '''------------------------------------------------------------------------
+          STEP 3 — RUN DP ${ver} BRINGUP
+          ------------------------------------------------------------------------
+          
+          Run this command on the cluster master only.
+          
+          Complete the DL cluster first, then run the corresponding command on the DA master using the DA worker IPs.
+          
+          Do not include the master IP.
+          Do not mix DL and DA worker IPs in one command.
+          
+          Management IP addresses or cluster IP addresses can be used for \\`--worker-ips\\`.
+          Cluster IP addresses are recommended when they are reachable from the master because the cluster network normally provides more reliable node-to-node communication.
+          
+          Copy and paste the following entire line into the DP terminal:
+          
+          ${bringup_cmd}
+          '''
+          new_cluster_p2 = '''------------------------------------------------------------------------
+          STEP 3 — RUN DP ${ver} BRINGUP ON CLUSTER MASTERS
+          ------------------------------------------------------------------------
+          
+          STEP 2 is identical for DL and DA: run it on every master and worker first.
+          Run the bringup commands below on the corresponding cluster MASTER ONLY.
+          Do NOT run these bringup commands manually on workers.
+          
+          Management IP addresses or cluster IP addresses can be used for \\`--worker-ips\\`.
+          Cluster IP addresses are recommended when reachable from each master.
+          
+          STEP 3A — DL CLUSTER MASTER
+          ---------------------------
+          ${dl_bringup_cmd:+Copy and paste the following entire line into the DL master terminal:}
+          ${dl_bringup_cmd:-DL worker IPs are not configured; no DL cluster bringup command was generated.}
+          
+          STEP 3B — DA CLUSTER MASTER
+          ---------------------------
+          ${da_bringup_cmd:+Copy and paste the following entire line into the DA master terminal:}
+          ${da_bringup_cmd:-DA worker IPs are not configured; no DA cluster bringup command was generated.}
+          '''
+          replace_once(path, old_cluster_p2, new_cluster_p2)
+
+          old_cluster_full = '''------------------------------------------------------------------------
+          STEP 7 — RUN DP ${ver} BRINGUP
+          ------------------------------------------------------------------------
+          
+          Run STEP 7 on the cluster MASTER ONLY.
+          Do NOT run STEP 7 manually on workers when using --worker-ips.
+          The master SSHes to its workers and starts worker bringup automatically.
+          
+          Complete the DL cluster first, then run the corresponding command on the DA master using the DA worker IPs.
+          
+          Do not include the master IP.
+          Do not mix DL and DA worker IPs in one command.
+          
+          Management IP addresses or cluster IP addresses can be used for \\`--worker-ips\\`.
+          Cluster IP addresses are recommended when they are reachable from the master because the cluster network normally provides more reliable node-to-node communication.
+          
+          Copy and paste the following entire line into the DP terminal:
+          
+          ${bringup_cmd}
+          '''
+          new_cluster_full = '''------------------------------------------------------------------------
+          STEP 7 — RUN DP ${ver} BRINGUP ON CLUSTER MASTERS
+          ------------------------------------------------------------------------
+          
+          STEPS 0–6 are shared: run the same commands on every required DL/DA master and worker.
+          After STEP 6 has completed on all cluster nodes, run only the two master commands below.
+          Do NOT run STEP 7 manually on workers. Each master SSHes to its own configured workers.
+          
+          Management IP addresses or cluster IP addresses can be used for \\`--worker-ips\\`.
+          Cluster IP addresses are recommended when reachable from each master.
+          
+          STEP 7A — DL CLUSTER MASTER
+          ---------------------------
+          ${dl_bringup_cmd:+Copy and paste the following entire line into the DL master terminal:}
+          ${dl_bringup_cmd:-DL worker IPs are not configured; no DL cluster bringup command was generated.}
+          
+          STEP 7B — DA CLUSTER MASTER
+          ---------------------------
+          ${da_bringup_cmd:+Copy and paste the following entire line into the DA master terminal:}
+          ${da_bringup_cmd:-DA worker IPs are not configured; no DA cluster bringup command was generated.}
+          '''
+          replace_once(path, old_cluster_full, new_cluster_full)
+
+          # Menu 7 now consumes Configuration instead of asking topology/IPs again.
+          replace_once(path,
+          '''  local mirror topology worker_ips="" topo_choice out_file tmp title ready_gen
+          ''',
+          '''  local mirror topology dl_worker_ips="" da_worker_ips="" out_file tmp title ready_gen
+          ''')
+          start = '''  topo_choice="$(mm_whiptail_menu \\
+            "DP deployment type" \\
+            "Select the DP deployment type for bringup.
+          
+          Preparation Mode: $(mm_preparation_mode_label)
+          Supported Starting DP Versions: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0
+          Phase 2 Target: ${ver} (fixed)
+          Starting DP Version is detected automatically on the DP." \\
+            "1" "Single DP / AIO / master without workers" \\
+            "2" "Cluster master with workers")" || return 0
+            case "$topo_choice" in
+              1) topology="single" ;;
+              2)
+                topology="cluster"
+                worker_ips="$(mm_whiptail_input \\
+                  "Worker IP addresses" \\
+                  "Enter the worker IP addresses for this cluster master.
+          
+          Management IP addresses or cluster IP addresses can be used.
+          
+          Recommended:
+          Use cluster IP addresses when they are reachable from the master because the cluster network usually provides more reliable node-to-node communication.
+          
+          Enter worker IPs only.
+          Do not enter the master IP.
+          
+          Separate multiple IP addresses with commas.
+          
+          Example:
+          192.168.124.23,192.168.124.24" \\
+                  "")" || return 0
+                worker_ips="$(mm_validate_worker_ips "$worker_ips")" || {
+                  mm_whiptail_msg "Invalid worker IPs" \\
+                    "Provide a non-empty comma-separated list of valid IPv4 addresses.
+          Do not include trailing commas, duplicates, 0.0.0.0, or 255.255.255.255.
+          Shell metacharacters are not allowed."
+                  return 0
+                }
+                if ! mm_validate_worker_ssh_password "${WORKER_SSH_PASSWORD:-}" "$worker_ips"; then
+                  mm_whiptail_msg "Worker SSH Password required" \\
+                    "Set Worker SSH Password (aella) in Configuration before generating
+          cluster Phase 2 commands.
+          
+          Password used by DL/DA masters to access worker nodes during Phase 2."
+                  return 0
+                fi
+                ;;
+              *) return 0 ;;
+            esac
+          '''
+          repl = '''  dl_worker_ips="${DL_WORKER_IPS:-}"
+            da_worker_ips="${DA_WORKER_IPS:-}"
+            if [[ -n "$dl_worker_ips" ]]; then
+              dl_worker_ips="$(mm_validate_worker_ips "$dl_worker_ips")" || {
+                mm_whiptail_msg "Invalid DL Worker IPs" \\
+                  "Fix DL Worker IP addresses in Configuration, save, then reopen Menu 7."
+                return 0
+              }
+            fi
+            if [[ -n "$da_worker_ips" ]]; then
+              da_worker_ips="$(mm_validate_worker_ips "$da_worker_ips")" || {
+                mm_whiptail_msg "Invalid DA Worker IPs" \\
+                  "Fix DA Worker IP addresses in Configuration, save, then reopen Menu 7."
+                return 0
+              }
+            fi
+            if [[ -n "${dl_worker_ips}${da_worker_ips}" ]]; then
+              topology="cluster"
+              if ! mm_validate_worker_ssh_password "${WORKER_SSH_PASSWORD:-}" "${dl_worker_ips}${da_worker_ips}"; then
+                mm_whiptail_msg "Worker SSH Password required" \\
+                  "Set Worker SSH Password (aella) in Configuration before generating cluster Phase 2 commands."
+                return 0
+              fi
+            else
+              topology="single"
+            fi
+          '''
+          replace_once(path, start, repl)
+          replace_once(path,
+          '''  gui_build_client_commands "$mirror" "$topology" "$worker_ips" "${WORKER_SSH_PASSWORD:-}" >"$tmp"
+          ''',
+          '''  gui_build_client_commands "$mirror" "$topology" "$dl_worker_ips" "$da_worker_ips" "${WORKER_SSH_PASSWORD:-}" >"$tmp"
+          ''')
+
+          # -----------------------------------------------------------------
+          # Workflow validator allows one bringup (single or one cluster type)
+          # or two bringups (DL + DA cluster masters).
+          # -----------------------------------------------------------------
+          path = 'scripts/lib/mirror_workflow_state.sh'
+          old = '''      [[ "$bringup_count" -eq 1 ]] || {
+                  printf 'COMMAND_FILE_BUILD=FAIL\\n'
+                  printf 'COMMAND_FILE_BRINGUP_COUNT=%s\\n' "$bringup_count"
+                  return 1
+                }
+          '''
+          new = '''      if [[ "$bringup_count" -lt 1 || "$bringup_count" -gt 2 ]]; then
+                  printf 'COMMAND_FILE_BUILD=FAIL\\n'
+                  printf 'COMMAND_FILE_BRINGUP_COUNT=%s\\n' "$bringup_count"
+                  return 1
+                fi
+          '''
+          p = Path(path)
+          text = p.read_text()
+          if text.count(old) != 2:
+              raise SystemExit(f"{path}: expected 2 bringup-count guards, got {text.count(old)}")
+          p.write_text(text.replace(old, new))
+
+          # Include command-routing config in generation identity.
+          replace_once(path,
+          '''    # Include only when set so existing AIO configs keep their identity hash.
+              if [[ -n "${WORKER_SSH_PASSWORD:-}" ]]; then
+                printf 'WORKER_SSH_PASSWORD_SHA256=%s\\n' \\
+                  "$(printf '%s' "${WORKER_SSH_PASSWORD}" | sha256sum | awk '{print $1}')"
+              fi
+          ''',
+          '''    # Include cluster command-routing inputs only when set so existing AIO
+              # configs keep their identity hash.
+              if [[ -n "${WORKER_SSH_PASSWORD:-}" ]]; then
+                printf 'WORKER_SSH_PASSWORD_SHA256=%s\\n' \\
+                  "$(printf '%s' "${WORKER_SSH_PASSWORD}" | sha256sum | awk '{print $1}')"
+              fi
+              [[ -n "${DL_WORKER_IPS:-}" ]] && printf 'DL_WORKER_IPS=%s\\n' "${DL_WORKER_IPS}"
+              [[ -n "${DA_WORKER_IPS:-}" ]] && printf 'DA_WORKER_IPS=%s\\n' "${DA_WORKER_IPS}"
+          ''')
+
+          # -----------------------------------------------------------------
+          # README operator contract
+          # -----------------------------------------------------------------
+          path = 'README.md'
+          replace_once(path,
+          '''Required operator inputs:
+          
+          - Preparation Mode
+          - Mirror Server IP
+          - ACPS Username
+          - ACPS Password
+          ''',
+          '''Required operator inputs:
+          
+          - Preparation Mode
+          - Mirror Server IP
+          - ACPS Username
+          - ACPS Password
+          
+          Cluster configuration is also entered here once:
+          
+          - **DL Worker IP addresses** — worker IPs only; do not include the DL master
+          - **DA Worker IP addresses** — worker IPs only; do not include the DA master
+          - **Worker SSH Password (aella)** — required when either worker list is configured
+          
+          Leave both worker-IP fields empty for a single DP / AIO / master without workers.
+          ''')
+          replace_once(path,
+          '''Menu 7 asks whether the target is:
+          
+          - **Single DP / AIO / master without workers**, or
+          - **Cluster master with workers**
+          
+          For a cluster, enter **worker IP addresses only**. Do not include the master IP and do not mix DL and DA worker IPs in one command. Management IPs or cluster IPs can be used; cluster IPs are recommended when reachable from the master.
+          
+          For clustered deployments, complete the DL cluster first, then run the corresponding process on the DA master with the DA worker IPs.
+          ''',
+          '''Menu 7 uses the DL/DA worker lists saved in **Configuration**; it no longer asks for worker IPs again.
+          
+          For clustered deployments, **STEPS 0–6 are the same commands for all required DL/DA masters and workers**. After STEP 6 is complete everywhere, STEP 7 prints two separate bringup commands:
+          
+          - **STEP 7A — DL CLUSTER MASTER** — uses only the configured DL worker IPs
+          - **STEP 7B — DA CLUSTER MASTER** — uses only the configured DA worker IPs
+          
+          Run STEP 7A on the DL master and STEP 7B on the DA master. Do not run STEP 7 manually on workers; each master uses `--worker-ips` to start bringup on its own workers.
+          ''')
+
+          # -----------------------------------------------------------------
+          # Focused regression tests
+          # -----------------------------------------------------------------
+          path = 'tests/test_gui_client_commands.sh'
+          p = Path(path)
+          text = p.read_text()
+          text = text.replace('"5" "Worker SSH Password (aella)"', '"7" "Worker SSH Password (aella)"')
+          text = text.replace("grep -q 'Password used by DL/DA masters to access worker nodes during Phase 2'", "grep -q 'Password used by DL/DA masters to access worker nodes during Phase 2'")
+          text = text.replace('gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23,192.168.124.25" \\\n  "customer-password"', 'gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23,192.168.124.25" "" \\\n  "customer-password"')
+          text = text.replace('gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.24,192.168.124.26" \\\n  "customer-password"', 'gui_build_client_commands "http://192.0.2.10" "cluster" "" "192.168.124.24,192.168.124.26" \\\n  "customer-password"')
+          text = text.replace('gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23" "" \\\n  >"$TMP/cluster-nopass.txt"', 'gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23" "" "" \\\n  >"$TMP/cluster-nopass.txt"')
+          text = text.replace('gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23" \\\n    "$spec_pass"', 'gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23" "" \\\n    "$spec_pass"')
+          p.write_text(text)
+
+          replace_once(path,
+          '''grep -q '\"7\" \"Worker SSH Password (aella)\"' "$INSTALLER" \\
+            || fail "Worker SSH Password menu item missing"
+          ''',
+          '''grep -q '\"5\" \"DL Worker IP addresses\"' "$INSTALLER" || fail "DL Worker IP menu item missing"
+          grep -q '\"6\" \"DA Worker IP addresses\"' "$INSTALLER" || fail "DA Worker IP menu item missing"
+          grep -q '\"7\" \"Worker SSH Password (aella)\"' "$INSTALLER" \\
+            || fail "Worker SSH Password menu item missing"
+          ''')
+
+          replace_once(path,
+          '''WORKER_SSH_PASSWORD='customer-password'
+          mm_save_gui_config >/dev/null
+          grep -q 'WORKER_SSH_PASSWORD=' "$MM_CONFIG_FILE" || fail "WORKER_SSH_PASSWORD not written"
+          WORKER_SSH_PASSWORD=""
+          mm_load_gui_config
+          [[ "$WORKER_SSH_PASSWORD" == "customer-password" ]] || fail "worker password not reloaded: ${WORKER_SSH_PASSWORD}"
+          ''',
+          '''WORKER_SSH_PASSWORD='customer-password'
+          DL_WORKER_IPS='192.168.124.23,192.168.124.25'
+          DA_WORKER_IPS='192.168.124.24,192.168.124.26'
+          mm_save_gui_config >/dev/null
+          grep -q 'WORKER_SSH_PASSWORD=' "$MM_CONFIG_FILE" || fail "WORKER_SSH_PASSWORD not written"
+          grep -q 'DL_WORKER_IPS=' "$MM_CONFIG_FILE" || fail "DL_WORKER_IPS not written"
+          grep -q 'DA_WORKER_IPS=' "$MM_CONFIG_FILE" || fail "DA_WORKER_IPS not written"
+          WORKER_SSH_PASSWORD=""
+          DL_WORKER_IPS=""
+          DA_WORKER_IPS=""
+          mm_load_gui_config
+          [[ "$WORKER_SSH_PASSWORD" == "customer-password" ]] || fail "worker password not reloaded: ${WORKER_SSH_PASSWORD}"
+          [[ "$DL_WORKER_IPS" == '192.168.124.23,192.168.124.25' ]] || fail "DL worker IPs not reloaded"
+          [[ "$DA_WORKER_IPS" == '192.168.124.24,192.168.124.26' ]] || fail "DA worker IPs not reloaded"
+          ''')
+
+          # Dual DL+DA generation in one command file.
+          marker = 'pass "DA worker-ips/password argv verified"\n'
+          insert = '''pass "DA worker-ips/password argv verified"
+          
+          # DL and DA cluster commands are emitted together from one configuration.
+          DUAL_OUT="$TMP/cluster-dual.txt"
+          gui_build_client_commands "http://192.0.2.10" "cluster" \\
+            "192.168.124.23,192.168.124.25" "192.168.124.24,192.168.124.26" \\
+            "customer-password" >"$DUAL_OUT"
+          [[ "$(grep -c 'bringup_py3_dp_after_os_upgrade.sh' "$DUAL_OUT")" -eq 2 ]] \\
+            || fail "dual cluster output must contain exactly two bringup commands"
+          grep -q 'STEP 7A — DL CLUSTER MASTER' "$DUAL_OUT" || fail "STEP 7A missing"
+          grep -q 'STEP 7B — DA CLUSTER MASTER' "$DUAL_OUT" || fail "STEP 7B missing"
+          grep -q -- '--worker-ips "192.168.124.23,192.168.124.25"' "$DUAL_OUT" || fail "dual DL worker list missing"
+          grep -q -- '--worker-ips "192.168.124.24,192.168.124.26"' "$DUAL_OUT" || fail "dual DA worker list missing"
+          pass "dual DL/DA cluster bringup commands"
+          '''
+          replace_once(path, marker, insert)
+
+          # Rewrite Menu 7 expectations: no topology or worker-IP prompt anymore.
+          replace_once(path,
+          '''# Menu 7: topology first; version input count=0; full instructions textbox direct
+          ''',
+          '''# Menu 7: consumes saved DL/DA worker configuration; no topology/IP prompt.
+          ''')
+          replace_once(path,
+          '''mm_whiptail_menu() {
+            printf 'MENU\\t%s\\n' "$1" >>"$MENU7_TRACE"
+            case "$1" in
+              "DP deployment type") printf '1\\n' ;;  # single
+              *" — view"*) fail "secondary viewer menu must not appear: $1" ;;
+              *) fail "unexpected menu after topology: $1" ;;
+            esac
+          }
+          ''',
+          '''mm_whiptail_menu() {
+            printf 'MENU\\t%s\\n' "$1" >>"$MENU7_TRACE"
+            fail "Menu 7 must not ask topology or worker IPs: $1"
+          }
+          ''')
+          replace_once(path,
+          '''grep -q $'MENU\\tDP deployment type' "$MENU7_TRACE" || fail "first menu7 prompt not topology"
+          ''',
+          '''grep -q $'MENU\\tDP deployment type' "$MENU7_TRACE" && fail "Menu 7 still asks topology" || true
+          ''')
+
+          # Basic syntax before tests.
+          PY
+
+          bash -n scripts/install-dp-upgrade-mirror.sh
+          bash -n scripts/lib/mirror_manager_common.sh
+          bash -n scripts/lib/mirror_workflow_state.sh
+          bash -n lib/bootstrap.sh
+          git diff --check
+
+          bash tests/test_gui_client_commands.sh
+          bash tests/test_menu7_normal_width_display.sh
+
+      - name: Commit changes
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "Rick Lee"
+          git config user.email "rick@rick.kr"
+          git add README.md lib/bootstrap.sh scripts/install-dp-upgrade-mirror.sh scripts/lib/mirror_manager_common.sh scripts/lib/mirror_workflow_state.sh tests/test_gui_client_commands.sh
+          git commit -m "feat(gui): configure DL and DA worker lists separately"
+          git push
