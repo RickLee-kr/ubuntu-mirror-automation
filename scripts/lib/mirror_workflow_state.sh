@@ -218,6 +218,11 @@ mm_wf_config_sha256() {
     else
       printf 'ACPS_PASSWORD_SHA256=\n'
     fi
+    # Include only when set so existing AIO configs keep their identity hash.
+    if [[ -n "${WORKER_SSH_PASSWORD:-}" ]]; then
+      printf 'WORKER_SSH_PASSWORD_SHA256=%s\n' \
+        "$(printf '%s' "${WORKER_SSH_PASSWORD}" | sha256sum | awk '{print $1}')"
+    fi
   ) | sha256sum | awk '{print $1}'
 }
 

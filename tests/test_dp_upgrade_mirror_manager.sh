@@ -66,8 +66,16 @@ ensure_upstream_bytes() {
   local dest="$1"
   if make_upstream_bringup "$dest"; then return 0; fi
   mkdir -p "${WORKDIR}/vendor/dp-phase2"
-  printf 'SYNTHETIC_UPSTREAM_BRINGUP_FOR_MIRROR_MANAGER_TEST\n' \
-    >"${WORKDIR}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.body"
+  # Compatible synthetic upstream: valid bash plus the patch anchors the
+  # engine requires. A one-line dummy would fail BRINGUP_PATCH_COMPAT.
+  cat >"${WORKDIR}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.body" <<'EOF'
+#!/bin/bash
+parse_args() { :; }
+orchestrate_workers() { :; }
+load_local_images() {
+  ctr -n=k8s.io images import "$1"
+}
+EOF
   cp -f "${WORKDIR}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.body" "$dest"
   sha1sum "$dest" | awk '{print $1"  bringup_py3_dp_after_os_upgrade.sh"}' \
     >"${WORKDIR}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1"
@@ -566,11 +574,12 @@ set -e
 [[ "$rc_auth" -ne 0 ]] && pass "G ACPS auth fail" || fail "G auth"
 echo "$out_auth" | grep -qi 'testpass' && fail "F secret leaked" || pass "F no secret in output"
 
-echo "======== I. upstream drift ========"
+echo "======== I. legitimate upstream SHA change is non-blocking ========"
 kill "$HTTP_PID" 2>/dev/null || true; wait "$HTTP_PID" 2>/dev/null || true; HTTP_PID=""
 kill "$R2_PID" 2>/dev/null || true; wait "$R2_PID" 2>/dev/null || true; R2_PID=""
 ACPS_DRIFT="${WORKDIR}/acps-drift"; cp -a "$ACPS_ROOT" "$ACPS_DRIFT"
-printf 'DRIFTED_UPSTREAM_CONTENT\n' >"${ACPS_DRIFT}/bringup_py3_dp_after_os_upgrade.sh"
+# Valid ACPS bringup whose SHA differs from the reference, with matching sidecar.
+cp -f "$PATCHED_BRINGUP" "${ACPS_DRIFT}/bringup_py3_dp_after_os_upgrade.sh"
 sha1sum "${ACPS_DRIFT}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}' \
   >"${ACPS_DRIFT}/bringup_py3_dp_after_os_upgrade.sh.sha1"
 start_r2 "$R2_ROOT2"
@@ -587,10 +596,14 @@ seed_client_files "$MM_CLIENT_ROOT"
 set +e
 out_drift="$(run_prepare 2>&1)"; rc_drift=$?
 set -e
-[[ "$rc_drift" -ne 0 ]] && echo "$out_drift" | grep -q 'UPSTREAM_BRINGUP_DRIFT=YES' \
-  && pass "I upstream drift" || fail "I drift"
-[[ ! -f "${WORKDIR}/mirror-drift/dp-phase2/6.5.0/dp_bundle_6.5.0-current.tar" ]] \
-  && pass "I no final bundle" || fail "I bundle published on drift"
+[[ "$rc_drift" -eq 0 ]] && echo "$out_drift" | grep -q 'UPSTREAM_BRINGUP_DRIFT=NON_BLOCKING' \
+  && pass "I legitimate upstream change continues" || fail "I drift should be non-blocking"
+echo "$out_drift" | grep -q 'INSTALL_RESULT=FAIL' && fail "I INSTALL_RESULT=FAIL on SHA change" \
+  || pass "I no INSTALL_RESULT=FAIL on SHA change"
+echo "$out_drift" | grep -q 'UPSTREAM_BRINGUP_DRIFT=YES' && fail "I blocking DRIFT=YES" \
+  || pass "I no blocking DRIFT=YES"
+[[ -f "${WORKDIR}/mirror-drift/dp-phase2/6.5.0/dp_bundle_6.5.0-current.tar" ]] \
+  && pass "I final bundle published after SHA change" || fail "I bundle missing after SHA change"
 
 echo "======== G resume ========"
 kill "$HTTP_PID" 2>/dev/null || true; wait "$HTTP_PID" 2>/dev/null || true; HTTP_PID=""

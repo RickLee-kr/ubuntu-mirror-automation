@@ -61,6 +61,8 @@ TEST_LIST=(
   test_dp_phase2_process_detect.sh
   test_dp_upgrade_mirror_manager.sh
   test_gui_client_commands.sh
+  test_bringup_worker_password.sh
+  test_bringup_acps_sha_policy.sh
   test_mirror_download_and_space_regressions.sh
   test_phase2_bundle_reuse_disk.sh
   test_mirror_long_step_progress.sh

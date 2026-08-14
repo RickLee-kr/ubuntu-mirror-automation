@@ -55,8 +55,50 @@ mm_validate_worker_ips '' >/dev/null 2>&1 && fail "empty worker ips accepted" ||
 mm_validate_worker_ips '192.168.1.1;rm -rf /' >/dev/null 2>&1 && fail "metachar accepted" || true
 pass "worker IP validation"
 
+mm_validate_worker_ssh_password '' '' \
+  || fail "empty password should be allowed with no worker IPs"
+mm_validate_worker_ssh_password '' '192.168.124.23' \
+  && fail "empty password accepted with worker IPs" || true
+mm_validate_worker_ssh_password 'customer-password' '192.168.124.23' \
+  || fail "non-empty password rejected with worker IPs"
+mm_validate_worker_ssh_password 'Abc$123!' '192.168.124.23,192.168.124.25' \
+  || fail "special-character password rejected"
+pass "worker SSH password validation"
+
+# Persist / reload / update worker password
+PREPARATION_MODE=FULL
+ACPS_USERNAME=u
+ACPS_PASSWORD=p
+MIRROR_HTTP_URL="http://192.0.2.10"
+WORKER_SSH_PASSWORD='customer-password'
+mm_save_gui_config >/dev/null
+grep -q 'WORKER_SSH_PASSWORD=' "$MM_CONFIG_FILE" || fail "WORKER_SSH_PASSWORD not written"
+WORKER_SSH_PASSWORD=""
+mm_load_gui_config
+[[ "$WORKER_SSH_PASSWORD" == "customer-password" ]] || fail "worker password not reloaded: ${WORKER_SSH_PASSWORD}"
+WORKER_SSH_PASSWORD='Abc$123!'
+mm_save_gui_config >/dev/null
+WORKER_SSH_PASSWORD=""
+mm_load_gui_config
+[[ "$WORKER_SSH_PASSWORD" == 'Abc$123!' ]] || fail "updated worker password not reloaded: ${WORKER_SSH_PASSWORD}"
+# Empty password remains allowed when no worker IPs are configured.
+WORKER_SSH_PASSWORD=""
+rm -f "$MM_CONFIG_FILE"
+ACPS_USERNAME=u
+ACPS_PASSWORD=p
+MIRROR_HTTP_URL="http://192.0.2.10"
+mm_save_gui_config >/dev/null
+WORKER_SSH_PASSWORD="stale"
+mm_load_gui_config
+[[ -z "${WORKER_SSH_PASSWORD}" ]] || fail "empty worker password not reloaded as empty"
+pass "worker SSH password save/reload/update"
+
 # --- Configuration: Preparation Mode only; no DP version fields ---
 grep -q '"1" "Preparation Mode"' "$INSTALLER" || fail "Preparation Mode menu missing"
+grep -q '"5" "Worker SSH Password (aella)"' "$INSTALLER" \
+  || fail "Worker SSH Password menu item missing"
+grep -q 'Password used by DL/DA masters to access worker nodes during Phase 2' "$INSTALLER" \
+  || fail "Worker SSH Password help text missing"
 grep -qE 'Current DP Version|Starting DP Version"|Target DP Version|"DP Version"' "$INSTALLER" \
   && fail "DP version config fields still present" || true
 footer="$(mm_config_footer_text)"
@@ -75,6 +117,7 @@ pass "Configuration uses Preparation Mode + exact footer"
 config_text="Preparation Mode: Full OS Upgrade + Phase 2
 ACPS Username: configured
 ACPS Password: configured
+Worker SSH Password (aella): configured
 ACPS Server: Fixed
 OS Core Source: Cloudflare R2
 
@@ -84,13 +127,13 @@ config_text_lines="$(printf '%b' "$config_text" | wc -l)"
 # mm_term_size normally overwrites HEIGHT/WIDTH via tput; pin sizes for this check.
 mm_term_size() { :; }
 HEIGHT=50 WIDTH=140
-read -r cfg_h cfg_w cfg_list <<<"$(mm_calc_menu_size 6 74 8 "${config_text_lines}")"
+read -r cfg_h cfg_w cfg_list <<<"$(mm_calc_menu_size 7 74 8 "${config_text_lines}")"
 # Whiptail text rows ≈ dialog_height - list_height - chrome(10).
 cfg_text_rows=$((cfg_h - cfg_list - 10))
 [[ "$cfg_text_rows" -ge "$config_text_lines" ]] \
   || fail "config menu text rows ${cfg_text_rows} < footer block ${config_text_lines} (h=${cfg_h} list=${cfg_list})"
 HEIGHT=40 WIDTH=100
-read -r cfg_h cfg_w cfg_list <<<"$(mm_calc_menu_size 6 74 8 "${config_text_lines}")"
+read -r cfg_h cfg_w cfg_list <<<"$(mm_calc_menu_size 7 74 8 "${config_text_lines}")"
 cfg_text_rows=$((cfg_h - cfg_list - 10))
 [[ "$cfg_text_rows" -ge "$config_text_lines" ]] \
   || fail "mid-term config menu clips footer (rows=${cfg_text_rows} need=${config_text_lines} h=${cfg_h} list=${cfg_list})"
@@ -219,32 +262,82 @@ do
 done
 pass "forbidden strings absent"
 
-# Cluster bringup
-CLUSTER_OUT="$TMP/cluster.txt"
+# Cluster bringup: DL master workers + worker password
+CLUSTER_OUT="$TMP/cluster-dl.txt"
 PREPARATION_MODE=FULL
-gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23,192.168.124.24" \
-  >"$CLUSTER_OUT"
-grep -q -- '--worker-ips "192.168.124.23,192.168.124.24"' "$CLUSTER_OUT" || fail "worker ips missing"
+WORKER_SSH_PASSWORD='customer-password'
+gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23,192.168.124.25" \
+  "customer-password" >"$CLUSTER_OUT"
+grep -q -- '--worker-ips "192.168.124.23,192.168.124.25"' "$CLUSTER_OUT" || fail "DL worker ips missing"
+grep -q -- '--worker-password' "$CLUSTER_OUT" || fail "DL --worker-password missing"
 grep -q 'Cluster IP addresses are recommended' "$CLUSTER_OUT" || fail "cluster IP recommendation missing"
 grep -q 'Management IP addresses or cluster IP addresses can be used' "$CLUSTER_OUT" || fail "mgmt/cluster IP support missing"
-pass "cluster bringup command"
+pass "DL cluster bringup command"
 
-bringup_line="$(grep -E 'bringup_py3_dp_after_os_upgrade\.sh' "$CLUSTER_OUT" | head -1)"
-STUB="$TMP/bringup_stub.sh"
-STUB_ARGV_FILE="$TMP/bringup.argv"
-cat >"$STUB" <<'EOF'
+assert_bringup_argv() {
+  local line="$1" expect_ips="$2" expect_pass="$3"
+  local stub stub_argv stub_args
+  stub="$TMP/bringup_stub.sh"
+  stub_argv="$TMP/bringup.argv"
+  cat >"$stub" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >"${STUB_ARGV_FILE}"
 EOF
-chmod +x "$STUB"
-stub_args="$(printf '%s\n' "$bringup_line" | sed -E 's|^sudo bash [^ ]+bringup_py3_dp_after_os_upgrade\.sh[[:space:]]*||')"
-# shellcheck disable=SC2086
-STUB_ARGV_FILE="$STUB_ARGV_FILE" eval "\"$STUB\" $stub_args"
-mapfile -t ARGV <"$STUB_ARGV_FILE"
-[[ "${ARGV[0]}" == "--version" && "${ARGV[1]}" == "6.5.0" ]] || fail "bringup version wrong"
-[[ "${ARGV[3]}" == "--worker-ips" ]] || fail "argv --worker-ips missing"
-[[ "${ARGV[4]}" == "192.168.124.23,192.168.124.24" ]] || fail "argv worker csv not one arg"
-pass "worker-ips argv verified as single CSV argument"
+  chmod +x "$stub"
+  stub_args="$(printf '%s\n' "$line" | sed -E 's|^sudo bash [^ ]+bringup_py3_dp_after_os_upgrade\.sh[[:space:]]*||')"
+  STUB_ARGV_FILE="$stub_argv" eval "\"$stub\" $stub_args"
+  mapfile -t ARGV <"$stub_argv"
+  [[ "${ARGV[0]}" == "--version" && "${ARGV[1]}" == "6.5.0" ]] || fail "bringup version wrong: ${ARGV[*]}"
+  [[ "${ARGV[2]}" == "--skip-download" ]] || fail "skip-download missing: ${ARGV[*]}"
+  if [[ -n "$expect_ips" ]]; then
+    [[ "${ARGV[3]}" == "--worker-ips" ]] || fail "argv --worker-ips missing: ${ARGV[*]}"
+    [[ "${ARGV[4]}" == "$expect_ips" ]] || fail "argv worker csv not one arg: ${ARGV[4]}"
+    [[ "${ARGV[5]}" == "--worker-password" ]] || fail "argv --worker-password missing: ${ARGV[*]}"
+    [[ "${ARGV[6]}" == "$expect_pass" ]] || fail "argv password mismatch: ${ARGV[6]}"
+  else
+    printf '%s\n' "${ARGV[@]}" | grep -qx -- '--worker-ips' && fail "unexpected --worker-ips" || true
+    printf '%s\n' "${ARGV[@]}" | grep -qx -- '--worker-password' && fail "unexpected --worker-password" || true
+  fi
+}
+
+bringup_line="$(grep -E 'bringup_py3_dp_after_os_upgrade\.sh' "$CLUSTER_OUT" | head -1)"
+assert_bringup_argv "$bringup_line" "192.168.124.23,192.168.124.25" "customer-password"
+pass "DL worker-ips/password argv verified"
+
+# DA master workers use the same configured password
+DA_OUT="$TMP/cluster-da.txt"
+gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.24,192.168.124.26" \
+  "customer-password" >"$DA_OUT"
+grep -q -- '--worker-ips "192.168.124.24,192.168.124.26"' "$DA_OUT" || fail "DA worker ips missing"
+da_line="$(grep -E 'bringup_py3_dp_after_os_upgrade\.sh' "$DA_OUT" | head -1)"
+assert_bringup_argv "$da_line" "192.168.124.24,192.168.124.26" "customer-password"
+pass "DA worker-ips/password argv verified"
+
+# No workers: no --worker-ips / --worker-password
+SINGLE_BRINGUP="$(grep -E 'bringup_py3_dp_after_os_upgrade\.sh' "$OUT" | head -1)"
+assert_bringup_argv "$SINGLE_BRINGUP" "" ""
+pass "single-node bringup omits worker flags"
+
+# Cluster without password is rejected
+set +e
+gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23" "" \
+  >"$TMP/cluster-nopass.txt" 2>"$TMP/cluster-nopass.err"
+nopass_rc=$?
+set -e
+[[ "$nopass_rc" -ne 0 ]] || fail "cluster without password should fail"
+grep -q 'WORKER_SSH_PASSWORD_REQUIRED=YES' "$TMP/cluster-nopass.err" \
+  || fail "missing WORKER_SSH_PASSWORD_REQUIRED"
+pass "cluster without password rejected"
+
+# Special-character passwords survive generated command eval
+for spec_pass in 'Test123!' 'Abc$123!' 'worker@Pass#2026' 'A&b!c$123'; do
+  spec_out="$TMP/cluster-spec.txt"
+  gui_build_client_commands "http://192.0.2.10" "cluster" "192.168.124.23" \
+    "$spec_pass" >"$spec_out"
+  spec_line="$(grep -E 'bringup_py3_dp_after_os_upgrade\.sh' "$spec_out" | head -1)"
+  assert_bringup_argv "$spec_line" "192.168.124.23" "$spec_pass"
+done
+pass "special-character worker passwords preserved in generated command"
 
 # Config save: PREPARATION_MODE, no TARGET_DP_VERSION / CURRENT
 PREPARATION_MODE=FULL

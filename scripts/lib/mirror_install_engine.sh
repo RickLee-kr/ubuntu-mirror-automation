@@ -727,46 +727,148 @@ engine_materialize_os_mirror() {
   mm_ok "OS_MIRROR_MATERIALIZE=PASS path=${MM_SELECTIVE_ROOT}"
 }
 
+# SHA1 of a bringup file. Tests may override to simulate a specific digest.
+engine_bringup_sha1_of() {
+  sha1sum "$1" | awk '{print $1}'
+}
+
+# Previously known unmodified ACPS bringup SHA1. Observability / change
+# detection only — never a production blocking gate.
+engine_bringup_reference_sha1() {
+  local baseline="${MM_PROJECT_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1"
+  [[ -f "$baseline" ]] || mm_die "UPSTREAM_BASELINE_MISSING path=${baseline}"
+  awk '{print $1; exit}' "$baseline"
+}
+
+# Source constructs the local patch path depends on. Missing => incompatible
+# upstream layout (fatal), distinct from reference-SHA drift (warning).
+engine_bringup_required_upstream_anchors() {
+  printf '%s\n' \
+    'parse_args()' \
+    'orchestrate_workers()' \
+    'load_local_images()' \
+    'images import'
+}
+
+# Markers that must be present after the local patched copy is applied.
+# A no-op replacement that leaves these out is a patch failure, not drift.
+engine_bringup_required_patch_result_markers() {
+  printf '%s\n' \
+    '# BEGIN_IMAGE_IMPORT_HEARTBEAT' \
+    'run_image_import_with_heartbeat' \
+    'emit_dp_resume_notice_line'
+}
+
+engine_bringup_fail() {
+  local event="$1"
+  mm_error "${event}=FAIL"
+  mm_error "INSTALL_RESULT=FAIL"
+  mm_state_set HTTP_DISTRIBUTION_READY NO
+  mm_die "${event}=FAIL"
+}
+
+engine_bringup_require_nonempty() {
+  local file="$1"
+  [[ -f "$file" ]] || engine_bringup_fail "UPSTREAM_BRINGUP_MISSING"
+  [[ -s "$file" ]] || engine_bringup_fail "UPSTREAM_BRINGUP_EMPTY"
+}
+
+engine_bringup_require_bash_n() {
+  local file="$1" event="$2"
+  if ! bash -n "$file" >/dev/null 2>&1; then
+    engine_bringup_fail "$event"
+  fi
+  mm_ok "${event}=PASS"
+}
+
+engine_bringup_require_markers() {
+  local file="$1" event="$2"
+  shift 2
+  local missing=() marker
+  for marker in "$@"; do
+    grep -qF -- "$marker" "$file" || missing+=("$marker")
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    mm_error "${event}=FAIL"
+    mm_error "${event}_MISSING=${missing[*]}"
+    mm_error "INSTALL_RESULT=FAIL"
+    mm_state_set HTTP_DISTRIBUTION_READY NO
+    mm_die "${event}=FAIL"
+  fi
+  mm_ok "${event}=PASS"
+}
+
+# Authoritative integrity check: downloaded bytes vs current ACPS .sha1 sidecar.
+engine_verify_acps_bringup_sidecar() {
+  local files_dir="$1"
+  local upstream_file="${files_dir}/bringup_py3_dp_after_os_upgrade.sh"
+  local sidecar="${files_dir}/bringup_py3_dp_after_os_upgrade.sh.sha1"
+  local expected actual
+  engine_bringup_require_nonempty "$upstream_file"
+  [[ -f "$sidecar" ]] || engine_bringup_fail "ACPS_BRINGUP_SIDECAR_MISSING"
+  expected="$(dp2_read_hash_field "$sidecar")"
+  dp2_validate_sha1_hex "$expected" || engine_bringup_fail "ACPS_BRINGUP_SIDECAR_FORMAT"
+  actual="$(engine_bringup_sha1_of "$upstream_file")"
+  if [[ "${expected,,}" != "${actual,,}" ]]; then
+    mm_error "ACPS_BRINGUP_CHECKSUM=FAIL"
+    mm_error "ACPS_BRINGUP_EXPECTED_SHA1=${expected}"
+    mm_error "ACPS_BRINGUP_ACTUAL_SHA1=${actual}"
+    mm_error "INSTALL_RESULT=FAIL"
+    mm_state_set HTTP_DISTRIBUTION_READY NO
+    mm_die "ACPS_BRINGUP_CHECKSUM=FAIL"
+  fi
+  BRINGUP_UPSTREAM_SHA1="$actual"
+  mm_ok "ACPS_BRINGUP_CHECKSUM=PASS sha1=${actual}"
+}
+
 engine_verify_acps_upstream_bringup() {
   local files_dir="$1"
-  local baseline="${MM_PROJECT_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1"
   local upstream_file="${files_dir}/bringup_py3_dp_after_os_upgrade.sh"
-  [[ -f "$baseline" ]] || mm_die "UPSTREAM_BASELINE_MISSING path=${baseline}"
-  [[ -f "$upstream_file" ]] || mm_die "UPSTREAM_BRINGUP_MISSING"
-  local expected actual
-  expected="$(awk '{print $1; exit}' "$baseline")"
-  actual="$(sha1sum "$upstream_file" | awk '{print $1}')"
-  if [[ "${expected,,}" != "${actual,,}" ]]; then
-    mm_error "UPSTREAM_BRINGUP_DRIFT=YES"
-    mm_error "EXPECTED_UPSTREAM_SHA1=${expected}"
-    mm_error "ACTUAL_UPSTREAM_SHA1=${actual}"
-    mm_error "HTTP_DISTRIBUTION_READY=NO"
-    mm_error "INSTALL_RESULT=FAIL"
-    mm_state_set UPSTREAM_BRINGUP_DRIFT YES
-    mm_state_set HTTP_DISTRIBUTION_READY NO
-    mm_die "UPSTREAM_BRINGUP_DRIFT=YES"
+  local reference actual
+  local anchors=()
+
+  engine_verify_acps_bringup_sidecar "$files_dir"
+  actual="${BRINGUP_UPSTREAM_SHA1}"
+  reference="$(engine_bringup_reference_sha1)"
+
+  if [[ "${reference,,}" != "${actual,,}" ]]; then
+    mm_warn "UPSTREAM_BRINGUP_CHANGED=YES"
+    mm_info "PREVIOUS_KNOWN_SHA1=${reference}"
+    mm_info "CURRENT_UPSTREAM_SHA1=${actual}"
+    mm_warn "UPSTREAM_BRINGUP_DRIFT=NON_BLOCKING"
+    mm_state_set UPSTREAM_BRINGUP_DRIFT NON_BLOCKING
+  else
+    mm_state_set UPSTREAM_BRINGUP_DRIFT NO
+    mm_ok "VERIFY_ACPS_UPSTREAM=PASS sha1=${actual}"
   fi
-  mm_state_set UPSTREAM_BRINGUP_DRIFT NO
-  BRINGUP_UPSTREAM_SHA1="$actual"
-  mm_ok "VERIFY_ACPS_UPSTREAM=PASS sha1=${actual}"
+
+  engine_bringup_require_bash_n "$upstream_file" "UPSTREAM_BRINGUP_SYNTAX"
+  mapfile -t anchors < <(engine_bringup_required_upstream_anchors)
+  engine_bringup_require_markers "$upstream_file" "BRINGUP_PATCH_COMPAT" "${anchors[@]}"
 }
 
 engine_apply_local_bringup_patch() {
   local files_dir="$1"
   local patched="${MM_PROJECT_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh"
+  local dest="${files_dir}/bringup_py3_dp_after_os_upgrade.sh"
+  local markers=()
+  local want
   [[ -f "$patched" ]] || mm_die "LOCAL_PATCHED_BRINGUP_MISSING"
   if [[ "${MM_DRY_RUN}" == "1" ]]; then
     mm_info "DRY_RUN skip apply_local_bringup_patch"
     return 0
   fi
   mm_set_phase "Preparing Patched Bringup Script"
-  cp -f "$patched" "${files_dir}/bringup_py3_dp_after_os_upgrade.sh"
-  sha1sum "${files_dir}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}' \
-    >"${files_dir}/bringup_py3_dp_after_os_upgrade.sh.sha1"
-  BRINGUP_PATCHED_SHA1="$(sha1sum "${files_dir}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
-  local want
+  cp -f "$patched" "$dest" || engine_bringup_fail "BRINGUP_PATCH_APPLY"
+  sha1sum "$dest" | awk '{print $1}' >"${dest}.sha1"
+  BRINGUP_PATCHED_SHA1="$(sha1sum "$dest" | awk '{print $1}')"
   want="$(sha1sum "$patched" | awk '{print $1}')"
-  [[ "${BRINGUP_PATCHED_SHA1,,}" == "${want,,}" ]] || mm_die "PATCHED_BRINGUP_SHA1=FAIL"
+  if [[ "${BRINGUP_PATCHED_SHA1,,}" != "${want,,}" ]]; then
+    engine_bringup_fail "PATCHED_BRINGUP_SHA1"
+  fi
+  mapfile -t markers < <(engine_bringup_required_patch_result_markers)
+  engine_bringup_require_markers "$dest" "BRINGUP_PATCH_RESULT" "${markers[@]}"
+  engine_bringup_require_bash_n "$dest" "PATCHED_BRINGUP_SYNTAX"
   mm_state_set PATCHED_BRINGUP_APPLIED YES
   mm_ok "PATCHED_BRINGUP_APPLIED=YES sha1=${BRINGUP_PATCHED_SHA1}"
 }
@@ -1403,7 +1505,8 @@ engine_compute_readiness() {
     v="$(mm_status_get "$k")"
     case "$k" in
       UPSTREAM_BRINGUP_DRIFT)
-        [[ "$v" == "NO" ]] || all=FAIL
+        # NO = unchanged vs reference; NON_BLOCKING = changed but ACPS sidecar OK.
+        [[ "$v" == "NO" || "$v" == "NON_BLOCKING" ]] || all=FAIL
         ;;
       PHASE2_BUNDLE_ENTRY_COUNT)
         [[ "$v" == "9" ]] || all=FAIL

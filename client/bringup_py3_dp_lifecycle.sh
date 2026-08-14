@@ -97,9 +97,9 @@ parse_args() {
         usage
         exit 0
         ;;
-      --skip-download|--worker-ips|--dry-run)
+      --skip-download|--worker-ips|--worker-password|--dry-run)
         PASSTHRU+=("$1")
-        if [[ "$1" == "--worker-ips" ]]; then
+        if [[ "$1" == "--worker-ips" || "$1" == "--worker-password" ]]; then
           PASSTHRU+=("${2:-}")
           shift 2
         else

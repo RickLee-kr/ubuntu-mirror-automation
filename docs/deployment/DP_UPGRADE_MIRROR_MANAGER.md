@@ -9,7 +9,7 @@ Build a DP Ubuntu upgrade HTTP mirror server in one fixed workflow:
 3. Download Ubuntu OS Core from Cloudflare R2 (FULL mode) or skip R2 (PHASE2_ONLY)
 4. Verify OS Core checksums (FULL mode)
 5. Download DP Phase 2 artifacts from ACPS (always 6.5.0)
-6. Verify ACPS checksums and upstream bringup baseline
+6. Verify ACPS checksums (bringup SHA1 vs the current ACPS `.sha1` sidecar)
 7. Apply the local patched bringup
 8. Materialize one Phase 1 OS mirror set (FULL) and one Phase 2 6.5.0 bundle
 9. Enable HTTP distribution (real nginx enable + smoke tests)
@@ -126,7 +126,7 @@ Decision matrix:
 
 Automatic sequence: config check → client artifact check → R2 download
 (`.part`, safe resume, retry) → OS Core verify/extract → ACPS download →
-checksum → upstream bringup drift gate → patched bringup → Phase 2 bundle
+checksum → ACPS bringup sidecar check → non-blocking reference-SHA notice → patched bringup → Phase 2 bundle
 (9 entries) → place final HTTP files → delete download cache/staging.
 
 ### Expected duration (disk-dependent)
@@ -299,14 +299,21 @@ Preflight logs structured fields (`DISK_PREFLIGHT_*`,
 `TOTAL_CAPACITY_BASED_PROJECTED_PEAK_BYTES`). Insufficient free space fails closed
 with `DISK_PREFLIGHT=FAIL`.
 
-## Bringup drift gate
+## Bringup integrity and reference SHA
 
-ACPS upstream bringup SHA1 must match
-`vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1`.
-Only then is
-`vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh` applied.
-Drift fails the install (`UPSTREAM_BRINGUP_DRIFT=YES`); patches are never
-auto-ported onto new upstream.
+Authoritative integrity for `bringup_py3_dp_after_os_upgrade.sh` is the
+current ACPS `.sha1` sidecar. If the downloaded (or reused) script SHA1 does
+not match that sidecar, preparation fails (`ACPS_BRINGUP_CHECKSUM=FAIL`).
+
+`vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1` is a
+previously known reference SHA for change detection only. A mismatch is
+logged as `UPSTREAM_BRINGUP_DRIFT=NON_BLOCKING` and does not fail the
+install or block HTTP distribution.
+
+A changed upstream must still pass syntax (`bash -n`) and required patch
+anchors before the local patched copy is applied. Missing anchors or a
+failed/no-op patch is fatal (`BRINGUP_PATCH_COMPAT` /
+`BRINGUP_PATCH_RESULT` / `PATCHED_BRINGUP_SYNTAX`), independent of SHA drift.
 
 ## Client HTTP only
 

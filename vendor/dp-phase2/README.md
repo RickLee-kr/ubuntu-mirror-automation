@@ -22,8 +22,11 @@ Prefer the explicit names above.
 - **Upstream release ID:** `20260726T155911Z`
 - **UPSTREAM_AUTHORITATIVE_SOURCE** (artifact path):
   `/var/spool/apt-mirror/dp-phase2/6.5.0/releases/20260726T155911Z/files/bringup_py3_dp_after_os_upgrade.sh`
-- **Exact upstream SHA1:** `70de02dd62409110dadb7553991d1ffb0a79f396`
-  (recorded in `bringup_py3_dp_after_os_upgrade.sh.upstream.sha1`)
+- **Reference / last-known unmodified upstream SHA1:**
+  `70de02dd62409110dadb7553991d1ffb0a79f396`
+  (recorded in `bringup_py3_dp_after_os_upgrade.sh.upstream.sha1`).
+  This is observability / change detection only. Download-and-prepare
+  integrity is the current ACPS `.sha1` sidecar, not this reference hash.
 - **LOCAL_PATCHED_SOURCE:**
   `vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh`
 - **Local patches currently applied:**

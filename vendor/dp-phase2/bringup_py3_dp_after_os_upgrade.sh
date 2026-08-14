@@ -62,7 +62,7 @@
 #
 #   # Step 3d: Bringup DA/DL master + orchestrate workers automatically
 #   sudo bash bringup_py3_dp_after_os_upgrade.sh --version 6.5.0 \
-#       --worker-ips 10.0.0.2,10.0.0.3 --worker-key /path/to/worker-ssh-key
+#       --worker-ips 10.0.0.2,10.0.0.3 --worker-password '<aella-password>'
 #
 #   # Step 3e: Bringup with artifacts already staged (no download needed)
 #   sudo bash bringup_py3_dp_after_os_upgrade.sh --version 6.5.0 --skip-download
@@ -98,7 +98,7 @@
 #   5. On each worker: sudo do-release-upgrade  (repeat until 24.04)
 #   6. On master:
 #        sudo bash bringup_py3_dp_after_os_upgrade.sh --version 6.5.0 \
-#            --worker-ips <w1>,<w2> --worker-key /path/to/key
+#            --worker-ips <w1>,<w2> --worker-password '<aella-password>'
 #      (master brings up itself first, then SSHes to workers and brings them up)
 #   7. Verify: kubectl get nodes (all Ready), kubectl get pods -A (all Running)
 #
@@ -109,7 +109,8 @@
 #   --version <ver>           Required (bringup). DP version, e.g., 6.5.0
 #   --skip-download           Use already-staged tarballs (skip download)
 #   --worker-ips <ip1,ip2>    Comma-separated worker IPs for master to orchestrate
-#   --worker-key <path>       (deprecated) Workers use sshpass (aella/aelladata)
+#   --worker-password <pass>  SSH password for aella on worker nodes (required with --worker-ips)
+#   --worker-key <path>       (deprecated) Use --worker-password instead
 #   --role <role>             Override auto-detect: AIO|DR-master|DL-master|DR-worker|DL-worker
 #   --dry-run                 Pre-flight checks only, no changes
 #   --skip-download           Use already-staged tarballs (skip download)
@@ -195,6 +196,7 @@ set -euo pipefail
 ###############################################################################
 VERSION=""
 WORKER_IPS=""
+WORKER_PASSWORD=""
 ROLE=""
 DRY_RUN=false
 SKIP_DOWNLOAD=false
@@ -228,7 +230,7 @@ ACPS_COMMON_TARBALL="aelladeb_py3_common.tar.gz"
 # ServerAliveInterval=30 * ServerAliveCountMax=240 tolerates ~120 min of silence.
 SCP_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=240 -o TCPKeepAlive=yes"
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=240 -o TCPKeepAlive=yes"
-WORKER_SSH_KEY=""  # deprecated: workers use sshpass (aella/aelladata)
+WORKER_SSH_KEY=""  # deprecated: use --worker-password
 
 # AELDEV-70673: expected major-version line for the Docker / containerd / runc
 # packages bundled in aelladeb_py3_common.tar.gz. Used by the install
@@ -722,6 +724,8 @@ parse_args() {
                 VERSION="$2"; shift 2 ;;
             --worker-ips)
                 WORKER_IPS="$2"; shift 2 ;;
+            --worker-password)
+                WORKER_PASSWORD="$2"; shift 2 ;;
             --role)
                 ROLE="$2"; shift 2 ;;
             --dry-run)
@@ -746,6 +750,7 @@ parse_args() {
                 echo ""
                 echo "Optional:"
                 echo "  --worker-ips <ip,ip>    Comma-separated worker IPs (master orchestrates)"
+                echo "  --worker-password <pw>  SSH password for aella on workers (required with --worker-ips)"
                 echo "  --role <role>           Override auto-detect (AIO|DR-master|DL-master|DR-worker|DL-worker)"
                 echo "  --dry-run               Pre-flight checks only"
                 echo "  --skip-download         Use already-staged tarballs"
@@ -770,6 +775,10 @@ parse_args() {
                 die "Unknown option: $1" ;;
         esac
     done
+
+    if [[ -n "$WORKER_IPS" && -z "$WORKER_PASSWORD" ]]; then
+        die "--worker-ips requires --worker-password"
+    fi
 
     # --version not required for pre-upgrade cleanup, auto-os-upgrade, or the
     # standalone overlay2 reclaim (a version-independent cleanup).
@@ -1613,7 +1622,10 @@ reclaim_overlay2_on_workers() {
         log "AELDEV-71912: sshpass unavailable -- skipping worker overlay2 sweep"
         return 0
     fi
-    local WORKER_USER="aella" WORKER_PASS="aelladata"
+    local WORKER_USER="aella" WORKER_PASS="${WORKER_PASSWORD}"
+    if [[ -z "$WORKER_PASS" ]]; then
+        die "--worker-ips requires --worker-password"
+    fi
     local workers worker_ip dry_flag=""
     [[ "$DRY_RUN" == "true" ]] && dry_flag=" --dry-run"
     IFS=',' read -ra workers <<< "$WORKER_IPS"
@@ -4472,9 +4484,12 @@ orchestrate_workers() {
         return 0
     fi
 
-    # Worker SSH via sshpass (standard on-prem DP auth: aella/aelladata)
-    local WORKER_PASS="aelladata"
+    # Worker SSH via sshpass (username aella; password from --worker-password)
+    local WORKER_PASS="${WORKER_PASSWORD}"
     local WORKER_USER="aella"
+    if [[ -z "$WORKER_PASS" ]]; then
+        die "--worker-ips requires --worker-password"
+    fi
     if ! command -v sshpass &>/dev/null; then
         log "Installing sshpass (needed for worker SSH)..."
         apt-get install -y sshpass &>/dev/null || die "Failed to install sshpass"

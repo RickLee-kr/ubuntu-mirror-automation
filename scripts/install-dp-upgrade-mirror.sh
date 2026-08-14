@@ -393,6 +393,7 @@ gui_configuration() {
 Mirror Server IP: ${ip_label}
 ACPS Username: $(mm_configured_label "$ACPS_USERNAME")
 ACPS Password: $(mm_configured_label "$ACPS_PASSWORD")
+Worker SSH Password (aella): $(mm_configured_label "$WORKER_SSH_PASSWORD")
 ACPS Server: Fixed
 OS Core Source: Cloudflare R2
 
@@ -402,8 +403,9 @@ ${footer}
       "2" "Mirror Server IP" \
       "3" "ACPS Username" \
       "4" "ACPS Password" \
-      "5" "Test ACPS Connection" \
-      "6" "Save Configuration" \
+      "5" "Worker SSH Password (aella)" \
+      "6" "Test ACPS Connection" \
+      "7" "Save Configuration" \
       "0" "Back")" || return 0
     case "$choice" in
       1)
@@ -470,6 +472,15 @@ Choose an address that exists on this host."
         ACPS_PASSWORD="$p"
         ;;
       5)
+        local wp
+        wp="$(mm_whiptail_password "Worker SSH Password (aella)" \
+          "Password used by DL/DA masters to access worker nodes during Phase 2.
+
+Required when generating cluster Phase 2 commands with worker IPs.
+May be left empty for single DP / AIO / master without workers.")" || continue
+        WORKER_SSH_PASSWORD="$wp"
+        ;;
+      6)
         # Use in-memory credentials from this Configuration session.
         # Do NOT reload from disk here — that discarded unsaved Username/Password
         # entries and made the form look "reset".
@@ -480,7 +491,7 @@ Choose an address that exists on this host."
             "Enter ACPS Username and ACPS Password first.
 
 Use menu items 3 and 4, then Test again.
-Use 6) Save Configuration to persist them."
+Use 7) Save Configuration to persist them."
           continue
         fi
         ACPS_BASE_URL="$ACPS_BASE_URL_FIXED"
@@ -492,7 +503,7 @@ Use 6) Save Configuration to persist them."
           mm_whiptail_msg "ACPS" "ACPS_CONNECTION=FAIL"
         fi
         ;;
-      6)
+      7)
         mm_force_phase2_target
         if [[ -z "${MIRROR_SERVER_IP:-}" ]]; then
           mm_whiptail_msg "Configuration" \
@@ -1027,11 +1038,15 @@ gui_phase2_stage_command_block() {
 }
 
 gui_build_client_commands() {
-  # Writes command text to stdout. Args: mirror topology worker_ips
+  # Writes command text to stdout. Args: mirror topology worker_ips [worker_password]
   # Uses PREPARATION_MODE from config (FULL or PHASE2_ONLY).
   # OS-hop commands are one physical LAUNCHER_V1 line each.
   # Phase 2 stage remains a three-line SUBSHELL_V2 block.
   local mirror="$1" topology="$2" worker_ips="${3:-}"
+  local worker_password="${WORKER_SSH_PASSWORD:-}"
+  if [[ $# -ge 4 ]]; then
+    worker_password="$4"
+  fi
   mm_normalize_preparation_mode
   mm_force_phase2_target
   local ver="${PHASE2_TARGET_VERSION}"
@@ -1048,7 +1063,11 @@ gui_build_client_commands() {
   hop4="$(gui_client_hop_command_line "$mirror" "dp-offline-upgrade-focal-to-jammy.sh")"
   hop5="$(gui_client_hop_command_line "$mirror" "dp-offline-upgrade-jammy-to-noble.sh")"
   if [[ "$topology" == "cluster" ]]; then
-    bringup_cmd="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download --worker-ips \"${worker_ips}\""
+    if ! mm_validate_worker_ssh_password "$worker_password" "$worker_ips"; then
+      echo "WORKER_SSH_PASSWORD_REQUIRED=YES" >&2
+      return 1
+    fi
+    bringup_cmd="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download --worker-ips \"${worker_ips}\" --worker-password $(mm_shell_quote "$worker_password")"
   else
     bringup_cmd="sudo bash /home/aella/bringup_py3_dp_after_os_upgrade.sh --version ${ver} --skip-download"
   fi
@@ -1453,12 +1472,20 @@ Do not include trailing commas, duplicates, 0.0.0.0, or 255.255.255.255.
 Shell metacharacters are not allowed."
         return 0
       }
+      if ! mm_validate_worker_ssh_password "${WORKER_SSH_PASSWORD:-}" "$worker_ips"; then
+        mm_whiptail_msg "Worker SSH Password required" \
+          "Set Worker SSH Password (aella) in Configuration before generating
+cluster Phase 2 commands.
+
+Password used by DL/DA masters to access worker nodes during Phase 2."
+        return 0
+      fi
       ;;
     *) return 0 ;;
   esac
 
   tmp="$(mktemp)"
-  gui_build_client_commands "$mirror" "$topology" "$worker_ips" >"$tmp"
+  gui_build_client_commands "$mirror" "$topology" "$worker_ips" "${WORKER_SSH_PASSWORD:-}" >"$tmp"
   out_file="$(mm_client_commands_file)"
   ready_gen="$(mm_wf_get READINESS_VERIFIED_GENERATION_ID)"
   if ! mm_wf_atomic_publish_command_file "$tmp" "$out_file" "${PREPARATION_MODE}" "$ready_gen"; then

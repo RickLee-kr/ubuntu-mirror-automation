@@ -62,6 +62,23 @@ PREPARATION_MODE="${PREPARATION_MODE:-FULL}"
 
 ACPS_USERNAME="${ACPS_USERNAME:-}"
 ACPS_PASSWORD="${ACPS_PASSWORD:-}"
+WORKER_SSH_PASSWORD="${WORKER_SSH_PASSWORD:-}"
+
+# Bash-safe quoting for generated operator commands (passwords with $ ! @ # & etc.).
+mm_shell_quote() {
+  printf '%q' "$1"
+}
+
+# Empty password is allowed when no worker IPs are configured.
+# One or more worker IPs require a non-empty worker SSH password.
+mm_validate_worker_ssh_password() {
+  local password="$1"
+  local worker_ips="${2:-}"
+  if [[ -n "$worker_ips" && -z "$password" ]]; then
+    return 1
+  fi
+  return 0
+}
 
 mm_force_phase2_target() {
   if [[ "${MM_ALLOW_TARGET_OVERRIDE:-0}" == "1" ]]; then
@@ -597,6 +614,7 @@ mm_load_gui_config() {
   PREPARATION_MODE="${PREPARATION_MODE:-FULL}"
   ACPS_USERNAME="${ACPS_USERNAME:-}"
   ACPS_PASSWORD="${ACPS_PASSWORD:-}"
+  WORKER_SSH_PASSWORD="${WORKER_SSH_PASSWORD:-}"
   MIRROR_HTTP_URL="${MIRROR_HTTP_URL:-}"
   MIRROR_SERVER_IP="${MIRROR_SERVER_IP:-}"
   if [[ -f "${MM_CONFIG_FILE}" ]]; then
@@ -612,6 +630,7 @@ mm_load_gui_config() {
   mm_force_phase2_target
   ACPS_USERNAME="${ACPS_USERNAME:-${ACPS_USER:-}}"
   ACPS_PASSWORD="${ACPS_PASSWORD:-${ACPS_PASS:-}}"
+  WORKER_SSH_PASSWORD="${WORKER_SSH_PASSWORD:-}"
   MIRROR_HTTP_URL="${MIRROR_HTTP_URL:-}"
   MIRROR_SERVER_IP="${MIRROR_SERVER_IP:-}"
   # Derive missing field from the other when only one is present.
@@ -628,10 +647,11 @@ mm_save_gui_config() {
   local prev_mode="" cmd_file
   local mem_user="${ACPS_USERNAME:-}"
   local mem_pass="${ACPS_PASSWORD:-}"
+  local mem_worker_pass="${WORKER_SSH_PASSWORD:-}"
   local mem_mirror="${MIRROR_HTTP_URL:-}"
   local mem_ip="${MIRROR_SERVER_IP:-}"
   local mem_mode="${PREPARATION_MODE:-}"
-  local disk_user="" disk_pass="" disk_mirror="" disk_ip=""
+  local disk_user="" disk_pass="" disk_worker_pass="" disk_mirror="" disk_ip=""
 
   if [[ -f "${MM_CONFIG_FILE}" ]]; then
     prev_mode="$(awk -F= '/^PREPARATION_MODE=/{print substr($0,index($0,"=")+1); exit}' "${MM_CONFIG_FILE}" 2>/dev/null || true)"
@@ -644,6 +664,7 @@ mm_save_gui_config() {
       set +a
       printf 'disk_user=%s\n' "$(printf '%q' "${ACPS_USERNAME:-}")"
       printf 'disk_pass=%s\n' "$(printf '%q' "${ACPS_PASSWORD:-}")"
+      printf 'disk_worker_pass=%s\n' "$(printf '%q' "${WORKER_SSH_PASSWORD:-}")"
       printf 'disk_mirror=%s\n' "$(printf '%q' "${MIRROR_HTTP_URL:-}")"
       printf 'disk_ip=%s\n' "$(printf '%q' "${MIRROR_SERVER_IP:-}")"
     )"
@@ -652,6 +673,7 @@ mm_save_gui_config() {
   # Prefer in-memory values; fall back to disk so URL-only saves cannot wipe ACPS.
   ACPS_USERNAME="${mem_user:-$disk_user}"
   ACPS_PASSWORD="${mem_pass:-$disk_pass}"
+  WORKER_SSH_PASSWORD="${mem_worker_pass:-$disk_worker_pass}"
   MIRROR_HTTP_URL="${mem_mirror:-$disk_mirror}"
   MIRROR_SERVER_IP="${mem_ip:-$disk_ip}"
   PREPARATION_MODE="${mem_mode:-${prev_mode:-FULL}}"
@@ -678,6 +700,7 @@ mm_save_gui_config() {
     printf 'PREPARATION_MODE=%s\n' "$(printf '%q' "${PREPARATION_MODE}")"
     printf 'ACPS_USERNAME=%s\n' "$(printf '%q' "${ACPS_USERNAME}")"
     printf 'ACPS_PASSWORD=%s\n' "$(printf '%q' "${ACPS_PASSWORD}")"
+    printf 'WORKER_SSH_PASSWORD=%s\n' "$(printf '%q' "${WORKER_SSH_PASSWORD:-}")"
     printf 'MIRROR_SERVER_IP=%s\n' "$(printf '%q' "${MIRROR_SERVER_IP:-}")"
     printf 'MIRROR_HTTP_URL=%s\n' "$(printf '%q' "${MIRROR_HTTP_URL:-}")"
   } >"$tmp"
