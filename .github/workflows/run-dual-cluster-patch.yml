@@ -21,7 +21,6 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-
           p = Path('scripts/install-dp-upgrade-mirror.sh')
           s = p.read_text()
           old = 'Use 7) Save Configuration to persist them.'
@@ -29,33 +28,23 @@ jobs:
           if s.count(old) != 1:
               raise SystemExit(f'expected one stale Save Configuration reference, got {s.count(old)}')
           p.write_text(s.replace(old, new, 1))
-
           p = Path('tests/test_gui_client_commands.sh')
-          s = p.read_text()
-          old = '''config_text="Preparation Mode: Full OS Upgrade + Phase 2
-ACPS Username: configured
-ACPS Password: configured
-Worker SSH Password (aella): configured
-ACPS Server: Fixed
-OS Core Source: Cloudflare R2
-'''
-          new = '''config_text="Preparation Mode: Full OS Upgrade + Phase 2
-Mirror Server IP: 192.0.2.10
-ACPS Username: configured
-ACPS Password: configured
-DL Worker IPs: 192.168.124.23,192.168.124.25
-DA Worker IPs: 192.168.124.24,192.168.124.26
-Worker SSH Password (aella): configured
-ACPS Server: Fixed
-OS Core Source: Cloudflare R2
-'''
-          if s.count(old) != 1:
-              raise SystemExit(f'expected one config_text fixture, got {s.count(old)}')
-          s = s.replace(old, new, 1)
-          if s.count('mm_calc_menu_size 7 74 8 "${config_text_lines}"') != 2:
-              raise SystemExit('expected two old 7-item config menu size checks')
-          s = s.replace('mm_calc_menu_size 7 74 8 "${config_text_lines}"',
-                        'mm_calc_menu_size 9 74 8 "${config_text_lines}"')
+          lines = p.read_text().splitlines()
+          out = []
+          inserted = False
+          for line in lines:
+              out.append(line)
+              if line == 'ACPS Password: configured' and not inserted:
+                  out.append('DL Worker IPs: 192.168.124.23,192.168.124.25')
+                  out.append('DA Worker IPs: 192.168.124.24,192.168.124.26')
+                  inserted = True
+          if not inserted:
+              raise SystemExit('config_text insertion point not found')
+          s = '\n'.join(out) + '\n'
+          old_size = 'mm_calc_menu_size 7 74 8 "${config_text_lines}"'
+          if s.count(old_size) != 2:
+              raise SystemExit(f'expected two old config menu size checks, got {s.count(old_size)}')
+          s = s.replace(old_size, 'mm_calc_menu_size 9 74 8 "${config_text_lines}"')
           p.write_text(s)
           PY
 
