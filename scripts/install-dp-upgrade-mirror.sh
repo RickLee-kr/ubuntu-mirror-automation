@@ -1276,6 +1276,10 @@ Do not resume the DP during the intermediate OS upgrades.
 STEP 6 — STAGE DP ${ver} FILES
 ------------------------------------------------------------------------
 
+CLUSTER: Run STEP 6 on the master AND every worker.
+Complete STEP 6 on all cluster nodes before starting STEP 7.
+AIO/single node: run STEP 6 on that DP only.
+
 ${copy_block_guide}
 
 Copy all three lines of the following block into the DP terminal once:
@@ -1289,7 +1293,9 @@ EOF
 STEP 7 — RUN DP ${ver} BRINGUP
 ------------------------------------------------------------------------
 
-Run this command on the cluster master only.
+Run STEP 7 on the cluster MASTER ONLY.
+Do NOT run STEP 7 manually on workers when using --worker-ips.
+The master SSHes to its workers and starts worker bringup automatically.
 
 Complete the DL cluster first, then run the corresponding command on the DA master using the DA worker IPs.
 

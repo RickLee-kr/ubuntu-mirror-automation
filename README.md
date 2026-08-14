@@ -301,6 +301,15 @@ For a cluster, enter **worker IP addresses only**. Do not include the master IP 
 
 For clustered deployments, complete the DL cluster first, then run the corresponding process on the DA master with the DA worker IPs.
 
+**Cluster Phase 2 execution rule:**
+
+| Step | Where to run |
+| --- | --- |
+| **STEP 6 — STAGE DP 6.5.0 FILES** | Run on the **cluster master and every worker** |
+| **STEP 7 — RUN DP 6.5.0 BRINGUP** | Run on the **cluster master only** |
+
+Complete STEP 6 on the master and all workers before starting STEP 7. When STEP 7 uses `--worker-ips`, do **not** run STEP 7 manually on the workers; the master SSHes to its workers and starts worker bringup automatically. For an AIO/single-node DP, run both steps on that DP.
+
 The generated commands are also saved at:
 
 ```text
@@ -324,8 +333,8 @@ Menu 7 guides the operator through the required sequence, which is conceptually:
    - 18.04 → 20.04
    - 20.04 → 22.04
    - 22.04 → 24.04
-4. Stage DP 6.5.0 Phase 2
-5. Run `bringup_py3` using `--skip-download`
+4. Stage DP 6.5.0 Phase 2 on the master **and every worker**
+5. Run `bringup_py3` using `--skip-download` on the **cluster master only**
 6. Resume DP services
 7. Verify DP/cluster status
 
