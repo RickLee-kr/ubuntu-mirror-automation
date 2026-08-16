@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+# Offline Phase 2 Ubuntu prerequisite install + critical Python runtime gate.
+# Uses the separately published phase2-ubuntu-prerequisites artifact.
+# Never runs apt --fix-broken install. Never force-depends as success.
+# shellcheck shell=bash
+
+PHASE2_PREREQ_ARTIFACT_NAME="${PHASE2_PREREQ_ARTIFACT_NAME:-phase2-ubuntu-prerequisites.tar.gz}"
+PHASE2_PREREQ_PROTECTED_PACKAGES="${PHASE2_PREREQ_PROTECTED_PACKAGES:-python3-gevent python3-kazoo python3-pyinotify aella-da-services aella-da-cli aella-uvp-2404}"
+PHASE2_CRITICAL_PYTHON_IMPORTS="${PHASE2_CRITICAL_PYTHON_IMPORTS:-click flask werkzeug OpenSSL gevent kazoo pyinotify}"
+
+dp2_prereq_log() {
+  local level="$1"
+  shift
+  if declare -F log >/dev/null 2>&1; then
+    log "[${level}] $*"
+    return 0
+  fi
+  if declare -F dp2_log >/dev/null 2>&1; then
+    dp2_log "$level" "$*"
+    return 0
+  fi
+  printf '%s [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$level" "$*"
+}
+
+dp2_prereq_find_artifact() {
+  local name="$PHASE2_PREREQ_ARTIFACT_NAME"
+  local cand
+  for cand in \
+    "${PHASE2_PREREQ_ARTIFACT:-}" \
+    "${STAGING_DIR:-/opt/aelladata/aelladeb_py3}/${name}" \
+    "/opt/aelladata/aelladeb_py3/${name}" \
+    "/home/aella/${name}" \
+    "/opt/aelladata/os-upgrade/offline/phase2-bringup/${name}"
+  do
+    [[ -n "$cand" && -f "$cand" ]] || continue
+    printf '%s\n' "$cand"
+    return 0
+  done
+  return 1
+}
+
+dp2_prereq_package_installed() {
+  local pkg="$1"
+  local status
+  status="$(dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null || true)"
+  [[ "$status" == "install ok installed" ]]
+}
+
+dp2_prereq_parse_simulation_removals() {
+  local text="$1"
+  printf '%s\n' "$text" | awk '
+    $1 == "Remv" || $1 == "Purg" { print $2 }
+    $1 == "Removing" || $1 == "Purging" { gsub(/\.$/, "", $2); print $2 }
+  '
+}
+
+dp2_prereq_transaction_safe() {
+  local simulation="$1"
+  local pkg blocked=()
+  local removals
+  removals="$(dp2_prereq_parse_simulation_removals "$simulation")"
+  while IFS= read -r pkg; do
+    [[ -z "$pkg" ]] && continue
+    for prot in $PHASE2_PREREQ_PROTECTED_PACKAGES; do
+      if [[ "$pkg" == "$prot" ]]; then
+        blocked+=("$pkg")
+      fi
+    done
+  done <<<"$removals"
+  if [[ ${#blocked[@]} -gt 0 ]]; then
+    dp2_prereq_log ERROR "PHASE2_PREREQ_TRANSACTION_SAFE=NO blocked=${blocked[*]}"
+    return 1
+  fi
+  dp2_prereq_log INFO "PHASE2_PREREQ_TRANSACTION_SAFE=YES"
+  return 0
+}
+
+dp2_prereq_refuse_fix_broken() {
+  # Guard: this layer must never invoke apt --fix-broken / apt-get -f.
+  return 0
+}
+
+dp2_prereq_dep_names() {
+  # First alternative of each Depends/Pre-Depends group (name only).
+  local field="$1" group first
+  while IFS= read -r group; do
+    group="${group#"${group%%[![:space:]]*}"}"
+    [[ -n "$group" ]] || continue
+    first="${group%%|*}"
+    first="${first#"${first%%[![:space:]]*}"}"
+    first="${first%%[[:space:]]*}"
+    first="${first%%(*}"
+    first="${first%"${first##*[![:space:]]}"}"
+    [[ -n "$first" ]] || continue
+    printf '%s\n' "$first"
+  done < <(printf '%s\n' "$field" | tr ',' '\n')
+}
+
+dp2_prereq_log_unsatisfied_protected_depends() {
+  local pkg field dep
+  for pkg in $PHASE2_PREREQ_PROTECTED_PACKAGES; do
+    dp2_prereq_package_installed "$pkg" || continue
+    field="$(dpkg-query -W -f='${Pre-Depends}\n${Depends}\n' "$pkg" 2>/dev/null || true)"
+    while IFS= read -r dep; do
+      [[ -n "$dep" ]] || continue
+      case "$dep" in
+        python3|python3-minimal|libc6|libgcc-s1|libstdc++6|base-files|dpkg) continue ;;
+      esac
+      if ! dp2_prereq_package_installed "$dep"; then
+        dp2_prereq_log ERROR "PROTECTED_PACKAGE_DEP_MISSING package=${pkg} depends=${dep}"
+      fi
+    done < <(dp2_prereq_dep_names "$field")
+  done
+}
+
+dp2_validate_apt_dependency_graph() {
+  local stage="${1:-unspecified}"
+  local audit=""
+  # dpkg --audit is informational only. It can be clean while apt still has
+  # unresolved Depends left by dpkg --force-depends. Never treat it as proof.
+  if command -v dpkg >/dev/null 2>&1; then
+    audit="$(dpkg --audit 2>&1 || true)"
+    if [[ -n "${audit// }" ]]; then
+      dp2_prereq_log WARN "DPKG_AUDIT=DIRTY stage=${stage}"
+    else
+      dp2_prereq_log INFO "DPKG_AUDIT=CLEAN stage=${stage} (not sufficient)"
+    fi
+  fi
+  dp2_prereq_log_unsatisfied_protected_depends
+
+  if ! command -v apt-get >/dev/null 2>&1; then
+    dp2_prereq_log ERROR "APT_DEPENDENCY_CHECK=FAIL stage=${stage} reason=apt-get_missing"
+    return 1
+  fi
+
+  local rc=0
+  local out=""
+  local prev_e=0
+  [[ $- == *e* ]] && prev_e=1
+  set +e
+  # Read-only graph check. NoLocking avoids a false FAIL when the wrapper
+  # runs without the dpkg frontend lock (non-root tests) and does not
+  # change the dependency verdict.
+  out="$(apt-get -o Debug::NoLocking=true check 2>&1)"
+  rc=$?
+  [[ "$prev_e" -eq 1 ]] && set -e
+  if [[ "$rc" -ne 0 ]]; then
+    dp2_prereq_log ERROR "APT_DEPENDENCY_CHECK=FAIL stage=${stage} rc=${rc}"
+    if [[ -n "${out// }" ]]; then
+      dp2_prereq_log ERROR "APT_DEPENDENCY_CHECK_DETAIL=$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-400)"
+    fi
+    return "$rc"
+  fi
+  dp2_prereq_log INFO "APT_DEPENDENCY_CHECK=PASS stage=${stage}"
+  return 0
+}
+
+dp2_validate_critical_python_runtime() {
+  local missing=()
+  local mod rc
+  local python_bin="${PHASE2_PREREQ_PYTHON:-python3}"
+  if ! command -v "$python_bin" >/dev/null 2>&1; then
+    dp2_prereq_log ERROR "CRITICAL_PYTHON_RUNTIME=FAIL reason=python3_missing"
+    return 1
+  fi
+  for mod in $PHASE2_CRITICAL_PYTHON_IMPORTS; do
+    if ! "$python_bin" -c "import ${mod}" >/dev/null 2>&1; then
+      missing+=("$mod")
+      dp2_prereq_log ERROR "CRITICAL_PYTHON_IMPORT=FAIL module=${mod}"
+    else
+      dp2_prereq_log INFO "CRITICAL_PYTHON_IMPORT=PASS module=${mod}"
+    fi
+  done
+  # pyinotify needs asyncore on Python 3.12 (provided by python3-pyasyncore).
+  if ! "$python_bin" -c "import asyncore" >/dev/null 2>&1; then
+    missing+=("asyncore")
+    dp2_prereq_log ERROR "CRITICAL_PYTHON_IMPORT=FAIL module=asyncore"
+  else
+    dp2_prereq_log INFO "CRITICAL_PYTHON_IMPORT=PASS module=asyncore"
+  fi
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    dp2_prereq_log ERROR "CRITICAL_PYTHON_RUNTIME=FAIL missing=${missing[*]}"
+    return 1
+  fi
+
+  local entry
+  for entry in \
+    /opt/aelladata/python/aella_da_restful.py \
+    /opt/aelladata/da/aella_da_restful.py \
+    /usr/lib/python3/dist-packages/aella_da_restful.py
+  do
+    if [[ -f "$entry" ]]; then
+      if "$python_bin" -c "import py_compile; py_compile.compile('${entry}', doraise=True)" >/dev/null 2>&1; then
+        dp2_prereq_log INFO "AELLA_DA_RESTFUL_COMPILE=PASS path=${entry}"
+      else
+        dp2_prereq_log ERROR "AELLA_DA_RESTFUL_COMPILE=FAIL path=${entry}"
+        return 1
+      fi
+      break
+    fi
+  done
+  dp2_prereq_log INFO "CRITICAL_PYTHON_RUNTIME=PASS"
+  return 0
+}
+
+dp2_install_phase2_ubuntu_prerequisites() {
+  local artifact extract rc=0
+  dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL=START"
+
+  if ! artifact="$(dp2_prereq_find_artifact)"; then
+    dp2_prereq_log INFO "PHASE2_PREREQ_ARTIFACT=ABSENT"
+    # Compatibility layer: a future ACPS release may already ship the closure.
+    # Runtime import validation happens after ACPS py3-apt packages are installed.
+    # A missing artifact must not hide an already-broken APT graph.
+    if ! dp2_validate_apt_dependency_graph prerequisites; then
+      dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=apt_dependency_check"
+      return 1
+    fi
+    dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL=SKIP reason=artifact_absent"
+    return 0
+  fi
+  dp2_prereq_log INFO "PHASE2_PREREQ_ARTIFACT=${artifact}"
+
+  if [[ -f "${artifact}.sha256" ]]; then
+    local expected actual
+    expected="$(awk 'NF {print $1; exit}' "${artifact}.sha256")"
+    actual="$(sha256sum "$artifact" | awk '{print $1}')"
+    if [[ -n "$expected" && "${expected,,}" != "${actual,,}" ]]; then
+      dp2_prereq_log ERROR "PHASE2_PREREQ_SHA256=FAIL"
+      return 1
+    fi
+    dp2_prereq_log INFO "PHASE2_PREREQ_SHA256=PASS"
+  fi
+
+  extract="$(mktemp -d "${TMPDIR:-/tmp}/phase2-prereq-inst.XXXXXX")"
+  if ! tar -xzf "$artifact" -C "$extract"; then
+    rm -rf "$extract"
+    dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=extract"
+    return 1
+  fi
+
+  local deb installed_any=0
+  shopt -s nullglob
+  for deb in "${extract}/debs/"*.deb; do
+    local pkg
+    pkg="$(dpkg-deb -f "$deb" Package 2>/dev/null || true)"
+    if [[ -z "$pkg" ]]; then
+      dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=deb_control_missing file=$(basename "$deb")"
+      rm -rf "$extract"
+      return 1
+    fi
+    if dp2_prereq_package_installed "$pkg"; then
+      dp2_prereq_log INFO "PHASE2_PREREQ_ALREADY_INSTALLED package=${pkg}"
+      continue
+    fi
+    # Offline local .deb install. Dependency order is encoded in the artifact
+    # closure (deps first). Do not use dpkg --force-depends as success.
+    if ! dpkg -i "$deb"; then
+      rc=$?
+      dp2_prereq_log ERROR "PHASE2_PREREQ_DPKG=FAIL package=${pkg} rc=${rc}"
+      rm -rf "$extract"
+      return "$rc"
+    fi
+    installed_any=1
+    dp2_prereq_log INFO "PHASE2_PREREQ_DPKG=PASS package=${pkg}"
+  done
+  shopt -u nullglob
+  rm -rf "$extract"
+
+  if [[ "$installed_any" -eq 0 ]]; then
+    dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL=IDEMPOTENT"
+  fi
+
+  if ! dp2_validate_apt_dependency_graph prerequisites; then
+    dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=apt_dependency_check"
+    return 1
+  fi
+
+  dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL=PASS"
+  return 0
+}

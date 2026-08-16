@@ -141,8 +141,8 @@ p2b_log_has_anchored_completion() {
     /^[[:space:]]*\[[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9:.]+\][[:space:]]+Bringup complete:/ { found=1 }
     /^[[:space:]]*Bringup complete:[[:space:]]/ {
       # Reject lines that are clearly instructional
-      if ($0 ~ /Completes when|run this command|when installation completes|로그에|Wait until|shows:|출력된/) next
-      if ($0 ~ /IMPORTANT|안내:|Do NOT|NEXT_COMMAND/) next
+      if ($0 ~ /Completes when|run this command|when installation completes|Wait until|shows:/) next
+      if ($0 ~ /IMPORTANT|Do NOT|NEXT_COMMAND/) next
       found=1
     }
     END { exit found ? 0 : 1 }
@@ -438,6 +438,43 @@ p2b_worker_main() {
 
   export BRINGUP_DETACHED=1
   export BRINGUP_LIFECYCLE_MANAGED=1
+
+  # Offline Ubuntu prerequisites before vendor Phase 2 (ACPS artifacts untouched).
+  local prereq_lib
+  for prereq_lib in \
+    "${d}/lib/dp-phase2-ubuntu-prerequisites.sh" \
+    "${LIB_DIR:-}/dp-phase2-ubuntu-prerequisites.sh" \
+    "/home/aella/lib/dp-phase2-ubuntu-prerequisites.sh"
+  do
+    if [[ -f "$prereq_lib" ]]; then
+      # shellcheck source=/dev/null
+      source "$prereq_lib"
+      if declare -F dp2_install_phase2_ubuntu_prerequisites >/dev/null 2>&1; then
+        set +e
+        dp2_install_phase2_ubuntu_prerequisites >>"$logf" 2>&1
+        rc=$?
+        set -e
+        if [[ "$rc" -ne 0 ]]; then
+          completed="$(p2b_utc_now)"
+          printf '%s\n' "$rc" | p2b_atomic_write "${d}/exit-code"
+          printf '%s\n' "$completed" | p2b_atomic_write "${d}/completed-at"
+          {
+            echo "BRINGUP_TERMINAL_STATE=FAILED"
+            echo "BRINGUP_RESULT=FAIL"
+            echo "FAILURE_REASON=PHASE2_PREREQ_INSTALL"
+            echo "BRINGUP_EXIT_CODE=${rc}"
+            echo "BRINGUP_RUN_ID=${run_id}"
+            echo "BRINGUP_COMPLETION_SENTINEL=FAIL"
+          } | p2b_atomic_write "${d}/completion.sentinel"
+          p2b_write_result_env "$run_id" "$$" "$target" "$started" "$completed" "$rc" "FAIL" "FAILED" "$logf"
+          p2b_write_state "FAILED"
+          exit "$rc"
+        fi
+      fi
+      break
+    fi
+  done
+
   set +e
   # Keep vendor stdout discarded; stderr+log via vendor's own logging when possible.
   bash "$vendor" "$@" >>"$logf" 2>&1
@@ -449,6 +486,71 @@ p2b_worker_main() {
   printf '%s\n' "$completed" | p2b_atomic_write "${d}/completed-at"
 
   if [[ "$rc" -eq 0 ]]; then
+    # Worker-IP runs cannot become PASS unless the vendor recorded a complete
+    # Ready topology. This prevents a 1/3-node vendor "Bringup complete" from
+    # being converted into BRINGUP_RESULT=PASS.
+    local want_workers=""
+    local arg next=""
+    for arg in "$@"; do
+      if [[ -n "$next" ]]; then
+        want_workers="$arg"
+        next=""
+        continue
+      fi
+      if [[ "$arg" == "--worker-ips" ]]; then
+        next=1
+      fi
+    done
+    if [[ -f "$logf" ]] && grep -q 'APT_DEPENDENCY_CHECK=FAIL' "$logf"; then
+      rc=1
+      completed="$(p2b_utc_now)"
+      printf '%s\n' "$rc" | p2b_atomic_write "${d}/exit-code"
+      printf '%s\n' "$completed" | p2b_atomic_write "${d}/completed-at"
+      {
+        echo "BRINGUP_TERMINAL_STATE=FAILED"
+        echo "BRINGUP_RESULT=FAIL"
+        echo "FAILURE_REASON=APT_DEPENDENCY_CHECK"
+        echo "BRINGUP_EXIT_CODE=${rc}"
+        echo "BRINGUP_RUN_ID=${run_id}"
+        echo "BRINGUP_COMPLETION_SENTINEL=FAIL"
+      } | p2b_atomic_write "${d}/completion.sentinel"
+      p2b_write_result_env "$run_id" "$$" "$target" "$started" "$completed" "$rc" "FAIL" "FAILED" "$logf"
+      p2b_write_state "FAILED"
+      exit "$rc"
+    fi
+    if [[ -n "$want_workers" ]]; then
+      local join_ok=0
+      if [[ -f "$logf" ]] && grep -E 'CLUSTER_JOIN_STATE ready=([0-9]+) expected=([0-9]+)' "$logf" \
+        | awk '{
+            ready=""; expected="";
+            for(i=1;i<=NF;i++){
+              if($i ~ /^ready=/){ split($i,a,"="); ready=a[2] }
+              if($i ~ /^expected=/){ split($i,b,"="); expected=b[2] }
+            }
+            if(ready!="" && expected!="" && ready==expected && expected+0>1) ok=1
+          }
+          END { exit ok?0:1 }'
+      then
+        join_ok=1
+      fi
+      if [[ "$join_ok" -ne 1 ]]; then
+        rc=1
+        completed="$(p2b_utc_now)"
+        printf '%s\n' "$rc" | p2b_atomic_write "${d}/exit-code"
+        printf '%s\n' "$completed" | p2b_atomic_write "${d}/completed-at"
+        {
+          echo "BRINGUP_TERMINAL_STATE=FAILED"
+          echo "BRINGUP_RESULT=FAIL"
+          echo "FAILURE_REASON=CLUSTER_JOIN_INCOMPLETE"
+          echo "BRINGUP_EXIT_CODE=${rc}"
+          echo "BRINGUP_RUN_ID=${run_id}"
+          echo "BRINGUP_COMPLETION_SENTINEL=FAIL"
+        } | p2b_atomic_write "${d}/completion.sentinel"
+        p2b_write_result_env "$run_id" "$$" "$target" "$started" "$completed" "$rc" "FAIL" "FAILED" "$logf"
+        p2b_write_state "FAILED"
+        exit "$rc"
+      fi
+    fi
     # Write machine-readable sentinel bound to this run — authoritative completion.
     {
       echo "BRINGUP_TERMINAL_STATE=COMPLETED"

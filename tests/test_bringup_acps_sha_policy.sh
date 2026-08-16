@@ -78,6 +78,12 @@ write_broken_patched() {
 run_image_import_with_heartbeat() { :; }
 emit_dp_resume_notice_line() { :; }
 --worker-password
+wait_for_master_token_api() { :; }
+validate_expected_cluster_nodes() { :; }
+validate_apt_dependency_graph() { :; }
+MASTER_TOKEN_API_READY=YES
+CLUSTER_JOIN_STATE ready=1 expected=1
+APT_DEPENDENCY_CHECK=PASS
 if then
 EOF
 }

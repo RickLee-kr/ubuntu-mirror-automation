@@ -235,6 +235,9 @@ start_or_monitor() {
   # Install lifecycle libs for worker re-exec
   mkdir -p "${d}/lib"
   cp -a "${LIB_DIR}/dp-phase2-bringup-lifecycle.sh" "${d}/lib/" 2>/dev/null || true
+  if [[ -f "${LIB_DIR}/dp-phase2-ubuntu-prerequisites.sh" ]]; then
+    cp -a "${LIB_DIR}/dp-phase2-ubuntu-prerequisites.sh" "${d}/lib/" 2>/dev/null || true
+  fi
   chmod 0700 "$d" "${d}/lib" 2>/dev/null || true
 
   printf '%s\n' "$run_id" | p2b_atomic_write "${d}/run-id"

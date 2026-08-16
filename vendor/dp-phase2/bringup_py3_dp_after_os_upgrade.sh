@@ -1294,6 +1294,217 @@ download_artifacts() {
 }
 
 ###############################################################################
+# PHASE 2 COMPATIBILITY: Ubuntu prerequisites + cluster readiness gates
+###############################################################################
+PHASE2_PREREQ_ARTIFACT_NAME="${PHASE2_PREREQ_ARTIFACT_NAME:-phase2-ubuntu-prerequisites.tar.gz}"
+PHASE2_CRITICAL_PYTHON_IMPORTS="${PHASE2_CRITICAL_PYTHON_IMPORTS:-click flask werkzeug OpenSSL gevent kazoo pyinotify}"
+MASTER_TOKEN_API_PORT="${MASTER_TOKEN_API_PORT:-8003}"
+MASTER_TOKEN_API_WAIT_SECONDS="${MASTER_TOKEN_API_WAIT_SECONDS:-180}"
+CLUSTER_JOIN_WAIT_SECONDS="${CLUSTER_JOIN_WAIT_SECONDS:-300}"
+
+phase2_prereq_lib_paths() {
+    printf '%s\n' \
+        "${STAGING_DIR}/lib/dp-phase2-ubuntu-prerequisites.sh" \
+        "/home/aella/lib/dp-phase2-ubuntu-prerequisites.sh" \
+        "/opt/aelladata/os-upgrade/offline/phase2-bringup/lib/dp-phase2-ubuntu-prerequisites.sh"
+}
+
+source_phase2_prereq_lib() {
+    local p
+    while IFS= read -r p; do
+        if [[ -f "$p" ]]; then
+            # shellcheck source=/dev/null
+            source "$p"
+            return 0
+        fi
+    done < <(phase2_prereq_lib_paths)
+    return 1
+}
+
+count_expected_cluster_nodes() {
+    local ips="$1"
+    local n=0 ip
+    [[ -n "$ips" ]] || { printf '0\n'; return 0; }
+    IFS=',' read -ra _exp_workers <<< "$ips"
+    for ip in "${_exp_workers[@]}"; do
+        ip="${ip//[[:space:]]/}"
+        [[ -n "$ip" ]] && n=$((n + 1))
+    done
+    if [[ "$n" -eq 0 ]]; then
+        printf '0\n'
+    else
+        printf '%s\n' $((n + 1))
+    fi
+}
+
+validate_apt_dependency_graph() {
+    local stage="${1:-unspecified}"
+    if source_phase2_prereq_lib && declare -F dp2_validate_apt_dependency_graph >/dev/null 2>&1; then
+        dp2_validate_apt_dependency_graph "$stage"
+        return $?
+    fi
+    local audit="" rc=0
+    audit="$(dpkg --audit 2>&1 || true)"
+    if [[ -n "${audit// }" ]]; then
+        log "WARNING: DPKG_AUDIT=DIRTY stage=${stage}"
+    else
+        log "DPKG_AUDIT=CLEAN stage=${stage} (not sufficient)"
+    fi
+    if ! command -v apt-get >/dev/null 2>&1; then
+        log "ERROR: APT_DEPENDENCY_CHECK=FAIL stage=${stage} reason=apt-get_missing"
+        return 1
+    fi
+    local prev_e=0
+    [[ $- == *e* ]] && prev_e=1
+    set +e
+    apt-get -o Debug::NoLocking=true check >/dev/null 2>&1
+    rc=$?
+    [[ "$prev_e" -eq 1 ]] && set -e
+    if [[ "$rc" -ne 0 ]]; then
+        log "ERROR: APT_DEPENDENCY_CHECK=FAIL stage=${stage} rc=${rc}"
+        return "$rc"
+    fi
+    log "APT_DEPENDENCY_CHECK=PASS stage=${stage}"
+    return 0
+}
+
+validate_critical_python_runtime() {
+    local missing=() mod
+    if source_phase2_prereq_lib && declare -F dp2_validate_critical_python_runtime >/dev/null 2>&1; then
+        dp2_validate_critical_python_runtime
+        return $?
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        log "ERROR: CRITICAL_PYTHON_RUNTIME=FAIL reason=python3_missing"
+        return 1
+    fi
+    for mod in $PHASE2_CRITICAL_PYTHON_IMPORTS; do
+        if ! python3 -c "import ${mod}" >/dev/null 2>&1; then
+            missing+=("$mod")
+            log "ERROR: CRITICAL_PYTHON_IMPORT=FAIL module=${mod}"
+        else
+            log "CRITICAL_PYTHON_IMPORT=PASS module=${mod}"
+        fi
+    done
+    if ! python3 -c "import asyncore" >/dev/null 2>&1; then
+        missing+=("asyncore")
+        log "ERROR: CRITICAL_PYTHON_IMPORT=FAIL module=asyncore"
+    else
+        log "CRITICAL_PYTHON_IMPORT=PASS module=asyncore"
+    fi
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log "ERROR: CRITICAL_PYTHON_RUNTIME=FAIL missing=${missing[*]}"
+        return 1
+    fi
+    log "CRITICAL_PYTHON_RUNTIME=PASS"
+    return 0
+}
+
+install_phase2_ubuntu_prerequisites() {
+    if source_phase2_prereq_lib && declare -F dp2_install_phase2_ubuntu_prerequisites >/dev/null 2>&1; then
+        dp2_install_phase2_ubuntu_prerequisites
+        return $?
+    fi
+    local artifact="${STAGING_DIR}/${PHASE2_PREREQ_ARTIFACT_NAME}"
+    if [[ ! -f "$artifact" ]]; then
+        validate_apt_dependency_graph prerequisites || return 1
+        log "PHASE2_PREREQ_INSTALL=SKIP reason=artifact_absent"
+        return 0
+    fi
+    local extract deb pkg rc=0
+    extract="$(mktemp -d /tmp/phase2-prereq-inst.XXXXXX)"
+    tar -xzf "$artifact" -C "$extract" || { rm -rf "$extract"; return 1; }
+    shopt -s nullglob
+    for deb in "${extract}/debs/"*.deb; do
+        pkg="$(dpkg-deb -f "$deb" Package 2>/dev/null || true)"
+        if [[ -z "$pkg" ]]; then
+            rm -rf "$extract"
+            log "ERROR: PHASE2_PREREQ_INSTALL=FAIL reason=deb_control_missing"
+            return 1
+        fi
+        if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -qx 'install ok installed'; then
+            log "PHASE2_PREREQ_ALREADY_INSTALLED package=${pkg}"
+            continue
+        fi
+        if ! dpkg -i "$deb"; then
+            rc=$?
+            rm -rf "$extract"
+            log "ERROR: PHASE2_PREREQ_DPKG=FAIL package=${pkg} rc=${rc}"
+            return "$rc"
+        fi
+        log "PHASE2_PREREQ_DPKG=PASS package=${pkg}"
+    done
+    shopt -u nullglob
+    rm -rf "$extract"
+    validate_apt_dependency_graph prerequisites || return 1
+    log "PHASE2_PREREQ_INSTALL=PASS"
+    return 0
+}
+
+wait_for_master_token_api() {
+    local timeout_s="${1:-$MASTER_TOKEN_API_WAIT_SECONDS}"
+    local port="${MASTER_TOKEN_API_PORT}"
+    local started now elapsed code=000
+    local targets=()
+    targets+=("https://127.0.0.1:${port}/")
+    if [[ -n "${MASTER_IP:-}" ]]; then
+        targets+=("https://${MASTER_IP}:${port}/")
+    fi
+    started="$(date +%s)"
+    log "Waiting for master token API on TCP/${port} (timeout=${timeout_s}s)"
+    while true; do
+        local url
+        for url in "${targets[@]}"; do
+            code="$(curl -sk --connect-timeout 5 --max-time 10 \
+                -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
+            # 200/401/403/404 prove the HTTPS listener is up. Do not log bodies.
+            if [[ "$code" =~ ^(200|401|403|404)$ ]]; then
+                log "MASTER_TOKEN_API_READY=YES port=${port} http=${code}"
+                return 0
+            fi
+        done
+        now="$(date +%s)"
+        elapsed=$((now - started))
+        if [[ "$elapsed" -ge "$timeout_s" ]]; then
+            log "MASTER_TOKEN_API_READY=NO port=${port} last_http=${code} waited=${elapsed}s"
+            log "BRINGUP_RESULT=FAIL"
+            return 1
+        fi
+        sleep 5
+    done
+}
+
+kubectl_ready_node_count() {
+    kubectl get nodes --no-headers 2>/dev/null | awk '$2 ~ /^Ready($|,)/ {c++} END {print c+0}'
+}
+
+validate_expected_cluster_nodes() {
+    local expected timeout_s started now elapsed ready
+    expected="$(count_expected_cluster_nodes "${WORKER_IPS:-}")"
+    if [[ "${expected:-0}" -le 1 ]]; then
+        log "CLUSTER_JOIN_STATE skipped (no worker IPs; single-node/AIO)"
+        return 0
+    fi
+    timeout_s="${1:-$CLUSTER_JOIN_WAIT_SECONDS}"
+    started="$(date +%s)"
+    while true; do
+        ready="$(kubectl_ready_node_count)"
+        log "CLUSTER_JOIN_STATE ready=${ready} expected=${expected}"
+        if [[ "${ready:-0}" -eq "$expected" ]]; then
+            return 0
+        fi
+        now="$(date +%s)"
+        elapsed=$((now - started))
+        if [[ "$elapsed" -ge "$timeout_s" ]]; then
+            log "ERROR: CLUSTER_JOIN_STATE ready=${ready} expected=${expected} waited=${elapsed}s"
+            log "BRINGUP_RESULT=FAIL"
+            return 1
+        fi
+        sleep 5
+    done
+}
+
+###############################################################################
 # PHASE 2: INSTALL PYTHON 3
 ###############################################################################
 
@@ -1344,6 +1555,11 @@ purge_legacy_py2_zombies() {
 install_python3() {
     log_phase "Install Python 3"
 
+    # Offline Ubuntu prerequisite closure (separate from ACPS artifacts).
+    # Must run before dpkg -i of the incomplete ACPS py3-apt-packages set.
+    install_phase2_ubuntu_prerequisites || \
+        die "PHASE2_PREREQ_INSTALL=FAIL critical Ubuntu prerequisites missing"
+
     # Ubuntu 24.04 ships python3.12 -- no tarball needed
     if python3 --version &>/dev/null; then
         log "Python 3 already installed: $(python3 --version 2>&1)"
@@ -1369,24 +1585,35 @@ install_python3() {
     # aellautil.py imports psutil, pymongo, kazoo, flask, tornado, etc.
     # All debs pre-staged in py3-apt-packages.tar.gz (no internet needed).
     # Must install these BEFORE pip3: python3-pip depends on python3-wheel which
-    # comes from this tarball, and dpkg -i on these debs may leave unmet
-    # dependencies that apt --fix-broken needs to resolve.
+    # comes from this tarball. Unmet Depends after dpkg are a hard failure
+    # (apt-get check), not something to paper over with apt --fix-broken.
     local apt_tarball="${STAGING_DIR}/py3-apt-packages.tar.gz"
     if [[ -f "$apt_tarball" ]]; then
         log "Installing Python 3 system apt packages from local tarball..."
         local apt_tmpdir="/tmp/py3-apt-debs-$$"
         mkdir -p "$apt_tmpdir"
         tar -xzf "$apt_tarball" -C "$apt_tmpdir" || log "WARNING: Failed to extract py3-apt-packages.tar.gz"
-        # AELDEV-71573: install all debs at once with --force-depends so
-        # interdependent packages (python3-flask -> python3-werkzeug,
-        # python3-pyinotify -> python3-pyasyncore, etc.) resolve in any
-        # order. Previous per-deb loop with "skip if installed" left stale
-        # packages and missed re-installs after apt fix-broken rolled them
-        # back. Bulk dpkg -i is faster + idempotent (already-installed +
-        # same-version is a no-op for dpkg).
+        # Prefer a complete offline closure (prereq artifact + ACPS debs)
+        # without forcing dependency violations. Bulk dpkg -i without
+        # --force-depends works when Depends are already present.
+        # --force-depends is only a last-resort unpack-order compatibility
+        # retry and is NEVER a success criterion; apt-get check is.
         if ls "$apt_tmpdir"/*.deb &>/dev/null; then
-            dpkg -i --force-depends "$apt_tmpdir"/*.deb 2>&1 | tail -10 || \
-                log "WARNING: some debs in py3-apt-packages.tar.gz failed (continuing)"
+            local py3_apt_rc=0
+            set +e
+            dpkg -i "$apt_tmpdir"/*.deb
+            py3_apt_rc=$?
+            set -e
+            if [[ "$py3_apt_rc" -ne 0 ]]; then
+                log "ACPS_PY3_APT_DPKG=RETRY force_depends=YES (intra-bundle unpack order)"
+                set +e
+                dpkg -i --force-depends "$apt_tmpdir"/*.deb
+                py3_apt_rc=$?
+                set -e
+                log "ACPS_PY3_APT_FORCE_DEPENDS=USED rc=${py3_apt_rc} (not a success criterion)"
+            else
+                log "ACPS_PY3_APT_DPKG=PASS force_depends=NO"
+            fi
         fi
         rm -rf "$apt_tmpdir"
     else
@@ -1395,16 +1622,8 @@ install_python3() {
         log "  Place py3-apt-packages.tar.gz in $STAGING_DIR and re-run"
     fi
 
-    # AELDEV-71573: dark-site (--skip-download) skips apt-based pip3 install.
-    # `apt --fix-broken install` and `apt install python3-pip` were RE-INSTALLING
-    # python3-flask via apt, but the missing deps that fix-broken couldn't
-    # resolve (no internet, stale local cache) caused apt to ROLL BACK the
-    # python3-flask install we just did via dpkg above. End result: flask gone,
-    # aella_da_restful crash-loop, port 8003 never binds, DA worker can't join.
-    # py3-apt-packages.tar.gz (debs above) + pip3-site-packages.tar.gz
-    # (extracted in install_pip3_packages) together are self-sufficient on
-    # dark-site -- no apt/internet ops needed. Online mode keeps the full
-    # apt flow as before.
+    # Dark-site and online: never run apt --fix-broken install as a repair.
+    # That path proposed removing python3-gevent/kazoo/pyinotify in the lab.
     if [[ "$SKIP_DOWNLOAD" == "true" ]]; then
         log "  --skip-download: skipping apt-based pip3 install (no internet)"
         log "  Python deps come from py3-apt-packages.tar.gz (already dpkg-installed)"
@@ -1414,15 +1633,8 @@ install_python3() {
             log "  installed Python packages remain functional via direct imports."
         fi
     elif ! command -v pip3 &>/dev/null; then
-        # Online mode: full apt flow (sequence matters):
-        # 1. `apt-get update` to refresh cache (post-OS-upgrade cache can be stale,
-        #    e.g. pinning to 404'd python3.12-dev versions)
-        # 2. `apt --fix-broken install` to resolve unmet deps left by dpkg -i above
-        #    (python3-gevent->python3-zope.event, python3-werkzeug->libjs-jquery, etc)
-        # 3. Then `apt install python3-pip python3-wheel` can succeed.
         log "Installing pip3..."
         apt-get update -qq 2>&1 | tail -3 || log "WARNING: apt-get update had errors"
-        apt-get install -f -y -qq 2>&1 | tail -3 || log "WARNING: apt --fix-broken install had errors"
         if apt-get install -y -qq python3-pip python3-wheel python3-setuptools 2>&1 | tail -3; then
             log "pip3 installed via apt"
         else
@@ -1434,10 +1646,16 @@ install_python3() {
         log "pip3: $(pip3 --version 2>&1 || echo 'not found')"
     fi
 
-    # Verify critical imports
+    # dpkg --audit and --force-depends are not sufficient. The APT graph
+    # must be consistent before Python runtime validation or worker orch.
+    validate_apt_dependency_graph python3_apt || \
+        die "APT_DEPENDENCY_CHECK=FAIL after Ubuntu/Python package installation"
+    # Critical runtime imports are a hard gate (not warnings). dpkg "install ok
+    # installed" is not sufficient — Flask without click still fails to import.
+    validate_critical_python_runtime || \
+        die "CRITICAL_PYTHON_RUNTIME=FAIL Phase 2 cannot continue"
     python3 -c "import psutil" 2>/dev/null || log "WARNING: psutil still missing"
     python3 -c "import pymongo" 2>/dev/null || log "WARNING: pymongo still missing"
-    python3 -c "import flask" 2>/dev/null || log "WARNING: flask still missing"
     log "Python 3 system packages installed"
 }
 
@@ -4511,12 +4729,15 @@ orchestrate_workers() {
     # due to key exchange. SSH_OPTS uses UserKnownHostsFile=/dev/null so
     # known_hosts isn't used; the retry below handles the timing issue.
     IFS=',' read -ra workers <<< "$WORKER_IPS"
+    local orch_failed=0
 
     for worker_ip in "${workers[@]}"; do
         worker_ip=$(echo "$worker_ip" | xargs)  # trim whitespace
         [[ -z "$worker_ip" ]] && continue
         log ""
         log "--- Deploying worker: $worker_ip ---"
+        local worker_failed=0
+        local worker_reason=""
 
         # Test SSH connectivity to worker (retry once after 5s if first attempt fails)
         log "Testing SSH to $worker_ip..."
@@ -4524,7 +4745,9 @@ orchestrate_workers() {
             log "WARNING: First SSH to $worker_ip failed, retrying in 5s..."
             sleep 5
             if ! worker_ssh "$worker_ip" "echo ok" &>/dev/null; then
-                log "ERROR: Cannot SSH to worker $worker_ip -- skipping"
+                log "ERROR: Cannot SSH to worker $worker_ip"
+                log "WORKER_RESULT ip=${worker_ip} result=FAIL reason=ssh"
+                orch_failed=1
                 continue
             fi
         fi
@@ -4548,7 +4771,11 @@ orchestrate_workers() {
 
         # Copy script to worker
         log "Copying script to $worker_ip..."
-        worker_scp "$SCRIPT_PATH" "$worker_ip" "/tmp/${SCRIPT_NAME}"
+        if ! worker_scp "$SCRIPT_PATH" "$worker_ip" "/tmp/${SCRIPT_NAME}"; then
+            log "WORKER_RESULT ip=${worker_ip} result=FAIL reason=artifact_copy"
+            orch_failed=1
+            continue
+        fi
 
         # Copy all debs and tarballs. Use a shell loop because worker_scp
         # wraps the source arg in double quotes, which suppresses bash's
@@ -4589,8 +4816,11 @@ orchestrate_workers() {
                 fi
             fi
             log "  scp ${_fname} (${_sz}) -> $worker_ip:${STAGING_DIR}/"
-            _scp_err=$(worker_scp "$f" "$worker_ip" "${STAGING_DIR}/" 2>&1 >/dev/null) || \
-                log "  WARNING: failed to scp $(basename "$f"): ${_scp_err}"
+            _scp_err=$(worker_scp "$f" "$worker_ip" "${STAGING_DIR}/" 2>&1 >/dev/null) || {
+                log "ERROR: failed to scp ${_fname}"
+                worker_failed=1
+                worker_reason="artifact_copy"
+            }
         done
 
         # Copy UVP and sub-debs from aelladeb dir
@@ -4598,9 +4828,17 @@ orchestrate_workers() {
         for f in "${AELLADEB_DIR}"/*.deb; do
             [[ -f "$f" ]] || continue
             local _scp_err
-            _scp_err=$(worker_scp "$f" "$worker_ip" "${AELLADEB_DIR}/" 2>&1 >/dev/null) || \
-                log "  WARNING: failed to scp $(basename "$f"): ${_scp_err}"
+            _scp_err=$(worker_scp "$f" "$worker_ip" "${AELLADEB_DIR}/" 2>&1 >/dev/null) || {
+                log "ERROR: failed to scp $(basename "$f")"
+                worker_failed=1
+                worker_reason="artifact_copy"
+            }
         done
+        if [[ "$worker_failed" -ne 0 ]]; then
+            log "WORKER_RESULT ip=${worker_ip} result=FAIL reason=${worker_reason}"
+            orch_failed=1
+            continue
+        fi
 
         # Detect worker role from master's perspective
         local worker_role
@@ -4612,31 +4850,58 @@ orchestrate_workers() {
             worker_role="DR-worker"  # default
         fi
 
-        # Run script on worker (sudo for root access)
+        # Run script on worker (sudo for root access). Capture rc without a
+        # pipe so set -euo pipefail cannot hide a remote nonzero status.
         log "Running bringup on worker $worker_ip (role: $worker_role)..."
+        local worker_out worker_rc=0
+        worker_out="$(mktemp /tmp/worker-bringup.XXXXXX)"
+        set +e
         worker_ssh "$worker_ip" \
-            "sudo bash /tmp/${SCRIPT_NAME} --version $VERSION --role $worker_role --worker-mode --skip-download" 2>&1 | \
-            while IFS= read -r line; do log "  [$worker_ip] $line"; done || {
-            log "WARNING: Worker $worker_ip bringup had errors"
-        }
-
-        # Verify worker appeared in cluster (check from master)
-        sleep 10
-        local worker_hostname
-        worker_hostname=$(worker_ssh "$worker_ip" "hostname" 2>/dev/null || echo "unknown")
-        if kubectl get nodes 2>/dev/null | grep -qi "$worker_hostname"; then
-            log "Worker $worker_ip ($worker_hostname) joined cluster successfully"
-        else
-            log "WARNING: Worker $worker_ip ($worker_hostname) not yet visible in 'kubectl get nodes'"
-            log "  It may still be joining -- check with: kubectl get nodes"
+            "sudo bash /tmp/${SCRIPT_NAME} --version $VERSION --role $worker_role --worker-mode --skip-download" \
+            >"$worker_out" 2>&1
+        worker_rc=$?
+        set -e
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            log "  [$worker_ip] $line"
+        done <"$worker_out"
+        rm -f "$worker_out"
+        if [[ "$worker_rc" -ne 0 ]]; then
+            log "WORKER_RESULT ip=${worker_ip} result=FAIL reason=remote_bringup"
+            orch_failed=1
+            continue
         fi
 
-        log "Worker $worker_ip deployment complete"
+        # Verify worker appeared in cluster and became Ready (bounded wait).
+        local worker_hostname ready_wait=0 ready_ok=0
+        worker_hostname=$(worker_ssh "$worker_ip" "hostname" 2>/dev/null || echo "unknown")
+        while [[ "$ready_wait" -lt 60 ]]; do
+            if kubectl get nodes --no-headers 2>/dev/null \
+                | awk -v h="$worker_hostname" 'BEGIN{IGNORECASE=1} $1==h && $2 ~ /^Ready($|,)/ {found=1} END{exit found?0:1}'; then
+                ready_ok=1
+                break
+            fi
+            sleep 5
+            ready_wait=$((ready_wait + 1))
+        done
+        if [[ "$ready_ok" -ne 1 ]]; then
+            log "WORKER_RESULT ip=${worker_ip} result=FAIL reason=not_ready host=${worker_hostname}"
+            orch_failed=1
+            continue
+        fi
+
+        log "WORKER_RESULT ip=${worker_ip} result=PASS"
+        log "Worker $worker_ip ($worker_hostname) joined cluster successfully"
     done
 
     # Final cluster state
     log "Cluster state after worker deployment:"
     kubectl get nodes -o wide 2>/dev/null || true
+    if [[ "$orch_failed" -ne 0 ]]; then
+        log "WORKER_ORCHESTRATION=FAIL"
+        return 1
+    fi
+    log "WORKER_ORCHESTRATION=PASS"
+    return 0
 }
 
 ###############################################################################
@@ -4681,9 +4946,16 @@ join_k8s_cluster() {
     host_name=$(hostname)
 
     if [[ -n "$username" && -n "$password" ]]; then
-        local token_response
-        token_response=$(curl -sk -u "${username}:${password}" \
-            "https://${master_ip}:8003/api/1.0/master_token?host=${host_name}" 2>/dev/null)
+        local token_response curl_rc=0
+        token_response="$(curl -sk --connect-timeout 10 --max-time 30 \
+            -u "${username}:${password}" \
+            "https://${master_ip}:8003/api/1.0/master_token?host=${host_name}" \
+            2>/dev/null)" || {
+            curl_rc=$?
+            log "ERROR: join-token API request failed master=${master_ip} port=8003 curl_rc=${curl_rc}"
+            log "WORKER_RESULT result=FAIL reason=token_api_curl"
+            return "$curl_rc"
+        }
         log "Token API response length: ${#token_response}"
 
         # Response may be raw token or JSON -- extract token if JSON
@@ -4697,9 +4969,8 @@ join_k8s_cluster() {
     fi
 
     if [[ -z "$token" || "$token" == *"error"* || "$token" == *"Error"* ]]; then
-        log "WARNING: Could not get token from REST API"
-        log "  Response: ${token_response:-empty}"
-        log "  Ensure master is fully up and aella_cluster_manager is running."
+        log "ERROR: join-token API response invalid master=${master_ip} port=8003 length=${#token_response}"
+        log "WORKER_RESULT result=FAIL reason=token_api_invalid"
         die "Cannot get join token from master"
     fi
 
@@ -5733,9 +6004,20 @@ main() {
     # Phase 12: Validate
     validate_all || true
 
-    # Phase 13: Orchestrate workers (master only, after self is fully up)
+    # Phase 13: Orchestrate workers (master only, after self is fully up).
+    # Token API / TCP 8003 must be functionally ready first. systemctl is-active
+    # aellad is not sufficient — the failed lab had aellad active with 8003 down.
     if [[ "$WORKER_MODE" != "true" && -n "$WORKER_IPS" ]]; then
-        orchestrate_workers
+        if ! validate_critical_python_runtime; then
+            die "CRITICAL_PYTHON_RUNTIME=FAIL before worker orchestration"
+        fi
+        MASTER_IP="${MASTER_IP:-}"
+        if [[ -z "$MASTER_IP" ]]; then
+            MASTER_IP=$(grep 'master_ip' "$DA_CONF" 2>/dev/null | awk -F': ' '{print $2}' | tr -d "' \"" || true)
+        fi
+        wait_for_master_token_api || die "MASTER_TOKEN_API_READY=NO; refusing worker orchestration"
+        orchestrate_workers || die "WORKER_ORCHESTRATION=FAIL"
+        validate_expected_cluster_nodes || die "CLUSTER_JOIN_STATE incomplete"
     fi
 
     # AELDEV-71573 fix #15: pre-label DL master + workers with elastic=enabled

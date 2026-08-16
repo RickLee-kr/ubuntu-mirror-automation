@@ -53,8 +53,7 @@ else
   fail "A test-mode pre-detach exit 0 (rc=$?)"
 fi
 assert_grep 'IMPORTANT: DP SERVICE RESUME MAY BE REQUIRED' "$A_OUT" "A EN banner"
-assert_grep '안내: OS 업그레이드 전 사전 점검에서 DP 서비스가 pause' "$A_OUT" "A KO pause may remain"
-assert_grep '안내: bringup 실행 중에는 resume을 수행하지 마십시오' "$A_OUT" "A KO do-not-resume-during-bringup"
+assert_no_grep '안내:' "$A_OUT" "A no Korean operator guidance"
 assert_grep 'DP_RESUME_AUTOMATIC=NO' "$A_OUT" "A DP_RESUME_AUTOMATIC=NO"
 assert_grep 'DP_RESUME_CHECK_REQUIRED_AFTER_BRINGUP=YES' "$A_OUT" "A CHECK_REQUIRED_AFTER_BRINGUP"
 assert_grep 'DP_RESUME_EARLIEST_POINT=AFTER_BRINGUP_COMPLETE' "$A_OUT" "A EARLIEST_POINT"

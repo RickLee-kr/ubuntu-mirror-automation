@@ -227,7 +227,8 @@ dp2_prepare_bringup_controller_dependencies() {
     bringup_py3_dp_lifecycle.sh \
     lib/dp-phase2-bringup-lifecycle.sh \
     lib/dp-offline-source-product-version.sh \
-    lib/dp-phase2-operation-progress.sh
+    lib/dp-phase2-operation-progress.sh \
+    lib/dp-phase2-ubuntu-prerequisites.sh
   do
     dest="${stage_dir}/${rel}"
     if [[ -s "$dest" ]] \

@@ -261,6 +261,7 @@ verify_helpers_http() {
     lib/dp-offline-source-product-version.sh
     lib/dp-phase2-operation-progress.sh
     lib/dp-phase2-bringup-lifecycle.sh
+    lib/dp-phase2-ubuntu-prerequisites.sh
   )
   for name in "${unit_scripts[@]}"; do
     for u in \

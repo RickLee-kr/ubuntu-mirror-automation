@@ -37,6 +37,7 @@ PHASE2_CLIENT_UNIT_LIBS=(
   lib/dp-offline-source-product-version.sh
   lib/dp-phase2-operation-progress.sh
   lib/dp-phase2-bringup-lifecycle.sh
+  lib/dp-phase2-ubuntu-prerequisites.sh
 )
 
 [[ "$(id -u)" -eq 0 || "${DP_PHASE2_SKIP_ROOT_CHECK:-0}" == "1" ]] || {

@@ -364,6 +364,14 @@ cmd_sync() {
   publish_atomic "$STAGING_DIR" "$run_id"
   verify_release_dir "$(readlink -f "$(dp2_current_dir)")"
 
+  # Separate prerequisite artifact; never mutates the 9-file ACPS bundle.
+  if [[ -f "${SCRIPT_DIR}/prepare-phase2-ubuntu-prerequisites.sh" ]]; then
+    PHASE2_PREREQ_OPTIONAL=1 \
+      DP_PHASE2_ROOT="$DP_PHASE2_ROOT" \
+      bash "${SCRIPT_DIR}/prepare-phase2-ubuntu-prerequisites.sh" "$DP_PHASE2_VERSION" \
+      || dp2_warn "PHASE2_PREREQ=SKIP_OR_FAIL (ACPS bundle unchanged)"
+  fi
+
   dp2_ok "SYNC_RESULT=PASS run_id=${run_id} bundle=${bundle_name} stable=${stable}"
   printf 'DP_PHASE2_SYNC_RESULT=PASS\n'
   printf 'RUN_ID=%s\n' "$run_id"

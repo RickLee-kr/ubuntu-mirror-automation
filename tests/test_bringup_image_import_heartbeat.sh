@@ -37,6 +37,15 @@ assert_grep() {
   fi
 }
 
+assert_no_grep() {
+  local pat="$1" file="$2" msg="$3"
+  if grep -Eq -- "$pat" "$file"; then
+    fail "$msg (unexpected pattern=$pat)"
+  else
+    pass "$msg"
+  fi
+}
+
 echo "======== test_bringup_image_import_heartbeat ========"
 
 # --- D: static ---
@@ -74,7 +83,7 @@ fi
 
 # Notices present.
 assert_grep 'NOTICE: Local image import may take tens of minutes' "$BRINGUP" "EN duration notice"
-assert_grep '안내: 대용량 로컬 이미지 import는 수십 분' "$BRINGUP" "KO duration notice"
+assert_no_grep '안내:' "$BRINGUP" "no Korean image-import guidance"
 assert_grep 'IMAGE_IMPORT_HEARTBEAT_SECONDS' "$BRINGUP" "heartbeat env honored"
 
 WORKDIR="$(mktemp -d)"

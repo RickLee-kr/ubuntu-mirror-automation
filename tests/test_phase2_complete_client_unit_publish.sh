@@ -82,6 +82,7 @@ UNIT=(
   lib/dp-offline-source-product-version.sh
   lib/dp-phase2-operation-progress.sh
   lib/dp-phase2-bringup-lifecycle.sh
+  lib/dp-phase2-ubuntu-prerequisites.sh
 )
 
 for f in "${UNIT[@]}"; do
@@ -103,7 +104,8 @@ for f in \
   bringup_py3_dp_lifecycle.sh \
   lib/dp-offline-source-product-version.sh \
   lib/dp-phase2-operation-progress.sh \
-  lib/dp-phase2-bringup-lifecycle.sh
+  lib/dp-phase2-bringup-lifecycle.sh \
+  lib/dp-phase2-ubuntu-prerequisites.sh
 do
   code="$(curl -sS -o "${TMP}/http-${f////_}" -w '%{http_code}' \
     "http://127.0.0.1:${PORT}/client/${f}")"

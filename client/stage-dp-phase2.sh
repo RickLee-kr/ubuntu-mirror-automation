@@ -60,7 +60,8 @@ _STAGE_LIB_DIR="${SCRIPT_DIR}/lib"
 mkdir -p "${_STAGE_LIB_DIR}"
 for _rel in \
   dp-offline-source-product-version.sh \
-  dp-phase2-operation-progress.sh
+  dp-phase2-operation-progress.sh \
+  dp-phase2-ubuntu-prerequisites.sh
 do
   if [[ ! -s "${_STAGE_LIB_DIR}/${_rel}" ]]; then
     if ! _stage_fetch_helper_if_missing "${_STAGE_LIB_DIR}/${_rel}" "lib/${_rel}"; then
@@ -77,6 +78,7 @@ do
     fi
   fi
 done
+# dp-phase2-ubuntu-prerequisites.sh is optional on older published client trees.
 if [[ ! -s "${_STAGE_LIB_DIR}/dp-offline-source-product-version.sh" \
   || ! -s "${_STAGE_LIB_DIR}/dp-phase2-operation-progress.sh" ]]
 then
@@ -1284,6 +1286,45 @@ EOF
   fi
 }
 
+stage_phase2_ubuntu_prerequisites() {
+  local name="phase2-ubuntu-prerequisites.tar.gz"
+  local url="${MIRROR_URL}/dp-phase2/${TARGET_DP_VERSION}/extras/${name}"
+  local dest="${ARTIFACT_DIR}/${name}"
+  local tmp sha_url sha_dest
+  tmp="$(mktemp "${ARTIFACT_DIR}/.${name}.XXXXXX")"
+  if ! curl -fsSL --connect-timeout 15 --max-time 120 --retry 2 -o "$tmp" "$url"; then
+    rm -f "$tmp"
+    log "PHASE2_PREREQ_STAGE=SKIP reason=not_published"
+    return 0
+  fi
+  if [[ ! -s "$tmp" ]] \
+    || head -c 256 "$tmp" | tr -d '\0' | grep -qiE '<!DOCTYPE[[:space:]]*html|<html[[:space:]]|<html>'; then
+    rm -f "$tmp"
+    log "PHASE2_PREREQ_STAGE=SKIP reason=invalid_payload"
+    return 0
+  fi
+  sha_url="${url}.sha256"
+  sha_dest="${dest}.sha256"
+  if curl -fsSL --connect-timeout 15 --max-time 30 -o "${sha_dest}.tmp" "$sha_url"; then
+    mv -f "${sha_dest}.tmp" "$sha_dest"
+    local expected actual
+    expected="$(awk 'NF {print $1; exit}' "$sha_dest")"
+    actual="$(sha256sum "$tmp" | awk '{print $1}')"
+    if [[ -n "$expected" && "${expected,,}" != "${actual,,}" ]]; then
+      rm -f "$tmp" "$sha_dest"
+      log "PHASE2_PREREQ_STAGE=FAIL reason=sha256"
+      return 1
+    fi
+  else
+    rm -f "${sha_dest}.tmp"
+  fi
+  mv -f "$tmp" "$dest"
+  chown "${AELLA_UID}:${AELLA_PRIMARY_GID}" "$dest" 2>/dev/null || true
+  [[ -f "$sha_dest" ]] && chown "${AELLA_UID}:${AELLA_PRIMARY_GID}" "$sha_dest" 2>/dev/null || true
+  log "PHASE2_PREREQ_STAGE=PASS path=${dest}"
+  return 0
+}
+
 install_bringup_lifecycle_wrapper() {
   PHASE2_STAGE_PHASE="PUBLISH_BRINGUP_CONTROLLER"
   log "PHASE2_STAGE_PHASE=${PHASE2_STAGE_PHASE}"
@@ -1321,6 +1362,14 @@ install_bringup_lifecycle_wrapper() {
   install -o root -g root -m 0644 \
     "${_STAGE_LIB_DIR}/dp-phase2-bringup-lifecycle.sh" \
     "${BRINGUP_DIR}/lib/dp-phase2-bringup-lifecycle.sh"
+  if [[ -f "${_STAGE_LIB_DIR}/dp-phase2-ubuntu-prerequisites.sh" ]]; then
+    install -o root -g root -m 0600 \
+      "${_STAGE_LIB_DIR}/dp-phase2-ubuntu-prerequisites.sh" \
+      "${lib_dest}/dp-phase2-ubuntu-prerequisites.sh"
+    install -o root -g root -m 0644 \
+      "${_STAGE_LIB_DIR}/dp-phase2-ubuntu-prerequisites.sh" \
+      "${BRINGUP_DIR}/lib/dp-phase2-ubuntu-prerequisites.sh"
+  fi
 
   local bu bg
   bu="$(stat -c '%u' "$VENDOR_BRINGUP_INSTALLED")"
@@ -1500,6 +1549,9 @@ stage_main() {
   bg="$(stat -c '%g' "$sample")"
   [[ "$bu" == "$AELLA_UID" && "$bg" == "$AELLA_PRIMARY_GID" ]] \
     || die "artifact ownership mismatch uid=${bu} gid=${bg}"
+
+  # Separate Phase 2 Ubuntu prerequisite artifact (not part of the 9 ACPS files).
+  stage_phase2_ubuntu_prerequisites || true
 
   rm -rf "$STAGE_ROOT"
   STAGE_ROOT=""

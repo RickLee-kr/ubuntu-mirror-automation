@@ -72,6 +72,8 @@ TEST_LIST=(
   test_mirror_manager_menu_status.sh
   test_bringup_image_import_heartbeat.sh
   test_bringup_dp_resume_notice.sh
+  test_phase2_ubuntu_prerequisites.py
+  test_phase2_cluster_readiness.sh
   test_client_manifest_signing.sh
   test_worktree_isolation.sh
   test_distupgrade_config_ascii.sh

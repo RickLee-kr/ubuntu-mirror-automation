@@ -228,11 +228,26 @@ def parse_dep_field(field):
     return groups
 
 
-def dep_names(field):
+def dep_names(field, packages=None):
+    """Return one package name per dependency group.
+
+    Default (packages is None): first alternative only, matching historical
+    callers. When a package index dict is provided, each alternative group
+    selects the first alternative present in that index.
+    """
     names = []
     for group in parse_dep_field(field):
-        if group:
+        if not group:
+            continue
+        if packages is None:
             names.append(group[0][0])
+            continue
+        chosen = None
+        for alt in group:
+            if alt[0] in packages:
+                chosen = alt[0]
+                break
+        names.append(chosen if chosen is not None else group[0][0])
     return names
 
 
@@ -602,13 +617,19 @@ def load_suite_packages(ubuntu_root, suites, components, arch='amd64'):
     return by_name, provenance
 
 
-def follow_dependency_closure(packages, roots, fields=None):
-    """Name-based dependency closure (first alternative only)."""
+def follow_dependency_closure(packages, roots, fields=None, prefer_available=False):
+    """Name-based recursive dependency closure.
+
+    Default alternative handling is first-alternative-only (historical).
+    When prefer_available is True, each Depends/Pre-Depends alternative
+    group selects the first alternative present in ``packages``.
+    """
     fields = fields or ('Pre-Depends', 'Depends', 'Recommends')
     seen = set()
     missing = []
     queue = list(roots)
     edges = []
+    alt_index = packages if prefer_available else None
     while queue:
         name = queue.pop(0)
         if name in seen:
@@ -619,7 +640,7 @@ def follow_dependency_closure(packages, roots, fields=None):
             missing.append(name)
             continue
         for field in fields:
-            for dep in dep_names(info.get(field)):
+            for dep in dep_names(info.get(field), alt_index):
                 edges.append(OrderedDict([
                     ('from', name), ('field', field), ('to', dep),
                 ]))

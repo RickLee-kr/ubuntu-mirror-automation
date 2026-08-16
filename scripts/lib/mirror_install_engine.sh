@@ -824,6 +824,23 @@ engine_materialize_os_mirror() {
 }
 
 # SHA1 of a bringup file. Tests may override to simulate a specific digest.
+engine_prepare_phase2_ubuntu_prerequisites() {
+  local script="${MM_PROJECT_ROOT}/scripts/prepare-phase2-ubuntu-prerequisites.sh"
+  local work="${1:-}"
+  [[ -f "$script" ]] || {
+    mm_warn "PHASE2_PREREQ=SKIP reason=prepare_script_missing"
+    return 0
+  }
+  mm_set_phase "Preparing Phase 2 Ubuntu Prerequisites"
+  PHASE2_PREREQ_OPTIONAL="${PHASE2_PREREQ_OPTIONAL:-1}" \
+    DP_PHASE2_VERSION="${TARGET_DP_VERSION}" \
+    DP_PHASE2_ROOT="${MM_DP_PHASE2_ROOT}" \
+    MM_SELECTIVE_ROOT="${MM_SELECTIVE_ROOT}" \
+    PHASE2_PREREQ_WORK_DIR="$work" \
+    bash "$script" "${TARGET_DP_VERSION}" \
+    || mm_warn "PHASE2_PREREQ=WARN prepare returned nonzero (ACPS bundle unchanged)"
+}
+
 engine_bringup_sha1_of() {
   sha1sum "$1" | awk '{print $1}'
 }
@@ -853,7 +870,13 @@ engine_bringup_required_patch_result_markers() {
     '# BEGIN_IMAGE_IMPORT_HEARTBEAT' \
     'run_image_import_with_heartbeat' \
     'emit_dp_resume_notice_line' \
-    '--worker-password'
+    '--worker-password' \
+    'wait_for_master_token_api' \
+    'validate_expected_cluster_nodes' \
+    'validate_apt_dependency_graph' \
+    'MASTER_TOKEN_API_READY' \
+    'CLUSTER_JOIN_STATE' \
+    'APT_DEPENDENCY_CHECK'
 }
 
 # SHA1 of the current locally patched bringup that must be inside the final bundle.
@@ -2037,6 +2060,7 @@ engine_download_and_prepare() {
 
   if [[ "${PHASE2_BUNDLE_ACTION}" == "REUSE" ]]; then
     engine_mark_phase2_reused "$TARGET_DP_VERSION"
+    engine_prepare_phase2_ubuntu_prerequisites
     engine_cleanup_temps
     mm_state_set HTTP_DISTRIBUTION_READY NO
     mm_status_set HTTP_DISTRIBUTION DISABLED
@@ -2063,6 +2087,7 @@ engine_download_and_prepare() {
     # Release the old final before writing .new (peak = work + new tar).
     engine_release_phase2_final_after_extract "$TARGET_DP_VERSION"
     engine_place_dp_phase2_final "$work" "$TARGET_DP_VERSION"
+    engine_prepare_phase2_ubuntu_prerequisites "$work"
     mm_status_set ACPS_PHASE2_DOWNLOADED REUSED
     mm_status_set ACPS_CHECKSUM REUSED
     mm_status_set UPSTREAM_BRINGUP_DRIFT NO
@@ -2082,6 +2107,7 @@ engine_download_and_prepare() {
     engine_assert_work_ready_for_bundle "$cache" "$work" "$TARGET_DP_VERSION" \
       || mm_die "ACPS_WORK_VALIDATE=FAIL"
     engine_place_dp_phase2_final "$work" "$TARGET_DP_VERSION"
+    engine_prepare_phase2_ubuntu_prerequisites "$work"
   fi
 
   engine_cleanup_temps
