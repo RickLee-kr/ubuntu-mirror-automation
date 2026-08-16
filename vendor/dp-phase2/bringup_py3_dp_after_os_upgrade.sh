@@ -2288,10 +2288,6 @@ load_local_images() {
         log "NOTICE: ctr may not print output while it is actively importing images."
         log "NOTICE: Do not interrupt bringup, restart containerd, reboot the VM, or run bringup again."
         log "NOTICE: Progress heartbeat will be printed every $(image_import_heartbeat_seconds) seconds."
-        log "안내: 대용량 로컬 이미지 import는 수십 분 이상 걸릴 수 있습니다."
-        log "안내: 이 단계에서는 ctr이 정상 동작 중이어도 별도 출력을 표시하지 않을 수 있습니다."
-        log "안내: 중간 로그가 없더라도 bringup을 재실행하거나 containerd를 재시작하거나 VM을 재부팅하지 마십시오."
-        log "안내: 작업 중에는 $(image_import_heartbeat_seconds)초마다 진행 상태가 출력됩니다."
         k8s_log=$(mktemp /tmp/load_local_k8s.XXXXXX.log)
         moby_log=$(mktemp /tmp/load_local_moby.XXXXXX.log)
         # Serial imports. Earlier parallel impl raced on the shared content store
@@ -5894,11 +5890,6 @@ emit_dp_resume_pre_detach_notice() {
     emit_dp_resume_notice_line ""
     emit_dp_resume_notice_line "  show status"
     emit_dp_resume_notice_line ""
-    emit_dp_resume_notice_line "안내: OS 업그레이드 전 사전 점검에서 DP 서비스가 pause되었을 수 있습니다."
-    emit_dp_resume_notice_line "안내: Phase 2 bringup은 기존 DP pause 상태를 자동으로 해제하지 않습니다."
-    emit_dp_resume_notice_line "안내: bringup 실행 중에는 resume을 수행하지 마십시오."
-    emit_dp_resume_notice_line "안내: 로그에 \"Bringup complete:\"가 출력된 후 aella_cli에서 상태를 확인하십시오."
-    emit_dp_resume_notice_line "안내: \"System paused\"가 표시되면 resume을 실행해야 DP 서비스가 시작됩니다."
     emit_dp_resume_notice_line "DP_RESUME_AUTOMATIC=NO"
     emit_dp_resume_notice_line "DP_RESUME_CHECK_REQUIRED_AFTER_BRINGUP=YES"
     emit_dp_resume_notice_line "DP_RESUME_COMMAND=aella_cli_then_resume"
@@ -5931,9 +5922,6 @@ emit_dp_resume_post_complete_notice() {
     emit_dp_resume_notice_line ""
     emit_dp_resume_notice_line "  show status"
     emit_dp_resume_notice_line ""
-    emit_dp_resume_notice_line "안내: bringup 완료 후에도 DP 제품 서비스는 아직 pause 상태일 수 있습니다."
-    emit_dp_resume_notice_line "안내: aella_cli에서 show status로 paused 여부를 먼저 확인하십시오."
-    emit_dp_resume_notice_line "안내: \"System paused\"이면 resume을 실행하고, pod 기동을 기다린 뒤 다시 확인하십시오."
     emit_dp_resume_notice_line "PHASE2_BRINGUP=COMPLETE"
     emit_dp_resume_notice_line "DP_PLATFORM_PAUSE_STATE=REQUIRES_OPERATOR_CHECK"
     emit_dp_resume_notice_line "DP_PRODUCT_RUNTIME_VALIDATION=NOT_COMPLETE"
