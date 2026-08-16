@@ -115,6 +115,8 @@ for f in \
   "${INSTALL_LIB_DIR}/scripts/lib/build_client_jammy_to_noble.py" \
   "${INSTALL_LIB_DIR}/scripts/rebuild-publish-clients.sh" \
   "${INSTALL_LIB_DIR}/lib/runtime_manifest.sh" \
+  "${INSTALL_LIB_DIR}/scripts/lib/patch_dp_phase2_bringup.py" \
+  "${INSTALL_LIB_DIR}/scripts/lib/phase2_bringup_patch/fragment_compat.sh" \
   "${INSTALL_LIB_DIR}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh" \
   "${INSTALL_LIB_DIR}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1" \
   "${INSTALL_LIB_DIR}/templates/nginx.conf" \

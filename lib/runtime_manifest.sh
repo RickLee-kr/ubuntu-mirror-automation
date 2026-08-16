@@ -68,6 +68,16 @@ UM_RUNTIME_SCRIPT_LIB_PYTHON_EXECUTABLES=(
   build_client_focal_to_jammy.py
   build_client_jammy_to_noble.py
   build_client_launchers.py
+  patch_dp_phase2_bringup.py
+)
+
+# Extra files under scripts/lib/ (subdirectories). Includes Phase 2 bringup
+# patch fragments that the patcher hashes into BRINGUP_PATCH_GENERATION.
+UM_RUNTIME_SCRIPT_LIB_EXTRA=(
+  phase2_bringup_patch/fragment_compat.sh
+  phase2_bringup_patch/fragment_heartbeat.sh
+  phase2_bringup_patch/fragment_resume.sh
+  phase2_bringup_patch/README.md
 )
 
 # ---------------------------------------------------------------------------
@@ -135,6 +145,11 @@ UM_RUNTIME_REQUIRED_RELATIVE_PATHS=(
   scripts/lib/build_client_focal_to_jammy.py
   scripts/lib/build_client_jammy_to_noble.py
   scripts/lib/build_client_launchers.py
+  scripts/lib/patch_dp_phase2_bringup.py
+  scripts/lib/phase2_bringup_patch/fragment_compat.sh
+  scripts/lib/phase2_bringup_patch/fragment_heartbeat.sh
+  scripts/lib/phase2_bringup_patch/fragment_resume.sh
+  scripts/lib/phase2_bringup_patch/README.md
   client/lib/dp-offline-destructive-confirmation.sh
   client/lib/dp-offline-release-upgrade-reconciliation.sh
   client/lib/dp-offline-apt-preflight-sandbox.sh
@@ -175,7 +190,8 @@ um_runtime_script_lib_files() {
   for f in \
     "${UM_RUNTIME_SCRIPT_LIB_SHELL[@]}" \
     "${UM_RUNTIME_SCRIPT_LIB_PYTHON_MODULES[@]}" \
-    "${UM_RUNTIME_SCRIPT_LIB_PYTHON_EXECUTABLES[@]}"
+    "${UM_RUNTIME_SCRIPT_LIB_PYTHON_EXECUTABLES[@]}" \
+    "${UM_RUNTIME_SCRIPT_LIB_EXTRA[@]}"
   do
     printf '%s\n' "$f"
   done
@@ -295,6 +311,13 @@ um_runtime_install_tree() {
     um_runtime_install_one \
       "${src_root}/scripts/lib/${f}" \
       "${runtime}/scripts/lib/${f}" "$mode"
+  done
+
+  for f in "${UM_RUNTIME_SCRIPT_LIB_EXTRA[@]}"; do
+    mkdir -p "$(dirname "${runtime}/scripts/lib/${f}")"
+    um_runtime_install_one \
+      "${src_root}/scripts/lib/${f}" \
+      "${runtime}/scripts/lib/${f}" 0644
   done
 
   for f in "${UM_RUNTIME_VENDOR_FILES[@]}"; do

@@ -63,6 +63,8 @@ TEST_LIST=(
   test_gui_client_commands.sh
   test_bringup_worker_password.sh
   test_bringup_acps_sha_policy.sh
+  test_patch_dp_phase2_bringup.py
+  test_phase2_bringup_fresh_upstream.sh
   test_bringup_lifecycle_failed_retry.sh
   test_mirror_download_and_space_regressions.sh
   test_phase2_bundle_reuse_disk.sh

@@ -130,13 +130,21 @@ make_valid_final() {
     images-6.5.0.tar.sha256
   (cd "$dest" && sha256sum "$stable" >"${stable}.sha256")
   patched_sha="$(sha1sum "$PATCHED_BRINGUP" | awk '{print $1}')"
+  gen="$(python3 "${ROOT}/scripts/lib/patch_dp_phase2_bringup.py" --print-generation \
+    | awk -F= '$1=="BRINGUP_PATCH_GENERATION"{print $2; exit}')"
   cat >"${dest}/release.env" <<EOF
 TARGET_DP_VERSION=6.5.0
 PHASE2_ARTIFACT_VERSION=6.5.0
 STABLE_BUNDLE_NAME=${stable}
 PHASE2_BUNDLE_ENTRY_COUNT=9
 BRINGUP_PATCHED_SHA1=${patched_sha}
+BRINGUP_PATCH_GENERATION=${gen}
+BRINGUP_UPSTREAM_SHA1=70de02dd62409110dadb7553991d1ffb0a79f396
 EOF
+  cp -f "${ROOT}/tests/fixtures/dp-phase2/upstream_bringup_unpatched.sh" \
+    "${dest}/bringup_py3_dp_after_os_upgrade.sh.upstream"
+  sha1sum "${dest}/bringup_py3_dp_after_os_upgrade.sh.upstream" | awk '{print $1}' \
+    >"${dest}/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1"
   [[ -f "${dest}/${stable}" ]] || fail "make_valid_final missing bundle"
 }
 

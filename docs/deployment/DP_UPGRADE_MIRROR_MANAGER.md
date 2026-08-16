@@ -311,9 +311,12 @@ logged as `UPSTREAM_BRINGUP_DRIFT=NON_BLOCKING` and does not fail the
 install or block HTTP distribution.
 
 A changed upstream must still pass syntax (`bash -n`) and required patch
-anchors before the local patched copy is applied. Missing anchors or a
-failed/no-op patch is fatal (`BRINGUP_PATCH_COMPAT` /
+anchors. Project modifications are then applied **to that fresh upstream**
+by `scripts/lib/patch_dp_phase2_bringup.py`. Missing anchors or a failed
+generation is fatal (`BRINGUP_PATCH_COMPAT` / `PATCHED_BRINGUP_GENERATION` /
 `BRINGUP_PATCH_RESULT` / `PATCHED_BRINGUP_SYNTAX`), independent of SHA drift.
+The repository vendor full copy is a reference artifact only and is never
+copied over a newly downloaded ACPS bringup.
 
 ## Client HTTP only
 

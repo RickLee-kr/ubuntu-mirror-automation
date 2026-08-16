@@ -4548,7 +4548,8 @@ else
   cat "$cf_pkg/v2.out" || true
   cat "$cf_pkg/root/etc/stellar-conffile-probe.conf" 2>/dev/null || true
 fi
-if apt-config -c "$cf_pkg/root/etc/apt/apt.conf.d/97stellar-offline-conffile-policy" dump 2>/dev/null \
+if env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" HOME=/tmp \
+  apt-config -c "$cf_pkg/root/etc/apt/apt.conf.d/97stellar-offline-conffile-policy" dump 2>/dev/null \
   | grep -Fq 'DPkg::Options:: "--force-confold"'; then
   pass "apt-config parses force-confold policy"
 else

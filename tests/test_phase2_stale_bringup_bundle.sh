@@ -137,11 +137,16 @@ publish_bundle_from_work "$OLD_WORK" "$OLD_SHA"
 engine_assess_phase2_final 6.5.0
 [[ "$PHASE2_EXISTING_BUNDLE" == "INVALID" ]] \
   || fail "old patched SHA bundle reusable got=${PHASE2_EXISTING_BUNDLE}"
-[[ "${PHASE2_EXISTING_INVALID_REASON}" == "patched_bringup_changed" ]] \
-  || fail "reason want=patched_bringup_changed got=${PHASE2_EXISTING_INVALID_REASON}"
+[[ "${PHASE2_EXISTING_INVALID_REASON}" == "patch_generation_missing" ]] \
+  || fail "reason want=patch_generation_missing got=${PHASE2_EXISTING_INVALID_REASON}"
 pass "reuse assessment rejects old-vendor Phase 2 bundle"
 
 publish_bundle_from_work "$OLD_WORK" ""
+printf 'BRINGUP_PATCH_GENERATION=%s\n' \
+  "$(python3 "${ROOT}/scripts/lib/patch_dp_phase2_bringup.py" --print-generation | awk -F= '$1=="BRINGUP_PATCH_GENERATION"{print $2; exit}')" \
+  >>"${MM_DP_PHASE2_ROOT}/6.5.0/release.env"
+printf 'BRINGUP_UPSTREAM_SHA1=70de02dd62409110dadb7553991d1ffb0a79f396\n' \
+  >>"${MM_DP_PHASE2_ROOT}/6.5.0/release.env"
 engine_assess_phase2_final 6.5.0
 [[ "$PHASE2_EXISTING_BUNDLE" == "INVALID" ]] \
   || fail "bundle missing BRINGUP_PATCHED_SHA1 still VALID"
@@ -152,7 +157,15 @@ pass "reuse assessment rejects bundle without BRINGUP_PATCHED_SHA1"
 # Rebuild using current patched bringup; large image payload is the small fixture.
 NEW_WORK="${TMP}/new-work"
 make_work_tree "$NEW_WORK" "$PATCHED_BRINGUP"
+mkdir -p "${NEW_WORK}.upstream"
+cp -f "${ROOT}/tests/fixtures/dp-phase2/upstream_bringup_unpatched.sh" \
+  "${NEW_WORK}.upstream/bringup_py3_dp_after_os_upgrade.sh"
+sha1sum "${NEW_WORK}.upstream/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}' \
+  >"${NEW_WORK}.upstream/bringup_py3_dp_after_os_upgrade.sh.sha1"
 export MM_KEEP_PHASE2_SOURCES=1
+BRINGUP_UPSTREAM_SHA1="$(sha1sum "${NEW_WORK}.upstream/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
+BRINGUP_PATCH_GENERATION="$(python3 "${ROOT}/scripts/lib/patch_dp_phase2_bringup.py" --print-generation | awk -F= '$1=="BRINGUP_PATCH_GENERATION"{print $2; exit}')"
+BRINGUP_PATCHED_SHA1="$CURRENT_SHA"
 engine_place_dp_phase2_final "$NEW_WORK" 6.5.0 >/dev/null
 NEW_ENV="${MM_DP_PHASE2_ROOT}/6.5.0/release.env"
 NEW_BUNDLE="${MM_DP_PHASE2_ROOT}/6.5.0/dp_bundle_6.5.0-current.tar"

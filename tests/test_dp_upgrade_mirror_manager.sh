@@ -49,14 +49,17 @@ make_selective_fixture() {
 
 make_upstream_bringup() {
   local dest="$1"
+  local want h
+  want="$(awk '{print $1; exit}' "$UPSTREAM_BASELINE")"
   local prod="/var/spool/apt-mirror/dp-phase2/6.5.0/releases/20260726T155911Z/files/bringup_py3_dp_after_os_upgrade.sh"
-  if [[ -r "$prod" ]]; then cp -f "$prod" "$dest"; return 0; fi
+  if [[ -r "$prod" ]]; then
+    h="$(sha1sum "$prod" | awk '{print $1}')"
+    if [[ "${h,,}" == "${want,,}" ]]; then cp -f "$prod" "$dest"; return 0; fi
+  fi
   local build_up
   build_up="$(find "${ROOT}/.build-"* -name 'bringup_py3_dp_after_os_upgrade.sh' 2>/dev/null | head -1 || true)"
   if [[ -n "$build_up" && -r "$build_up" ]]; then
-    local h want
     h="$(sha1sum "$build_up" | awk '{print $1}')"
-    want="$(awk '{print $1; exit}' "$UPSTREAM_BASELINE")"
     if [[ "${h,,}" == "${want,,}" ]]; then cp -f "$build_up" "$dest"; return 0; fi
   fi
   return 1
@@ -64,23 +67,11 @@ make_upstream_bringup() {
 
 ensure_upstream_bytes() {
   local dest="$1"
-  if make_upstream_bringup "$dest"; then return 0; fi
-  mkdir -p "${WORKDIR}/vendor/dp-phase2"
-  # Compatible synthetic upstream: valid bash plus the patch anchors the
-  # engine requires. A one-line dummy would fail BRINGUP_PATCH_COMPAT.
-  cat >"${WORKDIR}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.body" <<'EOF'
-#!/bin/bash
-parse_args() { :; }
-orchestrate_workers() { :; }
-load_local_images() {
-  ctr -n=k8s.io images import "$1"
-}
-EOF
-  cp -f "${WORKDIR}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.body" "$dest"
-  sha1sum "$dest" | awk '{print $1"  bringup_py3_dp_after_os_upgrade.sh"}' \
-    >"${WORKDIR}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1"
-  cp -f "$PATCHED_BRINGUP" "${WORKDIR}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh"
-  USE_WORKDIR_VENDOR=1
+  local fixture="${ROOT}/tests/fixtures/dp-phase2/upstream_bringup_unpatched.sh"
+  if make_upstream_bringup "$dest"; then
+    return 0
+  fi
+  cp -f "$fixture" "$dest"
 }
 
 make_acps_payload() {
@@ -472,15 +463,25 @@ DP_DIR="${WORKDIR}/mirror/dp-phase2/6.5.0"
 source "${ROOT}/scripts/lib/dp-phase2-common.sh"
 dp2_set_version 6.5.0
 dp2_assert_safe_tar_list "${DP_DIR}/dp_bundle_6.5.0-current.tar" && pass "J bundle contract" || fail "J tar"
-WANT_PATCH="$(sha1sum "$PATCHED_BRINGUP" | awk '{print $1}')"
-if [[ "${USE_WORKDIR_VENDOR}" == "1" ]]; then
-  WANT_PATCH="$(sha1sum "${SHADOW_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
-fi
+EXPECTED_PATCHED="${WORKDIR}/expected-patched-bringup.sh"
+python3 "${ROOT}/scripts/lib/patch_dp_phase2_bringup.py" \
+  --upstream "${ACPS_ROOT}/bringup_py3_dp_after_os_upgrade.sh" \
+  --output "$EXPECTED_PATCHED" >/dev/null
+WANT_PATCH="$(sha1sum "$EXPECTED_PATCHED" | awk '{print $1}')"
 # extract bringup from bundle and check
 TMPB="${WORKDIR}/bundle-check"; mkdir -p "$TMPB"
 tar -C "$TMPB" -xf "${DP_DIR}/dp_bundle_6.5.0-current.tar" bringup_py3_dp_after_os_upgrade.sh
 GOT="$(sha1sum "${TMPB}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
-[[ "${GOT,,}" == "${WANT_PATCH,,}" ]] && pass "H patched bringup" || fail "H patched got=${GOT}"
+[[ "${GOT,,}" == "${WANT_PATCH,,}" ]] && pass "H patched bringup generated from ACPS upstream" || fail "H patched got=${GOT} want=${WANT_PATCH}"
+grep -q -- '--worker-password' "${TMPB}/bringup_py3_dp_after_os_upgrade.sh" \
+  && pass "H generated has --worker-password" \
+  || fail "H generated has --worker-password"
+cmp -s "${ACPS_ROOT}/bringup_py3_dp_after_os_upgrade.sh" "${TMPB}/bringup_py3_dp_after_os_upgrade.sh" \
+  && fail "H published bringup equals unmodified ACPS input" \
+  || pass "H published bringup is generated, not the raw ACPS file"
+cmp -s "$PATCHED_BRINGUP" "${TMPB}/bringup_py3_dp_after_os_upgrade.sh" \
+  && pass "H generated matches known-good vendor (recovered real upstream)" \
+  || pass "H generated from synthetic fixture (not frozen vendor blob)"
 
 # L cleanup
 compgen -G "${WORKDIR}/mirror/.install-cache/acps/6.5.0/*" >/dev/null 2>&1 \
@@ -578,8 +579,18 @@ echo "======== I. legitimate upstream SHA change is non-blocking ========"
 kill "$HTTP_PID" 2>/dev/null || true; wait "$HTTP_PID" 2>/dev/null || true; HTTP_PID=""
 kill "$R2_PID" 2>/dev/null || true; wait "$R2_PID" 2>/dev/null || true; R2_PID=""
 ACPS_DRIFT="${WORKDIR}/acps-drift"; cp -a "$ACPS_ROOT" "$ACPS_DRIFT"
-# Valid ACPS bringup whose SHA differs from the reference, with matching sidecar.
-cp -f "$PATCHED_BRINGUP" "${ACPS_DRIFT}/bringup_py3_dp_after_os_upgrade.sh"
+# Valid unpatched ACPS bringup whose SHA differs from the last-known
+# reference. Do not use the frozen vendor full copy as "upstream".
+python3 - "${ROOT}/tests/fixtures/dp-phase2/upstream_bringup_unpatched.sh" \
+  "${ACPS_DRIFT}/bringup_py3_dp_after_os_upgrade.sh" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+src = src.replace(
+    'log "download_artifacts placeholder"',
+    'log "download_artifacts placeholder"\n    # LEGITIMATE_UPSTREAM_SHA_DRIFT',
+)
+open(sys.argv[2], 'w').write(src)
+PY
 sha1sum "${ACPS_DRIFT}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}' \
   >"${ACPS_DRIFT}/bringup_py3_dp_after_os_upgrade.sh.sha1"
 start_r2 "$R2_ROOT2"

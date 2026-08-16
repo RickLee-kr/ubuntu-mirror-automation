@@ -14,6 +14,7 @@ DP2="${ROOT}/scripts/lib/dp-phase2-common.sh"
 ACPS="${ROOT}/scripts/lib/acps_acquire.sh"
 R2="${ROOT}/scripts/lib/r2_acquire.sh"
 PATCHED_BRINGUP="${ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh"
+UPSTREAM_FIXTURE="${ROOT}/tests/fixtures/dp-phase2/upstream_bringup_unpatched.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "PASS: $*"; }
@@ -78,6 +79,9 @@ source "$ENGINE"
 dp2_set_version 6.5.0
 
 CURRENT_SHA="$(sha1sum "$PATCHED_BRINGUP" | awk '{print $1}')"
+CURRENT_GEN="$(python3 "${ROOT}/scripts/lib/patch_dp_phase2_bringup.py" --print-generation \
+  | awk -F= '$1=="BRINGUP_PATCH_GENERATION"{print $2; exit}')"
+UPSTREAM_FIXTURE_SHA="$(sha1sum "$UPSTREAM_FIXTURE" | awk '{print $1}')"
 
 engine_rebuild_publish_local_client_set() {
   seed_complete_client_http_set "$MM_CLIENT_ROOT" "http://192.0.2.10" \
@@ -168,6 +172,10 @@ EOF
   if [[ -n "$patched_sha" ]]; then
     printf 'BRINGUP_PATCHED_SHA1=%s\n' "$patched_sha" >>"${dest}/release.env"
   fi
+  printf 'BRINGUP_UPSTREAM_SHA1=%s\n' "$UPSTREAM_FIXTURE_SHA" >>"${dest}/release.env"
+  cp -f "$UPSTREAM_FIXTURE" "${dest}/bringup_py3_dp_after_os_upgrade.sh.upstream"
+  sha1sum "${dest}/bringup_py3_dp_after_os_upgrade.sh.upstream" | awk '{print $1}' \
+    >"${dest}/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1"
 }
 
 COUNTERS="${TMP}/counters"
@@ -196,7 +204,7 @@ install_recovery_acps() {
     bump acps
     local cache
     cache="$(acps_cache_dir 6.5.0)"
-    make_work_tree "$cache" "$PATCHED_BRINGUP"
+    make_work_tree "$cache" "$UPSTREAM_FIXTURE"
   }
 }
 
@@ -213,11 +221,13 @@ assert_rebuilt_current_final() {
   local dest="${MM_DP_PHASE2_ROOT}/6.5.0"
   local stable="dp_bundle_6.5.0-current.tar"
   local extract="${TMP}/extract-$$"
-  local expected actual
+  local expected actual inner_sha published_sha
   [[ -f "${dest}/${stable}" ]] || fail "rebuilt final bundle missing"
   [[ -f "${dest}/${stable}.sha256" ]] || fail "rebuilt sidecar missing"
-  grep -q "^BRINGUP_PATCHED_SHA1=${CURRENT_SHA}$" "${dest}/release.env" \
-    || fail "regenerated release.env missing current BRINGUP_PATCHED_SHA1"
+  grep -q "^BRINGUP_PATCH_GENERATION=${CURRENT_GEN}$" "${dest}/release.env" \
+    || fail "regenerated release.env missing current BRINGUP_PATCH_GENERATION"
+  published_sha="$(grep -E '^BRINGUP_PATCHED_SHA1=' "${dest}/release.env" | head -1 | cut -d= -f2-)"
+  [[ -n "$published_sha" ]] || fail "regenerated release.env missing BRINGUP_PATCHED_SHA1"
   expected="$(awk '{print $1}' "${dest}/${stable}.sha256")"
   actual="$(sha256sum "${dest}/${stable}" | awk '{print $1}')"
   [[ "${expected,,}" == "${actual,,}" ]] || fail "regenerated final SHA256 does not verify"
@@ -226,8 +236,11 @@ assert_rebuilt_current_final() {
   tar -xf "${dest}/${stable}" -C "$extract" bringup_py3_dp_after_os_upgrade.sh
   grep -q -- '--worker-password' "${extract}/bringup_py3_dp_after_os_upgrade.sh" \
     || fail "regenerated bundle still has old vendor without --worker-password"
+  inner_sha="$(sha1sum "${extract}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
+  [[ "${published_sha,,}" == "${inner_sha,,}" ]] \
+    || fail "published BRINGUP_PATCHED_SHA1 does not match inner bringup"
   cmp -s "$PATCHED_BRINGUP" "${extract}/bringup_py3_dp_after_os_upgrade.sh" \
-    || fail "regenerated bundle bringup is not the current patched file"
+    && fail "regenerated bundle is the frozen vendor full copy" || true
   grep -q 'OLD_VENDOR_RAN=YES' "${extract}/bringup_py3_dp_after_os_upgrade.sh" \
     && fail "old vendor still present in regenerated bundle" || true
   rm -rf "$extract"
@@ -244,8 +257,8 @@ rm -rf "${MM_CACHE_ROOT}/acps"
 engine_assess_phase2_final 6.5.0
 [[ "$PHASE2_EXISTING_BUNDLE" == "INVALID" ]] \
   || fail "stale bundle not INVALID got=${PHASE2_EXISTING_BUNDLE}"
-[[ "${PHASE2_EXISTING_INVALID_REASON}" == "patched_bringup_changed" ]] \
-  || fail "reason want=patched_bringup_changed got=${PHASE2_EXISTING_INVALID_REASON}"
+[[ "${PHASE2_EXISTING_INVALID_REASON}" == "patch_generation_missing" ]] \
+  || fail "reason want=patch_generation_missing got=${PHASE2_EXISTING_INVALID_REASON}"
 [[ "${PHASE2_EXISTING_FINAL_INTEGRITY}" == "PASS" ]] \
   || fail "stale but verified final integrity want=PASS got=${PHASE2_EXISTING_FINAL_INTEGRITY}"
 engine_phase2_existing_final_reusable \
@@ -258,7 +271,7 @@ mm_status_set HTTP_DISTRIBUTION ENABLED
 OUT="${TMP}/prepare_stale.log"
 run_prepare_to "$OUT" || { cat "$OUT"; fail "stale-bringup local rebuild prepare failed"; }
 grep -q 'PHASE2_EXISTING_BUNDLE=INVALID' "$OUT" || fail "INVALID assess missing"
-grep -q 'PHASE2_EXISTING_INVALID_REASON=patched_bringup_changed' "$OUT" \
+grep -q 'PHASE2_EXISTING_INVALID_REASON=patch_generation_missing' "$OUT" \
   || fail "PHASE2_EXISTING_INVALID_REASON missing"
 grep -q 'PHASE2_REBUILD_SOURCE=EXISTING_FINAL' "$OUT" \
   || fail "PHASE2_REBUILD_SOURCE=EXISTING_FINAL missing"
@@ -285,8 +298,8 @@ rm -rf "${MM_CACHE_ROOT}/acps"
 engine_assess_phase2_final 6.5.0
 [[ "$PHASE2_EXISTING_BUNDLE" == "INVALID" ]] \
   || fail "missing SHA bundle not INVALID"
-[[ "${PHASE2_EXISTING_INVALID_REASON}" == "patched_bringup_sha_missing" ]] \
-  || fail "reason want=patched_bringup_sha_missing got=${PHASE2_EXISTING_INVALID_REASON}"
+[[ "${PHASE2_EXISTING_INVALID_REASON}" == "patch_generation_missing" ]] \
+  || fail "reason want=patch_generation_missing got=${PHASE2_EXISTING_INVALID_REASON}"
 [[ "${PHASE2_EXISTING_FINAL_INTEGRITY}" == "PASS" ]] \
   || fail "missing-SHA verified final integrity want=PASS"
 reset_counters

@@ -823,7 +823,8 @@ engine_materialize_os_mirror() {
   mm_ok "OS_MIRROR_MATERIALIZE=PASS path=${MM_SELECTIVE_ROOT}"
 }
 
-# SHA1 of a bringup file. Tests may override to simulate a specific digest.
+# Offline Ubuntu prerequisite closure is prepared from ACPS metadata.
+# Failures here do not rewrite the ACPS bundle; they warn.
 engine_prepare_phase2_ubuntu_prerequisites() {
   local script="${MM_PROJECT_ROOT}/scripts/prepare-phase2-ubuntu-prerequisites.sh"
   local work="${1:-}"
@@ -853,18 +854,22 @@ engine_bringup_reference_sha1() {
   awk '{print $1; exit}' "$baseline"
 }
 
-# Source constructs the local patch path depends on. Missing => incompatible
-# upstream layout (fatal), distinct from reference-SHA drift (warning).
+# Coarse layout checks before the deterministic patcher runs. Missing =>
+# incompatible upstream (fatal), distinct from reference-SHA drift (warning).
+# Fine-grained exact-anchor checks live in patch_dp_phase2_bringup.py.
 engine_bringup_required_upstream_anchors() {
   printf '%s\n' \
     'parse_args()' \
     'orchestrate_workers()' \
     'load_local_images()' \
-    'images import'
+    'images import' \
+    'join_k8s_cluster()' \
+    'install_python3()'
 }
 
-# Markers that must be present after the local patched copy is applied.
-# A no-op replacement that leaves these out is a patch failure, not drift.
+# Markers that must be present after project patches are generated onto
+# the current upstream. A no-op or incomplete generation is a patch
+# failure, not drift.
 engine_bringup_required_patch_result_markers() {
   printf '%s\n' \
     '# BEGIN_IMAGE_IMPORT_HEARTBEAT' \
@@ -876,14 +881,47 @@ engine_bringup_required_patch_result_markers() {
     'validate_apt_dependency_graph' \
     'MASTER_TOKEN_API_READY' \
     'CLUSTER_JOIN_STATE' \
-    'APT_DEPENDENCY_CHECK'
+    'APT_DEPENDENCY_CHECK' \
+    'CRITICAL_PYTHON_RUNTIME' \
+    'WORKER_RESULT'
 }
 
-# SHA1 of the current locally patched bringup that must be inside the final bundle.
-engine_current_patched_bringup_sha1() {
-  local patched="${MM_PROJECT_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh"
-  [[ -f "$patched" ]] || return 1
-  sha1sum "$patched" | awk '{print $1}'
+# vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh is a reference / golden
+# output for a known upstream generation. It is NOT the production input
+# that replaces a freshly downloaded ACPS file.
+engine_bringup_reference_patched_path() {
+  printf '%s\n' "${MM_PROJECT_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh"
+}
+
+engine_bringup_patcher_py() {
+  printf '%s\n' "${MM_PROJECT_ROOT}/scripts/lib/patch_dp_phase2_bringup.py"
+}
+
+# Identity of the project patch layer. Same upstream + changed generation
+# requires a bundle rebuild. Never derived from the frozen vendor full copy.
+engine_current_bringup_patch_generation() {
+  local py
+  py="$(engine_bringup_patcher_py)"
+  [[ -f "$py" ]] || return 1
+  python3 "$py" --print-generation | awk -F= '$1=="BRINGUP_PATCH_GENERATION"{print $2; exit}'
+}
+
+engine_phase2_saved_upstream_path() {
+  local ver="${1:-${TARGET_DP_VERSION:-${PHASE2_TARGET_VERSION}}}"
+  printf '%s/%s/bringup_py3_dp_after_os_upgrade.sh.upstream\n' \
+    "${MM_DP_PHASE2_ROOT}" "$ver"
+}
+
+# Immutable ACPS copy lives beside the 9-file work set, never inside it
+# (dp2_assert_exact_files_dir rejects extra files in the tar source).
+engine_phase2_work_upstream_path() {
+  printf '%s.upstream/bringup_py3_dp_after_os_upgrade.sh\n' "${1%/}"
+}
+
+# Cheap inner bringup digest: extract only the small script from the 30GiB tar.
+engine_phase2_inner_bringup_sha1() {
+  local bundle="$1"
+  tar -xOf "$bundle" bringup_py3_dp_after_os_upgrade.sh 2>/dev/null | sha1sum | awk '{print $1}'
 }
 
 engine_bringup_fail() {
@@ -974,24 +1012,82 @@ engine_verify_acps_upstream_bringup() {
   engine_bringup_require_markers "$upstream_file" "BRINGUP_PATCH_COMPAT" "${anchors[@]}"
 }
 
+# Generate FINAL_BRINGUP = current ACPS upstream + project patch layer.
+# upstream_src is the immutable ACPS file (cache or saved .upstream copy).
+# files_dir receives the generated patched script + patched SHA sidecar.
+# Never copies vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh over upstream.
+# Never rewrites the ACPS sidecar to the patched digest.
 engine_apply_local_bringup_patch() {
   local files_dir="$1"
-  local patched="${MM_PROJECT_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh"
+  local upstream_src="${2:-}"
   local dest="${files_dir}/bringup_py3_dp_after_os_upgrade.sh"
+  local dest_sidecar="${dest}.sha1"
+  local saved_upstream saved_upstream_sidecar
+  local py out rc=0
   local markers=()
-  local want
-  [[ -f "$patched" ]] || mm_die "LOCAL_PATCHED_BRINGUP_MISSING"
+  py="$(engine_bringup_patcher_py)"
+  saved_upstream="$(engine_phase2_work_upstream_path "$files_dir")"
+  saved_upstream_sidecar="${saved_upstream}.sha1"
+
+  if [[ -z "$upstream_src" ]]; then
+    if [[ -f "$saved_upstream" ]]; then
+      upstream_src="$saved_upstream"
+    else
+      mm_die "UPSTREAM_BRINGUP_MISSING reason=patch_input"
+    fi
+  fi
+  [[ -f "$py" ]] || mm_die "BRINGUP_PATCHER_MISSING path=${py}"
+  engine_bringup_require_nonempty "$upstream_src"
   if [[ "${MM_DRY_RUN}" == "1" ]]; then
     mm_info "DRY_RUN skip apply_local_bringup_patch"
     return 0
   fi
   mm_set_phase "Preparing Patched Bringup Script"
-  cp -f "$patched" "$dest" || engine_bringup_fail "BRINGUP_PATCH_APPLY"
-  sha1sum "$dest" | awk '{print $1}' >"${dest}.sha1"
-  BRINGUP_PATCHED_SHA1="$(sha1sum "$dest" | awk '{print $1}')"
-  want="$(sha1sum "$patched" | awk '{print $1}')"
-  if [[ "${BRINGUP_PATCHED_SHA1,,}" != "${want,,}" ]]; then
+  mm_info "BRINGUP_PATCH_MODEL=fresh_upstream_plus_project_layer"
+  mm_info "Field operators must not edit bringup_py3_dp_after_os_upgrade.sh by hand."
+
+  mkdir -p "$files_dir" "$(dirname "$saved_upstream")" \
+    || engine_bringup_fail "BRINGUP_PATCH_APPLY"
+  if [[ "$(readlink -f "$upstream_src" 2>/dev/null || true)" != "$(readlink -f "$saved_upstream" 2>/dev/null || true)" ]]; then
+    cp -f "$upstream_src" "$saved_upstream" || engine_bringup_fail "BRINGUP_UPSTREAM_PRESERVE"
+  fi
+  # Preserve the authentic ACPS sidecar next to the immutable copy only.
+  # Never rewrite the ACPS sidecar to the patched digest.
+  if [[ -f "${upstream_src}.sha1" && "${upstream_src}.sha1" != "$saved_upstream_sidecar" ]]; then
+    cp -f "${upstream_src}.sha1" "$saved_upstream_sidecar" || true
+  elif [[ ! -f "$saved_upstream_sidecar" ]]; then
+    sha1sum "$saved_upstream" | awk '{print $1"  bringup_py3_dp_after_os_upgrade.sh"}' \
+      >"$saved_upstream_sidecar"
+  fi
+  BRINGUP_UPSTREAM_SHA1="$(engine_bringup_sha1_of "$saved_upstream")"
+  mm_info "BRINGUP_UPSTREAM_SHA1=${BRINGUP_UPSTREAM_SHA1}"
+
+  set +e
+  out="$(python3 "$py" --upstream "$saved_upstream" --output "$dest" 2>&1)"
+  rc=$?
+  set -e
+  printf '%s\n' "$out"
+  BRINGUP_PATCH_GENERATION="$(printf '%s\n' "$out" | awk -F= '$1=="BRINGUP_PATCH_GENERATION"{print $2; exit}')"
+  BRINGUP_PATCHED_SHA1="$(printf '%s\n' "$out" | awk -F= '$1=="BRINGUP_PATCHED_SHA1"{print $2; exit}')"
+  if [[ "$rc" -ne 0 ]]; then
+    mm_error "BRINGUP_PATCH_COMPAT=FAIL"
+    mm_error "PATCHED_BRINGUP_GENERATION=FAIL"
+    printf '%s\n' "$out" | grep -E '^(BRINGUP_PATCH_COMPAT_FAIL_|BRINGUP_PATCH_GENERATION=|PATCHED_BRINGUP_GENERATION=)' || true
+    engine_bringup_fail "BRINGUP_PATCH_COMPAT"
+  fi
+  [[ -n "${BRINGUP_PATCH_GENERATION:-}" ]] || engine_bringup_fail "BRINGUP_PATCH_GENERATION"
+  [[ -n "${BRINGUP_PATCHED_SHA1:-}" ]] || engine_bringup_fail "BRINGUP_PATCHED_SHA1"
+  mm_ok "BRINGUP_PATCH_COMPAT=PASS"
+  mm_ok "PATCHED_BRINGUP_GENERATION=PASS"
+  mm_info "BRINGUP_PATCH_GENERATION=${BRINGUP_PATCH_GENERATION}"
+
+  # Patched sidecar is the generated digest, never the ACPS upstream hash.
+  sha1sum "$dest" | awk '{print $1"  bringup_py3_dp_after_os_upgrade.sh"}' >"$dest_sidecar"
+  if [[ "${BRINGUP_PATCHED_SHA1,,}" != "$(engine_bringup_sha1_of "$dest")" ]]; then
     engine_bringup_fail "PATCHED_BRINGUP_SHA1"
+  fi
+  if [[ "${BRINGUP_PATCHED_SHA1,,}" == "${BRINGUP_UPSTREAM_SHA1,,}" ]]; then
+    engine_bringup_fail "PATCHED_BRINGUP_UNCHANGED"
   fi
   mapfile -t markers < <(engine_bringup_required_patch_result_markers)
   engine_bringup_require_markers "$dest" "BRINGUP_PATCH_RESULT" "${markers[@]}"
@@ -1059,12 +1155,16 @@ engine_phase2_mark_existing() {
   esac
 }
 
-# Stale patched-bringup generations may reuse a fully verified existing final.
-# Integrity/layout failures must not.
+# Stale patched-bringup / patch-generation may reuse a fully verified existing
+# final when an immutable upstream copy is saved beside the bundle. Integrity
+# or upstream-content failures must not.
 engine_phase2_existing_final_reusable() {
+  local saved
+  saved="$(engine_phase2_saved_upstream_path "${TARGET_DP_VERSION:-${PHASE2_TARGET_VERSION}}")"
   case "${PHASE2_EXISTING_INVALID_REASON:-}" in
-    patched_bringup_changed|patched_bringup_sha_missing)
-      [[ "${PHASE2_EXISTING_FINAL_INTEGRITY:-}" == "PASS" ]]
+    patched_bringup_changed|patched_bringup_sha_missing|patch_generation_changed|patch_generation_missing)
+      [[ "${PHASE2_EXISTING_FINAL_INTEGRITY:-}" == "PASS" ]] || return 1
+      [[ -f "$saved" && -s "$saved" ]] || return 1
       ;;
     *)
       return 1
@@ -1209,7 +1309,9 @@ engine_assess_phase2_final() {
   local ver="${1:-${TARGET_DP_VERSION:-${PHASE2_TARGET_VERSION}}}"
   local dest envf bundle sidecar stable
   local target_field artifact_field stable_field
-  local current_patched published_patched bringup_invalid_reason="" store_cache=0
+  local current_gen published_gen published_patched published_upstream
+  local inner_patched cache_dir cache_bringup cache_upstream
+  local bringup_invalid_reason="" store_cache=0
   PHASE2_EXISTING_BUNDLE=ABSENT
   PHASE2_EXISTING_INVALID_REASON=""
   PHASE2_EXISTING_FINAL_INTEGRITY=""
@@ -1262,26 +1364,66 @@ engine_assess_phase2_final() {
     engine_phase2_mark_existing INVALID release_env_secret
     return 0
   fi
-  # Final-bundle reuse is only valid when the published patched bringup is the
-  # current local patch generation. Version + outer tar SHA are not enough:
-  # the client lifecycle wrapper can be rebuilt independently of the 30GiB bundle.
-  current_patched="$(engine_current_patched_bringup_sha1 2>/dev/null || true)"
+  # Reuse identity is (upstream SHA, patch-generation, inner patched SHA).
+  # The frozen vendor full copy is not an authority for reuse.
+  current_gen="$(engine_current_bringup_patch_generation 2>/dev/null || true)"
+  current_gen="$(printf '%s' "$current_gen" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  published_gen="$(grep -E '^BRINGUP_PATCH_GENERATION=' "$envf" | head -1 | cut -d= -f2- || true)"
+  published_gen="$(printf '%s' "$published_gen" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
   published_patched="$(grep -E '^BRINGUP_PATCHED_SHA1=' "$envf" | head -1 | cut -d= -f2- || true)"
   published_patched="$(printf '%s' "$published_patched" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-  current_patched="$(printf '%s' "$current_patched" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-  if [[ -z "$current_patched" ]]; then
-    engine_phase2_mark_existing INVALID local_patched_bringup_missing
+  published_upstream="$(grep -E '^BRINGUP_UPSTREAM_SHA1=' "$envf" | head -1 | cut -d= -f2- || true)"
+  published_upstream="$(printf '%s' "$published_upstream" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  if [[ -z "$current_gen" ]]; then
+    engine_phase2_mark_existing INVALID local_patch_generation_missing
     return 0
   fi
-  if [[ -z "$published_patched" ]]; then
-    bringup_invalid_reason=patched_bringup_sha_missing
-    mm_info "CURRENT_PATCHED_BRINGUP_SHA1=${current_patched}"
-  elif [[ "$published_patched" != "$current_patched" ]]; then
-    bringup_invalid_reason=patched_bringup_changed
-    mm_info "PUBLISHED_PATCHED_BRINGUP_SHA1=${published_patched}"
-    mm_info "CURRENT_PATCHED_BRINGUP_SHA1=${current_patched}"
+  if [[ -z "$published_gen" ]]; then
+    bringup_invalid_reason=patch_generation_missing
+    mm_info "CURRENT_BRINGUP_PATCH_GENERATION=${current_gen}"
+  elif [[ "$published_gen" != "$current_gen" ]]; then
+    bringup_invalid_reason=patch_generation_changed
+    mm_info "PUBLISHED_BRINGUP_PATCH_GENERATION=${published_gen}"
+    mm_info "CURRENT_BRINGUP_PATCH_GENERATION=${current_gen}"
   else
-    mm_info "PATCHED_BRINGUP_SHA1_MATCH=YES sha1=${current_patched}"
+    mm_info "BRINGUP_PATCH_GENERATION_MATCH=YES generation=${current_gen}"
+  fi
+  if [[ -z "$bringup_invalid_reason" ]]; then
+    if [[ -z "$published_patched" ]]; then
+      bringup_invalid_reason=patched_bringup_sha_missing
+    else
+      inner_patched="$(engine_phase2_inner_bringup_sha1 "$bundle" 2>/dev/null || true)"
+      inner_patched="$(printf '%s' "$inner_patched" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+      if [[ -z "$inner_patched" ]]; then
+        bringup_invalid_reason=patched_bringup_sha_missing
+      elif [[ "$published_patched" != "$inner_patched" ]]; then
+        bringup_invalid_reason=patched_bringup_changed
+        mm_info "PUBLISHED_PATCHED_BRINGUP_SHA1=${published_patched}"
+        mm_info "INNER_PATCHED_BRINGUP_SHA1=${inner_patched}"
+      else
+        mm_info "PATCHED_BRINGUP_SHA1_MATCH=YES sha1=${published_patched}"
+      fi
+    fi
+  fi
+  if [[ -z "$bringup_invalid_reason" && -z "$published_upstream" ]]; then
+    bringup_invalid_reason=upstream_sha_missing
+  fi
+  # A verified ACPS cache with a different upstream SHA must not keep the old
+  # generated bringup published.
+  if [[ -z "$bringup_invalid_reason" && -n "$published_upstream" ]] \
+    && declare -F acps_cache_dir >/dev/null 2>&1; then
+    cache_dir="$(acps_cache_dir "$ver" 2>/dev/null || true)"
+    cache_bringup="${cache_dir}/bringup_py3_dp_after_os_upgrade.sh"
+    if [[ -n "$cache_dir" && -f "$cache_bringup" ]]; then
+      cache_upstream="$(engine_bringup_sha1_of "$cache_bringup" 2>/dev/null || true)"
+      cache_upstream="$(printf '%s' "$cache_upstream" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+      if [[ -n "$cache_upstream" && "$cache_upstream" != "$published_upstream" ]]; then
+        bringup_invalid_reason=upstream_bringup_changed
+        mm_info "PUBLISHED_BRINGUP_UPSTREAM_SHA1=${published_upstream}"
+        mm_info "CACHE_BRINGUP_UPSTREAM_SHA1=${cache_upstream}"
+        mm_warn "UPSTREAM_BRINGUP_CHANGED=YES"
+      fi
+    fi
   fi
   # Integrity is required both to mark VALID and to allow stale-bringup local
   # rebuild from this final. Fail closed: outer sha256/tar_entries and inner
@@ -1388,7 +1530,7 @@ engine_place_dp_phase2_final() {
 
   local dest="${MM_DP_PHASE2_ROOT}/${ver}"
   local dest_tmp="${dest}.new.$$"
-  local list_count stable actual want
+  local list_count stable actual work_upstream
   local expected_input_bytes=0 f sz publish_start publish_elapsed
   rm -rf "$dest_tmp"
   # Stray .old from older builds — never used as rollback in this workflow.
@@ -1453,14 +1595,36 @@ engine_place_dp_phase2_final() {
   # Sidecar was just produced from this exact .new file; skip an immediate
   # second full read. Final published bytes are verified after atomic rename.
 
-  # Validate patched bringup inside the file set that was just tarred.
+  # Validate generated patched bringup inside the file set that was just tarred.
+  # Do not require equality with the repository vendor full copy.
   actual="$(sha1sum "${files_src}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
-  want="$(sha1sum "${MM_PROJECT_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
-  if [[ "${actual,,}" != "${want,,}" ]]; then
+  if [[ -n "${BRINGUP_PATCHED_SHA1:-}" && "${actual,,}" != "${BRINGUP_PATCHED_SHA1,,}" ]]; then
     rm -rf "$dest_tmp"
     mm_die "VALIDATE_DP=FAIL patched_bringup_sha1"
   fi
   BRINGUP_PATCHED_SHA1="$actual"
+  if [[ -z "${BRINGUP_PATCH_GENERATION:-}" ]]; then
+    BRINGUP_PATCH_GENERATION="$(engine_current_bringup_patch_generation 2>/dev/null || true)"
+  fi
+  work_upstream="$(engine_phase2_work_upstream_path "$files_src")"
+  if [[ -z "${BRINGUP_UPSTREAM_SHA1:-}" && -f "$work_upstream" ]]; then
+    BRINGUP_UPSTREAM_SHA1="$(engine_bringup_sha1_of "$work_upstream")"
+  fi
+  if [[ -f "$work_upstream" ]]; then
+    cp -f "$work_upstream" \
+      "${dest_tmp}/bringup_py3_dp_after_os_upgrade.sh.upstream" || {
+      rm -rf "$dest_tmp"
+      mm_die "BRINGUP_UPSTREAM_PRESERVE=FAIL"
+    }
+    if [[ -f "${work_upstream}.sha1" ]]; then
+      cp -f "${work_upstream}.sha1" \
+        "${dest_tmp}/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1" || true
+    else
+      sha1sum "${dest_tmp}/bringup_py3_dp_after_os_upgrade.sh.upstream" \
+        | awk '{print $1"  bringup_py3_dp_after_os_upgrade.sh.upstream"}' \
+        >"${dest_tmp}/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1"
+    fi
+  fi
 
   local created_at commit
   created_at="$(mm_ts)"
@@ -1479,6 +1643,7 @@ SOURCE_PATH=provision
 VERIFICATION_RESULT=PASS
 SOURCE_REPOSITORY_COMMIT=${commit}
 BRINGUP_UPSTREAM_SHA1=${BRINGUP_UPSTREAM_SHA1:-}
+BRINGUP_PATCH_GENERATION=${BRINGUP_PATCH_GENERATION:-}
 BRINGUP_PATCHED_SHA1=${BRINGUP_PATCHED_SHA1}
 ACPS_SOURCE_VERSION=${ver}
 EOF
@@ -1864,7 +2029,7 @@ engine_write_install_report() {
 }
 
 engine_download_and_prepare() {
-  local cache work dest stable
+  local cache work dest stable saved_upstream
   mm_load_gui_config
   mm_normalize_preparation_mode
   mm_force_phase2_target
@@ -2083,7 +2248,10 @@ engine_download_and_prepare() {
   work="${MM_CACHE_ROOT}/acps-work/${TARGET_DP_VERSION}/$(mm_run_id)"
   if [[ "${PHASE2_REBUILD_SOURCE}" == "EXISTING_FINAL" ]]; then
     engine_stage_work_from_existing_final "$TARGET_DP_VERSION" "$work"
-    engine_apply_local_bringup_patch "$work"
+    saved_upstream="$(engine_phase2_saved_upstream_path "$TARGET_DP_VERSION")"
+    [[ -f "$saved_upstream" ]] || mm_die "BRINGUP_UPSTREAM_COPY_MISSING path=${saved_upstream}"
+    # Patch from the saved immutable upstream before deleting the old final.
+    engine_apply_local_bringup_patch "$work" "$saved_upstream"
     # Release the old final before writing .new (peak = work + new tar).
     engine_release_phase2_final_after_extract "$TARGET_DP_VERSION"
     engine_place_dp_phase2_final "$work" "$TARGET_DP_VERSION"
@@ -2100,10 +2268,12 @@ engine_download_and_prepare() {
 
     engine_verify_acps_upstream_bringup "$cache"
 
-    # Unchanged large ACPS files are hard-linked (same inode); only patched
-    # bringup is written as a new small file. No cache→work full tree copy.
+    # Unchanged large ACPS files are hard-linked (same inode); only the
+    # generated patched bringup is a new small file. Cache upstream stays
+    # immutable. No cache→work full tree copy.
     engine_stage_acps_work_from_cache "$cache" "$work"
-    engine_apply_local_bringup_patch "$work"
+    engine_apply_local_bringup_patch "$work" \
+      "${cache}/bringup_py3_dp_after_os_upgrade.sh"
     engine_assert_work_ready_for_bundle "$cache" "$work" "$TARGET_DP_VERSION" \
       || mm_die "ACPS_WORK_VALIDATE=FAIL"
     engine_place_dp_phase2_final "$work" "$TARGET_DP_VERSION"

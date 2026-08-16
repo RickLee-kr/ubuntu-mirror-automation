@@ -104,7 +104,9 @@ TARGET_DP_VERSION=6.5.0
 PHASE2_ARTIFACT_VERSION=6.5.0
 STABLE_BUNDLE_NAME=${stable}
 PHASE2_BUNDLE_ENTRY_COUNT=9
-BRINGUP_PATCHED_SHA1=$(sha1sum "${ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')
+BRINGUP_PATCHED_SHA1=$(sha1sum "${work}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')
+BRINGUP_PATCH_GENERATION=$(python3 "${ROOT}/scripts/lib/patch_dp_phase2_bringup.py" --print-generation | awk -F= '$1=="BRINGUP_PATCH_GENERATION"{print $2; exit}')
+BRINGUP_UPSTREAM_SHA1=70de02dd62409110dadb7553991d1ffb0a79f396
 EOF
 }
 
@@ -112,9 +114,8 @@ run_assess() {
   : >"$LOG"
   set +e
   engine_assess_phase2_final 6.5.0 >>"$LOG" 2>&1
-  local rc=$?
+  ASSESS_RC=$?
   set -e
-  ASSESS_RC=$rc
 }
 
 echo "=== test_phase2_existing_reuse_progress ==="

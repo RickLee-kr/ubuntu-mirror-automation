@@ -10,6 +10,7 @@ ACPS="${ROOT}/scripts/lib/acps_acquire.sh"
 R2="${ROOT}/scripts/lib/r2_acquire.sh"
 PATCHED_BRINGUP="${ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh"
 UPSTREAM_BASELINE="${ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1"
+UPSTREAM_FIXTURE="${ROOT}/tests/fixtures/dp-phase2/upstream_bringup_unpatched.sh"
 
 PREVIOUS_KNOWN_SHA1="70de02dd62409110dadb7553991d1ffb0a79f396"
 CURRENT_UPSTREAM_SHA1="f1a73c1d4502e2efcf55197865d2ade345d9c82f"
@@ -50,14 +51,7 @@ mm_state_init 2>/dev/null || true
 
 write_compatible_upstream() {
   local dest="$1"
-  cat >"$dest" <<'EOF'
-#!/bin/bash
-parse_args() { :; }
-orchestrate_workers() { :; }
-load_local_images() {
-  ctr -n=k8s.io images import "$1"
-}
-EOF
+  cp -f "$UPSTREAM_FIXTURE" "$dest"
 }
 
 write_incompatible_upstream() {
@@ -70,29 +64,17 @@ echo "valid syntax but missing load_local_images / images import"
 EOF
 }
 
-write_broken_patched() {
-  local dest="$1"
-  cat >"$dest" <<'EOF'
-#!/bin/bash
-# BEGIN_IMAGE_IMPORT_HEARTBEAT
-run_image_import_with_heartbeat() { :; }
-emit_dp_resume_notice_line() { :; }
---worker-password
-wait_for_master_token_api() { :; }
-validate_expected_cluster_nodes() { :; }
-validate_apt_dependency_graph() { :; }
-MASTER_TOKEN_API_READY=YES
-CLUSTER_JOIN_STATE ready=1 expected=1
-APT_DEPENDENCY_CHECK=PASS
-if then
-EOF
-}
-
 reset_vendor() {
-  mkdir -p "${MM_PROJECT_ROOT}/vendor/dp-phase2"
+  mkdir -p "${MM_PROJECT_ROOT}/vendor/dp-phase2" \
+    "${MM_PROJECT_ROOT}/scripts/lib"
   cp -f "$PATCHED_BRINGUP" "${MM_PROJECT_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh"
   printf '%s  bringup_py3_dp_after_os_upgrade.sh\n' "$PREVIOUS_KNOWN_SHA1" \
     >"${MM_PROJECT_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1"
+  cp -f "${ROOT}/scripts/lib/patch_dp_phase2_bringup.py" \
+    "${MM_PROJECT_ROOT}/scripts/lib/patch_dp_phase2_bringup.py"
+  rm -rf "${MM_PROJECT_ROOT}/scripts/lib/phase2_bringup_patch"
+  cp -a "${ROOT}/scripts/lib/phase2_bringup_patch" \
+    "${MM_PROJECT_ROOT}/scripts/lib/phase2_bringup_patch"
 }
 
 write_sidecar_for() {
@@ -114,7 +96,7 @@ restore_sha1_of() {
 
 run_verify_then_patch() {
   engine_verify_acps_upstream_bringup "$1"
-  engine_apply_local_bringup_patch "$2"
+  engine_apply_local_bringup_patch "$2" "${1}/bringup_py3_dp_after_os_upgrade.sh"
 }
 
 run_in_subshell() {
@@ -151,7 +133,8 @@ grep -q 'INSTALL_RESULT=FAIL' "$OUT1" && fail "TEST 1 INSTALL_RESULT=FAIL" || pa
 grep -q 'UPSTREAM_BRINGUP_DRIFT=YES' "$OUT1" && fail "TEST 1 blocking drift" || pass "TEST 1 no blocking drift"
 WORK1="${WORKDIR}/work1"; mkdir -p "$WORK1"
 OUT1b="${WORKDIR}/test1.patch.log"
-rc1b="$(run_in_subshell "$OUT1b" engine_apply_local_bringup_patch "$WORK1")"
+rc1b="$(run_in_subshell "$OUT1b" engine_apply_local_bringup_patch "$WORK1" \
+  "${CACHE1}/bringup_py3_dp_after_os_upgrade.sh")"
 [[ "$rc1b" -eq 0 ]] && pass "TEST 1 patch rc=0" || fail "TEST 1 patch rc=${rc1b}"
 grep -q 'PATCHED_BRINGUP_APPLIED=YES' "$OUT1b" && pass "TEST 1 patch applied" || fail "TEST 1 patch applied"
 
@@ -182,7 +165,8 @@ grep -q 'INSTALL_RESULT=FAIL' "$OUT2" && fail "TEST 2 INSTALL_RESULT=FAIL" || pa
 grep -q 'HTTP_DISTRIBUTION_READY=NO' "$OUT2" && fail "TEST 2 HTTP_DISTRIBUTION_READY=NO" || pass "TEST 2 no HTTP block"
 WORK2="${WORKDIR}/work2"; mkdir -p "$WORK2"
 OUT2b="${WORKDIR}/test2.patch.log"
-rc2b="$(run_in_subshell "$OUT2b" engine_apply_local_bringup_patch "$WORK2")"
+rc2b="$(run_in_subshell "$OUT2b" engine_apply_local_bringup_patch "$WORK2" \
+  "${CACHE2}/bringup_py3_dp_after_os_upgrade.sh")"
 [[ "$rc2b" -eq 0 ]] && pass "TEST 2 patch continues" || fail "TEST 2 patch rc=${rc2b}"
 grep -q 'PATCHED_BRINGUP_APPLIED=YES' "$OUT2b" && pass "TEST 2 patch applied" || fail "TEST 2 patch applied"
 [[ "$(mm_status_get UPSTREAM_BRINGUP_DRIFT)" == "NON_BLOCKING" ]] \
@@ -224,25 +208,34 @@ grep -q 'UPSTREAM_BRINGUP_DRIFT=YES' "$OUT4" && fail "TEST 4 died on SHA drift" 
 [[ ! -f "${WORK4}/bringup_py3_dp_after_os_upgrade.sh" ]] \
   && pass "TEST 4 did not apply patch" || fail "TEST 4 applied patch after incompat"
 
-# --- TEST 5: patch output fails bash -n ---
+# --- TEST 5: generated patched bringup must pass bash -n; syntax gate remains ---
 reset_vendor
 restore_sha1_of
 CACHE5="${WORKDIR}/cache5"; mkdir -p "$CACHE5"
 write_compatible_upstream "${CACHE5}/bringup_py3_dp_after_os_upgrade.sh"
 write_sidecar_for "${CACHE5}/bringup_py3_dp_after_os_upgrade.sh"
-# Same-SHA baseline so TEST 5 isolates patched syntax, not drift.
 sha5="$(sha1sum "${CACHE5}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}')"
 printf '%s  bringup_py3_dp_after_os_upgrade.sh\n' "$sha5" \
   >"${MM_PROJECT_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1"
-write_broken_patched "${MM_PROJECT_ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh"
 WORK5="${WORKDIR}/work5"; mkdir -p "$WORK5"
 OUT5="${WORKDIR}/test5.log"
 rc5="$(run_in_subshell "$OUT5" run_verify_then_patch "$CACHE5" "$WORK5")"
-[[ "$rc5" -ne 0 ]] && pass "TEST 5 patched syntax fails" || fail "TEST 5 should fail"
-grep -q 'ACPS_BRINGUP_CHECKSUM=PASS' "$OUT5" && pass "TEST 5 sidecar PASS" || fail "TEST 5 sidecar PASS"
-grep -q 'PATCHED_BRINGUP_SYNTAX=FAIL' "$OUT5" && pass "TEST 5 PATCHED_BRINGUP_SYNTAX=FAIL" || fail "TEST 5 syntax log"
-grep -q 'INSTALL_RESULT=FAIL' "$OUT5" && pass "TEST 5 INSTALL_RESULT=FAIL" || fail "TEST 5 INSTALL_RESULT=FAIL"
-grep -q 'PATCHED_BRINGUP_APPLIED=YES' "$OUT5" && fail "TEST 5 reported patch success" || pass "TEST 5 did not mark applied"
+[[ "$rc5" -eq 0 ]] && pass "TEST 5 generated patch rc=0" || { fail "TEST 5 generated patch rc=${rc5}"; cat "$OUT5"; }
+grep -q 'PATCHED_BRINGUP_SYNTAX=PASS' "$OUT5" && pass "TEST 5 PATCHED_BRINGUP_SYNTAX=PASS" || fail "TEST 5 syntax PASS"
+grep -q 'PATCHED_BRINGUP_APPLIED=YES' "$OUT5" && pass "TEST 5 patch applied" || fail "TEST 5 patch applied"
+BROKEN5="${WORKDIR}/broken5.sh"
+printf '#!/bin/bash\nif then\n' >"$BROKEN5"
+OUT5b="${WORKDIR}/test5b.log"
+rc5b="$(run_in_subshell "$OUT5b" engine_bringup_require_bash_n "$BROKEN5" PATCHED_BRINGUP_SYNTAX)"
+[[ "$rc5b" -ne 0 ]] && pass "TEST 5 syntax gate still fails closed" || fail "TEST 5 syntax gate should fail"
+grep -q 'PATCHED_BRINGUP_SYNTAX=FAIL' "$OUT5b" && pass "TEST 5 PATCHED_BRINGUP_SYNTAX=FAIL" || fail "TEST 5 syntax FAIL log"
+
+# Source audit: production must not copy the frozen vendor full copy over upstream.
+if grep -nE 'cp -f[[:space:]]+"\$patched"[[:space:]]+"\$dest"' "$ENGINE"; then
+  fail "engine still copies frozen vendor over dest"
+else
+  pass "engine does not copy frozen vendor over dest"
+fi
 
 # Source audit: reference mismatch must not mm_die as UPSTREAM_BRINGUP_DRIFT=YES
 if grep -nE 'mm_die[[:space:]]+"UPSTREAM_BRINGUP_DRIFT=YES"' "$ENGINE"; then

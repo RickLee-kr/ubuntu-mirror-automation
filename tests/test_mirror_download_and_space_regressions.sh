@@ -453,7 +453,9 @@ HARDLINK_COUNT="$(stat -c %h "${CACHE}/images-6.5.0.tar")"
 [[ "$HARDLINK_COUNT" -ge 2 ]] || fail "expected nlink>=2 after hardlink got=${HARDLINK_COUNT}"
 pass "ACPS large file hard-linked (same device/inode, nlink=${HARDLINK_COUNT})"
 
-# Patch bringup from vendor (production path).
+# Seed already-generated patched bringup for disk accounting (place path).
+# Production Download and Prepare generates this via the patcher; this suite
+# does not exercise patch application.
 cp -f "$PATCHED_BRINGUP" "${WORK}/bringup_py3_dp_after_os_upgrade.sh"
 sha1sum "${WORK}/bringup_py3_dp_after_os_upgrade.sh" | awk '{print $1}' \
   >"${WORK}/bringup_py3_dp_after_os_upgrade.sh.sha1"
