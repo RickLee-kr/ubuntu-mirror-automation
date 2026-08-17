@@ -37,6 +37,10 @@ RESULT_MARKERS = (
     'validate_expected_cluster_nodes',
     'validate_apt_dependency_graph',
     'validate_critical_python_runtime',
+    'validate_remote_role_identity',
+    'REMOTE_ROLE_IDENTITY',
+    'validate_local_remote_join_state',
+    'REMOTE_JOIN_LOCAL_STATE',
     'MASTER_TOKEN_API_READY',
     'CLUSTER_JOIN_STATE',
     'APT_DEPENDENCY_CHECK',
@@ -270,12 +274,36 @@ def apply_parse_args_worker_password(text):
         '                WORKER_IPS="$2"; shift 2 ;;\n'
         '            --role)\n',
         '            --worker-ips)\n'
+        '                if [[ $# -lt 2 || -z "${2:-}" || "$2" == --* ]]; then\n'
+        '                    die "--worker-ips requires a value"\n'
+        '                fi\n'
         '                WORKER_IPS="$2"; shift 2 ;;\n'
         '            --worker-password)\n'
+        '                if [[ $# -lt 2 || -z "${2:-}" || "$2" == --* ]]; then\n'
+        '                    die "--worker-password requires a value (use --worker-password=VALUE when VALUE begins with --)"\n'
+        '                fi\n'
         '                WORKER_PASSWORD="$2"; shift 2 ;;\n'
+        '            --worker-password=*)\n'
+        '                WORKER_PASSWORD="${1#*=}"\n'
+        '                [[ -n "$WORKER_PASSWORD" ]] || die "--worker-password requires a value"\n'
+        '                shift ;;\n'
         '            --role)\n',
         'parse_args_worker_password_case',
     )
+    # f1a73 introduced --standby. Previous supported upstream has no such flag.
+    # When the global exists, its parser site must also match exactly once.
+    if 'STANDBY_IPS=""' in text:
+        text = replace_exactly_once(
+            text,
+            '            --standby)\n'
+            '                STANDBY_IPS="$2"; shift 2 ;;\n',
+            '            --standby)\n'
+            '                if [[ $# -lt 2 || -z "${2:-}" || "$2" == --* ]]; then\n'
+            '                    die "--standby requires a value"\n'
+            '                fi\n'
+            '                STANDBY_IPS="$2"; shift 2 ;;\n',
+            'parse_args_standby_value',
+        )
     help_prev = (
         '                echo "  --worker-ips <ip,ip>    Comma-separated worker IPs (master orchestrates)"\n'
         '                echo "  --role <role>           Override auto-detect (AIO|DR-master|DL-master|DR-worker|DL-worker)"\n'
@@ -511,47 +539,67 @@ def apply_orchestrate_workers(text):
         '                continue\n',
         'orchestrate_workers_ssh_fail',
     )
-    role_mismatch_f1a73 = (
-        '        if [[ "$remote_role" == "standby" && "$node_role" != "standby" ]]; then\n'
-        '            log "ERROR: $worker_ip has aella_role: standby but was listed in --worker-ips -- SKIPPING."\n'
-        '            log "  Use --standby $worker_ip (or run on the node itself with --role standby)."\n'
-        '            continue\n'
-        '        fi\n'
-        '        if [[ "$node_role" == "standby" && -n "$remote_role" && "$remote_role" != "standby" ]]; then\n'
-        '            log "ERROR: $worker_ip was listed in --standby but has aella_role: ${remote_role} -- SKIPPING."\n'
-        '            log "  Use --worker-ips for workers; fix da_conf/role assignment first."\n'
-        '            continue\n'
-        '        fi\n'
-    )
-    role_mismatch_f1a73_fixed = (
-        '        if [[ "$remote_role" == "standby" && "$node_role" != "standby" ]]; then\n'
-        '            log "ERROR: $worker_ip has aella_role: standby but was listed in --worker-ips"\n'
-        '            log "WORKER_RESULT ip=${worker_ip} role=${node_role} result=FAIL reason=role_mismatch actual=${remote_role}"\n'
-        '            orch_failed=1\n'
-        '            continue\n'
-        '        fi\n'
-        '        if [[ "$node_role" == "standby" && -n "$remote_role" && "$remote_role" != "standby" ]]; then\n'
-        '            log "ERROR: $worker_ip was listed in --standby but has aella_role: ${remote_role}"\n'
-        '            log "WORKER_RESULT ip=${worker_ip} role=${node_role} result=FAIL reason=role_mismatch actual=${remote_role}"\n'
-        '            orch_failed=1\n'
-        '            continue\n'
-        '        fi\n'
-    )
-    # Previous upstream has no standby role-mismatch guard. Identity-map a
-    # prev-only site so the transform remains exact-one-of on both fixtures.
-    role_mismatch_prev_identity = (
-        '        log "--- Deploying worker: $worker_ip ---"\n'
-        '        local worker_failed=0\n'
-        '        local worker_reason=""\n'
-    )
-    text = replace_exactly_one_mapping(
-        text,
-        (
-            (role_mismatch_f1a73, role_mismatch_f1a73_fixed),
-            (role_mismatch_prev_identity, role_mismatch_prev_identity),
-        ),
-        'orchestrate_workers_role_mismatch',
-    )
+
+    # Role identity must be checked BEFORE any remote mkdir/copy/bringup mutation.
+    # f1a73 has a standby-only role guard at this location; replace it with the
+    # general expected==actual contract. Previous upstream has no role guard, so
+    # insert an equivalent worker-role gate immediately before its first mutation.
+    if 'STANDBY_IPS=""' in text:
+        role_mismatch_f1a73 = (
+            '        # AELDEV-73583 guard: intended role must match the node\'s preserved\n'
+            '        # aella_role in BOTH directions. A standby listed under --worker-ips\n'
+            '        # would be provisioned as a worker (wrong token params, wrong\n'
+            '        # expectations); a worker listed under --standby would be provisioned\n'
+            '        # as a standby. Skip with instructions instead of mis-provisioning.\n'
+            '        local remote_role\n'
+            '        remote_role=$(worker_ssh "$worker_ip" \\\n'
+            '            "grep aella_role /opt/aelladata/work/da_conf.yml 2>/dev/null | awk -F\': \' \'{print \\$2}\' | tr -d \\"\' \\"" 2>/dev/null || echo "")\n'
+            '        if [[ "$remote_role" == "standby" && "$node_role" != "standby" ]]; then\n'
+            '            log "ERROR: $worker_ip has aella_role: standby but was listed in --worker-ips -- SKIPPING."\n'
+            '            log "  Use --standby $worker_ip (or run on the node itself with --role standby)."\n'
+            '            continue\n'
+            '        fi\n'
+            '        if [[ "$node_role" == "standby" && -n "$remote_role" && "$remote_role" != "standby" ]]; then\n'
+            '            log "ERROR: $worker_ip was listed in --standby but has aella_role: ${remote_role} -- SKIPPING."\n'
+            '            log "  Use --worker-ips for workers; fix da_conf/role assignment first."\n'
+            '            continue\n'
+            '        fi\n'
+        )
+        text = replace_exactly_once(
+            text,
+            role_mismatch_f1a73,
+            '        if ! validate_remote_role_identity "$worker_ip" "$node_role"; then\n'
+            '            orch_failed=1\n'
+            '            continue\n'
+            '        fi\n',
+            'orchestrate_workers_role_identity_f1a73',
+        )
+    else:
+        prev_mutation_anchor = (
+            '        # Create directories on worker (sudo needed for aella user) and\n'
+        )
+        prev_role_gate = (
+            '        local expected_remote_role\n'
+            '        if [[ "$ROLE" == "DR-master" ]]; then\n'
+            '            expected_remote_role="DR-worker"\n'
+            '        elif [[ "$ROLE" == "DL-master" ]]; then\n'
+            '            expected_remote_role="DL-worker"\n'
+            '        else\n'
+            '            expected_remote_role="DR-worker"\n'
+            '        fi\n'
+            '        if ! validate_remote_role_identity "$worker_ip" "$expected_remote_role"; then\n'
+            '            orch_failed=1\n'
+            '            continue\n'
+            '        fi\n'
+            '\n'
+        )
+        text = insert_before(
+            text,
+            prev_mutation_anchor,
+            prev_role_gate,
+            'orchestrate_workers_role_identity_prev',
+        )
+
     text = replace_exactly_once(
         text,
         '        log "Copying script to $worker_ip..."\n'
@@ -824,7 +872,7 @@ def apply_main_orchestration_gates(text):
         '        orchestrate_workers || die "WORKER_ORCHESTRATION=FAIL"\n'
         '        validate_expected_cluster_nodes || die "CLUSTER_JOIN_STATE incomplete"\n'
     )
-    return replace_exactly_one_mapping(
+    text = replace_exactly_one_mapping(
         text,
         (
             (
@@ -848,6 +896,40 @@ def apply_main_orchestration_gates(text):
         ),
         'main_orchestration_gates',
     )
+
+    # Worker-mode completion is authoritative for both normal workers and
+    # standalone standby. join_k8s_cluster may log warnings and return after a
+    # partial join, so require local kubelet/conf/flannel evidence immediately.
+    text = replace_exactly_once(
+        text,
+        '    # Worker join (worker mode only)\n'
+        '    if [[ "$WORKER_MODE" == "true" ]]; then\n'
+        '        join_k8s_cluster\n'
+        '    fi\n',
+        '    # Worker join (worker mode only)\n'
+        '    if [[ "$WORKER_MODE" == "true" ]]; then\n'
+        '        join_k8s_cluster\n'
+        '        validate_local_remote_join_state || die "REMOTE_JOIN_LOCAL_STATE=FAIL"\n'
+        '    fi\n',
+        'worker_mode_local_join_gate',
+    )
+
+    # validate_all is diagnostic, but its role split must not treat standby as
+    # a master/AIO. Standby uses the same local K8s checks as a worker.
+    text = replace_exactly_once(
+        text,
+        '    if [[ "$ROLE" == *worker* ]]; then\n',
+        '    if [[ "$ROLE" == *worker* || "$ROLE" == "standby" ]]; then\n',
+        'validate_all_worker_or_standby',
+    )
+    master_cond = '    if [[ "$ROLE" != *worker* ]]; then\n'
+    _require_count(text, master_cond, 2, 'validate_all_master_conditions')
+    text = text.replace(
+        master_cond,
+        '    if [[ "$ROLE" == "AIO" || "$ROLE" == *master* ]]; then\n',
+        2,
+    )
+    return text
 
 
 def apply_image_import_heartbeat(text):

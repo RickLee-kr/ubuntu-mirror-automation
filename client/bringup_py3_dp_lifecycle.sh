@@ -57,7 +57,10 @@ Options:
   --version VER       Target DP version (required for start)
   --skip-download     Passed through to vendor bringup
   --worker-ips IPS    Passed through to vendor bringup
-  --worker-password   Passed through to vendor bringup (not logged)
+  --worker-password PW
+                      Passed through to vendor bringup (not logged). If PW begins
+                      with --, use --worker-password=PW so it cannot be parsed as
+                      a lifecycle control option.
   --standby IPS       Passed through to vendor bringup
   --detach            Return immediately after verified worker handoff
   --status            Read-only lifecycle status
@@ -100,10 +103,19 @@ parse_args() {
         usage
         exit 0
         ;;
+      --worker-password=*)
+        local worker_password_value="${1#*=}"
+        if [[ -z "$worker_password_value" ]]; then
+          echo "ERROR: --worker-password requires a value" >&2
+          exit 1
+        fi
+        PASSTHRU+=("--worker-password" "$worker_password_value")
+        shift
+        ;;
       --skip-download|--worker-ips|--worker-password|--dry-run|--standby)
         if [[ "$1" == "--worker-password" ]]; then
-          if [[ $# -lt 2 ]]; then
-            echo "ERROR: $1 requires a value" >&2
+          if [[ $# -lt 2 || -z "${2:-}" || "$2" == --* ]]; then
+            echo "ERROR: $1 requires a value (use --worker-password=VALUE when VALUE begins with --)" >&2
             exit 1
           fi
           PASSTHRU+=("$1" "$2")

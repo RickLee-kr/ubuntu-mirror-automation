@@ -9,6 +9,9 @@ CLUSTER_JOIN_WAIT_SECONDS="${CLUSTER_JOIN_WAIT_SECONDS:-300}"
 # Bounded per-target Ready wait used by orchestrate_workers. Tests may lower this.
 CLUSTER_TARGET_READY_ATTEMPTS="${CLUSTER_TARGET_READY_ATTEMPTS:-60}"
 CLUSTER_TARGET_READY_SLEEP_SECONDS="${CLUSTER_TARGET_READY_SLEEP_SECONDS:-5}"
+# Local worker/standby completion evidence. Paths are overrideable for tests only.
+PHASE2_KUBELET_CONF_PATH="${PHASE2_KUBELET_CONF_PATH:-/etc/kubernetes/kubelet.conf}"
+PHASE2_FLANNEL_INTERFACE="${PHASE2_FLANNEL_INTERFACE:-flannel.1}"
 
 # WORKER_PASSWORD is the SSH password for ALL remote orchestration nodes
 # (workers from --worker-ips and standby from --standby). The CLI flag name
@@ -31,7 +34,14 @@ _phase2_split_ip_csv() {
     local csv="${1:-}"
     local -n _phase2_split_out="$2"
     _phase2_split_out=()
+    csv="$(_phase2_trim_ip "$csv")"
     [[ -n "$csv" ]] || return 0
+    # Bash `read -a` drops a trailing empty field, so reject edge commas
+    # before splitting. Internal empty/whitespace-only fields are caught below.
+    if [[ "$csv" == ,* || "$csv" == *, ]]; then
+        log "ERROR: REMOTE_ORCH_NODES=FAIL reason=empty_ip"
+        return 1
+    fi
     local IFS=','
     local -a _phase2_parts=()
     read -ra _phase2_parts <<< "$csv"
@@ -85,6 +95,85 @@ normalize_remote_orchestration_nodes() {
     WORKER_IPS="${_phase2_workers[*]}"
     STANDBY_IPS="${_phase2_standbys[*]}"
     log "REMOTE_ORCH_NODES workers=${#_phase2_workers[@]} standby=${#_phase2_standbys[@]}"
+    return 0
+}
+
+_phase2_canonical_role() {
+    case "${1:-}" in
+        DA-master) printf '%s' 'DR-master' ;;
+        DA-worker) printf '%s' 'DR-worker' ;;
+        *) printf '%s' "${1:-}" ;;
+    esac
+}
+
+phase2_is_local_ipv4_address() {
+    local candidate="${1:-}"
+    [[ -n "$candidate" ]] || return 1
+    command -v ip >/dev/null 2>&1 || return 1
+    ip -o -4 addr show 2>/dev/null \
+        | awk '{split($4,a,"/"); print a[1]}' \
+        | grep -Fxq -- "$candidate"
+}
+
+# Read-only pre-mutation identity gate for every remotely orchestrated node.
+# The master must never force a role override onto a different DP role (or
+# accidentally target one of its own local addresses).
+validate_remote_role_identity() {
+    local worker_ip="${1:-}"
+    local expected_role="${2:-}"
+    local actual_role="" expected_canonical actual_canonical
+    if [[ -z "$worker_ip" || -z "$expected_role" ]]; then
+        log "WORKER_RESULT ip=${worker_ip:-unknown} result=FAIL reason=role_probe"
+        return 1
+    fi
+    if phase2_is_local_ipv4_address "$worker_ip"; then
+        log "WORKER_RESULT ip=${worker_ip} role=${expected_role} result=FAIL reason=self_ip"
+        return 1
+    fi
+    if ! declare -F worker_ssh >/dev/null 2>&1; then
+        log "WORKER_RESULT ip=${worker_ip} role=${expected_role} result=FAIL reason=role_probe"
+        return 1
+    fi
+    actual_role=$(worker_ssh "$worker_ip" \
+        "grep aella_role /opt/aelladata/work/da_conf.yml 2>/dev/null | awk -F': ' '{print \$2}' | tr -d \"' \\\"\"" \
+        2>/dev/null || true)
+    actual_role="$(_phase2_trim_ip "$actual_role")"
+    if [[ -z "$actual_role" ]]; then
+        log "WORKER_RESULT ip=${worker_ip} role=${expected_role} result=FAIL reason=role_probe"
+        return 1
+    fi
+    expected_canonical="$(_phase2_canonical_role "$expected_role")"
+    actual_canonical="$(_phase2_canonical_role "$actual_role")"
+    if [[ "$actual_canonical" != "$expected_canonical" ]]; then
+        log "WORKER_RESULT ip=${worker_ip} role=${expected_role} result=FAIL reason=role_mismatch expected=${expected_role} actual=${actual_role}"
+        return 1
+    fi
+    log "REMOTE_ROLE_IDENTITY ip=${worker_ip} expected=${expected_role} actual=${actual_role} result=PASS"
+    return 0
+}
+
+# Hard completion gate for a node executing in worker mode, including the
+# standalone `--role standby` path. Vendor validate_all remains diagnostic;
+# these three local facts must all be true before the run can complete.
+validate_local_remote_join_state() {
+    local role="${ROLE:-unknown}"
+    case "$role" in
+        *worker*|standby) ;;
+        *) return 0 ;;
+    esac
+    if ! systemctl is-active --quiet kubelet 2>/dev/null; then
+        log "REMOTE_JOIN_LOCAL_STATE=FAIL role=${role} reason=kubelet_inactive"
+        return 1
+    fi
+    if [[ ! -s "$PHASE2_KUBELET_CONF_PATH" ]]; then
+        log "REMOTE_JOIN_LOCAL_STATE=FAIL role=${role} reason=kubelet_conf_missing path=${PHASE2_KUBELET_CONF_PATH}"
+        return 1
+    fi
+    if ! ip link show "$PHASE2_FLANNEL_INTERFACE" >/dev/null 2>&1; then
+        log "REMOTE_JOIN_LOCAL_STATE=FAIL role=${role} reason=flannel_missing interface=${PHASE2_FLANNEL_INTERFACE}"
+        return 1
+    fi
+    log "REMOTE_JOIN_LOCAL_STATE=PASS role=${role} kubelet_conf=${PHASE2_KUBELET_CONF_PATH} flannel=${PHASE2_FLANNEL_INTERFACE}"
     return 0
 }
 
@@ -426,4 +515,3 @@ validate_expected_cluster_nodes() {
     log "CLUSTER_JOIN_STATE ready=${ready:-0} requested=${requested} diagnostic=YES"
     return 0
 }
-
