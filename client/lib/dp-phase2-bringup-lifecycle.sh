@@ -294,12 +294,32 @@ p2b_current_run_log_contains() {
   stream_rc=$?
   if [[ "$stream_rc" -ne 0 ]]; then
     [[ "$prev_e" -eq 1 ]] && set -e
-    return "$stream_rc"
+    # Missing/truncated/wrong-run evidence is invalid, not "pattern absent".
+    return 2
   fi
   p2b_current_run_log_stream "$logf" | grep -qE -- "$pattern"
   grep_rc=$?
   [[ "$prev_e" -eq 1 ]] && set -e
-  return "$grep_rc"
+  if [[ "$grep_rc" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "$grep_rc" -eq 1 ]]; then
+    return 1
+  fi
+  return 2
+}
+
+# Probe current-run identity. Return codes match p2b_current_run_log_stream:
+#   0 valid, nonzero invalid. Callers must not treat nonzero as success.
+p2b_require_current_run_log_identity() {
+  local logf="$1"
+  local prev_e=0 ident_rc=0
+  [[ $- == *e* ]] && prev_e=1
+  set +e
+  p2b_current_run_log_stream "$logf" >/dev/null
+  ident_rc=$?
+  [[ "$prev_e" -eq 1 ]] && set -e
+  return "$ident_rc"
 }
 
 # Exact anchored vendor completion line for current run context (optional corroboration).
@@ -618,7 +638,8 @@ p2b_worker_main() {
   local vendor="$1"
   shift
   local d run_id target logf started completed rc=0 start_tick
-  local marker_rc=0 current_log_rc=0
+  local marker_rc=0 current_log_rc=0 apt_log_rc=0 orch_fail_rc=0
+  local orch_pass_rc=0 final_log_rc=0
   d="$(p2b_dir)"
   run_id="$(p2b_read_file "${d}/run-id")"
   target="$(p2b_read_file "${d}/target-version")"
@@ -705,7 +726,7 @@ p2b_worker_main() {
     # Current-run log identity is a mandatory prerequisite for any secondary
     # log-based PASS decision. Invalid evidence is not "pattern absent".
     set +e
-    p2b_current_run_log_stream "$logf" >/dev/null
+    p2b_require_current_run_log_identity "$logf"
     current_log_rc=$?
     set -e
     if [[ "$current_log_rc" -ne 0 ]]; then
@@ -728,62 +749,65 @@ p2b_worker_main() {
         next=1
       fi
     done
-    if p2b_current_run_log_contains "$logf" 'APT_DEPENDENCY_CHECK=FAIL'; then
-      rc=1
-      completed="$(p2b_utc_now)"
-      printf '%s\n' "$rc" | p2b_atomic_write "${d}/exit-code"
-      printf '%s\n' "$completed" | p2b_atomic_write "${d}/completed-at"
-      {
-        echo "BRINGUP_TERMINAL_STATE=FAILED"
-        echo "BRINGUP_RESULT=FAIL"
-        echo "FAILURE_REASON=APT_DEPENDENCY_CHECK"
-        echo "BRINGUP_EXIT_CODE=${rc}"
-        echo "BRINGUP_RUN_ID=${run_id}"
-        echo "BRINGUP_COMPLETION_SENTINEL=FAIL"
-      } | p2b_atomic_write "${d}/completion.sentinel"
-      p2b_write_result_env "$run_id" "$$" "$target" "$started" "$completed" "$rc" "FAIL" "FAILED" "$logf"
-      p2b_write_state "FAILED"
-      exit "$rc"
-    fi
-    if p2b_current_run_log_contains "$logf" 'WORKER_ORCHESTRATION=FAIL'; then
-      rc=1
-      completed="$(p2b_utc_now)"
-      printf '%s\n' "$rc" | p2b_atomic_write "${d}/exit-code"
-      printf '%s\n' "$completed" | p2b_atomic_write "${d}/completed-at"
-      {
-        echo "BRINGUP_TERMINAL_STATE=FAILED"
-        echo "BRINGUP_RESULT=FAIL"
-        echo "FAILURE_REASON=WORKER_ORCHESTRATION"
-        echo "BRINGUP_EXIT_CODE=${rc}"
-        echo "BRINGUP_RUN_ID=${run_id}"
-        echo "BRINGUP_COMPLETION_SENTINEL=FAIL"
-      } | p2b_atomic_write "${d}/completion.sentinel"
-      p2b_write_result_env "$run_id" "$$" "$target" "$started" "$completed" "$rc" "FAIL" "FAILED" "$logf"
-      p2b_write_state "FAILED"
-      exit "$rc"
-    fi
-    if [[ -n "$want_remote" ]]; then
-      local orch_ok=0
-      if p2b_current_run_log_contains "$logf" 'WORKER_ORCHESTRATION=PASS'; then
-        orch_ok=1
-      fi
-      if [[ "$orch_ok" -ne 1 ]]; then
+    set +e
+    p2b_current_run_log_contains "$logf" 'APT_DEPENDENCY_CHECK=FAIL'
+    apt_log_rc=$?
+    set -e
+    case "$apt_log_rc" in
+      0)
         rc=1
-        completed="$(p2b_utc_now)"
-        printf '%s\n' "$rc" | p2b_atomic_write "${d}/exit-code"
-        printf '%s\n' "$completed" | p2b_atomic_write "${d}/completed-at"
-        {
-          echo "BRINGUP_TERMINAL_STATE=FAILED"
-          echo "BRINGUP_RESULT=FAIL"
-          echo "FAILURE_REASON=WORKER_ORCHESTRATION"
-          echo "BRINGUP_EXIT_CODE=${rc}"
-          echo "BRINGUP_RUN_ID=${run_id}"
-          echo "BRINGUP_COMPLETION_SENTINEL=FAIL"
-        } | p2b_atomic_write "${d}/completion.sentinel"
-        p2b_write_result_env "$run_id" "$$" "$target" "$started" "$completed" "$rc" "FAIL" "FAILED" "$logf"
-        p2b_write_state "FAILED"
-        exit "$rc"
-      fi
+        p2b_fail_run "$d" "$run_id" "$$" "$target" "$started" "$logf" "$rc" "APT_DEPENDENCY_CHECK"
+        ;;
+      1)
+        ;;
+      *)
+        rc=1
+        p2b_fail_run "$d" "$run_id" "$$" "$target" "$started" "$logf" "$rc" "CURRENT_RUN_LOG_IDENTITY_INVALID"
+        ;;
+    esac
+    set +e
+    p2b_current_run_log_contains "$logf" 'WORKER_ORCHESTRATION=FAIL'
+    orch_fail_rc=$?
+    set -e
+    case "$orch_fail_rc" in
+      0)
+        rc=1
+        p2b_fail_run "$d" "$run_id" "$$" "$target" "$started" "$logf" "$rc" "WORKER_ORCHESTRATION"
+        ;;
+      1)
+        ;;
+      *)
+        rc=1
+        p2b_fail_run "$d" "$run_id" "$$" "$target" "$started" "$logf" "$rc" "CURRENT_RUN_LOG_IDENTITY_INVALID"
+        ;;
+    esac
+    if [[ -n "$want_remote" ]]; then
+      set +e
+      p2b_current_run_log_contains "$logf" 'WORKER_ORCHESTRATION=PASS'
+      orch_pass_rc=$?
+      set -e
+      case "$orch_pass_rc" in
+        0)
+          ;;
+        1)
+          rc=1
+          p2b_fail_run "$d" "$run_id" "$$" "$target" "$started" "$logf" "$rc" "WORKER_ORCHESTRATION"
+          ;;
+        *)
+          rc=1
+          p2b_fail_run "$d" "$run_id" "$$" "$target" "$started" "$logf" "$rc" "CURRENT_RUN_LOG_IDENTITY_INVALID"
+          ;;
+      esac
+    fi
+    # Identity may change after the last secondary check (copytruncate). AIO
+    # and cluster both require a final valid current-run stream before PASS.
+    set +e
+    p2b_require_current_run_log_identity "$logf"
+    final_log_rc=$?
+    set -e
+    if [[ "$final_log_rc" -ne 0 ]]; then
+      rc=1
+      p2b_fail_run "$d" "$run_id" "$$" "$target" "$started" "$logf" "$rc" "CURRENT_RUN_LOG_IDENTITY_INVALID"
     fi
     # Write machine-readable sentinel bound to this run — authoritative completion.
     {

@@ -486,14 +486,19 @@ else
   fail "I --worker-password contract missing"
 fi
 
-# Lifecycle wrapper requires WORKER_ORCHESTRATION=PASS for remote nodes
-if grep -q 'FAILURE_REASON=WORKER_ORCHESTRATION' "$LIFECYCLE" \
-  && grep -q 'WORKER_ORCHESTRATION=PASS' "$LIFECYCLE"; then
+# Lifecycle wrapper requires WORKER_ORCHESTRATION=PASS for remote nodes.
+# Reasons are written via p2b_fail_run; callers must distinguish contains()
+# rc=0/1/2 (invalid stream is never treated as pattern-absent).
+if grep -q 'WORKER_ORCHESTRATION=PASS' "$LIFECYCLE" \
+  && grep -qE 'p2b_fail_run .*"WORKER_ORCHESTRATION"' "$LIFECYCLE" \
+  && grep -q 'orch_fail_rc' "$LIFECYCLE" \
+  && grep -q 'orch_pass_rc' "$LIFECYCLE"; then
   pass "G lifecycle wrapper requires WORKER_ORCHESTRATION=PASS for remote nodes"
 else
   fail "G lifecycle wrapper missing WORKER_ORCHESTRATION remote gate"
 fi
-if grep -q 'FAILURE_REASON=APT_DEPENDENCY_CHECK' "$LIFECYCLE"; then
+if grep -qE 'p2b_fail_run .*"APT_DEPENDENCY_CHECK"' "$LIFECYCLE" \
+  && grep -q 'apt_log_rc' "$LIFECYCLE"; then
   pass "K lifecycle wrapper rejects APT_DEPENDENCY_CHECK=FAIL"
 else
   fail "K lifecycle wrapper missing APT_DEPENDENCY_CHECK gate"

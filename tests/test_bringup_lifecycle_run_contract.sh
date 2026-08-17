@@ -798,4 +798,307 @@ grep -q 'FAILURE_REASON=CURRENT_RUN_LOG_IDENTITY_INVALID' "$(p2b_dir)/completion
   || fail "T8 missing CURRENT_RUN_LOG_IDENTITY_INVALID"
 pass "T8 historical success cannot rescue invalid current run"
 
+clone_fn() {
+  local src="$1" dest="$2"
+  eval "$(declare -f "$src" | sed "1s/${src}/${dest}/")"
+}
+
+assert_failed_identity() {
+  local label="$1"
+  [[ "$(p2b_read_state)" == "FAILED" ]] || fail "${label} state=$(p2b_read_state)"
+  grep -q 'FAILURE_REASON=CURRENT_RUN_LOG_IDENTITY_INVALID' "$(p2b_dir)/completion.sentinel" \
+    || fail "${label} missing CURRENT_RUN_LOG_IDENTITY_INVALID"
+  grep -q 'BRINGUP_TERMINAL_STATE=FAILED' "$(p2b_dir)/completion.sentinel" \
+    || fail "${label} sentinel not FAILED"
+  grep -q 'BRINGUP_COMPLETION_SENTINEL=FAIL' "$(p2b_dir)/completion.sentinel" \
+    || fail "${label} sentinel not FAIL"
+  if grep -q 'BRINGUP_TERMINAL_STATE=COMPLETED' "$(p2b_dir)/completion.sentinel"; then
+    fail "${label} wrote COMPLETED"
+  fi
+  if grep -q '^BRINGUP_RESULT=PASS$' "$(p2b_dir)/result.env" 2>/dev/null; then
+    fail "${label} wrote result PASS"
+  fi
+}
+
+setup_rc_run() {
+  local run_id="$1"
+  reset_lifecycle_files
+  : >"$PHASE2_BRINGUP_LOG_DEFAULT"
+  write_file "$(p2b_dir)/run-id" "$run_id"
+  write_file "$(p2b_dir)/target-version" "6.5.0"
+  write_file "$(p2b_dir)/log-path" "$PHASE2_BRINGUP_LOG_DEFAULT"
+  write_file "$(p2b_dir)/started-at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+
+# ---------------------------------------------------------------------------
+# RC-T1. VALID STREAM + PATTERN ABSENT => contains rc=1, lifecycle continues
+# ---------------------------------------------------------------------------
+setup_rc_run "run-rc-t1"
+p2b_write_current_run_log_marker "$PHASE2_BRINGUP_LOG_DEFAULT" "run-rc-t1"
+printf 'APT_DEPENDENCY_CHECK=PASS\n' >>"$PHASE2_BRINGUP_LOG_DEFAULT"
+set +e
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'APT_DEPENDENCY_CHECK=FAIL'
+RC_T1_CONTAINS=$?
+set -e
+[[ "$RC_T1_CONTAINS" -eq 1 ]] || fail "RC-T1 contains rc=${RC_T1_CONTAINS} expected 1"
+VENDOR_RC_T1="${TMP}/vendor-rc-t1.sh"
+cat >"$VENDOR_RC_T1" <<'EOF'
+#!/usr/bin/env bash
+echo "APT_DEPENDENCY_CHECK=PASS"
+exit 0
+EOF
+chmod +x "$VENDOR_RC_T1"
+set +e
+( p2b_worker_main "$VENDOR_RC_T1" >/dev/null 2>&1 )
+RC_T1_RC=$?
+set -e
+[[ "$RC_T1_RC" -eq 0 ]] || fail "RC-T1 worker rc=${RC_T1_RC}"
+[[ "$(p2b_read_state)" == "COMPLETED" ]] || fail "RC-T1 state=$(p2b_read_state)"
+pass "RC-T1 valid stream + pattern absent is rc=1 and lifecycle continues"
+
+# ---------------------------------------------------------------------------
+# RC-T2. VALID STREAM + APT FAIL
+# ---------------------------------------------------------------------------
+setup_rc_run "run-rc-t2"
+VENDOR_RC_T2="${TMP}/vendor-rc-t2.sh"
+cat >"$VENDOR_RC_T2" <<'EOF'
+#!/usr/bin/env bash
+echo "APT_DEPENDENCY_CHECK=FAIL"
+exit 0
+EOF
+chmod +x "$VENDOR_RC_T2"
+set +e
+( p2b_worker_main "$VENDOR_RC_T2" >/dev/null 2>&1 )
+RC_T2_RC=$?
+set -e
+[[ "$RC_T2_RC" -ne 0 ]] || fail "RC-T2 unexpectedly PASS"
+[[ "$(p2b_read_state)" == "FAILED" ]] || fail "RC-T2 state=$(p2b_read_state)"
+grep -q 'FAILURE_REASON=APT_DEPENDENCY_CHECK' "$(p2b_dir)/completion.sentinel" \
+  || fail "RC-T2 missing APT_DEPENDENCY_CHECK"
+if grep -q 'FAILURE_REASON=CURRENT_RUN_LOG_IDENTITY_INVALID' "$(p2b_dir)/completion.sentinel"; then
+  fail "RC-T2 valid APT FAIL was reported as log identity failure"
+fi
+pass "RC-T2 valid stream + APT FAIL keeps FAILURE_REASON=APT_DEPENDENCY_CHECK"
+
+# ---------------------------------------------------------------------------
+# RC-T3. VALID STREAM + WORKER_ORCHESTRATION FAIL
+# ---------------------------------------------------------------------------
+setup_rc_run "run-rc-t3"
+VENDOR_RC_T3="${TMP}/vendor-rc-t3.sh"
+cat >"$VENDOR_RC_T3" <<'EOF'
+#!/usr/bin/env bash
+echo "WORKER_ORCHESTRATION=FAIL"
+exit 0
+EOF
+chmod +x "$VENDOR_RC_T3"
+set +e
+( p2b_worker_main "$VENDOR_RC_T3" >/dev/null 2>&1 )
+RC_T3_RC=$?
+set -e
+[[ "$RC_T3_RC" -ne 0 ]] || fail "RC-T3 unexpectedly PASS"
+[[ "$(p2b_read_state)" == "FAILED" ]] || fail "RC-T3 state=$(p2b_read_state)"
+grep -q 'FAILURE_REASON=WORKER_ORCHESTRATION' "$(p2b_dir)/completion.sentinel" \
+  || fail "RC-T3 missing WORKER_ORCHESTRATION"
+if grep -q 'FAILURE_REASON=CURRENT_RUN_LOG_IDENTITY_INVALID' "$(p2b_dir)/completion.sentinel"; then
+  fail "RC-T3 valid orch FAIL was reported as log identity failure"
+fi
+pass "RC-T3 valid stream + WORKER_ORCHESTRATION=FAIL keeps specific reason"
+
+# ---------------------------------------------------------------------------
+# RC-T4. Identity break between initial gate and APT check (AIO TOCTOU)
+# ---------------------------------------------------------------------------
+setup_rc_run "run-rc-t4"
+VENDOR_RC_T4="${TMP}/vendor-rc-t4.sh"
+cat >"$VENDOR_RC_T4" <<'EOF'
+#!/usr/bin/env bash
+echo "APT_DEPENDENCY_CHECK=PASS"
+exit 0
+EOF
+chmod +x "$VENDOR_RC_T4"
+clone_fn p2b_current_run_log_contains p2b_current_run_log_contains_orig
+p2b_current_run_log_contains() {
+  if [[ "$2" == 'APT_DEPENDENCY_CHECK=FAIL' ]]; then
+    : >"$1"
+    python3 -c 'import sys; sys.stdout.write("N"*10000+"\n")' >>"$1"
+    printf 'APT_DEPENDENCY_CHECK=PASS\n' >>"$1"
+  fi
+  p2b_current_run_log_contains_orig "$@"
+}
+set +e
+( p2b_worker_main "$VENDOR_RC_T4" >/dev/null 2>&1 )
+RC_T4_RC=$?
+set -e
+eval "$(declare -f p2b_current_run_log_contains_orig | sed '1s/p2b_current_run_log_contains_orig/p2b_current_run_log_contains/')"
+unset -f p2b_current_run_log_contains_orig
+[[ "$RC_T4_RC" -ne 0 ]] || fail "RC-T4 unexpectedly PASS"
+assert_failed_identity "RC-T4"
+pass "RC-T4 AIO TOCTOU after initial identity cannot PASS"
+
+# ---------------------------------------------------------------------------
+# RC-T5. Identity break between APT and WORKER contains checks
+# ---------------------------------------------------------------------------
+setup_rc_run "run-rc-t5"
+VENDOR_RC_T5="${TMP}/vendor-rc-t5.sh"
+cat >"$VENDOR_RC_T5" <<'EOF'
+#!/usr/bin/env bash
+echo "APT_DEPENDENCY_CHECK=PASS"
+exit 0
+EOF
+chmod +x "$VENDOR_RC_T5"
+clone_fn p2b_current_run_log_contains p2b_current_run_log_contains_orig
+p2b_current_run_log_contains() {
+  if [[ "$2" == 'WORKER_ORCHESTRATION=FAIL' ]]; then
+    : >"$1"
+    python3 -c 'import sys; sys.stdout.write("N"*10000+"\n")' >>"$1"
+  fi
+  p2b_current_run_log_contains_orig "$@"
+}
+set +e
+( p2b_worker_main "$VENDOR_RC_T5" >/dev/null 2>&1 )
+RC_T5_RC=$?
+set -e
+eval "$(declare -f p2b_current_run_log_contains_orig | sed '1s/p2b_current_run_log_contains_orig/p2b_current_run_log_contains/')"
+unset -f p2b_current_run_log_contains_orig
+[[ "$RC_T5_RC" -ne 0 ]] || fail "RC-T5 unexpectedly PASS"
+assert_failed_identity "RC-T5"
+pass "RC-T5 identity break before WORKER contains cannot PASS"
+
+# ---------------------------------------------------------------------------
+# RC-T6. Identity break after secondary checks, before PASS sentinel
+# ---------------------------------------------------------------------------
+setup_rc_run "run-rc-t6"
+VENDOR_RC_T6="${TMP}/vendor-rc-t6.sh"
+cat >"$VENDOR_RC_T6" <<'EOF'
+#!/usr/bin/env bash
+echo "APT_DEPENDENCY_CHECK=PASS"
+exit 0
+EOF
+chmod +x "$VENDOR_RC_T6"
+clone_fn p2b_require_current_run_log_identity p2b_require_current_run_log_identity_orig
+RC_T6_IDENT=0
+p2b_require_current_run_log_identity() {
+  RC_T6_IDENT=$((RC_T6_IDENT + 1))
+  if [[ "$RC_T6_IDENT" -ge 2 ]]; then
+    : >"$1"
+    python3 -c 'import sys; sys.stdout.write("N"*10000+"\n")' >>"$1"
+  fi
+  p2b_require_current_run_log_identity_orig "$@"
+}
+set +e
+( p2b_worker_main "$VENDOR_RC_T6" >/dev/null 2>&1 )
+RC_T6_RC=$?
+set -e
+eval "$(declare -f p2b_require_current_run_log_identity_orig | sed '1s/p2b_require_current_run_log_identity_orig/p2b_require_current_run_log_identity/')"
+unset -f p2b_require_current_run_log_identity_orig
+[[ "$RC_T6_RC" -ne 0 ]] || fail "RC-T6 unexpectedly PASS"
+assert_failed_identity "RC-T6"
+pass "RC-T6 final pre-PASS identity gate cannot be skipped"
+
+# ---------------------------------------------------------------------------
+# RC-T7. NORMAL AIO STILL PASSES
+# ---------------------------------------------------------------------------
+setup_rc_run "run-rc-t7"
+VENDOR_RC_T7="${TMP}/vendor-rc-t7.sh"
+cat >"$VENDOR_RC_T7" <<'EOF'
+#!/usr/bin/env bash
+echo "APT_DEPENDENCY_CHECK=PASS"
+exit 0
+EOF
+chmod +x "$VENDOR_RC_T7"
+set +e
+( p2b_worker_main "$VENDOR_RC_T7" >/dev/null 2>&1 )
+RC_T7_RC=$?
+set -e
+[[ "$RC_T7_RC" -eq 0 ]] || fail "RC-T7 worker rc=${RC_T7_RC}"
+[[ "$(p2b_read_state)" == "COMPLETED" ]] || fail "RC-T7 state=$(p2b_read_state)"
+grep -q '^BRINGUP_RESULT=PASS$' "$(p2b_dir)/result.env" || fail "RC-T7 result.env not PASS"
+grep -q '^BRINGUP_EXIT_CODE=0$' "$(p2b_dir)/result.env" || fail "RC-T7 exit code not 0"
+grep -q '^BRINGUP_COMPLETION_SENTINEL=PASS$' "$(p2b_dir)/result.env" \
+  || fail "RC-T7 sentinel not PASS"
+pass "RC-T7 normal AIO still PASSES"
+
+# ---------------------------------------------------------------------------
+# RC-T8. NORMAL CLUSTER STILL PASSES WITH CURRENT 3/3 + orch PASS
+# ---------------------------------------------------------------------------
+setup_rc_run "run-rc-t8"
+VENDOR_RC_T8="${TMP}/vendor-rc-t8.sh"
+cat >"$VENDOR_RC_T8" <<'EOF'
+#!/usr/bin/env bash
+echo "WORKER_ORCHESTRATION=PASS"
+echo "CLUSTER_JOIN_STATE ready=3 expected=3"
+exit 0
+EOF
+chmod +x "$VENDOR_RC_T8"
+set +e
+( p2b_worker_main "$VENDOR_RC_T8" --worker-ips 192.0.2.10,192.0.2.11 >/dev/null 2>&1 )
+RC_T8_RC=$?
+set -e
+[[ "$RC_T8_RC" -eq 0 ]] || fail "RC-T8 worker rc=${RC_T8_RC}"
+[[ "$(p2b_read_state)" == "COMPLETED" ]] || fail "RC-T8 state=$(p2b_read_state)"
+grep -q '^BRINGUP_COMPLETION_SENTINEL=PASS$' "$(p2b_dir)/result.env" \
+  || fail "RC-T8 sentinel not PASS"
+pass "RC-T8 normal cluster current 3/3 still PASSES"
+
+# ---------------------------------------------------------------------------
+# RC-T9. WRONG RUN MARKER STILL FAILS
+# ---------------------------------------------------------------------------
+setup_rc_run "run-new"
+VENDOR_RC_T9="${TMP}/vendor-rc-t9.sh"
+cat >"$VENDOR_RC_T9" <<'EOF'
+#!/usr/bin/env bash
+: >"${PHASE2_BRINGUP_LOG_DEFAULT}"
+echo "PHASE2_LIFECYCLE_RUN_BEGIN run_id=run-old"
+echo "APT_DEPENDENCY_CHECK=PASS"
+echo "Bringup complete: all services ready"
+exit 0
+EOF
+chmod +x "$VENDOR_RC_T9"
+set +e
+( p2b_worker_main "$VENDOR_RC_T9" >/dev/null 2>&1 )
+RC_T9_RC=$?
+set -e
+[[ "$RC_T9_RC" -ne 0 ]] || fail "RC-T9 unexpectedly PASS"
+assert_failed_identity "RC-T9"
+pass "RC-T9 wrong-run marker remains unusable"
+
+# ---------------------------------------------------------------------------
+# RC-T10. HISTORICAL SUCCESS CANNOT RESCUE INVALID CURRENT RUN
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+{
+  echo "APT_DEPENDENCY_CHECK=PASS"
+  echo "WORKER_ORCHESTRATION=PASS"
+  echo "CLUSTER_JOIN_STATE ready=3 expected=3"
+  echo "Bringup complete: all nodes ready"
+} >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-rc-t10"
+write_file "$(p2b_dir)/target-version" "6.5.0"
+write_file "$(p2b_dir)/log-path" "$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/started-at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+VENDOR_RC_T10="${TMP}/vendor-rc-t10.sh"
+cat >"$VENDOR_RC_T10" <<'EOF'
+#!/usr/bin/env bash
+python3 - "${PHASE2_BRINGUP_LOG_DEFAULT}" <<'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+text = p.read_text(errors="replace")
+lines = [ln for ln in text.splitlines(True) if "PHASE2_LIFECYCLE_RUN_BEGIN" not in ln]
+p.write_text("".join(lines))
+PY
+echo "APT_DEPENDENCY_CHECK=PASS"
+echo "WORKER_ORCHESTRATION=PASS"
+echo "CLUSTER_JOIN_STATE ready=3 expected=3"
+echo "Bringup complete: all services ready"
+exit 0
+EOF
+chmod +x "$VENDOR_RC_T10"
+set +e
+( p2b_worker_main "$VENDOR_RC_T10" --worker-ips 192.0.2.10,192.0.2.11 >/dev/null 2>&1 )
+RC_T10_RC=$?
+set -e
+[[ "$RC_T10_RC" -ne 0 ]] || fail "RC-T10 unexpectedly PASS from historical success"
+assert_failed_identity "RC-T10"
+pass "RC-T10 historical success cannot rescue invalid current run"
+
 echo "TEST_BRINGUP_LIFECYCLE_RUN_CONTRACT=PASS"
