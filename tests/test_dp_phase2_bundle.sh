@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../scripts/lib/dp-phase2-common.sh
 source "${ROOT}/scripts/lib/dp-phase2-common.sh"
+# shellcheck source=lib/phase2_prereq_fixture.sh
+source "${ROOT}/tests/lib/phase2_prereq_fixture.sh"
 
 FAIL=0
 pass() { echo "  PASS: $*"; }
@@ -19,7 +21,7 @@ mkdir -p "$FIXTURE"
 make_payload() {
   local dir="$1"
   mkdir -p "$dir"
-  printf 'common-payload\n' >"${dir}/aelladeb_py3_common.tar.gz"
+  phase2_prereq_write_zero_extra_common "${dir}/aelladeb_py3_common.tar.gz" "common-payload"
   sha1sum "${dir}/aelladeb_py3_common.tar.gz" | awk '{print $1"  /build/server/aelladeb_py3_common.tar.gz"}' \
     >"${dir}/aelladeb_py3_common.tar.gz.sha1"
   printf 'uvp-deb\n' >"${dir}/aella-uvp-2404_6.5.0ubuntu1_amd64.deb"
@@ -129,6 +131,8 @@ export DP_PHASE2_LOCK_FILE="${WORKDIR}/dp2.lock"
 export UOM_LOCK_FILE="${WORKDIR}/uom.lock"
 export DP_PHASE2_LOG_FILE="${WORKDIR}/sync.log"
 export DP_PHASE2_CLEAN_FAILED_STAGING=1
+export PHASE2_PREREQ_INDEX_ROOT="${WORKDIR}/noble-index"
+phase2_prereq_write_empty_noble_index "$PHASE2_PREREQ_INDEX_ROOT"
 
 # Local fixture HTTP server
 make_payload "${WORKDIR}/http_root"
@@ -170,7 +174,8 @@ if [[ -n "$ts" ]]; then
 fi
 
 # Second sync with changed payload → previous preserved
-printf 'common-payload-v2\n' >"${WORKDIR}/http_root/aelladeb_py3_common.tar.gz"
+phase2_prereq_write_zero_extra_common \
+  "${WORKDIR}/http_root/aelladeb_py3_common.tar.gz" "common-payload-v2"
 sha1sum "${WORKDIR}/http_root/aelladeb_py3_common.tar.gz" | awk '{print $1"  /build/x"}' \
   >"${WORKDIR}/http_root/aelladeb_py3_common.tar.gz.sha1"
 sleep 1

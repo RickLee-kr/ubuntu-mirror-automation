@@ -1287,40 +1287,79 @@ EOF
 }
 
 stage_phase2_ubuntu_prerequisites() {
+  local extras_base="${MIRROR_URL}/dp-phase2/${TARGET_DP_VERSION}/extras"
+  local state_name="phase2-ubuntu-prerequisites.state"
   local name="phase2-ubuntu-prerequisites.tar.gz"
-  local url="${MIRROR_URL}/dp-phase2/${TARGET_DP_VERSION}/extras/${name}"
+  local state_url="${extras_base}/${state_name}"
+  local url="${extras_base}/${name}"
   local dest="${ARTIFACT_DIR}/${name}"
-  local tmp sha_url sha_dest
+  local state_dest="${ARTIFACT_DIR}/${state_name}"
+  local tmp sha_url sha_dest required count
+  tmp="$(mktemp "${ARTIFACT_DIR}/.${state_name}.XXXXXX")"
+  if ! curl -fsSL --connect-timeout 15 --max-time 30 --retry 2 -o "$tmp" "$state_url"; then
+    rm -f "$tmp"
+    log "PHASE2_PREREQ_STAGE=FAIL reason=state_not_published"
+    return 1
+  fi
+  if [[ ! -s "$tmp" ]]; then
+    rm -f "$tmp"
+    log "PHASE2_PREREQ_STAGE=FAIL reason=state_empty"
+    return 1
+  fi
+  mv -f "$tmp" "$state_dest"
+  chown "${AELLA_UID}:${AELLA_PRIMARY_GID}" "$state_dest" 2>/dev/null || true
+  required="$(awk -F= '$1=="PHASE2_PREREQ_REQUIRED"{print $2; exit}' "$state_dest")"
+  count="$(awk -F= '$1=="PHASE2_PREREQ_PACKAGE_COUNT"{print $2; exit}' "$state_dest")"
+  log "PHASE2_PREREQ_REQUIRED=${required:-unknown} PHASE2_PREREQ_PACKAGE_COUNT=${count:-unknown}"
+  if [[ "$required" == "NO" && "${count:-0}" == "0" ]]; then
+    log "PHASE2_PREREQ_STAGE=NOT_REQUIRED"
+    return 0
+  fi
+  if [[ "$required" != "YES" ]]; then
+    log "PHASE2_PREREQ_STAGE=FAIL reason=state_invalid required=${required}"
+    return 1
+  fi
   tmp="$(mktemp "${ARTIFACT_DIR}/.${name}.XXXXXX")"
   if ! curl -fsSL --connect-timeout 15 --max-time 120 --retry 2 -o "$tmp" "$url"; then
     rm -f "$tmp"
-    log "PHASE2_PREREQ_STAGE=SKIP reason=not_published"
-    return 0
+    log "PHASE2_PREREQ_STAGE=FAIL reason=artifact_http"
+    return 1
   fi
   if [[ ! -s "$tmp" ]] \
     || head -c 256 "$tmp" | tr -d '\0' | grep -qiE '<!DOCTYPE[[:space:]]*html|<html[[:space:]]|<html>'; then
     rm -f "$tmp"
-    log "PHASE2_PREREQ_STAGE=SKIP reason=invalid_payload"
-    return 0
+    log "PHASE2_PREREQ_STAGE=FAIL reason=invalid_payload"
+    return 1
   fi
   sha_url="${url}.sha256"
   sha_dest="${dest}.sha256"
-  if curl -fsSL --connect-timeout 15 --max-time 30 -o "${sha_dest}.tmp" "$sha_url"; then
-    mv -f "${sha_dest}.tmp" "$sha_dest"
-    local expected actual
-    expected="$(awk 'NF {print $1; exit}' "$sha_dest")"
-    actual="$(sha256sum "$tmp" | awk '{print $1}')"
-    if [[ -n "$expected" && "${expected,,}" != "${actual,,}" ]]; then
-      rm -f "$tmp" "$sha_dest"
-      log "PHASE2_PREREQ_STAGE=FAIL reason=sha256"
-      return 1
-    fi
-  else
-    rm -f "${sha_dest}.tmp"
+  if ! curl -fsSL --connect-timeout 15 --max-time 30 -o "${sha_dest}.tmp" "$sha_url"; then
+    rm -f "$tmp" "${sha_dest}.tmp"
+    log "PHASE2_PREREQ_STAGE=FAIL reason=sha256_missing"
+    return 1
   fi
+  mv -f "${sha_dest}.tmp" "$sha_dest"
+  local expected actual
+  expected="$(awk 'NF {print $1; exit}' "$sha_dest")"
+  actual="$(sha256sum "$tmp" | awk '{print $1}')"
+  if [[ -z "$expected" || "${expected,,}" != "${actual,,}" ]]; then
+    rm -f "$tmp" "$sha_dest"
+    log "PHASE2_PREREQ_STAGE=FAIL reason=sha256"
+    return 1
+  fi
+  local manifest_dest="${ARTIFACT_DIR}/phase2-ubuntu-prerequisites.manifest.json"
+  if ! curl -fsSL --connect-timeout 15 --max-time 30 \
+    -o "${manifest_dest}.tmp" \
+    "${extras_base}/phase2-ubuntu-prerequisites.manifest.json"; then
+    rm -f "$tmp" "$sha_dest" "${manifest_dest}.tmp"
+    log "PHASE2_PREREQ_STAGE=FAIL reason=manifest_http"
+    return 1
+  fi
+  mv -f "${manifest_dest}.tmp" "$manifest_dest"
   mv -f "$tmp" "$dest"
   chown "${AELLA_UID}:${AELLA_PRIMARY_GID}" "$dest" 2>/dev/null || true
-  [[ -f "$sha_dest" ]] && chown "${AELLA_UID}:${AELLA_PRIMARY_GID}" "$sha_dest" 2>/dev/null || true
+  chown "${AELLA_UID}:${AELLA_PRIMARY_GID}" "$sha_dest" 2>/dev/null || true
+  chown "${AELLA_UID}:${AELLA_PRIMARY_GID}" "$manifest_dest" 2>/dev/null || true
   log "PHASE2_PREREQ_STAGE=PASS path=${dest}"
   return 0
 }
@@ -1551,7 +1590,7 @@ stage_main() {
     || die "artifact ownership mismatch uid=${bu} gid=${bg}"
 
   # Separate Phase 2 Ubuntu prerequisite artifact (not part of the 9 ACPS files).
-  stage_phase2_ubuntu_prerequisites || true
+  stage_phase2_ubuntu_prerequisites || die "PHASE2_PREREQ_STAGE=FAIL"
 
   rm -rf "$STAGE_ROOT"
   STAGE_ROOT=""

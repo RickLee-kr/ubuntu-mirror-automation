@@ -18,10 +18,11 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -56,6 +57,10 @@ VIRTUAL_OR_BASE_SKIP = frozenset((
 ))
 ARTIFACT_NAME = 'phase2-ubuntu-prerequisites.tar.gz'
 MANIFEST_NAME = 'phase2-ubuntu-prerequisites.manifest.json'
+STATE_NAME = 'phase2-ubuntu-prerequisites.state'
+INSTALL_ORDER_NAME = 'install-order.txt'
+DEFAULT_ARCHIVE_BASE = 'http://archive.ubuntu.com/ubuntu'
+DEFAULT_SECURITY_BASE = 'http://security.ubuntu.com/ubuntu'
 
 
 def eprint(*args, **kwargs):
@@ -333,7 +338,248 @@ def package_record(name, info):
         ('filename', (info or {}).get('Filename', '')),
         ('sha256', (info or {}).get('SHA256', '')),
         ('size', (info or {}).get('Size', '')),
+        ('depends', (info or {}).get('Depends', '')),
+        ('pre_depends', (info or {}).get('Pre-Depends', '')),
     ])
+
+
+def package_upstream_url(suite, filename, archive_base=None, security_base=None):
+    """Build the official Ubuntu pool URL from Packages Filename + suite.
+
+    Does not invent pool paths. Filename comes from the Packages index.
+    noble-security uses the security pocket base; all other suites use archive.
+    """
+    filename = (filename or '').lstrip('/')
+    if not filename:
+        return ''
+    archive_base = (archive_base or DEFAULT_ARCHIVE_BASE).rstrip('/')
+    security_base = (security_base or DEFAULT_SECURITY_BASE).rstrip('/')
+    suite = suite or ''
+    if suite.endswith('-security') or suite == 'security':
+        base = security_base
+    else:
+        base = archive_base
+    return '%s/%s' % (base, filename)
+
+
+def _parse_size(value):
+    if value in (None, ''):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def read_deb_control(path):
+    """Return control fields from a .deb. Prefer selective_mirror.parse_deb_control."""
+    if sm is not None:
+        try:
+            return sm.parse_deb_control(path)
+        except Exception:
+            pass
+    try:
+        out = subprocess.check_output(
+            ['dpkg-deb', '-I', path, 'control'],
+            stderr=subprocess.DEVNULL,
+        ).decode('utf-8', 'replace')
+        return parse_control_text(out)
+    except (OSError, subprocess.CalledProcessError):
+        return OrderedDict()
+
+
+def verify_local_package_file(path, rec):
+    """Verify on-disk .deb against index metadata. Empty reason means OK."""
+    if not path or not os.path.isfile(path):
+        return 'deb_absent'
+    expected_size = _parse_size(rec.get('size'))
+    if expected_size is not None:
+        try:
+            actual_size = os.path.getsize(path)
+        except OSError:
+            return 'size_unreadable'
+        if actual_size != expected_size:
+            return 'size_mismatch expected=%s actual=%s' % (expected_size, actual_size)
+    expected_sha = (rec.get('sha256') or '').strip().lower()
+    if expected_sha:
+        actual_sha = sha256_file(path).lower()
+        if actual_sha != expected_sha:
+            return 'sha256_mismatch expected=%s actual=%s' % (expected_sha, actual_sha)
+    fields = read_deb_control(path)
+    if fields:
+        pkg = fields.get('Package') or ''
+        ver = fields.get('Version') or ''
+        arch = fields.get('Architecture') or ''
+        if rec.get('package') and pkg and pkg != rec.get('package'):
+            return 'control_package_mismatch expected=%s actual=%s' % (
+                rec.get('package'), pkg,
+            )
+        if rec.get('version') and ver and ver != rec.get('version'):
+            return 'control_version_mismatch expected=%s actual=%s' % (
+                rec.get('version'), ver,
+            )
+        expected_arch = rec.get('architecture') or ''
+        if expected_arch and arch and arch != expected_arch and arch != 'all':
+            return 'control_architecture_mismatch expected=%s actual=%s' % (
+                expected_arch, arch,
+            )
+    return ''
+
+
+def direct_install_deps(name, packages, install_set):
+    """Depends/Pre-Depends of name that are also in the install set."""
+    info = (packages or {}).get(name) or {}
+    deps = []
+    seen = set()
+    for field in PHASE2_PREREQ_FIELDS:
+        for dep in xba.dep_names(info.get(field), packages):
+            if dep in install_set and dep != name and dep not in seen:
+                seen.add(dep)
+                deps.append(dep)
+    return deps
+
+
+def _tarjan_scc(nodes, successors):
+    """Deterministic Tarjan strongly connected components."""
+    nodes = sorted(nodes)
+    index_counter = [0]
+    stack = []
+    onstack = set()
+    index = {}
+    lowlink = {}
+    components = []
+
+    def strongconnect(v):
+        index[v] = index_counter[0]
+        lowlink[v] = index_counter[0]
+        index_counter[0] += 1
+        stack.append(v)
+        onstack.add(v)
+        for w in sorted(successors.get(v, ())):
+            if w not in index:
+                strongconnect(w)
+                lowlink[v] = min(lowlink[v], lowlink[w])
+            elif w in onstack:
+                lowlink[v] = min(lowlink[v], index[w])
+        if lowlink[v] == index[v]:
+            comp = []
+            while True:
+                w = stack.pop()
+                onstack.discard(w)
+                comp.append(w)
+                if w == v:
+                    break
+            components.append(tuple(sorted(comp)))
+
+    for v in nodes:
+        if v not in index:
+            strongconnect(v)
+    return components
+
+
+def build_install_plan(package_names, packages):
+    """Deterministic dependency-aware install plan (deps before dependents).
+
+    Shared dependencies appear once. Cycles become one SCC group installed
+    together (one dpkg -i invocation), not a false claim of strict order.
+    """
+    names = []
+    seen = set()
+    for name in package_names or []:
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    install_set = set(names)
+    successors = defaultdict(list)  # dep -> packages that require it
+    predecessors = defaultdict(list)  # package -> deps in install set
+    for name in names:
+        for dep in direct_install_deps(name, packages, install_set):
+            predecessors[name].append(dep)
+            successors[dep].append(name)
+    sccs = _tarjan_scc(install_set, predecessors)
+    scc_of = {}
+    for scc in sccs:
+        for name in scc:
+            scc_of[name] = scc
+    scc_succ = defaultdict(set)
+    for name in names:
+        src = scc_of[name]
+        for dep in predecessors.get(name, ()):
+            dst = scc_of[dep]
+            if dst != src:
+                # dest SCC must be installed before src SCC
+                scc_succ[dst].add(src)
+    incoming = {scc: 0 for scc in sccs}
+    for src, dests in scc_succ.items():
+        for dest in dests:
+            incoming[dest] = incoming.get(dest, 0) + 1
+    ready = sorted(
+        [scc for scc in sccs if incoming.get(scc, 0) == 0],
+        key=lambda s: s,
+    )
+    ordered_sccs = []
+    remaining = set(sccs)
+    while ready:
+        scc = ready.pop(0)
+        if scc not in remaining:
+            continue
+        remaining.discard(scc)
+        ordered_sccs.append(scc)
+        for dest in sorted(scc_succ.get(scc, ())):
+            incoming[dest] -= 1
+            if incoming[dest] == 0 and dest in remaining:
+                ready.append(dest)
+                ready.sort()
+    if remaining:
+        # Should not happen after Tarjan; append leftover SCCs deterministically.
+        ordered_sccs.extend(sorted(remaining))
+    groups = [list(scc) for scc in ordered_sccs]
+    flat = []
+    for group in groups:
+        flat.extend(group)
+    return OrderedDict([
+        ('algorithm', 'tarjan_scc_topo'),
+        ('package_count', len(names)),
+        ('group_count', len(groups)),
+        ('cycle_group_count', sum(1 for g in groups if len(g) > 1)),
+        ('install_groups', groups),
+        ('install_order', flat),
+    ])
+
+
+def write_install_order_text(groups, filename_by_package):
+    """One dpkg -i group per line; space-separated artifact filenames."""
+    lines = [
+        '# PHASE2_PREREQ_INSTALL_ORDER',
+        '# One dpkg -i invocation per line. Space-separated files are one SCC group.',
+    ]
+    for group in groups:
+        files = []
+        for name in group:
+            fn = filename_by_package.get(name)
+            if fn:
+                files.append(fn)
+        if files:
+            lines.append(' '.join(files))
+    return '\n'.join(lines) + '\n'
+
+
+def write_prerequisite_state(path, fields):
+    """Write machine-readable PHASE2_PREREQ_* key=value state."""
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    lines = []
+    for key, value in fields.items():
+        if value is None:
+            value = ''
+        lines.append('%s=%s' % (key, value))
+    text = '\n'.join(lines) + '\n'
+    tmp = path + '.part'
+    with open(tmp, 'w') as fh:
+        fh.write(text)
+    os.rename(tmp, path)
+    return text
 
 
 def collect_artifact_packages(unsatisfied_names, packages, pool_root=None):
@@ -346,6 +592,7 @@ def collect_artifact_packages(unsatisfied_names, packages, pool_root=None):
         rec = package_record(name, info)
         if not info:
             rec['candidate'] = 'none'
+            rec['deb_path'] = ''
             missing_candidate.append(name)
             rows.append(rec)
             continue
@@ -353,20 +600,32 @@ def collect_artifact_packages(unsatisfied_names, packages, pool_root=None):
             info.get('_suite') or '',
             info.get('_component') or '',
         )
+        rec['url'] = package_upstream_url(
+            rec.get('suite'), rec.get('filename'),
+        )
         deb_path = ''
         filename = info.get('Filename') or ''
         if pool_root and filename:
             cand = os.path.join(pool_root, filename)
             if os.path.isfile(cand):
-                deb_path = cand
+                reason = verify_local_package_file(cand, rec)
+                if reason:
+                    rec['local_verify'] = reason
+                else:
+                    deb_path = cand
+                    rec['local_verify'] = 'ok'
         if not deb_path and pool_root:
             # Search pool by package name as a last resort.
             for dirpath, _dns, filenames in os.walk(pool_root):
                 for fn in filenames:
                     if fn.startswith(name + '_') and fn.endswith('.deb'):
-                        deb_path = os.path.join(dirpath, fn)
-                        rec['filename'] = os.path.relpath(deb_path, pool_root)
-                        break
+                        cand = os.path.join(dirpath, fn)
+                        reason = verify_local_package_file(cand, rec)
+                        if not reason:
+                            deb_path = cand
+                            rec['filename'] = os.path.relpath(deb_path, pool_root)
+                            rec['local_verify'] = 'ok'
+                            break
                 if deb_path:
                     break
         rec['deb_path'] = deb_path
@@ -377,6 +636,96 @@ def collect_artifact_packages(unsatisfied_names, packages, pool_root=None):
         ('packages', rows),
         ('missing_candidate', missing_candidate),
         ('missing_deb', missing_deb),
+    ])
+
+
+def acquire_missing_debs(
+    collected, ubuntu_root, archive_base=None, security_base=None,
+):
+    """Fetch missing .debs via selective_mirror.acquire_file and verify them.
+
+    Reuses the existing trusted downloader. Does not invent URLs: Filename
+    comes from the Packages index; the base is the suite's archive/security
+    repository root.
+    """
+    acquired = []
+    failed = []
+    skipped = []
+    if sm is None:
+        for name in collected.get('missing_deb') or []:
+            failed.append(name)
+            eprint('PHASE2_PREREQ_ACQUIRE=FAIL package=%s reason=selective_mirror_unavailable' % name)
+        return OrderedDict([
+            ('acquired', acquired),
+            ('failed', failed),
+            ('skipped', skipped),
+        ])
+    rows_by_name = OrderedDict(
+        (rec.get('package'), rec) for rec in (collected.get('packages') or [])
+    )
+    still_missing = []
+    for name in collected.get('missing_deb') or []:
+        rec = rows_by_name.get(name) or {}
+        filename = rec.get('filename') or ''
+        if not filename:
+            failed.append(name)
+            eprint('PHASE2_PREREQ_ACQUIRE=FAIL package=%s reason=filename_missing' % name)
+            continue
+        dest = os.path.join(ubuntu_root, filename)
+        url = package_upstream_url(
+            rec.get('suite'), filename, archive_base, security_base,
+        )
+        rec['url'] = url
+        expected_sha = (rec.get('sha256') or '').strip() or None
+        expected_size = _parse_size(rec.get('size'))
+        eprint('PHASE2_PREREQ_ACQUIRE=START package=%s suite=%s component=%s sha256=%s' % (
+            name, rec.get('suite') or '', rec.get('component') or '',
+            expected_sha or '',
+        ))
+        try:
+            sm.acquire_file(
+                src='',
+                dst=dest,
+                allow_download_url=url,
+                expected_sha256=expected_sha,
+                expected_size=expected_size,
+            )
+        except Exception as exc:
+            failed.append(name)
+            eprint('PHASE2_PREREQ_ACQUIRE=FAIL package=%s reason=%s' % (
+                name, type(exc).__name__,
+            ))
+            continue
+        reason = verify_local_package_file(dest, rec)
+        if reason:
+            failed.append(name)
+            eprint('PHASE2_PREREQ_ACQUIRE=FAIL package=%s reason=%s' % (name, reason))
+            continue
+        rec['deb_path'] = dest
+        rec['acquired'] = True
+        rec['local_verify'] = 'ok'
+        acquired.append(name)
+        eprint('PHASE2_PREREQ_ACQUIRE=PASS package=%s path=%s' % (name, dest))
+    collected['missing_deb'] = [
+        n for n in (collected.get('missing_deb') or [])
+        if n not in acquired
+    ]
+    for rec in collected.get('packages') or []:
+        if rec.get('package') in acquired:
+            continue
+        if rec.get('deb_path'):
+            skipped.append(rec.get('package'))
+        elif rec.get('candidate') != 'none' and rec.get('package'):
+            still_missing.append(rec.get('package'))
+    collected['missing_deb'] = [
+        n for n in (collected.get('missing_deb') or [])
+        if n not in set(acquired)
+    ]
+    return OrderedDict([
+        ('acquired', acquired),
+        ('failed', failed),
+        ('skipped', skipped),
+        ('still_missing', still_missing),
     ])
 
 
@@ -424,32 +773,69 @@ def transaction_is_safe(simulation, extra_protected=None):
     ])
 
 
-def build_prerequisite_artifact(package_rows, dest_dir, include_missing=False):
+def build_prerequisite_artifact(package_rows, dest_dir, include_missing=False,
+                                install_plan=None):
     """Write phase2-ubuntu-prerequisites.tar.gz + manifest + sha256 sidecar.
 
-    Only packages with an on-disk .deb are packed. Returns manifest dict.
+    Every required row must have an on-disk .deb. Partial artifacts are never
+    published. ``include_missing`` is rejected: omitting a required .deb is
+    a hard failure.
     """
+    if include_missing:
+        raise ValueError('include_missing is not allowed for production artifacts')
     os.makedirs(dest_dir, exist_ok=True)
+    required = list(package_rows or [])
+    missing = [
+        rec.get('package') or rec.get('artifact_filename') or '?'
+        for rec in required
+        if not rec.get('deb_path') or not os.path.isfile(rec.get('deb_path') or '')
+    ]
+    if missing:
+        eprint('PHASE2_PREREQ_MISSING_DEB=%s' % ','.join(missing))
+        eprint('PHASE2_PREREQ_BUILD=FAIL reason=missing_deb')
+        return None
     work = tempfile.mkdtemp(prefix='phase2-prereq-art-')
     packed = []
     try:
         debs_dir = os.path.join(work, 'debs')
         os.makedirs(debs_dir)
-        for rec in package_rows:
-            src = rec.get('deb_path') or ''
-            if not src or not os.path.isfile(src):
-                if include_missing:
-                    packed.append(rec)
-                continue
+        filename_by_package = OrderedDict()
+        for rec in required:
+            src = rec.get('deb_path')
             dest_name = os.path.basename(src)
             shutil.copy2(src, os.path.join(debs_dir, dest_name))
             out = OrderedDict(rec)
             out['artifact_filename'] = dest_name
             packed.append(out)
+            if out.get('package'):
+                filename_by_package[out['package']] = dest_name
+        plan = install_plan
+        if plan is None:
+            # Fall back to package-index Depends using packed rows as a mini index.
+            mini = OrderedDict()
+            for rec in packed:
+                mini[rec.get('package')] = OrderedDict([
+                    ('Package', rec.get('package') or ''),
+                    ('Depends', rec.get('depends') or ''),
+                    ('Pre-Depends', rec.get('pre_depends') or ''),
+                ])
+            plan = build_install_plan(
+                [rec.get('package') for rec in packed if rec.get('package')],
+                mini,
+            )
+        order_text = write_install_order_text(
+            plan.get('install_groups') or [], filename_by_package,
+        )
+        with open(os.path.join(work, INSTALL_ORDER_NAME), 'w') as fh:
+            fh.write(order_text)
         manifest = OrderedDict([
             ('artifact', ARTIFACT_NAME),
             ('package_count', len(packed)),
+            ('required_package_count', len(required)),
             ('packages', packed),
+            ('install_order', list(plan.get('install_order') or [])),
+            ('install_groups', list(plan.get('install_groups') or [])),
+            ('install_plan_algorithm', plan.get('algorithm') or ''),
             ('protected_packages', list(PROTECTED_PACKAGES)),
             ('fields', list(PHASE2_PREREQ_FIELDS)),
             ('acps_payload_modified', False),
@@ -459,10 +845,13 @@ def build_prerequisite_artifact(package_rows, dest_dir, include_missing=False):
         tmp_art = artifact_path + '.part'
         with tarfile.open(tmp_art, 'w:gz') as tf:
             tf.add(os.path.join(work, MANIFEST_NAME), arcname=MANIFEST_NAME)
+            tf.add(os.path.join(work, INSTALL_ORDER_NAME), arcname=INSTALL_ORDER_NAME)
+            packed_names = set()
             for rec in packed:
                 fn = rec.get('artifact_filename')
                 if not fn:
                     continue
+                packed_names.add(fn)
                 tf.add(os.path.join(debs_dir, fn), arcname='debs/%s' % fn)
         os.rename(tmp_art, artifact_path)
         digest = sha256_file(artifact_path)
@@ -472,9 +861,87 @@ def build_prerequisite_artifact(package_rows, dest_dir, include_missing=False):
         manifest['sha256'] = digest
         manifest['artifact_path'] = artifact_path
         dump_json(manifest, os.path.join(dest_dir, MANIFEST_NAME))
+        with open(os.path.join(dest_dir, INSTALL_ORDER_NAME), 'w') as fh:
+            fh.write(order_text)
+        verify_reason = verify_built_artifact(
+            dest_dir, manifest, required_names=[
+                rec.get('package') for rec in required if rec.get('package')
+            ],
+        )
+        if verify_reason:
+            eprint('PHASE2_PREREQ_BUILD=FAIL reason=%s' % verify_reason)
+            for path in (artifact_path, sidecar):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            return None
         return manifest
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def verify_built_artifact(dest_dir, manifest, required_names=None):
+    """Post-build gate: complete, no extras, control/checksums match."""
+    artifact_path = os.path.join(dest_dir, ARTIFACT_NAME)
+    if not os.path.isfile(artifact_path):
+        return 'artifact_missing'
+    required_names = list(required_names or [])
+    if manifest.get('package_count') != len(required_names):
+        return 'package_count_mismatch manifest=%s required=%s' % (
+            manifest.get('package_count'), len(required_names),
+        )
+    extract = tempfile.mkdtemp(prefix='phase2-prereq-verify-')
+    try:
+        with tarfile.open(artifact_path, 'r:gz') as tf:
+            members = tf.getnames()
+            tf.extractall(extract)
+        deb_members = [n for n in members if n.startswith('debs/') and n.endswith('.deb')]
+        unexpected = [
+            n for n in members
+            if n not in (MANIFEST_NAME, INSTALL_ORDER_NAME)
+            and not n.startswith('debs/')
+        ]
+        if unexpected:
+            return 'unexpected_members=%s' % ','.join(sorted(unexpected))
+        packed = list(manifest.get('packages') or [])
+        if len(deb_members) != len(packed):
+            return 'tar_deb_count_mismatch tar=%s manifest=%s' % (
+                len(deb_members), len(packed),
+            )
+        seen_files = set()
+        for rec in packed:
+            fn = rec.get('artifact_filename')
+            if not fn:
+                return 'manifest_filename_missing package=%s' % rec.get('package')
+            tar_path = os.path.join(extract, 'debs', fn)
+            if not os.path.isfile(tar_path):
+                return 'deb_missing_in_tar file=%s' % fn
+            seen_files.add('debs/%s' % fn)
+            reason = verify_local_package_file(tar_path, rec)
+            if reason:
+                return 'verify_fail package=%s %s' % (rec.get('package'), reason)
+        extra_debs = [n for n in deb_members if n not in seen_files]
+        if extra_debs:
+            return 'unexpected_deb=%s' % ','.join(sorted(extra_debs))
+        order_path = os.path.join(extract, INSTALL_ORDER_NAME)
+        if packed and not os.path.isfile(order_path):
+            return 'install_order_missing'
+        if packed:
+            with open(order_path, 'r') as fh:
+                order_text = fh.read()
+            ordered_files = []
+            for line in order_text.splitlines():
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                ordered_files.extend(line.split())
+            manifest_files = [rec.get('artifact_filename') for rec in packed]
+            if sorted(ordered_files) != sorted(manifest_files):
+                return 'install_order_filename_mismatch'
+        return ''
+    finally:
+        shutil.rmtree(extract, ignore_errors=True)
 
 
 def ensure_packages_in_selective(ubuntu_root, package_rows, copy_debs=True):
@@ -534,47 +1001,82 @@ def run_inspect(args):
     return 0
 
 
+def _emit_prereq_state(dest_dir, required, count, build, publication,
+                       missing_candidate=None, missing_deb=None, sha256='',
+                       artifact=''):
+    fields = OrderedDict([
+        ('PHASE2_PREREQ_REQUIRED', required),
+        ('PHASE2_PREREQ_PACKAGE_COUNT', str(count)),
+        ('PHASE2_PREREQ_BUILD', build),
+        ('PHASE2_PREREQ_PUBLICATION', publication),
+        ('PHASE2_PREREQ_MISSING_CANDIDATE', str(len(missing_candidate or []))),
+        ('PHASE2_PREREQ_MISSING_DEB', str(len(missing_deb or []))),
+        ('PHASE2_PREREQ_ARTIFACT', artifact or ARTIFACT_NAME),
+        ('PHASE2_PREREQ_SHA256', sha256 or ''),
+    ])
+    if missing_candidate:
+        fields['PHASE2_PREREQ_MISSING_CANDIDATE_PACKAGES'] = ','.join(missing_candidate)
+    if missing_deb:
+        fields['PHASE2_PREREQ_MISSING_DEB_PACKAGES'] = ','.join(missing_deb)
+    path = os.path.join(dest_dir, STATE_NAME) if dest_dir else None
+    if path:
+        write_prerequisite_state(path, fields)
+    for key, value in fields.items():
+        print('%s=%s' % (key, value))
+    return fields
+
+
+def _load_packages_for_args(args):
+    return load_noble_packages(
+        args.ubuntu_root,
+        suites=args.suites.split(',') if getattr(args, 'suites', None) else None,
+        components=args.components.split() if getattr(args, 'components', None) else None,
+    )
+
+
 def run_resolve(args):
     roots = collect_phase2_roots(args.source, extra_debs_from_args(args))
     root_names = [r['package'] for r in roots if r.get('package')]
     extra = roots_as_index(roots)
-    packages, _prov = load_noble_packages(
-        args.ubuntu_root,
-        suites=args.suites.split(',') if args.suites else None,
-        components=args.components.split() if args.components else None,
-    )
+    packages, _prov = _load_packages_for_args(args)
     closure = resolve_phase2_dependency_closure(root_names, packages, extra)
     unsat = unsatisfied_from_acps(closure, root_names)
     collected = collect_artifact_packages(
         unsat['unsatisfied'], packages, pool_root=args.ubuntu_root,
     )
+    plan = build_install_plan(unsat['unsatisfied'], packages)
     result = OrderedDict([
         ('roots', root_names),
         ('closure', closure),
         ('unsatisfied', unsat),
         ('collected', collected),
+        ('install_plan', plan),
     ])
     dump_json(result, args.output)
     print('PHASE2_PREREQ_ROOTS=%d' % len(root_names))
     print('PHASE2_PREREQ_CLOSURE=%d' % closure.get('visited_count', 0))
     print('PHASE2_PREREQ_UNSATISFIED=%d' % len(unsat['unsatisfied']))
     print('PHASE2_PREREQ_MISSING_CANDIDATE=%d' % len(collected['missing_candidate']))
+    print('PHASE2_PREREQ_MISSING_DEB=%d' % len(collected['missing_deb']))
     if collected['missing_candidate'] and not args.allow_missing_candidate:
         eprint('PHASE2_PREREQ_CANDIDATE=NONE packages=%s' %
                ','.join(collected['missing_candidate']))
+        eprint('PHASE2_PREREQ_BUILD=FAIL')
         return 2
+    if collected['missing_deb'] and not getattr(args, 'allow_missing_deb', False):
+        eprint('PHASE2_PREREQ_MISSING_DEB=%s' % ','.join(collected['missing_deb']))
+        eprint('PHASE2_PREREQ_BUILD=FAIL')
+        return 4
     return 0
 
 
 def run_build(args):
+    dest = args.dest
+    os.makedirs(dest, exist_ok=True)
     roots = collect_phase2_roots(args.source, extra_debs_from_args(args))
     root_names = [r['package'] for r in roots if r.get('package')]
     extra = roots_as_index(roots)
-    packages, _prov = load_noble_packages(
-        args.ubuntu_root,
-        suites=args.suites.split(',') if args.suites else None,
-        components=args.components.split() if args.components else None,
-    )
+    packages, _prov = _load_packages_for_args(args)
     closure = resolve_phase2_dependency_closure(root_names, packages, extra)
     unsat = unsatisfied_from_acps(closure, root_names)
     collected = collect_artifact_packages(
@@ -583,10 +1085,79 @@ def run_build(args):
     if collected['missing_candidate'] and not args.allow_missing_candidate:
         eprint('PHASE2_PREREQ_CANDIDATE=NONE packages=%s' %
                ','.join(collected['missing_candidate']))
+        _emit_prereq_state(
+            dest, 'YES' if unsat['unsatisfied'] else 'NO',
+            len(unsat['unsatisfied']), 'FAIL', 'FAIL',
+            missing_candidate=collected['missing_candidate'],
+            missing_deb=collected['missing_deb'],
+        )
+        eprint('PHASE2_PREREQ_BUILD=FAIL')
         return 2
-    manifest = build_prerequisite_artifact(collected['packages'], args.dest)
-    if args.ensure_selective:
-        ensure_packages_in_selective(args.ubuntu_root, collected['packages'])
+
+    skip_acquire = getattr(args, 'skip_acquire', False)
+    if collected['missing_deb'] and not skip_acquire:
+        acquire_missing_debs(
+            collected,
+            args.ubuntu_root,
+            archive_base=getattr(args, 'archive_base', None),
+            security_base=getattr(args, 'security_base', None),
+        )
+        collected['missing_deb'] = [
+            rec.get('package') for rec in collected.get('packages') or []
+            if rec.get('candidate') != 'none' and not rec.get('deb_path')
+        ]
+
+    if collected['missing_deb']:
+        eprint('PHASE2_PREREQ_MISSING_DEB=%s' % ','.join(collected['missing_deb']))
+        _emit_prereq_state(
+            dest, 'YES', len(unsat['unsatisfied']), 'FAIL', 'FAIL',
+            missing_candidate=collected['missing_candidate'],
+            missing_deb=collected['missing_deb'],
+        )
+        eprint('PHASE2_PREREQ_BUILD=FAIL reason=missing_deb')
+        return 4
+
+    required_rows = [
+        rec for rec in collected.get('packages') or []
+        if rec.get('candidate') != 'none'
+    ]
+    plan = build_install_plan(
+        [rec.get('package') for rec in required_rows if rec.get('package')],
+        packages,
+    )
+    required = 'YES' if required_rows else 'NO'
+    if not required_rows:
+        manifest = build_prerequisite_artifact([], dest, install_plan=plan)
+        if manifest is None:
+            _emit_prereq_state(dest, 'NO', 0, 'FAIL', 'FAIL')
+            return 5
+        _emit_prereq_state(
+            dest, 'NO', 0, 'PASS', 'PASS',
+            sha256=manifest.get('sha256'),
+            artifact=ARTIFACT_NAME,
+        )
+        print('PHASE2_PREREQ_ARTIFACT=%s' % manifest.get('artifact_path'))
+        print('PHASE2_PREREQ_PACKAGE_COUNT=0')
+        print('PHASE2_PREREQ_SHA256=%s' % manifest.get('sha256'))
+        return 0
+
+    manifest = build_prerequisite_artifact(
+        required_rows, dest, install_plan=plan,
+    )
+    if manifest is None:
+        _emit_prereq_state(
+            dest, required, len(required_rows), 'FAIL', 'FAIL',
+            missing_candidate=collected['missing_candidate'],
+            missing_deb=collected['missing_deb'],
+        )
+        return 5
+    if getattr(args, 'ensure_selective', False):
+        ensure_packages_in_selective(args.ubuntu_root, required_rows)
+    _emit_prereq_state(
+        dest, required, manifest.get('package_count', 0), 'PASS', 'PASS',
+        sha256=manifest.get('sha256'),
+        artifact=ARTIFACT_NAME,
+    )
     print('PHASE2_PREREQ_ARTIFACT=%s' % manifest.get('artifact_path'))
     print('PHASE2_PREREQ_PACKAGE_COUNT=%d' % manifest.get('package_count', 0))
     print('PHASE2_PREREQ_SHA256=%s' % manifest.get('sha256'))
@@ -627,6 +1198,7 @@ def main(argv=None):
     p_res.add_argument('--components')
     p_res.add_argument('--output')
     p_res.add_argument('--allow-missing-candidate', action='store_true')
+    p_res.add_argument('--allow-missing-deb', action='store_true')
     p_res.set_defaults(func=run_resolve)
 
     p_bld = sub.add_parser('build')
@@ -636,7 +1208,10 @@ def main(argv=None):
     p_bld.add_argument('--extra-deb', action='append', default=[])
     p_bld.add_argument('--suites')
     p_bld.add_argument('--components')
+    p_bld.add_argument('--archive-base', default=DEFAULT_ARCHIVE_BASE)
+    p_bld.add_argument('--security-base', default=DEFAULT_SECURITY_BASE)
     p_bld.add_argument('--allow-missing-candidate', action='store_true')
+    p_bld.add_argument('--skip-acquire', action='store_true')
     p_bld.add_argument('--ensure-selective', action='store_true')
     p_bld.set_defaults(func=run_build)
 

@@ -75,6 +75,8 @@ TEST_LIST=(
   test_bringup_image_import_heartbeat.sh
   test_bringup_dp_resume_notice.sh
   test_phase2_ubuntu_prerequisites.py
+  test_phase2_prereq_dpkg_rc.sh
+  test_phase2_prereq_stage_failclosed.sh
   test_phase2_cluster_readiness.sh
   test_client_manifest_signing.sh
   test_worktree_isolation.sh

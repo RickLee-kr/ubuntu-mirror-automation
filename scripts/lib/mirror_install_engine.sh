@@ -602,6 +602,31 @@ engine_stage_work_from_existing_final() {
   mm_ok "PHASE2_EXISTING_FINAL_EXTRACT=PASS"
 }
 
+engine_phase2_prereq_src_dir() {
+  local ver="${1:-${TARGET_DP_VERSION:-${PHASE2_TARGET_VERSION}}}"
+  printf '%s/phase2-prereq-src/%s\n' "${MM_CACHE_ROOT}" "$ver"
+}
+
+engine_preserve_phase2_prereq_sources() {
+  # Copy the small ACPS metadata payloads needed to resolve Ubuntu extras
+  # before engine_cleanup_phase2_sources drops the ~30GiB work tree.
+  local files_src="$1"
+  local ver="${2:-${TARGET_DP_VERSION}}"
+  local dest f
+  dest="$(engine_phase2_prereq_src_dir "$ver")"
+  mkdir -p "$dest" || return 1
+  for f in \
+    aelladeb_py3_common.tar.gz \
+    aelladeb_py3_common.tar.gz.sha1 \
+    "aella-uvp-2404_${ver}ubuntu1_amd64.deb" \
+    "aella-uvp-2404_${ver}ubuntu1_amd64.deb.sha1"
+  do
+    [[ -f "${files_src}/${f}" ]] || continue
+    cp -a "${files_src}/${f}" "${dest}/${f}"
+  done
+  [[ -f "${dest}/aelladeb_py3_common.tar.gz" ]]
+}
+
 engine_cleanup_phase2_sources() {
   # Drop ACPS source/work as soon as the verified bundle .new no longer needs them.
   local ver="${1:-${TARGET_DP_VERSION:-}}"
@@ -824,22 +849,52 @@ engine_materialize_os_mirror() {
 }
 
 # Offline Ubuntu prerequisite closure is prepared from ACPS metadata.
-# Failures here do not rewrite the ACPS bundle; they warn.
+# Failures here fail Download and Prepare closed. Never optional.
 engine_prepare_phase2_ubuntu_prerequisites() {
   local script="${MM_PROJECT_ROOT}/scripts/prepare-phase2-ubuntu-prerequisites.sh"
   local work="${1:-}"
-  [[ -f "$script" ]] || {
-    mm_warn "PHASE2_PREREQ=SKIP reason=prepare_script_missing"
-    return 0
-  }
+  local extras out rc=0
+  [[ -f "$script" ]] || mm_die "PHASE2_PREREQ=FAIL reason=prepare_script_missing"
   mm_set_phase "Preparing Phase 2 Ubuntu Prerequisites"
-  PHASE2_PREREQ_OPTIONAL="${PHASE2_PREREQ_OPTIONAL:-1}" \
-    DP_PHASE2_VERSION="${TARGET_DP_VERSION}" \
+  if [[ -z "$work" || ! -f "${work}/aelladeb_py3_common.tar.gz" ]]; then
+    local preserved
+    preserved="$(engine_phase2_prereq_src_dir)"
+    if [[ -f "${preserved}/aelladeb_py3_common.tar.gz" ]]; then
+      work="$preserved"
+    fi
+  fi
+  extras="${MM_DP_PHASE2_ROOT}/${TARGET_DP_VERSION}/extras"
+  mkdir -p "$extras"
+  set +e
+  DP_PHASE2_VERSION="${TARGET_DP_VERSION}" \
     DP_PHASE2_ROOT="${MM_DP_PHASE2_ROOT}" \
     MM_SELECTIVE_ROOT="${MM_SELECTIVE_ROOT}" \
     PHASE2_PREREQ_WORK_DIR="$work" \
-    bash "$script" "${TARGET_DP_VERSION}" \
-    || mm_warn "PHASE2_PREREQ=WARN prepare returned nonzero (ACPS bundle unchanged)"
+    PHASE2_PREREQ_OUT_DIR="$extras" \
+    bash "$script" "${TARGET_DP_VERSION}"
+  rc=$?
+  set -e
+  if [[ "$rc" -ne 0 ]]; then
+    mm_error "PHASE2_PREREQ_BUILD=FAIL rc=${rc}"
+    mm_die "PHASE2_PREREQ=FAIL rc=${rc}"
+  fi
+  [[ -f "${extras}/phase2-ubuntu-prerequisites.state" ]] \
+    || mm_die "PHASE2_PREREQ=FAIL reason=state_missing"
+  while IFS= read -r out; do
+    [[ -n "$out" ]] && mm_info "$out"
+  done < "${extras}/phase2-ubuntu-prerequisites.state"
+  local required count
+  required="$(awk -F= '$1=="PHASE2_PREREQ_REQUIRED"{print $2; exit}' \
+    "${extras}/phase2-ubuntu-prerequisites.state")"
+  count="$(awk -F= '$1=="PHASE2_PREREQ_PACKAGE_COUNT"{print $2; exit}' \
+    "${extras}/phase2-ubuntu-prerequisites.state")"
+  if [[ "${required}" == "YES" ]]; then
+    [[ -f "${extras}/phase2-ubuntu-prerequisites.tar.gz" ]] \
+      || mm_die "PHASE2_PREREQ=FAIL reason=artifact_missing"
+    [[ -f "${extras}/phase2-ubuntu-prerequisites.tar.gz.sha256" ]] \
+      || mm_die "PHASE2_PREREQ=FAIL reason=sha256_missing"
+  fi
+  mm_ok "PHASE2_PREREQ=PASS required=${required} count=${count}"
 }
 
 engine_bringup_sha1_of() {
@@ -1652,6 +1707,11 @@ EOF
     mm_die "RELEASE_ENV_SECRET=FAIL"
   fi
 
+  # Preserve small ACPS metadata for the Ubuntu extra-package closure before
+  # dropping the large work tree.
+  engine_preserve_phase2_prereq_sources "$files_src" "$ver" \
+    || mm_die "PHASE2_PREREQ_SOURCE_PRESERVE=FAIL"
+
   # .new is fully built — free ACPS source/work before rename so peak is only
   # source(+bundle in .new) then final alone. Keep MM_KEEP_PHASE2_SOURCES=1
   # only for debugging (not for production 100GB-class hosts).
@@ -1711,6 +1771,42 @@ EOF
   mm_info "FINAL_PHASE2_BUNDLE_COUNT=1"
 }
 
+engine_validate_phase2_prereq_http_layout() {
+  local dp="$1"
+  local extras="${dp}/extras"
+  local state="${extras}/phase2-ubuntu-prerequisites.state"
+  local required count art
+  [[ -f "$state" ]] || {
+    mm_error "HTTP_LAYOUT=FAIL missing ${state}"
+    return 1
+  }
+  required="$(awk -F= '$1=="PHASE2_PREREQ_REQUIRED"{print $2; exit}' "$state")"
+  count="$(awk -F= '$1=="PHASE2_PREREQ_PACKAGE_COUNT"{print $2; exit}' "$state")"
+  if [[ "$required" == "NO" && "${count:-0}" == "0" ]]; then
+    mm_info "PHASE2_PREREQ_HTTP=NOT_REQUIRED"
+    return 0
+  fi
+  if [[ "$required" != "YES" ]]; then
+    mm_error "HTTP_LAYOUT=FAIL phase2_prereq_state_invalid required=${required}"
+    return 1
+  fi
+  art="${extras}/phase2-ubuntu-prerequisites.tar.gz"
+  [[ -f "$art" ]] || {
+    mm_error "HTTP_LAYOUT=FAIL missing phase2-ubuntu-prerequisites.tar.gz"
+    return 1
+  }
+  [[ -f "${art}.sha256" ]] || {
+    mm_error "HTTP_LAYOUT=FAIL missing phase2-ubuntu-prerequisites.tar.gz.sha256"
+    return 1
+  }
+  [[ -f "${extras}/phase2-ubuntu-prerequisites.manifest.json" ]] || {
+    mm_error "HTTP_LAYOUT=FAIL missing phase2-ubuntu-prerequisites.manifest.json"
+    return 1
+  }
+  mm_info "PHASE2_PREREQ_HTTP=REQUIRED count=${count}"
+  return 0
+}
+
 engine_validate_http_layout() {
   # Validate on-disk layout matching client HTTP URL contract (no production nginx reload).
   mm_force_phase2_target
@@ -1730,6 +1826,8 @@ engine_validate_http_layout() {
   [[ -f "${dp}/release.env" ]] || mm_die "HTTP_LAYOUT=FAIL missing release.env"
   [[ -f "$bundle" ]] || mm_die "HTTP_LAYOUT=FAIL missing ${stable}"
   [[ -f "$sidecar" ]] || mm_die "HTTP_LAYOUT=FAIL missing ${stable}.sha256"
+  engine_validate_phase2_prereq_http_layout "$dp" \
+    || mm_die "HTTP_LAYOUT=FAIL phase2_prereq"
 
   # Full SHA256 only when needed. Menu status collection must set MM_SKIP_BUNDLE_SHA256=1.
   # Within one Enable HTTP run, verify once then reuse via MM_BUNDLE_SHA256_DONE_FP.
@@ -1829,6 +1927,19 @@ engine_http_smoke_urls() {
       "${base}/client/dp-launch-jammy-to-noble.sh"
       "${base}/client/public.gpg"
     )
+  fi
+  local extras_state="${MM_DP_PHASE2_ROOT}/${ver}/extras/phase2-ubuntu-prerequisites.state"
+  if [[ -f "$extras_state" ]]; then
+    urls+=("${base}/dp-phase2/${ver}/extras/phase2-ubuntu-prerequisites.state")
+    local required
+    required="$(awk -F= '$1=="PHASE2_PREREQ_REQUIRED"{print $2; exit}' "$extras_state")"
+    if [[ "$required" == "YES" ]]; then
+      urls+=(
+        "${base}/dp-phase2/${ver}/extras/phase2-ubuntu-prerequisites.tar.gz"
+        "${base}/dp-phase2/${ver}/extras/phase2-ubuntu-prerequisites.tar.gz.sha256"
+        "${base}/dp-phase2/${ver}/extras/phase2-ubuntu-prerequisites.manifest.json"
+      )
+    fi
   fi
   local u
   for u in "${urls[@]}"; do

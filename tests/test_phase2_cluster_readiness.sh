@@ -186,6 +186,74 @@ echo "$GATE_UP" | grep -q 'MASTER_TOKEN_API_READY=YES' \
   && pass "D 8003 HTTP 404 is accepted as listener-ready" \
   || fail "D 8003 HTTP 404: ${GATE_UP}"
 
+# Cluster: loopback up + MASTER_IP down must FAIL.
+BIN8003MIX="${WORKDIR}/bin-8003-mix"
+mkdir -p "$BIN8003MIX"
+cat >"${BIN8003MIX}/curl" <<'EOF'
+#!/usr/bin/env bash
+url=""
+for arg in "$@"; do
+  case "$arg" in
+    https://*) url="$arg" ;;
+  esac
+done
+if [[ "$url" == *127.0.0.1* ]]; then
+  echo 404
+  exit 0
+fi
+echo 000
+exit 7
+EOF
+chmod +x "${BIN8003MIX}/curl"
+set +e
+GATE_MIX="$(
+  PATH="${BIN8003MIX}:$PATH"
+  log() { echo "$*"; }
+  MASTER_TOKEN_API_PORT=8003
+  MASTER_TOKEN_API_WAIT_SECONDS=0
+  MASTER_IP=192.168.12.25
+  WORKER_IPS="192.168.12.26,192.168.12.27"
+  # shellcheck disable=SC1090
+  source "${WORKDIR}/wait_8003.sh"
+  wait_for_master_token_api 0
+  echo RC=$?
+)"
+set -e
+echo "$GATE_MIX" | grep -q 'MASTER_TOKEN_API_READY=NO' \
+  && echo "$GATE_MIX" | grep -q 'MASTER_IP_8003_READY=NO' \
+  && echo "$GATE_MIX" | grep -q 'RC=1' \
+  && pass "D cluster loopback-up master-IP-down FAIL" \
+  || fail "D cluster mix: ${GATE_MIX}"
+
+# Cluster: both loopback and MASTER_IP up => PASS
+BIN8003BOTH="${WORKDIR}/bin-8003-both"
+mkdir -p "$BIN8003BOTH"
+cat >"${BIN8003BOTH}/curl" <<'EOF'
+#!/usr/bin/env bash
+echo 401
+exit 0
+EOF
+chmod +x "${BIN8003BOTH}/curl"
+set +e
+GATE_BOTH="$(
+  PATH="${BIN8003BOTH}:$PATH"
+  log() { echo "$*"; }
+  MASTER_TOKEN_API_PORT=8003
+  MASTER_TOKEN_API_WAIT_SECONDS=5
+  MASTER_IP=192.168.12.25
+  WORKER_IPS="192.168.12.26,192.168.12.27"
+  # shellcheck disable=SC1090
+  source "${WORKDIR}/wait_8003.sh"
+  wait_for_master_token_api 5
+  echo RC=$?
+)"
+set -e
+echo "$GATE_BOTH" | grep -q 'MASTER_TOKEN_API_READY=YES' \
+  && echo "$GATE_BOTH" | grep -q 'MASTER_IP_8003_READY=YES' \
+  && echo "$GATE_BOTH" | grep -q 'RC=0' \
+  && pass "D cluster both 8003 endpoints PASS" \
+  || fail "D cluster both: ${GATE_BOTH}"
+
 # main() must call wait_for_master_token_api before orchestrate_workers
 if awk '
   /wait_for_master_token_api/ && !w {w=NR}
@@ -576,10 +644,27 @@ fi
 # No apt --fix-broken as a runtime repair in the new layer (comments may mention it).
 if grep -nE '^[[:space:]]*apt(-get)?[[:space:]]+(--fix-broken|-f)[[:space:]]+install' \
   "$PREREQ_LIB" "${ROOT}/scripts/lib/phase2_ubuntu_prerequisites.py" \
-  "${ROOT}/scripts/prepare-phase2-ubuntu-prerequisites.sh"; then
+  "${ROOT}/scripts/prepare-phase2-ubuntu-prerequisites.sh" \
+  "${ROOT}/scripts/lib/phase2_bringup_patch/fragment_compat.sh" \
+  "${ROOT}/client/stage-dp-phase2.sh"; then
   fail "new layer must not run apt --fix-broken install"
 else
   pass "new layer does not run apt --fix-broken install"
+fi
+if grep -nE 'PHASE2_PREREQ_OPTIONAL' \
+  "${ROOT}/scripts/prepare-phase2-ubuntu-prerequisites.sh" \
+  "${ROOT}/scripts/download-dp-phase2.sh" \
+  "${ROOT}/scripts/lib/mirror_install_engine.sh" \
+  "${ROOT}/client/stage-dp-phase2.sh"; then
+  fail "PHASE2_PREREQ_OPTIONAL still present in production"
+else
+  pass "PHASE2_PREREQ_OPTIONAL removed from production"
+fi
+if grep -nE 'stage_phase2_ubuntu_prerequisites \|\| true' \
+  "${ROOT}/client/stage-dp-phase2.sh"; then
+  fail "stage still ignores prerequisite failures"
+else
+  pass "stage does not ignore prerequisite failures"
 fi
 if awk '/^install_python3\(\)/{p=1} p; /^}$/{if(p){exit}}' "$BRINGUP" \
   | grep -nE '^[[:space:]]*apt-get[[:space:]]+install[[:space:]]+-f'; then

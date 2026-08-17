@@ -203,21 +203,72 @@ dp2_validate_critical_python_runtime() {
   return 0
 }
 
+dp2_prereq_dpkg_install() {
+  # Capture the real dpkg status. `if ! dpkg; then rc=$?` is wrong: inside
+  # the then-body $? is the status of `!`, which may be 0.
+  local prev_e=0 rc=0
+  [[ $- == *e* ]] && prev_e=1
+  set +e
+  dpkg -i "$@"
+  rc=$?
+  [[ "$prev_e" -eq 1 ]] && set -e
+  return "$rc"
+}
+
+dp2_prereq_read_state_value() {
+  local file="$1" key="$2"
+  [[ -f "$file" ]] || return 1
+  awk -F= -v k="$key" '$1==k {print $2; exit}' "$file"
+}
+
+dp2_prereq_find_state() {
+  local cand
+  for cand in \
+    "${PHASE2_PREREQ_STATE:-}" \
+    "${STAGING_DIR:-/opt/aelladata/aelladeb_py3}/phase2-ubuntu-prerequisites.state" \
+    "/opt/aelladata/aelladeb_py3/phase2-ubuntu-prerequisites.state" \
+    "/home/aella/phase2-ubuntu-prerequisites.state" \
+    "/opt/aelladata/os-upgrade/offline/phase2-bringup/phase2-ubuntu-prerequisites.state"
+  do
+    [[ -n "$cand" && -f "$cand" ]] || continue
+    printf '%s\n' "$cand"
+    return 0
+  done
+  return 1
+}
+
 dp2_install_phase2_ubuntu_prerequisites() {
   local artifact extract rc=0
+  local state="" required=""
   dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL=START"
+  dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL_STRATEGY=local_deb_closure"
 
-  if ! artifact="$(dp2_prereq_find_artifact)"; then
-    dp2_prereq_log INFO "PHASE2_PREREQ_ARTIFACT=ABSENT"
-    # Compatibility layer: a future ACPS release may already ship the closure.
-    # Runtime import validation happens after ACPS py3-apt packages are installed.
-    # A missing artifact must not hide an already-broken APT graph.
-    if ! dp2_validate_apt_dependency_graph prerequisites; then
-      dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=apt_dependency_check"
+  if state="$(dp2_prereq_find_state)"; then
+    required="$(dp2_prereq_read_state_value "$state" PHASE2_PREREQ_REQUIRED || true)"
+    dp2_prereq_log INFO "PHASE2_PREREQ_STATE=${state} required=${required:-unknown}"
+  fi
+
+  if [[ -n "${PHASE2_PREREQ_APT_SIMULATION:-}" ]]; then
+    if ! dp2_prereq_transaction_safe "$PHASE2_PREREQ_APT_SIMULATION"; then
+      dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=protected_removal"
       return 1
     fi
-    dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL=SKIP reason=artifact_absent"
-    return 0
+  fi
+
+  if ! artifact="$(dp2_prereq_find_artifact)"; then
+    if [[ "${required}" == "NO" ]]; then
+      dp2_prereq_log INFO "PHASE2_PREREQ_ARTIFACT=ABSENT"
+      if ! dp2_validate_apt_dependency_graph prerequisites; then
+        dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=apt_dependency_check"
+        return 1
+      fi
+      dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL=SKIP reason=not_required"
+      dp2_prereq_log INFO "PHASE2_PREREQ_STAGE=NOT_REQUIRED"
+      return 0
+    fi
+    dp2_prereq_log ERROR "PHASE2_PREREQ_ARTIFACT=ABSENT"
+    dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=artifact_absent_required"
+    return 1
   fi
   dp2_prereq_log INFO "PHASE2_PREREQ_ARTIFACT=${artifact}"
 
@@ -230,6 +281,9 @@ dp2_install_phase2_ubuntu_prerequisites() {
       return 1
     fi
     dp2_prereq_log INFO "PHASE2_PREREQ_SHA256=PASS"
+  elif [[ "${required}" == "YES" ]]; then
+    dp2_prereq_log ERROR "PHASE2_PREREQ_SHA256=FAIL reason=sidecar_missing"
+    return 1
   fi
 
   extract="$(mktemp -d "${TMPDIR:-/tmp}/phase2-prereq-inst.XXXXXX")"
@@ -239,32 +293,67 @@ dp2_install_phase2_ubuntu_prerequisites() {
     return 1
   fi
 
-  local deb installed_any=0
-  shopt -s nullglob
-  for deb in "${extract}/debs/"*.deb; do
-    local pkg
-    pkg="$(dpkg-deb -f "$deb" Package 2>/dev/null || true)"
-    if [[ -z "$pkg" ]]; then
-      dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=deb_control_missing file=$(basename "$deb")"
+  local order_file="${extract}/install-order.txt"
+  local installed_any=0 line fn pkg
+  local -a files
+  if [[ ! -f "$order_file" ]]; then
+    # Zero-extra artifacts may omit debs; still require an order file when debs exist.
+    shopt -s nullglob
+    files=("${extract}/debs/"*.deb)
+    shopt -u nullglob
+    if [[ ${#files[@]} -gt 0 ]]; then
       rm -rf "$extract"
+      dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=install_order_missing"
       return 1
     fi
-    if dp2_prereq_package_installed "$pkg"; then
+    rm -rf "$extract"
+    if ! dp2_validate_apt_dependency_graph prerequisites; then
+      dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=apt_dependency_check"
+      return 1
+    fi
+    dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL=PASS"
+    return 0
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    files=()
+    # shellcheck disable=SC2086
+    for fn in $line; do
+      files+=("${extract}/debs/${fn}")
+    done
+    if [[ ${#files[@]} -eq 0 ]]; then
+      continue
+    fi
+    for fn in "${files[@]}"; do
+      if [[ ! -f "$fn" ]]; then
+        dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=ordered_deb_missing file=$(basename "$fn")"
+        rm -rf "$extract"
+        return 1
+      fi
+      pkg="$(dpkg-deb -f "$fn" Package 2>/dev/null || true)"
+      if [[ -z "$pkg" ]]; then
+        dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=deb_control_missing file=$(basename "$fn")"
+        rm -rf "$extract"
+        return 1
+      fi
+    done
+    pkg="$(dpkg-deb -f "${files[0]}" Package 2>/dev/null || true)"
+    if [[ ${#files[@]} -eq 1 ]] && dp2_prereq_package_installed "$pkg"; then
       dp2_prereq_log INFO "PHASE2_PREREQ_ALREADY_INSTALLED package=${pkg}"
       continue
     fi
-    # Offline local .deb install. Dependency order is encoded in the artifact
-    # closure (deps first). Do not use dpkg --force-depends as success.
-    if ! dpkg -i "$deb"; then
-      rc=$?
+    dp2_prereq_dpkg_install "${files[@]}"
+    rc=$?
+    if [[ "$rc" -ne 0 ]]; then
       dp2_prereq_log ERROR "PHASE2_PREREQ_DPKG=FAIL package=${pkg} rc=${rc}"
       rm -rf "$extract"
       return "$rc"
     fi
     installed_any=1
-    dp2_prereq_log INFO "PHASE2_PREREQ_DPKG=PASS package=${pkg}"
-  done
-  shopt -u nullglob
+    dp2_prereq_log INFO "PHASE2_PREREQ_DPKG=PASS package=${pkg} group=${#files[@]}"
+  done < "$order_file"
   rm -rf "$extract"
 
   if [[ "$installed_any" -eq 0 ]]; then

@@ -257,6 +257,19 @@ mm_check_client_build_prerequisites_ready() {
 
 install_create_mocks
 
+engine_prepare_phase2_ubuntu_prerequisites() {
+  local extras="${MM_DP_PHASE2_ROOT}/${TARGET_DP_VERSION:-6.5.0}/extras"
+  mkdir -p "$extras"
+  cat >"${extras}/phase2-ubuntu-prerequisites.state" <<'EOF'
+PHASE2_PREREQ_REQUIRED=NO
+PHASE2_PREREQ_PACKAGE_COUNT=0
+PHASE2_PREREQ_BUILD=PASS
+PHASE2_PREREQ_PUBLICATION=PASS
+EOF
+  mm_ok "PHASE2_PREREQ=PASS fixture_stub"
+  return 0
+}
+
 # Avoid $(...) pipe deadlock when place/heartbeat emits large progress logs.
 # Run in a subshell so install flock is released between prepares.
 run_prepare_to() {

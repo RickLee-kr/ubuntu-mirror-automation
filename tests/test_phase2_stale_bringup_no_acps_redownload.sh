@@ -217,6 +217,19 @@ run_prepare_to() {
   return 1
 }
 
+engine_prepare_phase2_ubuntu_prerequisites() {
+  local extras="${MM_DP_PHASE2_ROOT}/${TARGET_DP_VERSION:-6.5.0}/extras"
+  mkdir -p "$extras"
+  cat >"${extras}/phase2-ubuntu-prerequisites.state" <<'EOF'
+PHASE2_PREREQ_REQUIRED=NO
+PHASE2_PREREQ_PACKAGE_COUNT=0
+PHASE2_PREREQ_BUILD=PASS
+PHASE2_PREREQ_PUBLICATION=PASS
+EOF
+  mm_ok "PHASE2_PREREQ=PASS fixture_stub"
+  return 0
+}
+
 assert_rebuilt_current_final() {
   local dest="${MM_DP_PHASE2_ROOT}/6.5.0"
   local stable="dp_bundle_6.5.0-current.tar"

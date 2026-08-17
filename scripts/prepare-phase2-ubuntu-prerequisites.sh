@@ -14,7 +14,6 @@ PHASE2_PREREQ_PY="${SCRIPT_DIR}/lib/phase2_ubuntu_prerequisites.py"
 DP_PHASE2_VERSION="${DP_PHASE2_VERSION:-${DP_PHASE2_VERSION_DEFAULT}}"
 DP_PHASE2_ROOT="${DP_PHASE2_ROOT:-/var/spool/apt-mirror/dp-phase2}"
 MM_SELECTIVE_ROOT="${MM_SELECTIVE_ROOT:-/var/spool/apt-mirror/selective}"
-PHASE2_PREREQ_OPTIONAL="${PHASE2_PREREQ_OPTIONAL:-0}"
 PHASE2_PREREQ_ALLOW_MISSING_CANDIDATE="${PHASE2_PREREQ_ALLOW_MISSING_CANDIDATE:-0}"
 
 dp2_phase2_prereq_artifact_name() {
@@ -22,16 +21,9 @@ dp2_phase2_prereq_artifact_name() {
 }
 
 dp2_phase2_prereq_published_dir() {
-  local ver_root dest
-  ver_root="$(dp2_version_root)"
-  if [[ -L "${ver_root}/current" && -d "${ver_root}/current" ]]; then
-    dest="$(readlink -f "${ver_root}/current")"
-  elif [[ -d "$ver_root" ]]; then
-    dest="$ver_root"
-  else
-    dest="$ver_root"
-  fi
-  printf '%s/extras\n' "$dest"
+  # Always version-root/extras so DP stage URL /dp-phase2/<ver>/extras/ matches
+  # the production nginx alias (flat final dir, no current/ generation layout).
+  printf '%s/extras\n' "$(dp2_version_root)"
 }
 
 dp2_find_acps_common() {
@@ -142,36 +134,38 @@ prepare_phase2_ubuntu_prerequisites() {
   local common ubuntu_root extras work rc=0
   local allow=()
 
+  extras="${PHASE2_PREREQ_OUT_DIR:-$(dp2_phase2_prereq_published_dir)}"
+  mkdir -p "$extras"
+  work="$(mktemp -d "${TMPDIR:-/tmp}/phase2-prereq.XXXXXX")"
+
   if ! common="$(dp2_find_acps_common)"; then
-    if [[ "$PHASE2_PREREQ_OPTIONAL" == "1" ]]; then
-      dp2_warn "PHASE2_PREREQ=SKIP reason=acps_common_missing"
-      return 0
+    local bundle
+    bundle="$(dp2_version_root)/$(dp2_stable_bundle_name 2>/dev/null || true)"
+    if [[ -f "$bundle" ]] \
+      && tar -xf "$bundle" -C "$work" aelladeb_py3_common.tar.gz 2>/dev/null \
+      && [[ -s "${work}/aelladeb_py3_common.tar.gz" ]]; then
+      tar -xf "$bundle" -C "$work" \
+        "aella-uvp-2404_${DP_PHASE2_VERSION}ubuntu1_amd64.deb" 2>/dev/null || true
+      common="${work}/aelladeb_py3_common.tar.gz"
+      dp2_info "PHASE2_PREREQ_ACPS_COMMON_FROM_BUNDLE=${bundle}"
+    else
+      rm -rf "$work"
+      dp2_error "PHASE2_PREREQ=FAIL reason=acps_common_missing"
+      return 1
     fi
-    dp2_error "PHASE2_PREREQ=FAIL reason=acps_common_missing"
-    return 1
   fi
   dp2_info "PHASE2_PREREQ_ACPS_COMMON=${common}"
   dp2_info "PHASE2_PREREQ_ACPS_SHA1=$(sha1sum "$common" | awk '{print $1}')"
 
   if ! ubuntu_root="$(dp2_find_noble_ubuntu_root)"; then
-    if [[ "$PHASE2_PREREQ_OPTIONAL" == "1" ]]; then
-      dp2_warn "PHASE2_PREREQ=SKIP reason=noble_index_missing"
-      return 0
-    fi
+    rm -rf "$work"
     dp2_error "PHASE2_PREREQ=FAIL reason=noble_index_missing"
     return 1
   fi
   dp2_info "PHASE2_PREREQ_UBUNTU_ROOT=${ubuntu_root}"
 
-  extras="${PHASE2_PREREQ_OUT_DIR:-$(dp2_phase2_prereq_published_dir)}"
-  mkdir -p "$extras"
-  work="$(mktemp -d "${TMPDIR:-/tmp}/phase2-prereq.XXXXXX")"
   if ! dp2_extract_py3_apt_from_common "$common" "$work"; then
     rm -rf "$work"
-    if [[ "$PHASE2_PREREQ_OPTIONAL" == "1" ]]; then
-      dp2_warn "PHASE2_PREREQ=SKIP reason=py3_apt_missing"
-      return 0
-    fi
     dp2_error "PHASE2_PREREQ=FAIL reason=py3_apt_missing"
     return 1
   fi
@@ -187,27 +181,52 @@ prepare_phase2_ubuntu_prerequisites() {
     dp2_info "PHASE2_PREREQ_EXTRA_ROOT_DEB=${extra_deb}"
   done < <(dp2_find_extra_acps_debs "$common")
 
+  local archive_base security_base
+  archive_base="${PHASE2_PREREQ_ARCHIVE_BASE:-http://archive.ubuntu.com/ubuntu}"
+  security_base="${PHASE2_PREREQ_SECURITY_BASE:-http://security.ubuntu.com/ubuntu}"
+
   set +e
   python3 "$PHASE2_PREREQ_PY" build \
     --source "${work}/py3-apt-packages.tar.gz" \
     --ubuntu-root "$ubuntu_root" \
     --dest "$extras" \
     --ensure-selective \
+    --archive-base "$archive_base" \
+    --security-base "$security_base" \
     "${extra_args[@]}" \
     "${allow[@]}"
   rc=$?
   set -e
   rm -rf "$work"
 
+  local state="${extras}/phase2-ubuntu-prerequisites.state"
   if [[ "$rc" -ne 0 ]]; then
+    dp2_error "PHASE2_PREREQ_BUILD=FAIL rc=${rc}"
     dp2_error "PHASE2_PREREQ=FAIL rc=${rc}"
     return "$rc"
   fi
-  local art sha
+  local art sha required count
   art="${extras}/$(dp2_phase2_prereq_artifact_name)"
-  [[ -f "$art" ]] || { dp2_error "PHASE2_PREREQ=FAIL artifact_missing"; return 1; }
-  sha="$(awk '{print $1; exit}' "${art}.sha256")"
-  dp2_ok "PHASE2_PREREQ=PASS artifact=${art} sha256=${sha}"
+  required="YES"
+  count="0"
+  if [[ -f "$state" ]]; then
+    required="$(awk -F= '$1=="PHASE2_PREREQ_REQUIRED"{print $2; exit}' "$state")"
+    count="$(awk -F= '$1=="PHASE2_PREREQ_PACKAGE_COUNT"{print $2; exit}' "$state")"
+  fi
+  if [[ "${required:-YES}" == "YES" ]]; then
+    [[ -f "$art" ]] || { dp2_error "PHASE2_PREREQ=FAIL artifact_missing"; return 1; }
+    [[ -f "${art}.sha256" ]] || { dp2_error "PHASE2_PREREQ=FAIL sha256_missing"; return 1; }
+    [[ -f "${extras}/phase2-ubuntu-prerequisites.manifest.json" ]] \
+      || { dp2_error "PHASE2_PREREQ=FAIL manifest_missing"; return 1; }
+  else
+    [[ -f "$state" ]] || { dp2_error "PHASE2_PREREQ=FAIL state_missing"; return 1; }
+  fi
+  sha=""
+  if [[ -f "${art}.sha256" ]]; then
+    sha="$(awk '{print $1; exit}' "${art}.sha256")"
+  fi
+  dp2_ok "PHASE2_PREREQ=PASS artifact=${art} sha256=${sha} required=${required:-?} count=${count:-?}"
+  dp2_info "PHASE2_PREREQ_PUBLICATION=PASS extras=${extras}"
   # Confirm the original ACPS common file is unchanged.
   dp2_info "PHASE2_PREREQ_ACPS_UNMODIFIED=YES"
   return 0

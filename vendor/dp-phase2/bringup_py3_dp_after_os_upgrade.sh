@@ -1406,35 +1406,70 @@ install_phase2_ubuntu_prerequisites() {
         return $?
     fi
     local artifact="${STAGING_DIR}/${PHASE2_PREREQ_ARTIFACT_NAME}"
-    if [[ ! -f "$artifact" ]]; then
-        validate_apt_dependency_graph prerequisites || return 1
-        log "PHASE2_PREREQ_INSTALL=SKIP reason=artifact_absent"
-        return 0
+    local state="${STAGING_DIR}/phase2-ubuntu-prerequisites.state"
+    local required=""
+    if [[ -f "$state" ]]; then
+        required="$(awk -F= '$1=="PHASE2_PREREQ_REQUIRED"{print $2; exit}' "$state")"
     fi
-    local extract deb pkg rc=0
+    if [[ ! -f "$artifact" ]]; then
+        if [[ "$required" == "NO" ]]; then
+            validate_apt_dependency_graph prerequisites || return 1
+            log "PHASE2_PREREQ_INSTALL=SKIP reason=not_required"
+            return 0
+        fi
+        log "ERROR: PHASE2_PREREQ_INSTALL=FAIL reason=artifact_absent_required"
+        return 1
+    fi
+    local extract pkg rc=0 line fn
+    local -a files
     extract="$(mktemp -d /tmp/phase2-prereq-inst.XXXXXX)"
     tar -xzf "$artifact" -C "$extract" || { rm -rf "$extract"; return 1; }
-    shopt -s nullglob
-    for deb in "${extract}/debs/"*.deb; do
-        pkg="$(dpkg-deb -f "$deb" Package 2>/dev/null || true)"
+    if [[ ! -f "${extract}/install-order.txt" ]]; then
+        shopt -s nullglob
+        files=("${extract}/debs/"*.deb)
+        shopt -u nullglob
+        if [[ ${#files[@]} -gt 0 ]]; then
+            rm -rf "$extract"
+            log "ERROR: PHASE2_PREREQ_INSTALL=FAIL reason=install_order_missing"
+            return 1
+        fi
+        rm -rf "$extract"
+        validate_apt_dependency_graph prerequisites || return 1
+        log "PHASE2_PREREQ_INSTALL=PASS"
+        return 0
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        files=()
+        # shellcheck disable=SC2086
+        for fn in $line; do
+            files+=("${extract}/debs/${fn}")
+        done
+        [[ ${#files[@]} -gt 0 ]] || continue
+        pkg="$(dpkg-deb -f "${files[0]}" Package 2>/dev/null || true)"
         if [[ -z "$pkg" ]]; then
             rm -rf "$extract"
             log "ERROR: PHASE2_PREREQ_INSTALL=FAIL reason=deb_control_missing"
             return 1
         fi
-        if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -qx 'install ok installed'; then
+        if [[ ${#files[@]} -eq 1 ]] && dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -qx 'install ok installed'; then
             log "PHASE2_PREREQ_ALREADY_INSTALLED package=${pkg}"
             continue
         fi
-        if ! dpkg -i "$deb"; then
-            rc=$?
+        local prev_e=0
+        [[ $- == *e* ]] && prev_e=1
+        set +e
+        dpkg -i "${files[@]}"
+        rc=$?
+        [[ "$prev_e" -eq 1 ]] && set -e
+        if [[ "$rc" -ne 0 ]]; then
             rm -rf "$extract"
             log "ERROR: PHASE2_PREREQ_DPKG=FAIL package=${pkg} rc=${rc}"
             return "$rc"
         fi
         log "PHASE2_PREREQ_DPKG=PASS package=${pkg}"
-    done
-    shopt -u nullglob
+    done < "${extract}/install-order.txt"
     rm -rf "$extract"
     validate_apt_dependency_graph prerequisites || return 1
     log "PHASE2_PREREQ_INSTALL=PASS"
@@ -1444,29 +1479,79 @@ install_phase2_ubuntu_prerequisites() {
 wait_for_master_token_api() {
     local timeout_s="${1:-$MASTER_TOKEN_API_WAIT_SECONDS}"
     local port="${MASTER_TOKEN_API_PORT}"
-    local started now elapsed code=000
-    local targets=()
-    targets+=("https://127.0.0.1:${port}/")
-    if [[ -n "${MASTER_IP:-}" ]]; then
-        targets+=("https://${MASTER_IP}:${port}/")
+    local started now elapsed
+    local loopback_code=000 master_ip_code=000
+    local loopback_ready=0 master_ip_ready=0
+    local cluster_mode=0
+    if [[ -n "${WORKER_IPS:-}" ]]; then
+        cluster_mode=1
     fi
     started="$(date +%s)"
-    log "Waiting for master token API on TCP/${port} (timeout=${timeout_s}s)"
+    log "Waiting for master token API on TCP/${port} (timeout=${timeout_s}s cluster=${cluster_mode})"
     while true; do
-        local url
-        for url in "${targets[@]}"; do
-            code="$(curl -sk --connect-timeout 5 --max-time 10 \
-                -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
-            # 200/401/403/404 prove the HTTPS listener is up. Do not log bodies.
-            if [[ "$code" =~ ^(200|401|403|404)$ ]]; then
-                log "MASTER_TOKEN_API_READY=YES port=${port} http=${code}"
+        loopback_code="$(curl -sk --connect-timeout 5 --max-time 10 \
+            -o /dev/null -w '%{http_code}' "https://127.0.0.1:${port}/" 2>/dev/null || echo 000)"
+        if [[ "$loopback_code" =~ ^(200|401|403|404)$ ]]; then
+            loopback_ready=1
+        else
+            loopback_ready=0
+        fi
+        master_ip_ready=0
+        master_ip_code=000
+        if [[ -n "${MASTER_IP:-}" ]]; then
+            master_ip_code="$(curl -sk --connect-timeout 5 --max-time 10 \
+                -o /dev/null -w '%{http_code}' "https://${MASTER_IP}:${port}/" 2>/dev/null || echo 000)"
+            if [[ "$master_ip_code" =~ ^(200|401|403|404)$ ]]; then
+                master_ip_ready=1
+            fi
+        fi
+        if [[ "$cluster_mode" -eq 1 ]]; then
+            if [[ -z "${MASTER_IP:-}" ]]; then
+                log "MASTER_IP_8003_READY=NO reason=master_ip_unset"
+                log "MASTER_TOKEN_API_READY=NO"
+                log "BRINGUP_RESULT=FAIL"
+                return 1
+            fi
+            if [[ "$master_ip_ready" -eq 1 ]]; then
+                if [[ "$loopback_ready" -eq 1 ]]; then
+                    log "LOOPBACK_8003_READY=YES"
+                else
+                    log "LOOPBACK_8003_READY=NO http=${loopback_code}"
+                fi
+                log "MASTER_IP_8003_READY=YES port=${port} http=${master_ip_code}"
+                log "MASTER_TOKEN_API_READY=YES port=${port} http=${master_ip_code}"
                 return 0
             fi
-        done
+        else
+            if [[ "$loopback_ready" -eq 1 ]]; then
+                log "LOOPBACK_8003_READY=YES port=${port} http=${loopback_code}"
+                if [[ -n "${MASTER_IP:-}" ]]; then
+                    if [[ "$master_ip_ready" -eq 1 ]]; then
+                        log "MASTER_IP_8003_READY=YES"
+                    else
+                        log "MASTER_IP_8003_READY=NO http=${master_ip_code}"
+                    fi
+                else
+                    log "MASTER_IP_8003_READY=NOT_REQUIRED"
+                fi
+                log "MASTER_TOKEN_API_READY=YES port=${port} http=${loopback_code}"
+                return 0
+            fi
+        fi
         now="$(date +%s)"
         elapsed=$((now - started))
         if [[ "$elapsed" -ge "$timeout_s" ]]; then
-            log "MASTER_TOKEN_API_READY=NO port=${port} last_http=${code} waited=${elapsed}s"
+            if [[ "$loopback_ready" -eq 1 ]]; then
+                log "LOOPBACK_8003_READY=YES http=${loopback_code}"
+            else
+                log "LOOPBACK_8003_READY=NO http=${loopback_code}"
+            fi
+            if [[ "$cluster_mode" -eq 1 || -n "${MASTER_IP:-}" ]]; then
+                log "MASTER_IP_8003_READY=NO http=${master_ip_code}"
+            else
+                log "MASTER_IP_8003_READY=NOT_REQUIRED"
+            fi
+            log "MASTER_TOKEN_API_READY=NO port=${port} last_http=${master_ip_code:-$loopback_code} waited=${elapsed}s"
             log "BRINGUP_RESULT=FAIL"
             return 1
         fi

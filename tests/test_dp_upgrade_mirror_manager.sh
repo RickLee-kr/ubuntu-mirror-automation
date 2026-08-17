@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/seed_complete_client_http_set.sh
 source "${ROOT}/tests/lib/seed_complete_client_http_set.sh"
+# shellcheck source=lib/phase2_prereq_fixture.sh
+source "${ROOT}/tests/lib/phase2_prereq_fixture.sh"
 INSTALLER="${ROOT}/scripts/install-dp-upgrade-mirror.sh"
 COMMON="${ROOT}/scripts/lib/mirror_manager_common.sh"
 OS_CORE_PY="${ROOT}/scripts/lib/os_core_package.py"
@@ -17,6 +19,8 @@ fail() { echo "  FAIL: $*"; FAIL=1; }
 skip() { echo "  SKIP: $*"; }
 
 WORKDIR="$(mktemp -d)"
+export PHASE2_PREREQ_INDEX_ROOT="${WORKDIR}/noble-index"
+phase2_prereq_write_empty_noble_index "$PHASE2_PREREQ_INDEX_ROOT"
 HTTP_PID=""
 R2_PID=""
 HTTP_PORT=""
@@ -77,7 +81,7 @@ ensure_upstream_bytes() {
 make_acps_payload() {
   local dir="$1" ver="${2:-6.5.0}"
   mkdir -p "$dir"
-  printf 'common-payload\n' >"${dir}/aelladeb_py3_common.tar.gz"
+  phase2_prereq_write_zero_extra_common "${dir}/aelladeb_py3_common.tar.gz" "common-payload"
   sha1sum "${dir}/aelladeb_py3_common.tar.gz" | awk '{print $1}' >"${dir}/aelladeb_py3_common.tar.gz.sha1"
   printf 'uvp-deb\n' >"${dir}/aella-uvp-2404_${ver}ubuntu1_amd64.deb"
   sha1sum "${dir}/aella-uvp-2404_${ver}ubuntu1_amd64.deb" | awk '{print $1}' >"${dir}/aella-uvp-2404_${ver}ubuntu1_amd64.deb.sha1"

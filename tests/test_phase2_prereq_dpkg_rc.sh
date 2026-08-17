@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+# Prove dpkg failure return codes are preserved (never inverted to 0) and
+# that the installer consumes install-order.txt instead of lexical glob order.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PREREQ_LIB="${ROOT}/client/lib/dp-phase2-ubuntu-prerequisites.sh"
+FAIL=0
+PASS=0
+WORKDIR="$(mktemp -d)"
+trap 'rm -rf "$WORKDIR"' EXIT
+
+pass() { echo "  PASS: $*"; PASS=$((PASS + 1)); }
+fail() { echo "  FAIL: $*"; FAIL=$((FAIL + 1)); }
+
+echo "======== test_phase2_prereq_dpkg_rc ========"
+
+bash -n "$PREREQ_LIB" && pass "bash -n prereq lib" || fail "bash -n prereq lib"
+
+build_tiny_deb() {
+  local dest="$1" package="$2" version="${3:-1}" depends="${4:-}"
+  local work debian
+  work="$(mktemp -d "${WORKDIR}/deb.XXXXXX")"
+  debian="${work}/DEBIAN"
+  mkdir -p "$debian" "${work}/usr/share/doc/${package}"
+  printf 'fixture\n' >"${work}/usr/share/doc/${package}/README"
+  {
+    echo "Package: ${package}"
+    echo "Version: ${version}"
+    echo "Architecture: all"
+    echo "Maintainer: fixture@example.com"
+    echo "Description: fixture ${package}"
+    [[ -n "$depends" ]] && echo "Depends: ${depends}"
+  } >"${debian}/control"
+  dpkg-deb -Zgzip --build "$work" "$dest" >/dev/null
+  rm -rf "$work"
+}
+
+# ---------------------------------------------------------------------------
+# 1. Fake dpkg returning 1 and 42 must never become rc=0
+# ---------------------------------------------------------------------------
+for want_rc in 1 42; do
+  BIN="${WORKDIR}/bin-dpkg-${want_rc}"
+  mkdir -p "$BIN"
+  cat >"${BIN}/dpkg" <<EOF
+#!/usr/bin/env bash
+echo "fake-dpkg invoked rc=${want_rc}" >&2
+exit ${want_rc}
+EOF
+  cat >"${BIN}/dpkg-deb" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "-f" && "$3" == "Package" ]]; then
+  base="$(basename "$2")"
+  echo "${base%%_*}"
+  exit 0
+fi
+exit 0
+EOF
+  cat >"${BIN}/dpkg-query" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  cat >"${BIN}/apt-get" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "${BIN}/dpkg" "${BIN}/dpkg-deb" "${BIN}/dpkg-query" "${BIN}/apt-get"
+
+  ART="${WORKDIR}/art-${want_rc}"
+  mkdir -p "${ART}/debs"
+  build_tiny_deb "${ART}/debs/python3-colorama_1_all.deb" python3-colorama
+  cat >"${ART}/install-order.txt" <<'EOF'
+# PHASE2_PREREQ_INSTALL_ORDER
+python3-colorama_1_all.deb
+EOF
+  TAR="${WORKDIR}/phase2-ubuntu-prerequisites-${want_rc}.tar.gz"
+  tar -C "$ART" -czf "$TAR" install-order.txt debs
+  sha256sum "$TAR" | awk '{print $1"  phase2-ubuntu-prerequisites.tar.gz"}' >"${TAR}.sha256"
+
+  set +e
+  OUT="$(
+    PATH="${BIN}:$PATH"
+    PHASE2_PREREQ_ARTIFACT="$TAR"
+    # shellcheck source=/dev/null
+    source "$PREREQ_LIB"
+    dp2_prereq_package_installed() { return 1; }
+    dp2_validate_apt_dependency_graph() { return 0; }
+    dp2_install_phase2_ubuntu_prerequisites
+    echo RC=$?
+  )"
+  set -e
+  echo "$OUT" | grep -q "PHASE2_PREREQ_DPKG=FAIL" \
+    && echo "$OUT" | grep -q "rc=${want_rc}" \
+    && echo "$OUT" | grep -q "RC=${want_rc}" \
+    && ! echo "$OUT" | grep -q "RC=0" \
+    && pass "dpkg rc=${want_rc} preserved (never 0)" \
+    || fail "dpkg rc=${want_rc} not preserved: ${OUT}"
+done
+
+# ---------------------------------------------------------------------------
+# 2. Install order is manifest/order-file, not lexical glob
+# ---------------------------------------------------------------------------
+# Lexical glob would install python3-click before python3-colorama.
+ORD_BIN="${WORKDIR}/bin-order"
+mkdir -p "$ORD_BIN"
+cat >"${ORD_BIN}/dpkg" <<'EOF'
+#!/usr/bin/env bash
+echo "DPKG_CALL $*" >>"${DPKG_LOG}"
+exit 0
+EOF
+cat >"${ORD_BIN}/dpkg-deb" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "-f" && "$3" == "Package" ]]; then
+  base="$(basename "$2")"
+  echo "${base%%_*}"
+  exit 0
+fi
+exit 0
+EOF
+cat >"${ORD_BIN}/dpkg-query" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+cat >"${ORD_BIN}/apt-get" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "${ORD_BIN}/dpkg" "${ORD_BIN}/dpkg-deb" "${ORD_BIN}/dpkg-query" "${ORD_BIN}/apt-get"
+
+ART2="${WORKDIR}/art-order"
+mkdir -p "${ART2}/debs"
+build_tiny_deb "${ART2}/debs/python3-click_1_all.deb" python3-click 1 "python3-colorama"
+build_tiny_deb "${ART2}/debs/python3-colorama_1_all.deb" python3-colorama
+# Order file puts colorama first; glob would put click first.
+cat >"${ART2}/install-order.txt" <<'EOF'
+python3-colorama_1_all.deb
+python3-click_1_all.deb
+EOF
+TAR2="${WORKDIR}/phase2-ubuntu-prerequisites-order.tar.gz"
+tar -C "$ART2" -czf "$TAR2" install-order.txt debs
+sha256sum "$TAR2" | awk '{print $1"  phase2-ubuntu-prerequisites.tar.gz"}' >"${TAR2}.sha256"
+DPKG_LOG="${WORKDIR}/dpkg-order.log"
+: >"$DPKG_LOG"
+set +e
+OUT2="$(
+  PATH="${ORD_BIN}:$PATH"
+  export DPKG_LOG="$DPKG_LOG"
+  PHASE2_PREREQ_ARTIFACT="$TAR2"
+  # shellcheck source=/dev/null
+  source "$PREREQ_LIB"
+  dp2_prereq_package_installed() { return 1; }
+  dp2_validate_apt_dependency_graph() { return 0; }
+  dp2_install_phase2_ubuntu_prerequisites
+  echo RC=$?
+)"
+set -e
+echo "$OUT2" | grep -q 'RC=0' && echo "$OUT2" | grep -q 'PHASE2_PREREQ_INSTALL=PASS' \
+  && pass "ordered install rc=0" \
+  || fail "ordered install: ${OUT2}"
+first="$(grep '^DPKG_CALL' "$DPKG_LOG" | head -1 || true)"
+second="$(grep '^DPKG_CALL' "$DPKG_LOG" | sed -n '2p' || true)"
+echo "$first" | grep -q 'python3-colorama_1_all.deb' \
+  && echo "$second" | grep -q 'python3-click_1_all.deb' \
+  && pass "install order colorama before click (not glob)" \
+  || fail "install order was lexical/glob: first=${first} second=${second}"
+
+# Missing order file with debs present must FAIL (no glob fallback).
+ART3="${WORKDIR}/art-no-order"
+mkdir -p "${ART3}/debs"
+cp -a "${ART2}/debs/"*.deb "${ART3}/debs/"
+TAR3="${WORKDIR}/phase2-ubuntu-prerequisites-no-order.tar.gz"
+tar -C "$ART3" -czf "$TAR3" debs
+sha256sum "$TAR3" | awk '{print $1"  phase2-ubuntu-prerequisites.tar.gz"}' >"${TAR3}.sha256"
+set +e
+OUT3="$(
+  PATH="${ORD_BIN}:$PATH"
+  PHASE2_PREREQ_ARTIFACT="$TAR3"
+  # shellcheck source=/dev/null
+  source "$PREREQ_LIB"
+  dp2_prereq_package_installed() { return 1; }
+  dp2_validate_apt_dependency_graph() { return 0; }
+  dp2_install_phase2_ubuntu_prerequisites
+  echo RC=$?
+)"
+set -e
+echo "$OUT3" | grep -q 'install_order_missing' \
+  && echo "$OUT3" | grep -q 'RC=1' \
+  && pass "missing install-order with debs fails closed" \
+  || fail "missing install-order: ${OUT3}"
+
+# REQUIRED=NO + absent artifact => PASS skip
+set +e
+OUT4="$(
+  PATH="${ORD_BIN}:$PATH"
+  unset PHASE2_PREREQ_ARTIFACT
+  PHASE2_PREREQ_STATE="${WORKDIR}/not-required.state"
+  cat >"$PHASE2_PREREQ_STATE" <<'EOF'
+PHASE2_PREREQ_REQUIRED=NO
+PHASE2_PREREQ_PACKAGE_COUNT=0
+PHASE2_PREREQ_BUILD=PASS
+EOF
+  # shellcheck source=/dev/null
+  source "$PREREQ_LIB"
+  dp2_validate_apt_dependency_graph() { return 0; }
+  dp2_install_phase2_ubuntu_prerequisites
+  echo RC=$?
+)"
+set -e
+echo "$OUT4" | grep -q 'not_required' \
+  && echo "$OUT4" | grep -q 'RC=0' \
+  && pass "REQUIRED=NO absent artifact is skip/PASS" \
+  || fail "REQUIRED=NO: ${OUT4}"
+
+# Absent artifact without NOT_REQUIRED metadata => FAIL
+set +e
+OUT5="$(
+  PATH="${ORD_BIN}:$PATH"
+  unset PHASE2_PREREQ_ARTIFACT PHASE2_PREREQ_STATE
+  # shellcheck source=/dev/null
+  source "$PREREQ_LIB"
+  dp2_prereq_find_artifact() { return 1; }
+  dp2_prereq_find_state() { return 1; }
+  dp2_install_phase2_ubuntu_prerequisites
+  echo RC=$?
+)"
+set -e
+echo "$OUT5" | grep -q 'artifact_absent_required' \
+  && echo "$OUT5" | grep -q 'RC=1' \
+  && pass "absent artifact without NOT_REQUIRED metadata FAIL" \
+  || fail "absent required: ${OUT5}"
+
+echo "SUMMARY pass=${PASS} fail=${FAIL}"
+[[ "$FAIL" -eq 0 ]]

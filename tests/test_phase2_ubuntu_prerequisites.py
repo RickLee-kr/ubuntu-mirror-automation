@@ -2,8 +2,10 @@
 """Regression tests for Phase 2 Ubuntu dependency closure and transaction safety."""
 from __future__ import print_function, unicode_literals
 
+import json
 import os
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -255,15 +257,31 @@ class Phase2ClosureIncidentTests(unittest.TestCase):
             'components': None,
             'allow_missing_candidate': False,
             'ensure_selective': False,
+            'extra_deb': [],
+            'skip_acquire': True,
+            'archive_base': 'http://127.0.0.1:1/ubuntu',
+            'security_base': 'http://127.0.0.1:1/ubuntu',
         })())
         self.assertEqual(rc, 0)
         art = os.path.join(dest, p2p.ARTIFACT_NAME)
         self.assertTrue(os.path.isfile(art))
         self.assertTrue(os.path.isfile(art + '.sha256'))
+        state = os.path.join(dest, p2p.STATE_NAME)
+        self.assertTrue(os.path.isfile(state))
+        text = open(state).read()
+        self.assertIn('PHASE2_PREREQ_REQUIRED=YES', text)
+        self.assertIn('PHASE2_PREREQ_BUILD=PASS', text)
         with tarfile.open(art, 'r:gz') as tf:
             names = tf.getnames()
         self.assertTrue(any(n.endswith('python3-click_1_all.deb') for n in names))
         self.assertFalse(any('python3-flask_' in n for n in names))
+        self.assertIn(p2p.INSTALL_ORDER_NAME, names)
+        with open(os.path.join(dest, p2p.MANIFEST_NAME)) as fh:
+            manifest = json.loads(fh.read())
+        order = manifest.get('install_order') or []
+        self.assertIn('python3-colorama', order)
+        self.assertIn('python3-click', order)
+        self.assertLess(order.index('python3-colorama'), order.index('python3-click'))
 
 
 class TransactionSafetyTests(unittest.TestCase):
@@ -291,6 +309,291 @@ class TransactionSafetyTests(unittest.TestCase):
         result = p2p.transaction_is_safe(sim)
         self.assertTrue(result['safe'])
         self.assertEqual(result['blocked_removals'], [])
+
+
+class InstallPlanTests(unittest.TestCase):
+    def test_deps_before_dependents(self):
+        packages = OrderedDict([
+            ('a', OrderedDict([('Package', 'a'), ('Depends', 'b')])),
+            ('b', OrderedDict([('Package', 'b'), ('Depends', 'c')])),
+            ('c', OrderedDict([('Package', 'c'), ('Depends', '')])),
+        ])
+        plan = p2p.build_install_plan(['a', 'b', 'c'], packages)
+        order = plan['install_order']
+        self.assertLess(order.index('c'), order.index('b'))
+        self.assertLess(order.index('b'), order.index('a'))
+
+    def test_shared_dependency_once(self):
+        packages = OrderedDict([
+            ('a', OrderedDict([('Package', 'a'), ('Depends', 'c')])),
+            ('b', OrderedDict([('Package', 'b'), ('Depends', 'c')])),
+            ('c', OrderedDict([('Package', 'c'), ('Depends', '')])),
+        ])
+        plan = p2p.build_install_plan(['a', 'b', 'c'], packages)
+        self.assertEqual(plan['install_order'].count('c'), 1)
+        self.assertEqual(plan['install_order'][0], 'c')
+
+    def test_cycle_is_one_group(self):
+        packages = OrderedDict([
+            ('a', OrderedDict([('Package', 'a'), ('Depends', 'b')])),
+            ('b', OrderedDict([('Package', 'b'), ('Depends', 'a')])),
+            ('c', OrderedDict([('Package', 'c'), ('Depends', '')])),
+        ])
+        plan = p2p.build_install_plan(['a', 'b', 'c'], packages)
+        groups = plan['install_groups']
+        self.assertTrue(any(sorted(g) == ['a', 'b'] for g in groups))
+        self.assertGreaterEqual(plan['cycle_group_count'], 1)
+        self.assertEqual(plan['install_order'].count('a'), 1)
+        self.assertEqual(plan['install_order'].count('b'), 1)
+
+    def test_deterministic_across_runs(self):
+        packages = OrderedDict([
+            ('zpkg', OrderedDict([('Package', 'zpkg'), ('Depends', 'apkg')])),
+            ('apkg', OrderedDict([('Package', 'apkg'), ('Depends', '')])),
+            ('mpkg', OrderedDict([('Package', 'mpkg'), ('Depends', 'apkg')])),
+        ])
+        a = p2p.build_install_plan(['zpkg', 'mpkg', 'apkg'], packages)
+        b = p2p.build_install_plan(['mpkg', 'apkg', 'zpkg'], packages)
+        self.assertEqual(a['install_order'], b['install_order'])
+        self.assertEqual(a['install_groups'], b['install_groups'])
+
+
+class MissingDebFailClosedTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix='phase2-missing-deb-')
+        self.ubuntu = os.path.join(self.tmp, 'ubuntu')
+        self.acps = os.path.join(self.tmp, 'acps')
+        os.makedirs(self.acps)
+        rec = stanza('python3-click', 'python3-colorama', component='universe')
+        rec2 = stanza('python3-colorama', component='universe')
+        rec3 = stanza('python3-flask', 'python3-click', component='universe')
+        write_packages_index(self.ubuntu, 'noble', 'universe', [rec, rec2, rec3])
+        # Candidate exists; only colorama is materialized.
+        for s in (rec2,):
+            path = os.path.join(self.ubuntu, s['Filename'])
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'wb') as fh:
+                fh.write(b'deb-fixture\n')
+        inner = os.path.join(self.tmp, 'py3-inner')
+        os.makedirs(inner)
+        deb = os.path.join(inner, 'python3-flask_1_all.deb')
+        with open(deb, 'wb') as fh:
+            fh.write(b'acps\n')
+        with open(deb + '.control', 'w') as fh:
+            fh.write('Package: python3-flask\nVersion: 1\nArchitecture: all\nDepends: python3-click\n')
+        self.tarball = os.path.join(self.tmp, 'py3-apt-packages.tar.gz')
+        with tarfile.open(self.tarball, 'w:gz') as tf:
+            for fn in os.listdir(inner):
+                tf.add(os.path.join(inner, fn), arcname=fn)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_missing_deb_does_not_omit_silently(self):
+        dest = os.path.join(self.tmp, 'extras')
+        rc = p2p.run_build(type('Args', (), {
+            'source': self.tarball,
+            'ubuntu_root': self.ubuntu,
+            'dest': dest,
+            'suites': None,
+            'components': None,
+            'allow_missing_candidate': False,
+            'ensure_selective': False,
+            'extra_deb': [],
+            'skip_acquire': True,
+            'archive_base': 'http://127.0.0.1:1/ubuntu',
+            'security_base': 'http://127.0.0.1:1/ubuntu',
+        })())
+        self.assertNotEqual(rc, 0)
+        state = os.path.join(dest, p2p.STATE_NAME)
+        self.assertTrue(os.path.isfile(state))
+        text = open(state).read()
+        self.assertIn('PHASE2_PREREQ_BUILD=FAIL', text)
+        self.assertIn('PHASE2_PREREQ_MISSING_DEB_PACKAGES=python3-click', text)
+        art = os.path.join(dest, p2p.ARTIFACT_NAME)
+        self.assertFalse(os.path.isfile(art))
+
+    def test_zero_extra_is_not_required(self):
+        inner = os.path.join(self.tmp, 'complete-inner')
+        os.makedirs(inner)
+        for name in ('python3-flask', 'python3-click', 'python3-colorama'):
+            deb = os.path.join(inner, '%s_1_all.deb' % name)
+            with open(deb, 'wb') as fh:
+                fh.write(b'acps\n')
+            depends = {
+                'python3-flask': 'python3-click',
+                'python3-click': 'python3-colorama',
+                'python3-colorama': '',
+            }[name]
+            with open(deb + '.control', 'w') as fh:
+                fh.write(
+                    'Package: %s\nVersion: 1\nArchitecture: all\nDepends: %s\n' % (
+                        name, depends,
+                    )
+                )
+        tarball = os.path.join(self.tmp, 'complete.tar.gz')
+        with tarfile.open(tarball, 'w:gz') as tf:
+            for fn in os.listdir(inner):
+                tf.add(os.path.join(inner, fn), arcname=fn)
+        dest = os.path.join(self.tmp, 'zero-extras')
+        rc = p2p.run_build(type('Args', (), {
+            'source': tarball,
+            'ubuntu_root': self.ubuntu,
+            'dest': dest,
+            'suites': None,
+            'components': None,
+            'allow_missing_candidate': False,
+            'ensure_selective': False,
+            'extra_deb': [],
+            'skip_acquire': True,
+            'archive_base': 'http://127.0.0.1:1/ubuntu',
+            'security_base': 'http://127.0.0.1:1/ubuntu',
+        })())
+        self.assertEqual(rc, 0)
+        text = open(os.path.join(dest, p2p.STATE_NAME)).read()
+        self.assertIn('PHASE2_PREREQ_REQUIRED=NO', text)
+        self.assertIn('PHASE2_PREREQ_PACKAGE_COUNT=0', text)
+        self.assertIn('PHASE2_PREREQ_BUILD=PASS', text)
+
+
+class PackageAcquisitionTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix='phase2-acquire-')
+        self.ubuntu = os.path.join(self.tmp, 'ubuntu')
+        self.http_root = os.path.join(self.tmp, 'http')
+        os.makedirs(self.http_root)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _tiny_deb(self, path, package, version='1', depends=''):
+        work = tempfile.mkdtemp(prefix='tiny-deb-')
+        debian = os.path.join(work, 'DEBIAN')
+        os.makedirs(debian)
+        os.makedirs(os.path.join(work, 'usr', 'share', 'doc', package))
+        with open(os.path.join(work, 'usr', 'share', 'doc', package, 'README'), 'w') as fh:
+            fh.write('fixture\n')
+        control = [
+            'Package: %s' % package,
+            'Version: %s' % version,
+            'Architecture: all',
+            'Maintainer: fixture@example.com',
+            'Description: fixture %s' % package,
+        ]
+        if depends:
+            control.append('Depends: %s' % depends)
+        with open(os.path.join(debian, 'control'), 'w') as fh:
+            fh.write('\n'.join(control) + '\n')
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        subprocess.check_call(
+            ['dpkg-deb', '-Zgzip', '--build', work, path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        shutil.rmtree(work, ignore_errors=True)
+
+    def _start_http(self):
+        import http.server
+        import socketserver
+        import threading
+
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                kwargs['directory'] = Handler.directory
+                http.server.SimpleHTTPRequestHandler.__init__(self, *args, **kwargs)
+
+            def log_message(self, *args):
+                return
+
+        Handler.directory = self.http_root
+
+        class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+            daemon_threads = True
+            allow_reuse_address = True
+
+        server = Server(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.daemon = True
+        thread.start()
+        self.server = server
+        host, port = server.server_address
+        return 'http://%s:%s' % (host, port)
+
+    def test_acquire_exact_package_and_reject_corrupt_checksum(self):
+        pkg_rel = 'pool/universe/p/python3-needme/python3-needme_1_all.deb'
+        http_deb = os.path.join(self.http_root, 'ubuntu', pkg_rel)
+        self._tiny_deb(http_deb, 'python3-needme')
+        digest = p2p.sha256_file(http_deb)
+        size = os.path.getsize(http_deb)
+        rec = OrderedDict([
+            ('Package', 'python3-needme'),
+            ('Version', '1'),
+            ('Architecture', 'all'),
+            ('Filename', pkg_rel),
+            ('SHA256', digest),
+            ('Size', str(size)),
+            ('Depends', ''),
+        ])
+        write_packages_index(self.ubuntu, 'noble', 'universe', [rec])
+        inner = os.path.join(self.tmp, 'py3-inner')
+        os.makedirs(inner)
+        root_deb = os.path.join(inner, 'python3-root_1_all.deb')
+        with open(root_deb, 'wb') as fh:
+            fh.write(b'acps\n')
+        with open(root_deb + '.control', 'w') as fh:
+            fh.write('Package: python3-root\nVersion: 1\nArchitecture: all\nDepends: python3-needme\n')
+        tarball = os.path.join(self.tmp, 'py3-apt-packages.tar.gz')
+        with tarfile.open(tarball, 'w:gz') as tf:
+            for fn in os.listdir(inner):
+                tf.add(os.path.join(inner, fn), arcname=fn)
+
+        base = self._start_http() + '/ubuntu'
+        dest = os.path.join(self.tmp, 'extras-ok')
+        rc = p2p.run_build(type('Args', (), {
+            'source': tarball,
+            'ubuntu_root': self.ubuntu,
+            'dest': dest,
+            'suites': None,
+            'components': None,
+            'allow_missing_candidate': False,
+            'ensure_selective': False,
+            'extra_deb': [],
+            'skip_acquire': False,
+            'archive_base': base,
+            'security_base': base,
+        })())
+        self.assertEqual(rc, 0, msg=open(os.path.join(dest, p2p.STATE_NAME)).read()
+                         if os.path.isfile(os.path.join(dest, p2p.STATE_NAME)) else 'no state')
+        local = os.path.join(self.ubuntu, pkg_rel)
+        self.assertTrue(os.path.isfile(local))
+        self.assertEqual(p2p.sha256_file(local), digest)
+        art = os.path.join(dest, p2p.ARTIFACT_NAME)
+        self.assertTrue(os.path.isfile(art))
+        with tarfile.open(art, 'r:gz') as tf:
+            self.assertTrue(any(n.endswith('python3-needme_1_all.deb') for n in tf.getnames()))
+
+        # Corrupt checksum must fail closed and must not publish an artifact.
+        rec_bad = OrderedDict(rec)
+        rec_bad['SHA256'] = '0' * 64
+        write_packages_index(self.ubuntu, 'noble', 'universe', [rec_bad])
+        os.unlink(local)
+        dest_bad = os.path.join(self.tmp, 'extras-bad')
+        rc_bad = p2p.run_build(type('Args', (), {
+            'source': tarball,
+            'ubuntu_root': self.ubuntu,
+            'dest': dest_bad,
+            'suites': None,
+            'components': None,
+            'allow_missing_candidate': False,
+            'ensure_selective': False,
+            'extra_deb': [],
+            'skip_acquire': False,
+            'archive_base': base,
+            'security_base': base,
+        })())
+        self.assertNotEqual(rc_bad, 0)
+        self.assertFalse(os.path.isfile(os.path.join(dest_bad, p2p.ARTIFACT_NAME)))
+        self.server.shutdown()
+        self.server.server_close()
 
 
 if __name__ == '__main__':

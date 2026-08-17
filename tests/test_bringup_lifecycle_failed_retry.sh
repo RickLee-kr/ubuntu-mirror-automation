@@ -4,6 +4,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/phase2_prereq_fixture.sh
+source "${ROOT}/tests/lib/phase2_prereq_fixture.sh"
 WRAPPER="${ROOT}/client/bringup_py3_dp_lifecycle.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -16,6 +18,8 @@ export PHASE2_BRINGUP_LOG_DEFAULT="${TMP}/bringup.log"
 export PHASE2_BRINGUP_MONITOR_SECONDS=1
 export PHASE2_BRINGUP_ALLOW_NONROOT=1
 export BRINGUP_VENDOR_SCRIPT="${TMP}/vendor.sh"
+export PHASE2_PREREQ_STATE="${TMP}/phase2-ubuntu-prerequisites.state"
+phase2_prereq_write_not_required_state "$PHASE2_PREREQ_STATE"
 mkdir -p "$PHASE2_BRINGUP_DIR" "$(dirname "$PHASE2_BRINGUP_LOG_DEFAULT")"
 
 VENDOR_COUNT="${TMP}/vendor.count"
@@ -36,6 +40,7 @@ run_wrapper() {
     PHASE2_BRINGUP_MONITOR_SECONDS=1 \
     PHASE2_BRINGUP_ALLOW_NONROOT=1 \
     BRINGUP_VENDOR_SCRIPT="$BRINGUP_VENDOR_SCRIPT" \
+    PHASE2_PREREQ_STATE="$PHASE2_PREREQ_STATE" \
     bash "$WRAPPER" "$@"
 }
 

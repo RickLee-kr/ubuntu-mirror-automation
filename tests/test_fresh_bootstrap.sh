@@ -116,6 +116,10 @@ for f in \
   "${INSTALL_LIB_DIR}/scripts/rebuild-publish-clients.sh" \
   "${INSTALL_LIB_DIR}/lib/runtime_manifest.sh" \
   "${INSTALL_LIB_DIR}/scripts/lib/patch_dp_phase2_bringup.py" \
+  "${INSTALL_LIB_DIR}/scripts/lib/phase2_ubuntu_prerequisites.py" \
+  "${INSTALL_LIB_DIR}/scripts/lib/xenial_bionic_upgrade_analysis.py" \
+  "${INSTALL_LIB_DIR}/scripts/lib/selective_mirror.py" \
+  "${INSTALL_LIB_DIR}/scripts/prepare-phase2-ubuntu-prerequisites.sh" \
   "${INSTALL_LIB_DIR}/scripts/lib/phase2_bringup_patch/fragment_compat.sh" \
   "${INSTALL_LIB_DIR}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh" \
   "${INSTALL_LIB_DIR}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh.upstream.sha1" \
@@ -325,6 +329,13 @@ mkdir -p "${HTTP_ROOT}/selective/hops/jammy-to-noble/ubuntu" \
 ln -sfn hops/jammy-to-noble/ubuntu "${HTTP_ROOT}/selective/ubuntu"
 seed_complete_client_http_set "${HTTP_ROOT}/client" "http://192.0.2.10" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 printf 'TARGET_DP_VERSION=6.5.0\n' >"${HTTP_ROOT}/dp-phase2/6.5.0/release.env"
+mkdir -p "${HTTP_ROOT}/dp-phase2/6.5.0/extras"
+cat >"${HTTP_ROOT}/dp-phase2/6.5.0/extras/phase2-ubuntu-prerequisites.state" <<'EOF'
+PHASE2_PREREQ_REQUIRED=NO
+PHASE2_PREREQ_PACKAGE_COUNT=0
+PHASE2_PREREQ_BUILD=PASS
+PHASE2_PREREQ_PUBLICATION=PASS
+EOF
 # Minimal valid-looking bundle + sha for layout check
 tar -cf "${HTTP_ROOT}/dp-phase2/6.5.0/dp_bundle_6.5.0-current.tar" -C "${HTTP_ROOT}/dp-phase2/6.5.0" release.env
 (

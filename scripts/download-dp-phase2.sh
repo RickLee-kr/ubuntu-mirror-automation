@@ -366,10 +366,11 @@ cmd_sync() {
 
   # Separate prerequisite artifact; never mutates the 9-file ACPS bundle.
   if [[ -f "${SCRIPT_DIR}/prepare-phase2-ubuntu-prerequisites.sh" ]]; then
-    PHASE2_PREREQ_OPTIONAL=1 \
-      DP_PHASE2_ROOT="$DP_PHASE2_ROOT" \
+    DP_PHASE2_ROOT="$DP_PHASE2_ROOT" \
       bash "${SCRIPT_DIR}/prepare-phase2-ubuntu-prerequisites.sh" "$DP_PHASE2_VERSION" \
-      || dp2_warn "PHASE2_PREREQ=SKIP_OR_FAIL (ACPS bundle unchanged)"
+      || dp2_die "PHASE2_PREREQ=FAIL (Download and Prepare cannot continue)"
+  else
+    dp2_die "PHASE2_PREREQ=FAIL reason=prepare_script_missing"
   fi
 
   dp2_ok "SYNC_RESULT=PASS run_id=${run_id} bundle=${bundle_name} stable=${stable}"

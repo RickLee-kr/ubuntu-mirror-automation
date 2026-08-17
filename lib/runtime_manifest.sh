@@ -30,6 +30,7 @@ UM_RUNTIME_SCRIPT_ENTRYPOINTS=(
   ubuntu-offline-mirror.sh
   install-dp-upgrade-mirror.sh
   rebuild-publish-clients.sh
+  prepare-phase2-ubuntu-prerequisites.sh
 )
 
 # ---------------------------------------------------------------------------
@@ -69,6 +70,9 @@ UM_RUNTIME_SCRIPT_LIB_PYTHON_EXECUTABLES=(
   build_client_jammy_to_noble.py
   build_client_launchers.py
   patch_dp_phase2_bringup.py
+  phase2_ubuntu_prerequisites.py
+  xenial_bionic_upgrade_analysis.py
+  selective_mirror.py
 )
 
 # Extra files under scripts/lib/ (subdirectories). Includes Phase 2 bringup
@@ -116,6 +120,7 @@ UM_RUNTIME_CLIENT_LIB_FILES=(
   dp-offline-source-product-version.sh
   dp-phase2-operation-progress.sh
   dp-phase2-bringup-lifecycle.sh
+  dp-phase2-ubuntu-prerequisites.sh
   dp-offline-durable-write.sh
   dp-offline-lxd-inventory.sh
 )
@@ -146,6 +151,10 @@ UM_RUNTIME_REQUIRED_RELATIVE_PATHS=(
   scripts/lib/build_client_jammy_to_noble.py
   scripts/lib/build_client_launchers.py
   scripts/lib/patch_dp_phase2_bringup.py
+  scripts/lib/phase2_ubuntu_prerequisites.py
+  scripts/lib/xenial_bionic_upgrade_analysis.py
+  scripts/lib/selective_mirror.py
+  scripts/prepare-phase2-ubuntu-prerequisites.sh
   scripts/lib/phase2_bringup_patch/fragment_compat.sh
   scripts/lib/phase2_bringup_patch/fragment_heartbeat.sh
   scripts/lib/phase2_bringup_patch/fragment_resume.sh
@@ -156,6 +165,7 @@ UM_RUNTIME_REQUIRED_RELATIVE_PATHS=(
   client/lib/dp-offline-source-product-version.sh
   client/lib/dp-phase2-operation-progress.sh
   client/lib/dp-phase2-bringup-lifecycle.sh
+  client/lib/dp-phase2-ubuntu-prerequisites.sh
   client/dp-client-command-runner.sh
   client/dp-client-hop-launcher.sh.in
   client/bringup_py3_dp_lifecycle.sh
