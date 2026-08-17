@@ -160,6 +160,36 @@ def replace_exactly_one_of(text, alternatives, new, transform):
     return text.replace(old, new, 1)
 
 
+def replace_exactly_one_mapping(text, pairs, transform):
+    """Replace exactly one known (old, new) pair. Fail closed otherwise.
+
+    Used when the same semantic site exists in more than one supported
+    upstream form and the replacement text must preserve that form's
+    vendor-side surrounding code. Zero matches, more than one matching
+    alternative, or a duplicate occurrence of the chosen alternative is
+    BRINGUP_PATCH_COMPAT=FAIL.
+    """
+    found = []
+    for old, new in pairs:
+        c = _count(text, old)
+        if c:
+            found.append((old, new, c))
+    if not found:
+        raise PatchCompatError(transform, 'anchor_count=0 expected=1')
+    if len(found) != 1:
+        raise PatchCompatError(
+            transform,
+            'multiple_alternative_anchors count=%d' % len(found),
+        )
+    old, new, c = found[0]
+    if c != 1:
+        raise PatchCompatError(
+            transform,
+            'anchor_count=%d expected=1' % c,
+        )
+    return text.replace(old, new, 1)
+
+
 def insert_before(text, anchor, payload, transform):
     _require_count(text, anchor, 1, transform)
     return text.replace(anchor, payload + anchor, 1)
@@ -243,13 +273,36 @@ def apply_parse_args_worker_password(text):
         '            --role)\n',
         'parse_args_worker_password_case',
     )
-    text = replace_exactly_once(
+    help_prev = (
+        '                echo "  --worker-ips <ip,ip>    Comma-separated worker IPs (master orchestrates)"\n'
+        '                echo "  --role <role>           Override auto-detect (AIO|DR-master|DL-master|DR-worker|DL-worker)"\n'
+    )
+    help_f1a73 = (
+        '                echo "  --worker-ips <ip,ip>    Comma-separated worker IPs (master orchestrates)"\n'
+        '                echo "  --standby <ip[,ip]>     Standby node IP(s) -- orchestrated like workers but with"\n'
+        '                echo "                          role standby, always AFTER the workers. May be used with"\n'
+        '                echo "                          or without --worker-ips."\n'
+        '                echo "  --role <role>           Override auto-detect (AIO|DR-master|DL-master|DR-worker|DL-worker|standby)"\n'
+    )
+    text = replace_exactly_one_mapping(
         text,
-        '                echo "  --worker-ips <ip,ip>    Comma-separated worker IPs (master orchestrates)"\n'
-        '                echo "  --role <role>           Override auto-detect (AIO|DR-master|DL-master|DR-worker|DL-worker)"\n',
-        '                echo "  --worker-ips <ip,ip>    Comma-separated worker IPs (master orchestrates)"\n'
-        '                echo "  --worker-password <pw>  SSH password for aella on workers (required with --worker-ips)"\n'
-        '                echo "  --role <role>           Override auto-detect (AIO|DR-master|DL-master|DR-worker|DL-worker)"\n',
+        (
+            (
+                help_prev,
+                '                echo "  --worker-ips <ip,ip>    Comma-separated worker IPs (master orchestrates)"\n'
+                '                echo "  --worker-password <pw>  SSH password for aella on workers (required with --worker-ips)"\n'
+                '                echo "  --role <role>           Override auto-detect (AIO|DR-master|DL-master|DR-worker|DL-worker)"\n',
+            ),
+            (
+                help_f1a73,
+                '                echo "  --worker-ips <ip,ip>    Comma-separated worker IPs (master orchestrates)"\n'
+                '                echo "  --worker-password <pw>  SSH password for aella on workers (required with --worker-ips)"\n'
+                '                echo "  --standby <ip[,ip]>     Standby node IP(s) -- orchestrated like workers but with"\n'
+                '                echo "                          role standby, always AFTER the workers. May be used with"\n'
+                '                echo "                          or without --worker-ips."\n'
+                '                echo "  --role <role>           Override auto-detect (AIO|DR-master|DL-master|DR-worker|DL-worker|standby)"\n',
+            ),
+        ),
         'parse_args_worker_password_help',
     )
     text = replace_exactly_once(
@@ -390,25 +443,52 @@ def apply_orchestrate_workers(text):
         '    if ! command -v sshpass &>/dev/null; then\n',
         'orchestrate_workers_password',
     )
-    text = replace_exactly_once(
-        text,
+    fail_state_prev = (
         '    IFS=\',\' read -ra workers <<< "$WORKER_IPS"\n'
-        '\n'
-        '    for worker_ip in "${workers[@]}"; do\n'
-        '        worker_ip=$(echo "$worker_ip" | xargs)  # trim whitespace\n'
-        '        [[ -z "$worker_ip" ]] && continue\n'
-        '        log ""\n'
-        '        log "--- Deploying worker: $worker_ip ---"\n',
-        '    IFS=\',\' read -ra workers <<< "$WORKER_IPS"\n'
-        '    local orch_failed=0\n'
         '\n'
         '    for worker_ip in "${workers[@]}"; do\n'
         '        worker_ip=$(echo "$worker_ip" | xargs)  # trim whitespace\n'
         '        [[ -z "$worker_ip" ]] && continue\n'
         '        log ""\n'
         '        log "--- Deploying worker: $worker_ip ---"\n'
-        '        local worker_failed=0\n'
-        '        local worker_reason=""\n',
+    )
+    fail_state_f1a73 = (
+        '    local node_spec worker_ip node_role\n'
+        '    for node_spec in "${node_specs[@]}"; do\n'
+        '        worker_ip="${node_spec%%:*}"\n'
+        '        node_role="${node_spec##*:}"\n'
+        '        log ""\n'
+        '        log "--- Deploying node: $worker_ip (role: $node_role) ---"\n'
+    )
+    text = replace_exactly_one_mapping(
+        text,
+        (
+            (
+                fail_state_prev,
+                '    IFS=\',\' read -ra workers <<< "$WORKER_IPS"\n'
+                '    local orch_failed=0\n'
+                '\n'
+                '    for worker_ip in "${workers[@]}"; do\n'
+                '        worker_ip=$(echo "$worker_ip" | xargs)  # trim whitespace\n'
+                '        [[ -z "$worker_ip" ]] && continue\n'
+                '        log ""\n'
+                '        log "--- Deploying worker: $worker_ip ---"\n'
+                '        local worker_failed=0\n'
+                '        local worker_reason=""\n',
+            ),
+            (
+                fail_state_f1a73,
+                '    local node_spec worker_ip node_role\n'
+                '    local orch_failed=0\n'
+                '    for node_spec in "${node_specs[@]}"; do\n'
+                '        worker_ip="${node_spec%%:*}"\n'
+                '        node_role="${node_spec##*:}"\n'
+                '        log ""\n'
+                '        log "--- Deploying node: $worker_ip (role: $node_role) ---"\n'
+                '        local worker_failed=0\n'
+                '        local worker_reason=""\n',
+            ),
+        ),
         'orchestrate_workers_fail_state',
     )
     text = replace_exactly_once(
@@ -462,34 +542,72 @@ def apply_orchestrate_workers(text):
         '        fi\n',
         'orchestrate_workers_uvp_copy',
     )
-    text = replace_exactly_once(
-        text,
+    remote_rc_prev = (
         '        log "Running bringup on worker $worker_ip (role: $worker_role)..."\n'
         '        worker_ssh "$worker_ip" \\\n'
         '            "sudo bash /tmp/${SCRIPT_NAME} --version $VERSION --role $worker_role --worker-mode --skip-download" 2>&1 | \\\n'
         '            while IFS= read -r line; do log "  [$worker_ip] $line"; done || {\n'
         '            log "WARNING: Worker $worker_ip bringup had errors"\n'
-        '        }\n',
-        '        # Run script on worker (sudo for root access). Capture rc without a\n'
-        '        # pipe so set -euo pipefail cannot hide a remote nonzero status.\n'
-        '        log "Running bringup on worker $worker_ip (role: $worker_role)..."\n'
-        '        local worker_out worker_rc=0\n'
-        '        worker_out="$(mktemp /tmp/worker-bringup.XXXXXX)"\n'
-        '        set +e\n'
+        '        }\n'
+    )
+    remote_rc_f1a73 = (
+        '        log "Running bringup on $worker_ip (role: $node_role)..."\n'
         '        worker_ssh "$worker_ip" \\\n'
-        '            "sudo bash /tmp/${SCRIPT_NAME} --version $VERSION --role $worker_role --worker-mode --skip-download" \\\n'
-        '            >"$worker_out" 2>&1\n'
-        '        worker_rc=$?\n'
-        '        set -e\n'
-        '        while IFS= read -r line || [[ -n "$line" ]]; do\n'
-        '            log "  [$worker_ip] $line"\n'
-        '        done <"$worker_out"\n'
-        '        rm -f "$worker_out"\n'
-        '        if [[ "$worker_rc" -ne 0 ]]; then\n'
-        '            log "WORKER_RESULT ip=${worker_ip} result=FAIL reason=remote_bringup"\n'
-        '            orch_failed=1\n'
-        '            continue\n'
-        '        fi\n',
+        '            "sudo bash /tmp/${SCRIPT_NAME} --version $VERSION --role $node_role --worker-mode ${skip_flag}" 2>&1 | \\\n'
+        '            while IFS= read -r line; do log "  [$worker_ip] $line"; done || {\n'
+        '            log "WARNING: Node $worker_ip bringup had errors"\n'
+        '        }\n'
+    )
+    text = replace_exactly_one_mapping(
+        text,
+        (
+            (
+                remote_rc_prev,
+                '        # Run script on worker (sudo for root access). Capture rc without a\n'
+                '        # pipe so set -euo pipefail cannot hide a remote nonzero status.\n'
+                '        log "Running bringup on worker $worker_ip (role: $worker_role)..."\n'
+                '        local worker_out worker_rc=0\n'
+                '        worker_out="$(mktemp /tmp/worker-bringup.XXXXXX)"\n'
+                '        set +e\n'
+                '        worker_ssh "$worker_ip" \\\n'
+                '            "sudo bash /tmp/${SCRIPT_NAME} --version $VERSION --role $worker_role --worker-mode --skip-download" \\\n'
+                '            >"$worker_out" 2>&1\n'
+                '        worker_rc=$?\n'
+                '        set -e\n'
+                '        while IFS= read -r line || [[ -n "$line" ]]; do\n'
+                '            log "  [$worker_ip] $line"\n'
+                '        done <"$worker_out"\n'
+                '        rm -f "$worker_out"\n'
+                '        if [[ "$worker_rc" -ne 0 ]]; then\n'
+                '            log "WORKER_RESULT ip=${worker_ip} result=FAIL reason=remote_bringup"\n'
+                '            orch_failed=1\n'
+                '            continue\n'
+                '        fi\n',
+            ),
+            (
+                remote_rc_f1a73,
+                '        # Run script on worker (sudo for root access). Capture rc without a\n'
+                '        # pipe so set -euo pipefail cannot hide a remote nonzero status.\n'
+                '        log "Running bringup on $worker_ip (role: $node_role)..."\n'
+                '        local worker_out worker_rc=0\n'
+                '        worker_out="$(mktemp /tmp/worker-bringup.XXXXXX)"\n'
+                '        set +e\n'
+                '        worker_ssh "$worker_ip" \\\n'
+                '            "sudo bash /tmp/${SCRIPT_NAME} --version $VERSION --role $node_role --worker-mode ${skip_flag}" \\\n'
+                '            >"$worker_out" 2>&1\n'
+                '        worker_rc=$?\n'
+                '        set -e\n'
+                '        while IFS= read -r line || [[ -n "$line" ]]; do\n'
+                '            log "  [$worker_ip] $line"\n'
+                '        done <"$worker_out"\n'
+                '        rm -f "$worker_out"\n'
+                '        if [[ "$worker_rc" -ne 0 ]]; then\n'
+                '            log "WORKER_RESULT ip=${worker_ip} result=FAIL reason=remote_bringup"\n'
+                '            orch_failed=1\n'
+                '            continue\n'
+                '        fi\n',
+            ),
+        ),
         'orchestrate_workers_remote_rc',
     )
     text = replace_exactly_once(
@@ -562,11 +680,17 @@ def apply_orchestrate_workers(text):
 
 
 def apply_join_k8s_cluster(text):
-    text = replace_exactly_once(
-        text,
+    curl_prev = (
         '        local token_response\n'
         '        token_response=$(curl -sk -u "${username}:${password}" \\\n'
-        '            "https://${master_ip}:8003/api/1.0/master_token?host=${host_name}" 2>/dev/null)\n',
+        '            "https://${master_ip}:8003/api/1.0/master_token?host=${host_name}" 2>/dev/null)\n'
+    )
+    curl_f1a73 = (
+        '        local token_response\n'
+        '        token_response=$(curl -sk -u "${username}:${password}" \\\n'
+        '            "https://${master_ip}:8003/api/1.0/master_token?host=${host_name}${token_extra}" 2>/dev/null)\n'
+    )
+    curl_wrap_prev = (
         '        local token_response curl_rc=0\n'
         '        token_response="$(curl -sk --connect-timeout 10 --max-time 30 \\\n'
         '            -u "${username}:${password}" \\\n'
@@ -576,7 +700,26 @@ def apply_join_k8s_cluster(text):
         '            log "ERROR: join-token API request failed master=${master_ip} port=8003 curl_rc=${curl_rc}"\n'
         '            log "WORKER_RESULT result=FAIL reason=token_api_curl"\n'
         '            return "$curl_rc"\n'
-        '        }\n',
+        '        }\n'
+    )
+    curl_wrap_f1a73 = (
+        '        local token_response curl_rc=0\n'
+        '        token_response="$(curl -sk --connect-timeout 10 --max-time 30 \\\n'
+        '            -u "${username}:${password}" \\\n'
+        '            "https://${master_ip}:8003/api/1.0/master_token?host=${host_name}${token_extra}" \\\n'
+        '            2>/dev/null)" || {\n'
+        '            curl_rc=$?\n'
+        '            log "ERROR: join-token API request failed master=${master_ip} port=8003 curl_rc=${curl_rc}"\n'
+        '            log "WORKER_RESULT result=FAIL reason=token_api_curl"\n'
+        '            return "$curl_rc"\n'
+        '        }\n'
+    )
+    text = replace_exactly_one_mapping(
+        text,
+        (
+            (curl_prev, curl_wrap_prev),
+            (curl_f1a73, curl_wrap_f1a73),
+        ),
         'join_k8s_cluster_curl_rc',
     )
     text = replace_exactly_once(
@@ -594,16 +737,19 @@ def apply_join_k8s_cluster(text):
 
 
 def apply_main_orchestration_gates(text):
-    return replace_exactly_once(
-        text,
+    main_prev = (
         '    # Phase 13: Orchestrate workers (master only, after self is fully up)\n'
         '    if [[ "$WORKER_MODE" != "true" && -n "$WORKER_IPS" ]]; then\n'
         '        orchestrate_workers\n'
-        '    fi\n',
-        '    # Phase 13: Orchestrate workers (master only, after self is fully up).\n'
-        '    # Token API / TCP 8003 must be functionally ready first. systemctl is-active\n'
-        '    # aellad is not sufficient — the failed lab had aellad active with 8003 down.\n'
-        '    if [[ "$WORKER_MODE" != "true" && -n "$WORKER_IPS" ]]; then\n'
+        '    fi\n'
+    )
+    main_f1a73 = (
+        '    # Phase 13: Orchestrate workers + standby (master only, after self is fully up)\n'
+        '    if [[ "$WORKER_MODE" != "true" && ( -n "$WORKER_IPS" || -n "$STANDBY_IPS" ) ]]; then\n'
+        '        orchestrate_workers\n'
+        '    fi\n'
+    )
+    gates_body = (
         '        if ! validate_critical_python_runtime; then\n'
         '            die "CRITICAL_PYTHON_RUNTIME=FAIL before worker orchestration"\n'
         '        fi\n'
@@ -614,7 +760,29 @@ def apply_main_orchestration_gates(text):
         '        wait_for_master_token_api || die "MASTER_TOKEN_API_READY=NO; refusing worker orchestration"\n'
         '        orchestrate_workers || die "WORKER_ORCHESTRATION=FAIL"\n'
         '        validate_expected_cluster_nodes || die "CLUSTER_JOIN_STATE incomplete"\n'
-        '    fi\n',
+    )
+    return replace_exactly_one_mapping(
+        text,
+        (
+            (
+                main_prev,
+                '    # Phase 13: Orchestrate workers (master only, after self is fully up).\n'
+                '    # Token API / TCP 8003 must be functionally ready first. systemctl is-active\n'
+                '    # aellad is not sufficient — the failed lab had aellad active with 8003 down.\n'
+                '    if [[ "$WORKER_MODE" != "true" && -n "$WORKER_IPS" ]]; then\n'
+                + gates_body +
+                '    fi\n',
+            ),
+            (
+                main_f1a73,
+                '    # Phase 13: Orchestrate workers + standby (master only, after self is fully up).\n'
+                '    # Token API / TCP 8003 must be functionally ready first. systemctl is-active\n'
+                '    # aellad is not sufficient — the failed lab had aellad active with 8003 down.\n'
+                '    if [[ "$WORKER_MODE" != "true" && ( -n "$WORKER_IPS" || -n "$STANDBY_IPS" ) ]]; then\n'
+                + gates_body +
+                '    fi\n',
+            ),
+        ),
         'main_orchestration_gates',
     )
 
@@ -637,6 +805,16 @@ def apply_image_import_heartbeat(text):
         '            ctr -n=moby images import --no-unpack "$tarball" >"$moby_log" 2>&1 || moby_rc=$?\n'
         '        fi\n'
     )
+    gzip_block_f1a73 = (
+        '        k8s_rc=0; moby_rc=0\n'
+        '        if [[ "$tarball" == *.gz ]]; then\n'
+        '            gunzip -c "$tarball" | ctr -n=k8s.io images import - >"$k8s_log"  2>&1 || k8s_rc=$?\n'
+        '            gunzip -c "$tarball" | ctr -n=moby   images import --no-unpack - >"$moby_log" 2>&1 || moby_rc=$?\n'
+        '        else\n'
+        '            ctr -n=k8s.io images import "$tarball" >"$k8s_log"  2>&1 || k8s_rc=$?\n'
+        '            ctr -n=moby   images import --no-unpack "$tarball" >"$moby_log" 2>&1 || moby_rc=$?\n'
+        '        fi\n'
+    )
     simple_block = (
         '        k8s_rc=0; moby_rc=0\n'
         '        ctr -n=k8s.io images import "$tarball" >"$k8s_log" 2>&1 || k8s_rc=$?\n'
@@ -650,7 +828,7 @@ def apply_image_import_heartbeat(text):
     )
     text = replace_exactly_one_of(
         text,
-        (gzip_block, simple_block),
+        (gzip_block, gzip_block_f1a73, simple_block),
         wrapped,
         'image_import_ctr_wrap',
     )
@@ -672,13 +850,40 @@ def apply_image_import_heartbeat(text):
 
 def apply_dp_resume_notices(text):
     _require_absent(text, '# BEGIN_DP_RESUME_OPERATOR_NOTICE', 'resume_notice_already_present')
-    text = replace_exactly_once(
+    resume_prev = (
+        '    } >> "$LOG_FILE" 2>/dev/null || true\n'
+        '}\n'
+    )
+    resume_f1a73 = (
+        '    echo "========================================================================"\n'
+        '    echo "  Bringup complete: $(date)"\n'
+        '    echo "  Role: $ROLE"\n'
+        '    echo "  Version: $VERSION"\n'
+        '    echo "  Log: $LOG_FILE"\n'
+        '    echo "========================================================================"\n'
+        '}\n'
+    )
+    text = replace_exactly_one_mapping(
         text,
-        '    } >> "$LOG_FILE" 2>/dev/null || true\n'
-        '}\n',
-        '    } >> "$LOG_FILE" 2>/dev/null || true\n'
-        '    emit_dp_resume_post_complete_notice\n'
-        '}\n',
+        (
+            (
+                resume_prev,
+                '    } >> "$LOG_FILE" 2>/dev/null || true\n'
+                '    emit_dp_resume_post_complete_notice\n'
+                '}\n',
+            ),
+            (
+                resume_f1a73,
+                '    echo "========================================================================"\n'
+                '    echo "  Bringup complete: $(date)"\n'
+                '    echo "  Role: $ROLE"\n'
+                '    echo "  Version: $VERSION"\n'
+                '    echo "  Log: $LOG_FILE"\n'
+                '    echo "========================================================================"\n'
+                '    emit_dp_resume_post_complete_notice\n'
+                '}\n',
+            ),
+        ),
         'resume_post_complete_call',
     )
     text = replace_exactly_once(

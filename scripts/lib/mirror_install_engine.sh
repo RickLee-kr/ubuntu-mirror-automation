@@ -1081,6 +1081,7 @@ engine_apply_local_bringup_patch() {
   local saved_upstream saved_upstream_sidecar
   local py out rc=0
   local markers=()
+  local fail_transform="" fail_reason=""
   py="$(engine_bringup_patcher_py)"
   saved_upstream="$(engine_phase2_work_upstream_path "$files_dir")"
   saved_upstream_sidecar="${saved_upstream}.sha1"
@@ -1126,9 +1127,16 @@ engine_apply_local_bringup_patch() {
   BRINGUP_PATCH_GENERATION="$(printf '%s\n' "$out" | awk -F= '$1=="BRINGUP_PATCH_GENERATION"{print $2; exit}')"
   BRINGUP_PATCHED_SHA1="$(printf '%s\n' "$out" | awk -F= '$1=="BRINGUP_PATCHED_SHA1"{print $2; exit}')"
   if [[ "$rc" -ne 0 ]]; then
+    fail_transform="$(printf '%s\n' "$out" | awk 'sub(/^BRINGUP_PATCH_COMPAT_FAIL_TRANSFORM=/, "") { print; exit }')"
+    fail_reason="$(printf '%s\n' "$out" | awk 'sub(/^BRINGUP_PATCH_COMPAT_FAIL_REASON=/, "") { print; exit }')"
     mm_error "BRINGUP_PATCH_COMPAT=FAIL"
     mm_error "PATCHED_BRINGUP_GENERATION=FAIL"
-    printf '%s\n' "$out" | grep -E '^(BRINGUP_PATCH_COMPAT_FAIL_|BRINGUP_PATCH_GENERATION=|PATCHED_BRINGUP_GENERATION=)' || true
+    if [[ -n "$fail_transform" ]]; then
+      mm_error "BRINGUP_PATCH_COMPAT_FAIL_TRANSFORM=${fail_transform}"
+    fi
+    if [[ -n "$fail_reason" ]]; then
+      mm_error "BRINGUP_PATCH_COMPAT_FAIL_REASON=${fail_reason}"
+    fi
     engine_bringup_fail "BRINGUP_PATCH_COMPAT"
   fi
   [[ -n "${BRINGUP_PATCH_GENERATION:-}" ]] || engine_bringup_fail "BRINGUP_PATCH_GENERATION"

@@ -11,6 +11,8 @@ ACPS="${ROOT}/scripts/lib/acps_acquire.sh"
 R2="${ROOT}/scripts/lib/r2_acquire.sh"
 PATCHER="${ROOT}/scripts/lib/patch_dp_phase2_bringup.py"
 FIXTURE="${ROOT}/tests/fixtures/dp-phase2/upstream_bringup_unpatched.sh"
+PRODUCTION_F1A73="${ROOT}/tests/fixtures/dp-phase2/production-f1a73/bringup_py3_dp_after_os_upgrade.sh"
+EXPECTED_F1A73_SHA1="f1a73c1d4502e2efcf55197865d2ade345d9c82f"
 VENDOR="${ROOT}/vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh"
 WRAPPER="${ROOT}/client/bringup_py3_dp_lifecycle.sh"
 
@@ -182,6 +184,14 @@ rcd="$(run_in_subshell "$OUTD" run_verify_then_patch "$CACHED" "$WORKD")"
 grep -q 'BRINGUP_PATCH_COMPAT=FAIL' "$OUTD" && pass "D BRINGUP_PATCH_COMPAT=FAIL" || fail "D compat fail log"
 grep -q 'PATCHED_BRINGUP_GENERATION=FAIL\|INSTALL_RESULT=FAIL' "$OUTD" \
   && pass "D generation/install FAIL" || fail "D generation/install FAIL"
+grep -q 'BRINGUP_PATCH_COMPAT_FAIL_TRANSFORM=parse_args_worker_password_case' "$OUTD" \
+  && pass "D FAIL_TRANSFORM" || fail "D FAIL_TRANSFORM missing"
+grep -q 'BRINGUP_PATCH_COMPAT_FAIL_REASON=anchor_count=0 expected=1' "$OUTD" \
+  && pass "D FAIL_REASON" || fail "D FAIL_REASON missing"
+grep -E '\[ERROR\].*BRINGUP_PATCH_COMPAT_FAIL_TRANSFORM=parse_args_worker_password_case' "$OUTD" \
+  && pass "D FAIL_TRANSFORM via mm_error" || { fail "D FAIL_TRANSFORM not operator-logged"; cat "$OUTD"; }
+grep -E '\[ERROR\].*BRINGUP_PATCH_COMPAT_FAIL_REASON=anchor_count=0 expected=1' "$OUTD" \
+  && pass "D FAIL_REASON via mm_error" || fail "D FAIL_REASON not operator-logged"
 [[ ! -f "${WORKD}/bringup_py3_dp_after_os_upgrade.sh" ]] \
   && pass "D did not publish patched bringup" \
   || fail "D wrote patched bringup after incompat"
@@ -271,6 +281,40 @@ old_published="$(tar -xOf "${DESTF}/dp_bundle_6.5.0-current.tar" bringup_py3_dp_
 printf '%s\n' "$old_published" | grep -q 'NEW_UPSTREAM_VENDOR_FIX_MARKER=YES' \
   && fail "H old bundle already had new marker" \
   || pass "H old published bundle lacked new upstream marker"
+
+# P. Exact production f1a73 upstream patches through the engine path.
+F1SHA="$(sha1sum "$PRODUCTION_F1A73" | awk '{print $1}')"
+[[ "$F1SHA" == "$EXPECTED_F1A73_SHA1" ]] \
+  && pass "P production fixture SHA1=${F1SHA}" \
+  || fail "P production fixture SHA1 want=${EXPECTED_F1A73_SHA1} got=${F1SHA}"
+CACHEP="${WORKDIR}/cacheP"; mkdir -p "$CACHEP"
+cp -f "$PRODUCTION_F1A73" "${CACHEP}/bringup_py3_dp_after_os_upgrade.sh"
+write_sidecar_for "${CACHEP}/bringup_py3_dp_after_os_upgrade.sh"
+WORKP="${WORKDIR}/workP"; mkdir -p "$WORKP"
+OUTP="${WORKDIR}/p.log"
+rcp="$(run_in_subshell "$OUTP" engine_apply_local_bringup_patch "$WORKP" \
+  "${CACHEP}/bringup_py3_dp_after_os_upgrade.sh")"
+[[ "$rcp" -eq 0 ]] && pass "P apply rc=0" || { fail "P apply rc=${rcp}"; cat "$OUTP"; }
+grep -q 'BRINGUP_PATCH_COMPAT=PASS' "$OUTP" && pass "P BRINGUP_PATCH_COMPAT=PASS" || fail "P compat"
+grep -q 'PATCHED_BRINGUP_GENERATION=PASS' "$OUTP" && pass "P PATCHED_BRINGUP_GENERATION=PASS" || fail "P generation"
+grep -q 'STANDBY_IPS=""' "${WORKP}/bringup_py3_dp_after_os_upgrade.sh" \
+  && grep -q 'AELDEV-73583' "${WORKP}/bringup_py3_dp_after_os_upgrade.sh" \
+  && grep -q 'token_extra="&standby=1"' "${WORKP}/bringup_py3_dp_after_os_upgrade.sh" \
+  && pass "P f1a73 vendor changes preserved" \
+  || fail "P f1a73 vendor changes preserved"
+grep -q -- '--worker-password' "${WORKP}/bringup_py3_dp_after_os_upgrade.sh" \
+  && pass "P worker-password present" || fail "P worker-password present"
+cmp -s "${WORKP}/bringup_py3_dp_after_os_upgrade.sh" "$VENDOR" \
+  && fail "P generated equals frozen vendor full copy" \
+  || pass "P generated is not the frozen vendor blob"
+cmp -s "${WORKP}/bringup_py3_dp_after_os_upgrade.sh" "$PRODUCTION_F1A73" \
+  && fail "P generated equals raw f1a73 upstream" \
+  || pass "P generated is not the raw f1a73 upstream"
+bash -n "${WORKP}/bringup_py3_dp_after_os_upgrade.sh" \
+  && pass "P patched bash -n" || fail "P patched bash -n"
+cmp -s "${CACHEP}/bringup_py3_dp_after_os_upgrade.sh" "$PRODUCTION_F1A73" \
+  && pass "P cache upstream not mutated" \
+  || fail "P cache upstream mutated"
 
 # English-only on production patcher + engine hunks.
 if ROOT="$ROOT" python3 - <<'PY'

@@ -2,8 +2,10 @@
 """Deterministic Phase 2 bringup patcher: fresh upstream + project layer."""
 from __future__ import print_function, unicode_literals
 
+import hashlib
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -21,6 +23,31 @@ VENDOR = os.path.join(
     ROOT, 'vendor', 'dp-phase2', 'bringup_py3_dp_after_os_upgrade.sh',
 )
 ENGINE = os.path.join(ROOT, 'scripts', 'lib', 'mirror_install_engine.sh')
+PRODUCTION_F1A73 = os.path.join(
+    ROOT, 'tests', 'fixtures', 'dp-phase2', 'production-f1a73',
+    'bringup_py3_dp_after_os_upgrade.sh',
+)
+PRODUCTION_F1A73_SHA1 = 'f1a73c1d4502e2efcf55197865d2ade345d9c82f'
+F1A73_VENDOR_MARKERS = (
+    'STANDBY_IPS=""',
+    'AELDEV-73583',
+    '--relabel-elastic',
+    'token_extra="&standby=1"',
+    'Orchestrate workers + standby',
+    '${skip_flag}',
+    'RELABEL_ELASTIC_ONLY',
+)
+HELP_PREV = (
+    '                echo "  --worker-ips <ip,ip>    Comma-separated worker IPs (master orchestrates)"\n'
+    '                echo "  --role <role>           Override auto-detect (AIO|DR-master|DL-master|DR-worker|DL-worker)"\n'
+)
+HELP_F1A73 = (
+    '                echo "  --worker-ips <ip,ip>    Comma-separated worker IPs (master orchestrates)"\n'
+    '                echo "  --standby <ip[,ip]>     Standby node IP(s) -- orchestrated like workers but with"\n'
+    '                echo "                          role standby, always AFTER the workers. May be used with"\n'
+    '                echo "                          or without --worker-ips."\n'
+    '                echo "  --role <role>           Override auto-detect (AIO|DR-master|DL-master|DR-worker|DL-worker|standby)"\n'
+)
 
 
 class PatchGenerationTests(unittest.TestCase):
@@ -121,6 +148,151 @@ class FreshUpstreamPatchTests(unittest.TestCase):
             self.assertEqual(before, after)
             with open(dest, 'rb') as fh3:
                 self.assertNotEqual(fh3.read(), before)
+        finally:
+            shutil.rmtree(tmp)
+
+
+class MappingHelperTests(unittest.TestCase):
+    def test_zero_matches_fails_closed(self):
+        with self.assertRaises(patcher.PatchCompatError) as ctx:
+            patcher.replace_exactly_one_mapping(
+                'aaa', (('bbb', 'ccc'), ('ddd', 'eee')), 't',
+            )
+        self.assertEqual(ctx.exception.transform, 't')
+        self.assertEqual(ctx.exception.reason, 'anchor_count=0 expected=1')
+
+    def test_duplicate_occurrence_fails_closed(self):
+        with self.assertRaises(patcher.PatchCompatError) as ctx:
+            patcher.replace_exactly_one_mapping(
+                'xxx yyy xxx', (('xxx', 'z'),), 't',
+            )
+        self.assertEqual(ctx.exception.reason, 'anchor_count=2 expected=1')
+
+    def test_ambiguous_alternatives_fail_closed(self):
+        with self.assertRaises(patcher.PatchCompatError) as ctx:
+            patcher.replace_exactly_one_mapping(
+                'aaa bbb', (('aaa', 'A'), ('bbb', 'B')), 't',
+            )
+        self.assertIn('multiple_alternative_anchors', ctx.exception.reason)
+
+
+class ProductionF1a73PatchTests(unittest.TestCase):
+    def setUp(self):
+        with open(PRODUCTION_F1A73, 'r', encoding='utf-8') as fh:
+            self.upstream = fh.read()
+        with open(PRODUCTION_F1A73, 'rb') as fh:
+            self.raw = fh.read()
+        self.assertEqual(hashlib.sha1(self.raw).hexdigest(), PRODUCTION_F1A73_SHA1)
+        self.assertNotIn('--worker-password', self.upstream)
+
+    def _patch(self, src=None):
+        return patcher.patch_bringup_text(
+            src if src is not None else self.upstream, emit=False,
+        )
+
+    def test_fixture_sha1_is_production_f1a73(self):
+        self.assertEqual(
+            hashlib.sha1(self.raw).hexdigest(), PRODUCTION_F1A73_SHA1,
+        )
+
+    def test_previous_upstream_still_patches(self):
+        with open(FIXTURE, 'r', encoding='utf-8') as fh:
+            prev = fh.read()
+        out, applied = patcher.patch_bringup_text(prev, emit=False)
+        self.assertEqual(len(applied), 11)
+        for marker in patcher.RESULT_MARKERS:
+            self.assertIn(marker, out, marker)
+
+    def test_f1a73_patch_generation_pass(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            dest = os.path.join(tmp, 'patched.sh')
+            result = patcher.patch_bringup_file(PRODUCTION_F1A73, dest)
+            self.assertEqual(result['upstream_sha1'], PRODUCTION_F1A73_SHA1)
+            self.assertNotEqual(result['patched_sha1'], result['upstream_sha1'])
+            with open(dest, 'r', encoding='utf-8') as fh:
+                text = fh.read()
+            for marker in patcher.RESULT_MARKERS:
+                self.assertIn(marker, text, marker)
+            rc = os.system("bash -n %s" % dest)
+            self.assertEqual(rc, 0)
+            with open(VENDOR, 'r', encoding='utf-8') as fh:
+                vendor = fh.read()
+            self.assertNotEqual(text, vendor)
+            self.assertNotEqual(text, self.upstream)
+            with open(PRODUCTION_F1A73, 'rb') as fh:
+                self.assertEqual(
+                    hashlib.sha1(fh.read()).hexdigest(), PRODUCTION_F1A73_SHA1,
+                )
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_f1a73_vendor_changes_preserved(self):
+        out, _applied = self._patch()
+        for marker in F1A73_VENDOR_MARKERS:
+            self.assertIn(marker, out, marker)
+        self.assertIn('--worker-password', out)
+        self.assertIn('wait_for_master_token_api', out)
+        self.assertIn('copy_phase2_prereq_contract_to_worker', out)
+        self.assertIn('# BEGIN_IMAGE_IMPORT_HEARTBEAT', out)
+        self.assertIn('emit_dp_resume_notice_line', out)
+        self.assertIn('validate_apt_dependency_graph', out)
+        self.assertIn('validate_critical_python_runtime', out)
+        self.assertIn('validate_expected_cluster_nodes', out)
+
+    def test_missing_anchor_fails_closed(self):
+        src = self.upstream.replace(HELP_F1A73, '', 1)
+        self.assertNotEqual(src, self.upstream)
+        with self.assertRaises(patcher.PatchCompatError) as ctx:
+            self._patch(src)
+        self.assertEqual(ctx.exception.transform, 'parse_args_worker_password_help')
+        self.assertEqual(ctx.exception.reason, 'anchor_count=0 expected=1')
+
+    def test_duplicate_anchor_fails_closed(self):
+        src = self.upstream.replace(HELP_F1A73, HELP_F1A73 + HELP_F1A73, 1)
+        with self.assertRaises(patcher.PatchCompatError) as ctx:
+            self._patch(src)
+        self.assertEqual(ctx.exception.transform, 'parse_args_worker_password_help')
+        self.assertEqual(ctx.exception.reason, 'anchor_count=2 expected=1')
+
+    def test_ambiguous_alternative_anchors_fail_closed(self):
+        src = self.upstream.replace(HELP_F1A73, HELP_F1A73 + HELP_PREV, 1)
+        with self.assertRaises(patcher.PatchCompatError) as ctx:
+            self._patch(src)
+        self.assertEqual(ctx.exception.transform, 'parse_args_worker_password_help')
+        self.assertIn('multiple_alternative_anchors', ctx.exception.reason)
+
+    def test_cli_emits_fail_transform_and_reason(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            src = os.path.join(tmp, 'upstream.sh')
+            dest = os.path.join(tmp, 'patched.sh')
+            mutated = self.upstream.replace(HELP_F1A73, '', 1)
+            with open(src, 'w', encoding='utf-8') as fh:
+                fh.write(mutated)
+            proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    os.path.join(LIB, 'patch_dp_phase2_bringup.py'),
+                    '--upstream', src,
+                    '--output', dest,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+            )
+            out, _err = proc.communicate()
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn(
+                'BRINGUP_PATCH_COMPAT_FAIL_TRANSFORM=parse_args_worker_password_help',
+                out,
+            )
+            self.assertIn(
+                'BRINGUP_PATCH_COMPAT_FAIL_REASON=anchor_count=0 expected=1',
+                out,
+            )
+            self.assertIn('BRINGUP_PATCH_COMPAT=FAIL', out)
+            self.assertIn('PATCHED_BRINGUP_GENERATION=FAIL', out)
         finally:
             shutil.rmtree(tmp)
 
