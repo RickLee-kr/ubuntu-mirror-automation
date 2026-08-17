@@ -363,6 +363,12 @@ main() {
     download_artifacts
     install_python3
     load_local_images
+
+    # Worker join (worker mode only)
+    if [[ "$WORKER_MODE" == "true" ]]; then
+        join_k8s_cluster
+    fi
+
     validate_all || true
 
     # Phase 13: Orchestrate workers (master only, after self is fully up)
@@ -378,7 +384,23 @@ main() {
     } >> "$LOG_FILE" 2>/dev/null || true
 }
 
-validate_all() { return 0; }
+validate_all() {
+    # K8s worker validation
+    if [[ "$ROLE" == *worker* ]]; then
+        :
+    fi
+
+    # K8s cluster (master/AIO only)
+    if [[ "$ROLE" != *worker* ]]; then
+        :
+    fi
+
+    # Flannel networking (master/AIO)
+    if [[ "$ROLE" != *worker* ]]; then
+        :
+    fi
+    return 0
+}
 
 detach_guard() {
     case " $* " in
