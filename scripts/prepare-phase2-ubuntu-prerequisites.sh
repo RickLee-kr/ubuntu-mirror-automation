@@ -14,7 +14,6 @@ PHASE2_PREREQ_PY="${SCRIPT_DIR}/lib/phase2_ubuntu_prerequisites.py"
 DP_PHASE2_VERSION="${DP_PHASE2_VERSION:-${DP_PHASE2_VERSION_DEFAULT}}"
 DP_PHASE2_ROOT="${DP_PHASE2_ROOT:-/var/spool/apt-mirror/dp-phase2}"
 MM_SELECTIVE_ROOT="${MM_SELECTIVE_ROOT:-/var/spool/apt-mirror/selective}"
-PHASE2_PREREQ_ALLOW_MISSING_CANDIDATE="${PHASE2_PREREQ_ALLOW_MISSING_CANDIDATE:-0}"
 
 dp2_phase2_prereq_artifact_name() {
   printf '%s\n' "phase2-ubuntu-prerequisites.tar.gz"
@@ -132,7 +131,6 @@ dp2_extract_py3_apt_from_common() {
 
 prepare_phase2_ubuntu_prerequisites() {
   local common ubuntu_root extras work rc=0
-  local allow=()
 
   extras="${PHASE2_PREREQ_OUT_DIR:-$(dp2_phase2_prereq_published_dir)}"
   mkdir -p "$extras"
@@ -170,10 +168,6 @@ prepare_phase2_ubuntu_prerequisites() {
     return 1
   fi
 
-  if [[ "$PHASE2_PREREQ_ALLOW_MISSING_CANDIDATE" == "1" ]]; then
-    allow+=(--allow-missing-candidate)
-  fi
-
   local extra_deb extra_args=()
   while IFS= read -r extra_deb; do
     [[ -n "$extra_deb" ]] || continue
@@ -184,6 +178,15 @@ prepare_phase2_ubuntu_prerequisites() {
   local archive_base security_base
   archive_base="${PHASE2_PREREQ_ARCHIVE_BASE:-http://archive.ubuntu.com/ubuntu}"
   security_base="${PHASE2_PREREQ_SECURITY_BASE:-http://security.ubuntu.com/ubuntu}"
+  extra_args+=(--target-version "${DP_PHASE2_VERSION}")
+  extra_args+=(--archive-base "$archive_base")
+  extra_args+=(--security-base "$security_base")
+  if [[ -n "${PHASE2_PREREQ_AUTHORITATIVE_ROOT:-}" ]]; then
+    extra_args+=(--authoritative-root "${PHASE2_PREREQ_AUTHORITATIVE_ROOT}")
+  fi
+  if [[ -n "${PHASE2_PREREQ_AUTHORITATIVE_CACHE:-}" ]]; then
+    extra_args+=(--authoritative-cache "${PHASE2_PREREQ_AUTHORITATIVE_CACHE}")
+  fi
 
   set +e
   python3 "$PHASE2_PREREQ_PY" build \
@@ -191,41 +194,40 @@ prepare_phase2_ubuntu_prerequisites() {
     --ubuntu-root "$ubuntu_root" \
     --dest "$extras" \
     --ensure-selective \
-    --archive-base "$archive_base" \
-    --security-base "$security_base" \
-    "${extra_args[@]}" \
-    "${allow[@]}"
+    "${extra_args[@]}"
   rc=$?
   set -e
   rm -rf "$work"
 
   local state="${extras}/phase2-ubuntu-prerequisites.state"
   if [[ "$rc" -ne 0 ]]; then
+    python3 "$PHASE2_PREREQ_PY" validate-state --dest "$extras" >/dev/null 2>&1 || true
     dp2_error "PHASE2_PREREQ_BUILD=FAIL rc=${rc}"
     dp2_error "PHASE2_PREREQ=FAIL rc=${rc}"
     return "$rc"
   fi
+  if [[ ! -f "$state" ]]; then
+    dp2_error "PHASE2_PREREQ=FAIL state_missing"
+    return 1
+  fi
+  local fields_rc=0
+  set +e
+  python3 "$PHASE2_PREREQ_PY" validate-state --dest "$extras"
+  fields_rc=$?
+  set -e
+  if [[ "$fields_rc" -ne 0 ]]; then
+    dp2_error "PHASE2_PREREQ=FAIL reason=state_contract"
+    return 1
+  fi
   local art sha required count
   art="${extras}/$(dp2_phase2_prereq_artifact_name)"
-  required="YES"
-  count="0"
-  if [[ -f "$state" ]]; then
-    required="$(awk -F= '$1=="PHASE2_PREREQ_REQUIRED"{print $2; exit}' "$state")"
-    count="$(awk -F= '$1=="PHASE2_PREREQ_PACKAGE_COUNT"{print $2; exit}' "$state")"
-  fi
-  if [[ "${required:-YES}" == "YES" ]]; then
-    [[ -f "$art" ]] || { dp2_error "PHASE2_PREREQ=FAIL artifact_missing"; return 1; }
-    [[ -f "${art}.sha256" ]] || { dp2_error "PHASE2_PREREQ=FAIL sha256_missing"; return 1; }
-    [[ -f "${extras}/phase2-ubuntu-prerequisites.manifest.json" ]] \
-      || { dp2_error "PHASE2_PREREQ=FAIL manifest_missing"; return 1; }
-  else
-    [[ -f "$state" ]] || { dp2_error "PHASE2_PREREQ=FAIL state_missing"; return 1; }
-  fi
+  required="$(awk -F= '$1=="PHASE2_PREREQ_REQUIRED"{print $2; exit}' "$state")"
+  count="$(awk -F= '$1=="PHASE2_PREREQ_PACKAGE_COUNT"{print $2; exit}' "$state")"
   sha=""
   if [[ -f "${art}.sha256" ]]; then
     sha="$(awk '{print $1; exit}' "${art}.sha256")"
   fi
-  dp2_ok "PHASE2_PREREQ=PASS artifact=${art} sha256=${sha} required=${required:-?} count=${count:-?}"
+  dp2_ok "PHASE2_PREREQ=PASS artifact=${art} sha256=${sha} required=${required} count=${count}"
   dp2_info "PHASE2_PREREQ_PUBLICATION=PASS extras=${extras}"
   # Confirm the original ACPS common file is unchanged.
   dp2_info "PHASE2_PREREQ_ACPS_UNMODIFIED=YES"

@@ -1294,7 +1294,7 @@ stage_phase2_ubuntu_prerequisites() {
   local url="${extras_base}/${name}"
   local dest="${ARTIFACT_DIR}/${name}"
   local state_dest="${ARTIFACT_DIR}/${state_name}"
-  local tmp sha_url sha_dest required count
+  local tmp sha_url sha_dest required count build publication artifact_name sha
   tmp="$(mktemp "${ARTIFACT_DIR}/.${state_name}.XXXXXX")"
   if ! curl -fsSL --connect-timeout 15 --max-time 30 --retry 2 -o "$tmp" "$state_url"; then
     rm -f "$tmp"
@@ -1310,13 +1310,51 @@ stage_phase2_ubuntu_prerequisites() {
   chown "${AELLA_UID}:${AELLA_PRIMARY_GID}" "$state_dest" 2>/dev/null || true
   required="$(awk -F= '$1=="PHASE2_PREREQ_REQUIRED"{print $2; exit}' "$state_dest")"
   count="$(awk -F= '$1=="PHASE2_PREREQ_PACKAGE_COUNT"{print $2; exit}' "$state_dest")"
-  log "PHASE2_PREREQ_REQUIRED=${required:-unknown} PHASE2_PREREQ_PACKAGE_COUNT=${count:-unknown}"
-  if [[ "$required" == "NO" && "${count:-0}" == "0" ]]; then
+  build="$(awk -F= '$1=="PHASE2_PREREQ_BUILD"{print $2; exit}' "$state_dest")"
+  publication="$(awk -F= '$1=="PHASE2_PREREQ_PUBLICATION"{print $2; exit}' "$state_dest")"
+  artifact_name="$(awk -F= '$1=="PHASE2_PREREQ_ARTIFACT"{print $2; exit}' "$state_dest")"
+  sha="$(awk -F= '$1=="PHASE2_PREREQ_SHA256"{print $2; exit}' "$state_dest")"
+  log "PHASE2_PREREQ_REQUIRED=${required:-unknown} PHASE2_PREREQ_PACKAGE_COUNT=${count:-unknown} PHASE2_PREREQ_BUILD=${build:-unknown} PHASE2_PREREQ_PUBLICATION=${publication:-unknown}"
+  if [[ "$build" != "PASS" ]]; then
+    rm -f "$dest" "${dest}.sha256" "${ARTIFACT_DIR}/phase2-ubuntu-prerequisites.manifest.json"
+    log "PHASE2_PREREQ_STAGE=FAIL reason=build_not_pass"
+    return 1
+  fi
+  if [[ "$publication" != "PASS" ]]; then
+    rm -f "$dest" "${dest}.sha256" "${ARTIFACT_DIR}/phase2-ubuntu-prerequisites.manifest.json"
+    log "PHASE2_PREREQ_STAGE=FAIL reason=publication_not_pass"
+    return 1
+  fi
+  if [[ -z "$count" ]]; then
+    log "PHASE2_PREREQ_STAGE=FAIL reason=count_missing"
+    return 1
+  fi
+  if [[ ! "$count" =~ ^[0-9]+$ ]]; then
+    log "PHASE2_PREREQ_STAGE=FAIL reason=count_nonnumeric"
+    return 1
+  fi
+  if [[ "$required" == "NO" ]]; then
+    if [[ "$count" != "0" ]]; then
+      log "PHASE2_PREREQ_STAGE=FAIL reason=count_nonzero_when_not_required"
+      return 1
+    fi
     log "PHASE2_PREREQ_STAGE=NOT_REQUIRED"
     return 0
   fi
   if [[ "$required" != "YES" ]]; then
     log "PHASE2_PREREQ_STAGE=FAIL reason=state_invalid required=${required}"
+    return 1
+  fi
+  if [[ "$count" -le 0 ]]; then
+    log "PHASE2_PREREQ_STAGE=FAIL reason=count_not_positive"
+    return 1
+  fi
+  if [[ "$artifact_name" != "$name" ]]; then
+    log "PHASE2_PREREQ_STAGE=FAIL reason=artifact_name_invalid"
+    return 1
+  fi
+  if [[ ! "$sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    log "PHASE2_PREREQ_STAGE=FAIL reason=sha256_missing"
     return 1
   fi
   tmp="$(mktemp "${ARTIFACT_DIR}/.${name}.XXXXXX")"
@@ -1342,7 +1380,7 @@ stage_phase2_ubuntu_prerequisites() {
   local expected actual
   expected="$(awk 'NF {print $1; exit}' "$sha_dest")"
   actual="$(sha256sum "$tmp" | awk '{print $1}')"
-  if [[ -z "$expected" || "${expected,,}" != "${actual,,}" ]]; then
+  if [[ -z "$expected" || "${expected,,}" != "${actual,,}" || "${sha,,}" != "${actual,,}" ]]; then
     rm -f "$tmp" "$sha_dest"
     log "PHASE2_PREREQ_STAGE=FAIL reason=sha256"
     return 1

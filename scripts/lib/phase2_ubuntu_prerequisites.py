@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """Phase 2 Ubuntu prerequisite dependency closure and artifact builder.
 
-Reuses the existing Debian dependency-closure helpers in
-xenial_bionic_upgrade_analysis.py (parse_dep_field / dep_names /
-follow_dependency_closure / load_suite_packages). Does not invent a second
-resolver.
+Reuses Debian field parsers in xenial_bionic_upgrade_analysis.py
+(parse_dep_field / parse_packages_index / load_suite_packages). Phase 2
+candidate selection, version constraints, and authoritative Noble lookup
+live here so OS-hop last-wins loading is unchanged.
 
 Inspects ACPS py3-apt-packages as root requirements, resolves recursive
-Depends/Pre-Depends against Noble main/universe/updates/security indexes,
-and builds a separate compatibility artifact. Never modifies ACPS payloads.
+Depends/Pre-Depends against Noble metadata, and builds a separate
+compatibility artifact. Never modifies ACPS payloads. The DP runtime never
+talks to Ubuntu archives; extra packages are materialized during Mirror
+Download and Prepare.
 """
 from __future__ import print_function, unicode_literals
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
@@ -61,6 +64,31 @@ STATE_NAME = 'phase2-ubuntu-prerequisites.state'
 INSTALL_ORDER_NAME = 'install-order.txt'
 DEFAULT_ARCHIVE_BASE = 'http://archive.ubuntu.com/ubuntu'
 DEFAULT_SECURITY_BASE = 'http://security.ubuntu.com/ubuntu'
+SHA256_HEX_RE = re.compile(r'^[0-9a-fA-F]{64}$')
+REQUIRED_INDEX_FIELDS = (
+    'Package', 'Version', 'Architecture', 'Filename', 'SHA256', 'Size',
+)
+# Ubuntu apt pin: archive/updates/security are 500; backports are 100
+# (NotAutomatic). Higher rank wins only among equal Debian versions.
+SUITE_PIN = {
+    'noble': 500,
+    'noble-updates': 500,
+    'noble-security': 500,
+    'noble-backports': 100,
+}
+SUITE_TIE_RANK = {
+    'noble-security': 3,
+    'noble-updates': 2,
+    'noble': 1,
+    'noble-backports': 0,
+}
+CONSTRAINT_OPS = {
+    '>=': 'ge',
+    '<=': 'le',
+    '=': 'eq',
+    '<<': 'lt',
+    '>>': 'gt',
+}
 
 
 def eprint(*args, **kwargs):
@@ -273,29 +301,490 @@ def merge_package_indexes(*indexes):
     return merged
 
 
-def resolve_phase2_dependency_closure(root_names, packages, extra_root_stanzas=None):
-    """Resolve recursive Depends/Pre-Depends for Phase 2 Ubuntu packages.
+def _dpkg_compare_versions(left, op, right):
+    """Debian version compare via dpkg. True when the relation holds."""
+    try:
+        rc = subprocess.call(
+            ['dpkg', '--compare-versions', str(left), op, str(right)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        raise RuntimeError('dpkg --compare-versions is required for Phase 2 candidate policy')
+    return rc == 0
 
-    ACPS root stanzas (when provided) are merged first so the resolver sees
-    the actual Depends declared by the extracted ACPS debs, then overlay
-    mirror index versions of the same names.
+
+def parse_version_constraint(constraint):
+    """Return (op_token, version) or None when unconstrained.
+
+    Malformed constraints fail closed (empty tuple marker).
     """
-    combined = OrderedDict()
-    if packages:
-        combined.update(packages)
-    # ACPS root stanzas overlay last so the extracted .deb Depends/Pre-Depends
-    # are the requirements we actually have to satisfy.
-    if extra_root_stanzas:
-        combined.update(extra_root_stanzas)
-    closure = xba.follow_dependency_closure(
-        combined,
-        list(root_names),
-        fields=PHASE2_PREREQ_FIELDS,
-        prefer_available=True,
+    text = (constraint or '').strip()
+    if not text:
+        return None
+    m = re.match(r'^(<<|<=|>=|>>|=|!=)\s*(\S+)$', text)
+    if not m:
+        return ('invalid', text)
+    return (m.group(1), m.group(2))
+
+
+def version_satisfies_constraint(version, constraint):
+    parsed = parse_version_constraint(constraint)
+    if parsed is None:
+        return True
+    op, other = parsed
+    if op == 'invalid' or not version:
+        return False
+    if op == '!=':
+        return not _dpkg_compare_versions(version, 'eq', other)
+    dpkg_op = CONSTRAINT_OPS.get(op)
+    if not dpkg_op:
+        return False
+    return _dpkg_compare_versions(version, dpkg_op, other)
+
+
+def suite_pin(suite):
+    suite = suite or ''
+    if suite in SUITE_PIN:
+        return SUITE_PIN[suite]
+    if suite.endswith('-backports'):
+        return 100
+    if suite.endswith('-security') or suite.endswith('-updates'):
+        return 500
+    if suite == 'acps':
+        return 0
+    return 500
+
+
+def suite_tie_rank(suite):
+    suite = suite or ''
+    if suite in SUITE_TIE_RANK:
+        return SUITE_TIE_RANK[suite]
+    if suite.endswith('-security'):
+        return 3
+    if suite.endswith('-updates'):
+        return 2
+    if suite.endswith('-backports'):
+        return 0
+    return 1
+
+
+def _candidate_identity(stanza):
+    return (
+        stanza.get('Package') or '',
+        stanza.get('_suite') or '',
+        stanza.get('Version') or '',
+        stanza.get('Filename') or '',
     )
-    closure['algorithm'] = 'follow_dependency_closure'
-    closure['prefer_available'] = True
-    return closure
+
+
+def load_all_package_candidates(ubuntu_root, suites=None, components=None, arch='amd64'):
+    """Load every Packages stanza; do not collapse to last-suite-wins."""
+    suites = suites or PHASE2_DEFAULT_SUITES
+    components = components or PHASE2_DEFAULT_COMPONENTS
+    by_name = OrderedDict()
+    provenance = OrderedDict()
+    if not ubuntu_root or not os.path.isdir(ubuntu_root):
+        return by_name, provenance
+    for suite in suites:
+        for component in components:
+            path = os.path.join(
+                ubuntu_root, 'dists', suite, component,
+                'binary-%s' % arch, 'Packages',
+            )
+            if not os.path.isfile(path):
+                gz = path + '.gz'
+                if not os.path.isfile(gz):
+                    continue
+                text = xba.open_packages_text(gz)
+            else:
+                text = xba.read_text(path)
+            for stanza in xba.parse_packages_index(text):
+                name = stanza.get('Package')
+                if not name:
+                    continue
+                rec = OrderedDict(stanza)
+                rec['_suite'] = suite
+                rec['_component'] = component
+                rec['_source'] = 'local_selective'
+                by_name.setdefault(name, [])
+                ident = _candidate_identity(rec)
+                if any(_candidate_identity(existing) == ident for existing in by_name[name]):
+                    continue
+                by_name[name].append(rec)
+                provenance.setdefault(name, [])
+                provenance[name].append('%s/%s' % (suite, component))
+    return by_name, provenance
+
+
+def selected_packages_from_candidates(candidates_by_name):
+    """Best unconstrained candidate per name (for install-plan Depends lookup)."""
+    selected = OrderedDict()
+    for name, stanzas in (candidates_by_name or {}).items():
+        chosen = select_best_candidate(stanzas, constraint=None)
+        if chosen is not None:
+            selected[name] = chosen
+    return selected
+
+
+def select_best_candidate(stanzas, constraint=None):
+    """Pick one stanza using Noble pin + Debian version policy.
+
+    Backports (pin 100) never override archive/updates/security (pin 500)
+    merely by being loaded last. A backports stanza is used only when no
+    pin-500 candidate satisfies the constraint.
+    """
+    satisfying = []
+    for stanza in stanzas or []:
+        if version_satisfies_constraint(stanza.get('Version') or '', constraint):
+            satisfying.append(stanza)
+    if not satisfying:
+        return None
+    pin500 = [s for s in satisfying if suite_pin(s.get('_suite')) >= 500]
+    pool = pin500 if pin500 else satisfying
+    best = pool[0]
+    for cand in pool[1:]:
+        left = cand.get('Version') or ''
+        right = best.get('Version') or ''
+        if left and right and _dpkg_compare_versions(left, 'gt', right):
+            best = cand
+            continue
+        if left and right and _dpkg_compare_versions(left, 'eq', right):
+            if suite_tie_rank(cand.get('_suite')) > suite_tie_rank(best.get('_suite')):
+                best = cand
+    return best
+
+
+def candidate_evidence(name, stanzas, constraint=None):
+    rows = []
+    for stanza in stanzas or []:
+        ver = stanza.get('Version') or ''
+        rows.append(OrderedDict([
+            ('package', name),
+            ('version', ver),
+            ('suite', stanza.get('_suite') or ''),
+            ('component', stanza.get('_component') or ''),
+            ('filename', stanza.get('Filename') or ''),
+            ('pin', suite_pin(stanza.get('_suite'))),
+            ('satisfies_constraint', version_satisfies_constraint(ver, constraint)),
+            ('source', stanza.get('_source') or ''),
+        ]))
+    return rows
+
+
+def format_dep_expression(group):
+    parts = []
+    for alt in group or []:
+        name, constraint, _arch = alt
+        if constraint:
+            parts.append('%s (%s)' % (name, constraint))
+        else:
+            parts.append(name)
+    return ' | '.join(parts) if parts else ''
+
+
+def select_alternative_candidate(group, candidates_by_name):
+    """Left-to-right alternative that has a candidate satisfying its constraint."""
+    evidence = []
+    expression = format_dep_expression(group)
+    for alt in group or []:
+        name, constraint, _arch = alt
+        stanzas = candidates_by_name.get(name) or []
+        evidence.extend(candidate_evidence(name, stanzas, constraint))
+        if name in VIRTUAL_OR_BASE_SKIP:
+            return OrderedDict([
+                ('Package', name),
+                ('_virtual_or_base', True),
+                ('_suite', 'base'),
+            ]), None, evidence
+        local = [
+            s for s in stanzas
+            if (s.get('_source') or 'local_selective') == 'local_selective'
+        ]
+        chosen = select_best_candidate(local, constraint)
+        if chosen is None:
+            chosen = select_best_candidate(stanzas, constraint)
+        if chosen is not None:
+            return chosen, None, evidence
+    reason = (
+        'unsatisfied_dependency expression=%s candidates=%s'
+        % (expression, json.dumps(evidence, sort_keys=True))
+    )
+    return None, reason, evidence
+
+
+def packages_index_url(suite, component, arch, archive_base, security_base):
+    rel = 'dists/%s/%s/binary-%s/Packages.gz' % (suite, component, arch)
+    archive_base = (archive_base or DEFAULT_ARCHIVE_BASE).rstrip('/')
+    security_base = (security_base or DEFAULT_SECURITY_BASE).rstrip('/')
+    if suite.endswith('-security') or suite == 'security':
+        return '%s/%s' % (security_base, rel)
+    return '%s/%s' % (archive_base, rel)
+
+
+def _decompress_packages_gz(gz_path, dest_path):
+    parent = os.path.dirname(dest_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with gzip.open(gz_path, 'rb') as fh:
+        data = fh.read()
+    tmp = dest_path + '.part'
+    with open(tmp, 'wb') as fh:
+        fh.write(data)
+    os.rename(tmp, dest_path)
+    return dest_path
+
+
+def fetch_authoritative_packages_index(
+    cache_root, suite, component, arch='amd64',
+    archive_base=None, security_base=None,
+):
+    """Download official Ubuntu Packages.gz into cache via acquire_file."""
+    dest_dir = os.path.join(
+        cache_root, 'dists', suite, component, 'binary-%s' % arch,
+    )
+    dest = os.path.join(dest_dir, 'Packages')
+    dest_gz = dest + '.gz'
+    if os.path.isfile(dest):
+        return dest
+    url = packages_index_url(
+        suite, component, arch, archive_base, security_base,
+    )
+    if sm is None:
+        raise RuntimeError('selective_mirror.acquire_file is required to fetch %s' % url)
+    os.makedirs(dest_dir, exist_ok=True)
+    eprint('PHASE2_PREREQ_AUTH_INDEX=START suite=%s component=%s url=%s' % (
+        suite, component, url,
+    ))
+    sm.acquire_file(
+        src='',
+        dst=dest_gz,
+        allow_download_url=url,
+    )
+    _decompress_packages_gz(dest_gz, dest)
+    eprint('PHASE2_PREREQ_AUTH_INDEX=PASS suite=%s component=%s path=%s' % (
+        suite, component, dest,
+    ))
+    return dest
+
+
+def load_authoritative_noble_candidates(
+    authoritative_root=None, cache_root=None, fetch=False,
+    suites=None, components=None, arch='amd64',
+    archive_base=None, security_base=None,
+):
+    """Load official Noble Packages metadata (local cache and/or fetch).
+
+    Trust is the Ubuntu archive/security Packages indexes (Filename/SHA256/Size
+    from those stanzas), not the selective mirror plan.
+    """
+    suites = suites or PHASE2_DEFAULT_SUITES
+    components = components or PHASE2_DEFAULT_COMPONENTS
+    by_name = OrderedDict()
+    roots = []
+    if authoritative_root:
+        roots.append(authoritative_root)
+    if cache_root:
+        roots.append(cache_root)
+        if fetch:
+            for suite in suites:
+                for component in components:
+                    try:
+                        fetch_authoritative_packages_index(
+                            cache_root, suite, component, arch=arch,
+                            archive_base=archive_base,
+                            security_base=security_base,
+                        )
+                    except Exception as exc:
+                        eprint('PHASE2_PREREQ_AUTH_INDEX=FAIL suite=%s component=%s reason=%s' % (
+                            suite, component, type(exc).__name__,
+                        ))
+                        raise
+    for root in roots:
+        loaded, _prov = load_all_package_candidates(
+            root, suites=suites, components=components, arch=arch,
+        )
+        for name, stanzas in loaded.items():
+            by_name.setdefault(name, [])
+            for stanza in stanzas:
+                rec = OrderedDict(stanza)
+                rec['_source'] = rec.get('_source') or 'authoritative_noble'
+                if rec.get('_source') == 'local_selective':
+                    rec['_source'] = 'authoritative_noble'
+                ident = _candidate_identity(rec)
+                if any(_candidate_identity(existing) == ident for existing in by_name[name]):
+                    continue
+                by_name[name].append(rec)
+    return by_name
+
+
+def merge_candidate_indexes(*indexes):
+    merged = OrderedDict()
+    for idx in indexes:
+        if not idx:
+            continue
+        for name, stanzas in idx.items():
+            if isinstance(stanzas, dict):
+                stanzas = [stanzas]
+            merged.setdefault(name, [])
+            for stanza in stanzas:
+                ident = _candidate_identity(stanza)
+                if any(_candidate_identity(existing) == ident for existing in merged[name]):
+                    continue
+                merged[name].append(OrderedDict(stanza))
+    return merged
+
+
+def default_authoritative_cache(ubuntu_root, dest=None):
+    if dest:
+        # Never cache under the HTTP-published extras directory.
+        extras_name = os.path.basename(os.path.abspath(dest).rstrip(os.sep))
+        if extras_name != 'extras':
+            return os.path.join(dest, '.phase2-noble-authoritative')
+    if ubuntu_root:
+        parent = os.path.dirname(os.path.abspath(ubuntu_root))
+        return os.path.join(parent, '.phase2-noble-authoritative')
+    return os.path.join(tempfile.gettempdir(), 'phase2-noble-authoritative')
+
+
+def resolve_phase2_dependency_closure(
+    root_names, packages, extra_root_stanzas=None,
+    candidate_index=None, on_missing_name=None,
+):
+    """Resolve recursive Depends/Pre-Depends with version/alternative policy.
+
+    ``packages`` may be name->stanza (legacy last-wins) or name->list of
+    stanzas. Newly discovered packages missing from the local selective
+    index are filled via ``on_missing_name`` (authoritative Noble lookup).
+    """
+    candidates = OrderedDict()
+    if candidate_index:
+        candidates = merge_candidate_indexes(candidate_index)
+    elif packages:
+        for name, info in packages.items():
+            if isinstance(info, (list, tuple)):
+                candidates[name] = [OrderedDict(s) for s in info]
+            elif info:
+                candidates[name] = [OrderedDict(info)]
+    extra = extra_root_stanzas or OrderedDict()
+    seen = set()
+    missing = []
+    constraint_failures = []
+    queue = list(root_names or [])
+    edges = []
+    selected = OrderedDict()
+    authoritative_queries = []
+
+    def ensure_candidates(name):
+        if name in candidates and candidates[name]:
+            return True
+        if name in extra:
+            return True
+        if name in VIRTUAL_OR_BASE_SKIP:
+            return True
+        if on_missing_name is None:
+            return False
+        authoritative_queries.append(name)
+        added = on_missing_name(name, candidates)
+        return bool(added and candidates.get(name))
+
+    while queue:
+        name = queue.pop(0)
+        if name in seen:
+            continue
+        seen.add(name)
+        if name in VIRTUAL_OR_BASE_SKIP:
+            continue
+        extra_info = extra.get(name)
+        if extra_info is not None:
+            selected[name] = extra_info
+            info = extra_info
+        else:
+            if not ensure_candidates(name):
+                missing.append(name)
+                continue
+            stanzas = candidates.get(name) or []
+            local = [
+                s for s in stanzas
+                if (s.get('_source') or 'local_selective') == 'local_selective'
+            ]
+            chosen = select_best_candidate(local, constraint=None)
+            if chosen is None:
+                chosen = select_best_candidate(stanzas, constraint=None)
+            if chosen is None:
+                missing.append(name)
+                continue
+            selected[name] = chosen
+            info = chosen
+        for field in PHASE2_PREREQ_FIELDS:
+            for group in xba.parse_dep_field(info.get(field)):
+                if not group:
+                    continue
+                for alt in group:
+                    alt_name = alt[0]
+                    if alt_name not in VIRTUAL_OR_BASE_SKIP:
+                        ensure_candidates(alt_name)
+                chosen, reason, _ev = select_alternative_candidate(group, candidates)
+                expression = format_dep_expression(group)
+                if reason:
+                    # Extra/ACPS roots may depend on another extra root.
+                    extra_hit = None
+                    for alt in group:
+                        if alt[0] in extra and version_satisfies_constraint(
+                            extra.get(alt[0], {}).get('Version') or '', alt[1],
+                        ):
+                            extra_hit = extra[alt[0]]
+                            break
+                    if extra_hit is None:
+                        any_candidates = False
+                        for alt in group:
+                            if (
+                                (candidates.get(alt[0]))
+                                or alt[0] in extra
+                                or alt[0] in VIRTUAL_OR_BASE_SKIP
+                            ):
+                                any_candidates = True
+                                break
+                        if not any_candidates:
+                            for alt in group:
+                                missing.append(alt[0])
+                            eprint('PHASE2_PREREQ_CANDIDATE=NONE from=%s expression=%s' % (
+                                name, expression,
+                            ))
+                            continue
+                        constraint_failures.append(OrderedDict([
+                            ('from', name),
+                            ('field', field),
+                            ('expression', expression),
+                            ('reason', reason),
+                        ]))
+                        eprint('PHASE2_PREREQ_DEP=FAIL from=%s field=%s expression=%s' % (
+                            name, field, expression,
+                        ))
+                        continue
+                    chosen = extra_hit
+                dep_name = chosen.get('Package')
+                edges.append(OrderedDict([
+                    ('from', name), ('field', field), ('to', dep_name),
+                    ('expression', expression),
+                ]))
+                if dep_name not in seen:
+                    queue.append(dep_name)
+
+    return OrderedDict([
+        ('roots', list(root_names or [])),
+        ('fields', list(PHASE2_PREREQ_FIELDS)),
+        ('visited_count', len(seen)),
+        ('visited', sorted(seen)),
+        ('missing_from_index', sorted(set(missing))),
+        ('constraint_failures', constraint_failures),
+        ('edge_count', len(edges)),
+        ('edges_sample', edges[:50]),
+        ('selected', selected),
+        ('algorithm', 'phase2_noble_candidate_policy'),
+        ('authoritative_queries', authoritative_queries),
+        ('prefer_available', True),
+    ])
 
 
 def unsatisfied_from_acps(closure, acps_names):
@@ -365,17 +854,60 @@ def package_upstream_url(suite, filename, archive_base=None, security_base=None)
 def _parse_size(value):
     if value in (None, ''):
         return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    text = str(value).strip()
+    if not re.match(r'^[0-9]+$', text):
         return None
+    return int(text)
+
+
+def is_valid_sha256(value):
+    return bool(value) and SHA256_HEX_RE.match(str(value).strip()) is not None
+
+
+def required_index_metadata_reason(rec):
+    """Fail closed when any mandatory Packages field is absent or malformed."""
+    rec = rec or {}
+    pkg = (rec.get('package') or rec.get('Package') or '').strip()
+    ver = (rec.get('version') or rec.get('Version') or '').strip()
+    arch = (rec.get('architecture') or rec.get('Architecture') or '').strip()
+    filename = (rec.get('filename') or rec.get('Filename') or '').strip()
+    sha256 = (rec.get('sha256') or rec.get('SHA256') or '').strip()
+    size_raw = rec.get('size')
+    if size_raw in (None, '') and rec.get('Size') not in (None, ''):
+        size_raw = rec.get('Size')
+    if not pkg:
+        return 'metadata_missing field=Package'
+    if not ver:
+        return 'metadata_missing field=Version'
+    if not arch:
+        return 'metadata_missing field=Architecture'
+    if not filename:
+        return 'metadata_missing field=Filename'
+    if filename.startswith('/') or '..' in filename.split('/'):
+        return 'metadata_malformed field=Filename'
+    if not is_valid_sha256(sha256):
+        return 'metadata_missing field=SHA256'
+    size = _parse_size(size_raw)
+    if size is None:
+        return 'metadata_missing field=Size'
+    return ''
 
 
 def read_deb_control(path):
-    """Return control fields from a .deb. Prefer selective_mirror.parse_deb_control."""
+    """Return control fields from a .deb. Prefer selective_mirror.parse_deb_control.
+
+    Control-read failure returns an empty dict. Callers that require a readable
+    control stanza must treat that as FAIL (see verify_local_package_file).
+    """
+    if not path or not os.path.isfile(path):
+        return OrderedDict()
     if sm is not None:
         try:
-            return sm.parse_deb_control(path)
+            fields = sm.parse_deb_control(path)
+            if fields:
+                return fields
         except Exception:
             pass
     try:
@@ -383,46 +915,68 @@ def read_deb_control(path):
             ['dpkg-deb', '-I', path, 'control'],
             stderr=subprocess.DEVNULL,
         ).decode('utf-8', 'replace')
-        return parse_control_text(out)
+        fields = parse_control_text(out)
+        if fields:
+            return fields
     except (OSError, subprocess.CalledProcessError):
-        return OrderedDict()
+        pass
+    return OrderedDict()
+
+
+def architecture_matches(expected, actual):
+    expected = (expected or '').strip()
+    actual = (actual or '').strip()
+    if not expected or not actual:
+        return False
+    if actual == expected:
+        return True
+    # Arch-independent packages may satisfy an architecture-specific Depends.
+    if actual == 'all':
+        return True
+    return False
 
 
 def verify_local_package_file(path, rec):
-    """Verify on-disk .deb against index metadata. Empty reason means OK."""
+    """Verify on-disk .deb against mandatory index metadata. Empty reason means OK."""
+    meta_reason = required_index_metadata_reason(rec)
+    if meta_reason:
+        return meta_reason
     if not path or not os.path.isfile(path):
         return 'deb_absent'
-    expected_size = _parse_size(rec.get('size'))
-    if expected_size is not None:
-        try:
-            actual_size = os.path.getsize(path)
-        except OSError:
-            return 'size_unreadable'
-        if actual_size != expected_size:
-            return 'size_mismatch expected=%s actual=%s' % (expected_size, actual_size)
-    expected_sha = (rec.get('sha256') or '').strip().lower()
-    if expected_sha:
-        actual_sha = sha256_file(path).lower()
-        if actual_sha != expected_sha:
-            return 'sha256_mismatch expected=%s actual=%s' % (expected_sha, actual_sha)
+    expected_size = _parse_size(rec.get('size') if rec.get('size') not in (None, '') else rec.get('Size'))
+    try:
+        actual_size = os.path.getsize(path)
+    except OSError:
+        return 'size_unreadable'
+    if actual_size != expected_size:
+        return 'size_mismatch expected=%s actual=%s' % (expected_size, actual_size)
+    expected_sha = (rec.get('sha256') or rec.get('SHA256') or '').strip().lower()
+    actual_sha = sha256_file(path).lower()
+    if actual_sha != expected_sha:
+        return 'sha256_mismatch expected=%s actual=%s' % (expected_sha, actual_sha)
     fields = read_deb_control(path)
-    if fields:
-        pkg = fields.get('Package') or ''
-        ver = fields.get('Version') or ''
-        arch = fields.get('Architecture') or ''
-        if rec.get('package') and pkg and pkg != rec.get('package'):
-            return 'control_package_mismatch expected=%s actual=%s' % (
-                rec.get('package'), pkg,
-            )
-        if rec.get('version') and ver and ver != rec.get('version'):
-            return 'control_version_mismatch expected=%s actual=%s' % (
-                rec.get('version'), ver,
-            )
-        expected_arch = rec.get('architecture') or ''
-        if expected_arch and arch and arch != expected_arch and arch != 'all':
-            return 'control_architecture_mismatch expected=%s actual=%s' % (
-                expected_arch, arch,
-            )
+    if not fields:
+        return 'control_unreadable'
+    pkg = (fields.get('Package') or '').strip()
+    ver = (fields.get('Version') or '').strip()
+    arch = (fields.get('Architecture') or '').strip()
+    expected_pkg = (rec.get('package') or rec.get('Package') or '').strip()
+    expected_ver = (rec.get('version') or rec.get('Version') or '').strip()
+    expected_arch = (rec.get('architecture') or rec.get('Architecture') or '').strip()
+    if not pkg:
+        return 'control_package_unreadable'
+    if pkg != expected_pkg:
+        return 'control_package_mismatch expected=%s actual=%s' % (expected_pkg, pkg)
+    if not ver:
+        return 'control_version_unreadable'
+    if ver != expected_ver:
+        return 'control_version_mismatch expected=%s actual=%s' % (expected_ver, ver)
+    if not arch:
+        return 'control_architecture_unreadable'
+    if not architecture_matches(expected_arch, arch):
+        return 'control_architecture_mismatch expected=%s actual=%s' % (
+            expected_arch, arch,
+        )
     return ''
 
 
@@ -564,6 +1118,94 @@ def write_install_order_text(groups, filename_by_package):
     return '\n'.join(lines) + '\n'
 
 
+def retract_published_prerequisite_files(dest_dir):
+    """Remove previously published artifacts so a FAIL state cannot be staged."""
+    if not dest_dir:
+        return
+    for name in (
+        ARTIFACT_NAME,
+        ARTIFACT_NAME + '.sha256',
+        MANIFEST_NAME,
+        INSTALL_ORDER_NAME,
+    ):
+        path = os.path.join(dest_dir, name)
+        try:
+            if os.path.isfile(path) or os.path.islink(path):
+                os.unlink(path)
+        except OSError:
+            pass
+
+
+def parse_prereq_state_text(text):
+    fields = OrderedDict()
+    for raw in (text or '').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        fields[key.strip()] = value
+    return fields
+
+
+def validate_prereq_state_contract(fields, dest_dir=None, require_files=None):
+    """Return a reason string when the PHASE2_PREREQ_* contract is invalid."""
+    fields = fields or {}
+    required = (fields.get('PHASE2_PREREQ_REQUIRED') or '').strip()
+    count_raw = fields.get('PHASE2_PREREQ_PACKAGE_COUNT')
+    build = (fields.get('PHASE2_PREREQ_BUILD') or '').strip()
+    publication = (fields.get('PHASE2_PREREQ_PUBLICATION') or '').strip()
+    artifact = (fields.get('PHASE2_PREREQ_ARTIFACT') or '').strip()
+    sha = (fields.get('PHASE2_PREREQ_SHA256') or '').strip()
+    if build != 'PASS':
+        return 'build_not_pass'
+    if publication != 'PASS':
+        return 'publication_not_pass'
+    if count_raw is None or str(count_raw).strip() == '':
+        return 'count_missing'
+    count_text = str(count_raw).strip()
+    if not re.match(r'^[0-9]+$', count_text):
+        return 'count_nonnumeric'
+    count = int(count_text)
+    if required == 'NO':
+        if count != 0:
+            return 'count_nonzero_when_not_required'
+        return ''
+    if required != 'YES':
+        return 'required_invalid'
+    if count <= 0:
+        return 'count_not_positive'
+    if artifact != ARTIFACT_NAME:
+        return 'artifact_name_invalid'
+    if not is_valid_sha256(sha):
+        return 'sha256_invalid'
+    if require_files is None:
+        require_files = bool(dest_dir)
+    if require_files:
+        if not dest_dir:
+            return 'dest_missing'
+        art = os.path.join(dest_dir, ARTIFACT_NAME)
+        if not os.path.isfile(os.path.join(dest_dir, STATE_NAME)):
+            return 'state_file_missing'
+        if not os.path.isfile(art):
+            return 'artifact_missing'
+        if not os.path.isfile(art + '.sha256'):
+            return 'sha_sidecar_missing'
+        if not os.path.isfile(os.path.join(dest_dir, MANIFEST_NAME)):
+            return 'manifest_missing'
+        sidecar_sha = ''
+        try:
+            with open(art + '.sha256', 'r') as fh:
+                sidecar_sha = (fh.read().split() or [''])[0]
+        except OSError:
+            return 'sha_sidecar_unreadable'
+        if sidecar_sha.strip().lower() != sha.lower():
+            return 'sha256_sidecar_mismatch'
+        actual = sha256_file(art)
+        if actual.lower() != sha.lower():
+            return 'sha256_file_mismatch'
+    return ''
+
+
 def write_prerequisite_state(path, fields):
     """Write machine-readable PHASE2_PREREQ_* key=value state."""
     parent = os.path.dirname(path)
@@ -587,6 +1229,7 @@ def collect_artifact_packages(unsatisfied_names, packages, pool_root=None):
     rows = []
     missing_candidate = []
     missing_deb = []
+    invalid_metadata = []
     for name in unsatisfied_names:
         info = (packages or {}).get(name)
         rec = package_record(name, info)
@@ -594,6 +1237,17 @@ def collect_artifact_packages(unsatisfied_names, packages, pool_root=None):
             rec['candidate'] = 'none'
             rec['deb_path'] = ''
             missing_candidate.append(name)
+            rows.append(rec)
+            continue
+        meta_reason = required_index_metadata_reason(rec)
+        if meta_reason:
+            rec['candidate'] = '%s/%s' % (
+                info.get('_suite') or '',
+                info.get('_component') or '',
+            )
+            rec['local_verify'] = meta_reason
+            rec['deb_path'] = ''
+            invalid_metadata.append(name)
             rows.append(rec)
             continue
         rec['candidate'] = '%s/%s' % (
@@ -604,7 +1258,7 @@ def collect_artifact_packages(unsatisfied_names, packages, pool_root=None):
             rec.get('suite'), rec.get('filename'),
         )
         deb_path = ''
-        filename = info.get('Filename') or ''
+        filename = info.get('Filename') or rec.get('filename') or ''
         if pool_root and filename:
             cand = os.path.join(pool_root, filename)
             if os.path.isfile(cand):
@@ -614,20 +1268,6 @@ def collect_artifact_packages(unsatisfied_names, packages, pool_root=None):
                 else:
                     deb_path = cand
                     rec['local_verify'] = 'ok'
-        if not deb_path and pool_root:
-            # Search pool by package name as a last resort.
-            for dirpath, _dns, filenames in os.walk(pool_root):
-                for fn in filenames:
-                    if fn.startswith(name + '_') and fn.endswith('.deb'):
-                        cand = os.path.join(dirpath, fn)
-                        reason = verify_local_package_file(cand, rec)
-                        if not reason:
-                            deb_path = cand
-                            rec['filename'] = os.path.relpath(deb_path, pool_root)
-                            rec['local_verify'] = 'ok'
-                            break
-                if deb_path:
-                    break
         rec['deb_path'] = deb_path
         if not deb_path:
             missing_deb.append(name)
@@ -636,6 +1276,7 @@ def collect_artifact_packages(unsatisfied_names, packages, pool_root=None):
         ('packages', rows),
         ('missing_candidate', missing_candidate),
         ('missing_deb', missing_deb),
+        ('invalid_metadata', invalid_metadata),
     ])
 
 
@@ -678,6 +1319,10 @@ def acquire_missing_debs(
         rec['url'] = url
         expected_sha = (rec.get('sha256') or '').strip() or None
         expected_size = _parse_size(rec.get('size'))
+        if not is_valid_sha256(expected_sha) or expected_size is None:
+            failed.append(name)
+            eprint('PHASE2_PREREQ_ACQUIRE=FAIL package=%s reason=metadata_incomplete' % name)
+            continue
         eprint('PHASE2_PREREQ_ACQUIRE=START package=%s suite=%s component=%s sha256=%s' % (
             name, rec.get('suite') or '', rec.get('component') or '',
             expected_sha or '',
@@ -914,6 +1559,9 @@ def verify_built_artifact(dest_dir, manifest, required_names=None):
             fn = rec.get('artifact_filename')
             if not fn:
                 return 'manifest_filename_missing package=%s' % rec.get('package')
+            meta_reason = required_index_metadata_reason(rec)
+            if meta_reason:
+                return 'verify_fail package=%s %s' % (rec.get('package'), meta_reason)
             tar_path = os.path.join(extract, 'debs', fn)
             if not os.path.isfile(tar_path):
                 return 'deb_missing_in_tar file=%s' % fn
@@ -960,13 +1608,11 @@ def ensure_packages_in_selective(ubuntu_root, package_rows, copy_debs=True):
             skipped.append(rec.get('package'))
             continue
         if not filename:
-            pkg = rec.get('package') or 'unknown'
-            arch = rec.get('architecture') or 'amd64'
-            ver = rec.get('version') or '0'
-            component = rec.get('component') or 'universe'
-            filename = 'pool/%s/%s/%s/%s_%s_%s.deb' % (
-                component, pkg[:1] if pkg else 'u', pkg, pkg, ver, arch,
-            )
+            skipped.append(rec.get('package'))
+            eprint('PHASE2_PREREQ_SELECTIVE=FAIL package=%s reason=filename_missing' % (
+                rec.get('package'),
+            ))
+            continue
         dest = os.path.join(ubuntu_root, filename)
         if copy_debs:
             parent = os.path.dirname(dest)
@@ -1003,8 +1649,11 @@ def run_inspect(args):
 
 def _emit_prereq_state(dest_dir, required, count, build, publication,
                        missing_candidate=None, missing_deb=None, sha256='',
-                       artifact=''):
+                       artifact='', target_version='', invalid_metadata=None):
+    if dest_dir and build != 'PASS':
+        retract_published_prerequisite_files(dest_dir)
     fields = OrderedDict([
+        ('TARGET_DP_VERSION', target_version or ''),
         ('PHASE2_PREREQ_REQUIRED', required),
         ('PHASE2_PREREQ_PACKAGE_COUNT', str(count)),
         ('PHASE2_PREREQ_BUILD', build),
@@ -1018,6 +1667,8 @@ def _emit_prereq_state(dest_dir, required, count, build, publication,
         fields['PHASE2_PREREQ_MISSING_CANDIDATE_PACKAGES'] = ','.join(missing_candidate)
     if missing_deb:
         fields['PHASE2_PREREQ_MISSING_DEB_PACKAGES'] = ','.join(missing_deb)
+    if invalid_metadata:
+        fields['PHASE2_PREREQ_INVALID_METADATA_PACKAGES'] = ','.join(invalid_metadata)
     path = os.path.join(dest_dir, STATE_NAME) if dest_dir else None
     if path:
         write_prerequisite_state(path, fields)
@@ -1026,25 +1677,125 @@ def _emit_prereq_state(dest_dir, required, count, build, publication,
     return fields
 
 
+def _suites_from_args(args):
+    raw = getattr(args, 'suites', None)
+    if raw:
+        return [s.strip() for s in raw.split(',') if s.strip()]
+    return None
+
+
+def _components_from_args(args):
+    raw = getattr(args, 'components', None)
+    if raw:
+        return [s.strip() for s in raw.split() if s.strip()]
+    return None
+
+
 def _load_packages_for_args(args):
     return load_noble_packages(
         args.ubuntu_root,
-        suites=args.suites.split(',') if getattr(args, 'suites', None) else None,
-        components=args.components.split() if getattr(args, 'components', None) else None,
+        suites=_suites_from_args(args),
+        components=_components_from_args(args),
     )
+
+
+def _load_candidates_for_args(args):
+    return load_all_package_candidates(
+        args.ubuntu_root,
+        suites=_suites_from_args(args),
+        components=_components_from_args(args),
+    )
+
+
+def _target_version_from_args(args):
+    return (
+        getattr(args, 'target_version', None)
+        or os.environ.get('DP_PHASE2_VERSION')
+        or os.environ.get('TARGET_DP_VERSION')
+        or ''
+    )
+
+
+def _make_authoritative_loader(args, dest=None):
+    loaded = {'done': False, 'error': None}
+    skip_fetch = bool(getattr(args, 'skip_authoritative_fetch', False))
+    auth_root = getattr(args, 'authoritative_root', None) or None
+    cache_root = getattr(args, 'authoritative_cache', None) or None
+    if not cache_root:
+        cache_root = default_authoritative_cache(
+            getattr(args, 'ubuntu_root', None), dest,
+        )
+    archive_base = getattr(args, 'archive_base', None) or DEFAULT_ARCHIVE_BASE
+    security_base = getattr(args, 'security_base', None) or DEFAULT_SECURITY_BASE
+    suites = _suites_from_args(args)
+    components = _components_from_args(args)
+
+    def on_missing(name, candidates):
+        if loaded['error'] is not None:
+            return False
+        if not loaded['done']:
+            fetch = (not skip_fetch) and (not auth_root)
+            try:
+                auth = load_authoritative_noble_candidates(
+                    authoritative_root=auth_root,
+                    cache_root=cache_root if (fetch or (cache_root and os.path.isdir(cache_root))) else None,
+                    fetch=fetch,
+                    suites=suites,
+                    components=components,
+                    archive_base=archive_base,
+                    security_base=security_base,
+                )
+            except Exception as exc:
+                loaded['error'] = exc
+                eprint('PHASE2_PREREQ_AUTH=FAIL reason=%s' % type(exc).__name__)
+                loaded['done'] = True
+                return False
+            merged = merge_candidate_indexes(candidates, auth)
+            candidates.clear()
+            candidates.update(merged)
+            loaded['done'] = True
+            eprint('PHASE2_PREREQ_AUTH=LOADED packages=%d' % len(candidates))
+        return bool(candidates.get(name))
+
+    return on_missing, loaded
+
+
+def _packages_from_selected(selected, names):
+    packages = OrderedDict()
+    for name in names:
+        info = (selected or {}).get(name)
+        if info:
+            packages[name] = info
+    return packages
+
+
+def _report_unresolved_closure(closure):
+    missing = [
+        n for n in (closure.get('missing_from_index') or [])
+        if n not in VIRTUAL_OR_BASE_SKIP and not str(n).startswith('aella-')
+    ]
+    failures = list(closure.get('constraint_failures') or [])
+    return missing, failures
 
 
 def run_resolve(args):
     roots = collect_phase2_roots(args.source, extra_debs_from_args(args))
     root_names = [r['package'] for r in roots if r.get('package')]
     extra = roots_as_index(roots)
-    packages, _prov = _load_packages_for_args(args)
-    closure = resolve_phase2_dependency_closure(root_names, packages, extra)
+    candidates, _prov = _load_candidates_for_args(args)
+    on_missing, _loaded = _make_authoritative_loader(args)
+    closure = resolve_phase2_dependency_closure(
+        root_names, None, extra,
+        candidate_index=candidates, on_missing_name=on_missing,
+    )
+    missing, failures = _report_unresolved_closure(closure)
     unsat = unsatisfied_from_acps(closure, root_names)
+    selected = closure.get('selected') or OrderedDict()
+    packages = _packages_from_selected(selected, unsat['unsatisfied'])
     collected = collect_artifact_packages(
         unsat['unsatisfied'], packages, pool_root=args.ubuntu_root,
     )
-    plan = build_install_plan(unsat['unsatisfied'], packages)
+    plan = build_install_plan(unsat['unsatisfied'], selected)
     result = OrderedDict([
         ('roots', root_names),
         ('closure', closure),
@@ -1058,9 +1809,18 @@ def run_resolve(args):
     print('PHASE2_PREREQ_UNSATISFIED=%d' % len(unsat['unsatisfied']))
     print('PHASE2_PREREQ_MISSING_CANDIDATE=%d' % len(collected['missing_candidate']))
     print('PHASE2_PREREQ_MISSING_DEB=%d' % len(collected['missing_deb']))
-    if collected['missing_candidate'] and not args.allow_missing_candidate:
+    if failures:
+        eprint('PHASE2_PREREQ_DEP=FAIL count=%d' % len(failures))
+        eprint('PHASE2_PREREQ_BUILD=FAIL')
+        return 2
+    if (collected['missing_candidate'] or missing) and not args.allow_missing_candidate:
         eprint('PHASE2_PREREQ_CANDIDATE=NONE packages=%s' %
-               ','.join(collected['missing_candidate']))
+               ','.join(collected['missing_candidate'] or missing))
+        eprint('PHASE2_PREREQ_BUILD=FAIL')
+        return 2
+    if collected.get('invalid_metadata'):
+        eprint('PHASE2_PREREQ_METADATA=FAIL packages=%s' %
+               ','.join(collected['invalid_metadata']))
         eprint('PHASE2_PREREQ_BUILD=FAIL')
         return 2
     if collected['missing_deb'] and not getattr(args, 'allow_missing_deb', False):
@@ -1073,25 +1833,59 @@ def run_resolve(args):
 def run_build(args):
     dest = args.dest
     os.makedirs(dest, exist_ok=True)
+    target_version = _target_version_from_args(args)
     roots = collect_phase2_roots(args.source, extra_debs_from_args(args))
     root_names = [r['package'] for r in roots if r.get('package')]
     extra = roots_as_index(roots)
-    packages, _prov = _load_packages_for_args(args)
-    closure = resolve_phase2_dependency_closure(root_names, packages, extra)
+    candidates, _prov = _load_candidates_for_args(args)
+    on_missing, _loaded = _make_authoritative_loader(args, dest=dest)
+    closure = resolve_phase2_dependency_closure(
+        root_names, None, extra,
+        candidate_index=candidates, on_missing_name=on_missing,
+    )
+    missing, failures = _report_unresolved_closure(closure)
     unsat = unsatisfied_from_acps(closure, root_names)
+    selected = closure.get('selected') or OrderedDict()
+    packages = _packages_from_selected(selected, unsat['unsatisfied'])
     collected = collect_artifact_packages(
         unsat['unsatisfied'], packages, pool_root=args.ubuntu_root,
     )
-    if collected['missing_candidate'] and not args.allow_missing_candidate:
-        eprint('PHASE2_PREREQ_CANDIDATE=NONE packages=%s' %
-               ','.join(collected['missing_candidate']))
+    if failures:
+        eprint('PHASE2_PREREQ_DEP=FAIL count=%d' % len(failures))
         _emit_prereq_state(
             dest, 'YES' if unsat['unsatisfied'] else 'NO',
             len(unsat['unsatisfied']), 'FAIL', 'FAIL',
             missing_candidate=collected['missing_candidate'],
             missing_deb=collected['missing_deb'],
+            target_version=target_version,
+            invalid_metadata=collected.get('invalid_metadata'),
+        )
+        eprint('PHASE2_PREREQ_BUILD=FAIL reason=dependency_constraint')
+        return 2
+    if (collected['missing_candidate'] or missing) and not args.allow_missing_candidate:
+        names = collected['missing_candidate'] or missing
+        eprint('PHASE2_PREREQ_CANDIDATE=NONE packages=%s' % ','.join(names))
+        _emit_prereq_state(
+            dest, 'YES',
+            max(len(unsat['unsatisfied']), len(names)), 'FAIL', 'FAIL',
+            missing_candidate=names,
+            missing_deb=collected['missing_deb'],
+            target_version=target_version,
+            invalid_metadata=collected.get('invalid_metadata'),
         )
         eprint('PHASE2_PREREQ_BUILD=FAIL')
+        return 2
+    if collected.get('invalid_metadata'):
+        eprint('PHASE2_PREREQ_METADATA=FAIL packages=%s' %
+               ','.join(collected['invalid_metadata']))
+        _emit_prereq_state(
+            dest, 'YES', len(unsat['unsatisfied']), 'FAIL', 'FAIL',
+            missing_candidate=collected['missing_candidate'],
+            missing_deb=collected['missing_deb'],
+            target_version=target_version,
+            invalid_metadata=collected.get('invalid_metadata'),
+        )
+        eprint('PHASE2_PREREQ_BUILD=FAIL reason=invalid_metadata')
         return 2
 
     skip_acquire = getattr(args, 'skip_acquire', False)
@@ -1113,6 +1907,8 @@ def run_build(args):
             dest, 'YES', len(unsat['unsatisfied']), 'FAIL', 'FAIL',
             missing_candidate=collected['missing_candidate'],
             missing_deb=collected['missing_deb'],
+            target_version=target_version,
+            invalid_metadata=collected.get('invalid_metadata'),
         )
         eprint('PHASE2_PREREQ_BUILD=FAIL reason=missing_deb')
         return 4
@@ -1123,18 +1919,21 @@ def run_build(args):
     ]
     plan = build_install_plan(
         [rec.get('package') for rec in required_rows if rec.get('package')],
-        packages,
+        selected,
     )
     required = 'YES' if required_rows else 'NO'
     if not required_rows:
         manifest = build_prerequisite_artifact([], dest, install_plan=plan)
         if manifest is None:
-            _emit_prereq_state(dest, 'NO', 0, 'FAIL', 'FAIL')
+            _emit_prereq_state(
+                dest, 'NO', 0, 'FAIL', 'FAIL', target_version=target_version,
+            )
             return 5
         _emit_prereq_state(
             dest, 'NO', 0, 'PASS', 'PASS',
             sha256=manifest.get('sha256'),
             artifact=ARTIFACT_NAME,
+            target_version=target_version,
         )
         print('PHASE2_PREREQ_ARTIFACT=%s' % manifest.get('artifact_path'))
         print('PHASE2_PREREQ_PACKAGE_COUNT=0')
@@ -1149,14 +1948,25 @@ def run_build(args):
             dest, required, len(required_rows), 'FAIL', 'FAIL',
             missing_candidate=collected['missing_candidate'],
             missing_deb=collected['missing_deb'],
+            target_version=target_version,
+            invalid_metadata=collected.get('invalid_metadata'),
         )
         return 5
     if getattr(args, 'ensure_selective', False):
-        ensure_packages_in_selective(args.ubuntu_root, required_rows)
+        placed = ensure_packages_in_selective(args.ubuntu_root, required_rows)
+        if placed.get('skipped'):
+            eprint('PHASE2_PREREQ_SELECTIVE=FAIL skipped=%s' %
+                   ','.join(p for p in placed['skipped'] if p))
+            _emit_prereq_state(
+                dest, required, len(required_rows), 'FAIL', 'FAIL',
+                target_version=target_version,
+            )
+            return 5
     _emit_prereq_state(
         dest, required, manifest.get('package_count', 0), 'PASS', 'PASS',
         sha256=manifest.get('sha256'),
         artifact=ARTIFACT_NAME,
+        target_version=target_version,
     )
     print('PHASE2_PREREQ_ARTIFACT=%s' % manifest.get('artifact_path'))
     print('PHASE2_PREREQ_PACKAGE_COUNT=%d' % manifest.get('package_count', 0))
@@ -1175,6 +1985,28 @@ def run_transaction(args):
     if result['blocked_removals']:
         print('PHASE2_PREREQ_BLOCKED_REMOVALS=%s' % ','.join(result['blocked_removals']))
         return 3
+    return 0
+
+
+def run_validate_state(args):
+    dest = args.dest
+    state_path = args.state or (os.path.join(dest, STATE_NAME) if dest else '')
+    if not state_path or not os.path.isfile(state_path):
+        eprint('PHASE2_PREREQ_STATE=FAIL reason=state_missing')
+        return 1
+    with open(state_path, 'r') as fh:
+        fields = parse_prereq_state_text(fh.read())
+    require_files = not getattr(args, 'fields_only', False)
+    reason = validate_prereq_state_contract(
+        fields, dest_dir=dest, require_files=require_files,
+    )
+    if reason:
+        eprint('PHASE2_PREREQ_STATE=FAIL reason=%s' % reason)
+        return 1
+    print('PHASE2_PREREQ_STATE=PASS required=%s count=%s' % (
+        fields.get('PHASE2_PREREQ_REQUIRED'),
+        fields.get('PHASE2_PREREQ_PACKAGE_COUNT'),
+    ))
     return 0
 
 
@@ -1197,6 +2029,11 @@ def main(argv=None):
     p_res.add_argument('--suites')
     p_res.add_argument('--components')
     p_res.add_argument('--output')
+    p_res.add_argument('--archive-base', default=DEFAULT_ARCHIVE_BASE)
+    p_res.add_argument('--security-base', default=DEFAULT_SECURITY_BASE)
+    p_res.add_argument('--authoritative-root')
+    p_res.add_argument('--authoritative-cache')
+    p_res.add_argument('--skip-authoritative-fetch', action='store_true')
     p_res.add_argument('--allow-missing-candidate', action='store_true')
     p_res.add_argument('--allow-missing-deb', action='store_true')
     p_res.set_defaults(func=run_resolve)
@@ -1210,6 +2047,10 @@ def main(argv=None):
     p_bld.add_argument('--components')
     p_bld.add_argument('--archive-base', default=DEFAULT_ARCHIVE_BASE)
     p_bld.add_argument('--security-base', default=DEFAULT_SECURITY_BASE)
+    p_bld.add_argument('--authoritative-root')
+    p_bld.add_argument('--authoritative-cache')
+    p_bld.add_argument('--skip-authoritative-fetch', action='store_true')
+    p_bld.add_argument('--target-version', default='')
     p_bld.add_argument('--allow-missing-candidate', action='store_true')
     p_bld.add_argument('--skip-acquire', action='store_true')
     p_bld.add_argument('--ensure-selective', action='store_true')
@@ -1220,6 +2061,12 @@ def main(argv=None):
     p_tx.add_argument('--simulation-file')
     p_tx.add_argument('--output')
     p_tx.set_defaults(func=run_transaction)
+
+    p_st = sub.add_parser('validate-state')
+    p_st.add_argument('--state')
+    p_st.add_argument('--dest')
+    p_st.add_argument('--fields-only', action='store_true')
+    p_st.set_defaults(func=run_validate_state)
 
     args = parser.parse_args(argv)
     if not getattr(args, 'func', None):

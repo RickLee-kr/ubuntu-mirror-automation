@@ -883,18 +883,18 @@ engine_prepare_phase2_ubuntu_prerequisites() {
   while IFS= read -r out; do
     [[ -n "$out" ]] && mm_info "$out"
   done < "${extras}/phase2-ubuntu-prerequisites.state"
-  local required count
+  python3 "${MM_PROJECT_ROOT}/scripts/lib/phase2_ubuntu_prerequisites.py" \
+    validate-state --dest "$extras" \
+    || mm_die "PHASE2_PREREQ=FAIL reason=state_contract"
+  local required count sha
   required="$(awk -F= '$1=="PHASE2_PREREQ_REQUIRED"{print $2; exit}' \
     "${extras}/phase2-ubuntu-prerequisites.state")"
   count="$(awk -F= '$1=="PHASE2_PREREQ_PACKAGE_COUNT"{print $2; exit}' \
     "${extras}/phase2-ubuntu-prerequisites.state")"
-  if [[ "${required}" == "YES" ]]; then
-    [[ -f "${extras}/phase2-ubuntu-prerequisites.tar.gz" ]] \
-      || mm_die "PHASE2_PREREQ=FAIL reason=artifact_missing"
-    [[ -f "${extras}/phase2-ubuntu-prerequisites.tar.gz.sha256" ]] \
-      || mm_die "PHASE2_PREREQ=FAIL reason=sha256_missing"
-  fi
-  mm_ok "PHASE2_PREREQ=PASS required=${required} count=${count}"
+  sha="$(awk -F= '$1=="PHASE2_PREREQ_SHA256"{print $2; exit}' \
+    "${extras}/phase2-ubuntu-prerequisites.state")"
+  engine_record_phase2_prereq_release_identity
+  mm_ok "PHASE2_PREREQ=PASS required=${required} count=${count} sha256=${sha}"
 }
 
 engine_bringup_sha1_of() {
@@ -1775,36 +1775,55 @@ engine_validate_phase2_prereq_http_layout() {
   local dp="$1"
   local extras="${dp}/extras"
   local state="${extras}/phase2-ubuntu-prerequisites.state"
-  local required count art
+  local py="${MM_PROJECT_ROOT}/scripts/lib/phase2_ubuntu_prerequisites.py"
   [[ -f "$state" ]] || {
     mm_error "HTTP_LAYOUT=FAIL missing ${state}"
     return 1
   }
+  if ! python3 "$py" validate-state --dest "$extras"; then
+    mm_error "HTTP_LAYOUT=FAIL phase2_prereq_state_contract"
+    return 1
+  fi
+  local required count
   required="$(awk -F= '$1=="PHASE2_PREREQ_REQUIRED"{print $2; exit}' "$state")"
   count="$(awk -F= '$1=="PHASE2_PREREQ_PACKAGE_COUNT"{print $2; exit}' "$state")"
-  if [[ "$required" == "NO" && "${count:-0}" == "0" ]]; then
+  if [[ "$required" == "NO" ]]; then
     mm_info "PHASE2_PREREQ_HTTP=NOT_REQUIRED"
     return 0
   fi
-  if [[ "$required" != "YES" ]]; then
-    mm_error "HTTP_LAYOUT=FAIL phase2_prereq_state_invalid required=${required}"
-    return 1
-  fi
-  art="${extras}/phase2-ubuntu-prerequisites.tar.gz"
-  [[ -f "$art" ]] || {
-    mm_error "HTTP_LAYOUT=FAIL missing phase2-ubuntu-prerequisites.tar.gz"
-    return 1
-  }
-  [[ -f "${art}.sha256" ]] || {
-    mm_error "HTTP_LAYOUT=FAIL missing phase2-ubuntu-prerequisites.tar.gz.sha256"
-    return 1
-  }
-  [[ -f "${extras}/phase2-ubuntu-prerequisites.manifest.json" ]] || {
-    mm_error "HTTP_LAYOUT=FAIL missing phase2-ubuntu-prerequisites.manifest.json"
-    return 1
-  }
   mm_info "PHASE2_PREREQ_HTTP=REQUIRED count=${count}"
   return 0
+}
+
+engine_record_phase2_prereq_release_identity() {
+  local ver="${TARGET_DP_VERSION:-}"
+  local envf="${MM_DP_PHASE2_ROOT}/${ver}/release.env"
+  local state="${MM_DP_PHASE2_ROOT}/${ver}/extras/phase2-ubuntu-prerequisites.state"
+  local tmp required count sha build publication
+  [[ -n "$ver" && -f "$envf" && -f "$state" ]] || return 0
+  required="$(awk -F= '$1=="PHASE2_PREREQ_REQUIRED"{print $2; exit}' "$state")"
+  count="$(awk -F= '$1=="PHASE2_PREREQ_PACKAGE_COUNT"{print $2; exit}' "$state")"
+  sha="$(awk -F= '$1=="PHASE2_PREREQ_SHA256"{print $2; exit}' "$state")"
+  build="$(awk -F= '$1=="PHASE2_PREREQ_BUILD"{print $2; exit}' "$state")"
+  publication="$(awk -F= '$1=="PHASE2_PREREQ_PUBLICATION"{print $2; exit}' "$state")"
+  tmp="$(mktemp "${envf}.prereq.XXXXXX")"
+  grep -vE '^PHASE2_PREREQ_(REQUIRED|PACKAGE_COUNT|SHA256|BUILD|PUBLICATION)=' "$envf" >"$tmp" || true
+  {
+    printf 'PHASE2_PREREQ_REQUIRED=%s\n' "$required"
+    printf 'PHASE2_PREREQ_PACKAGE_COUNT=%s\n' "$count"
+    printf 'PHASE2_PREREQ_SHA256=%s\n' "$sha"
+    printf 'PHASE2_PREREQ_BUILD=%s\n' "$build"
+    printf 'PHASE2_PREREQ_PUBLICATION=%s\n' "$publication"
+  } >>"$tmp"
+  if python3 "${MM_PROJECT_ROOT}/scripts/lib/phase2_ubuntu_prerequisites.py" \
+    validate-state --dest "${MM_DP_PHASE2_ROOT}/${ver}/extras" >/dev/null
+  then
+    mv -f "$tmp" "$envf"
+    chmod 0644 "$envf" 2>/dev/null || true
+  else
+    rm -f "$tmp"
+    mm_die "PHASE2_PREREQ=FAIL reason=release_identity_state"
+  fi
 }
 
 engine_validate_http_layout() {

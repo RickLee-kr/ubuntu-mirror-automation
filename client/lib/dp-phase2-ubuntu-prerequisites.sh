@@ -221,6 +221,85 @@ dp2_prereq_read_state_value() {
   awk -F= -v k="$key" '$1==k {print $2; exit}' "$file"
 }
 
+dp2_prereq_validate_state_contract() {
+  # Independent PHASE2_PREREQ_* contract. Missing/blank/non-numeric count is
+  # never treated as zero. BUILD/PUBLICATION must be PASS.
+  local state="$1"
+  local extras_dir="${2:-}"
+  local required count build publication artifact sha
+  local reason=""
+  if [[ ! -f "$state" ]]; then
+    printf '%s\n' "state_missing"
+    return 1
+  fi
+  required="$(awk -F= '$1=="PHASE2_PREREQ_REQUIRED"{print $2; exit}' "$state")"
+  count="$(awk -F= '$1=="PHASE2_PREREQ_PACKAGE_COUNT"{print $2; exit}' "$state")"
+  build="$(awk -F= '$1=="PHASE2_PREREQ_BUILD"{print $2; exit}' "$state")"
+  publication="$(awk -F= '$1=="PHASE2_PREREQ_PUBLICATION"{print $2; exit}' "$state")"
+  artifact="$(awk -F= '$1=="PHASE2_PREREQ_ARTIFACT"{print $2; exit}' "$state")"
+  sha="$(awk -F= '$1=="PHASE2_PREREQ_SHA256"{print $2; exit}' "$state")"
+  if [[ "$build" != "PASS" ]]; then
+    printf '%s\n' "build_not_pass"
+    return 1
+  fi
+  if [[ "$publication" != "PASS" ]]; then
+    printf '%s\n' "publication_not_pass"
+    return 1
+  fi
+  if [[ -z "${count+x}" || -z "$count" ]]; then
+    printf '%s\n' "count_missing"
+    return 1
+  fi
+  if [[ ! "$count" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "count_nonnumeric"
+    return 1
+  fi
+  if [[ "$required" == "NO" ]]; then
+    if [[ "$count" != "0" ]]; then
+      printf '%s\n' "count_nonzero_when_not_required"
+      return 1
+    fi
+    printf '%s\n' "not_required"
+    return 0
+  fi
+  if [[ "$required" != "YES" ]]; then
+    printf '%s\n' "required_invalid"
+    return 1
+  fi
+  if [[ "$count" -le 0 ]]; then
+    printf '%s\n' "count_not_positive"
+    return 1
+  fi
+  if [[ "$artifact" != "phase2-ubuntu-prerequisites.tar.gz" ]]; then
+    printf '%s\n' "artifact_name_invalid"
+    return 1
+  fi
+  if [[ ! "$sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    printf '%s\n' "sha256_invalid"
+    return 1
+  fi
+  if [[ -n "$extras_dir" ]]; then
+    if [[ ! -f "${extras_dir}/phase2-ubuntu-prerequisites.state" ]]; then
+      printf '%s\n' "state_file_missing"
+      return 1
+    fi
+    if [[ ! -f "${extras_dir}/phase2-ubuntu-prerequisites.tar.gz" ]]; then
+      printf '%s\n' "artifact_missing"
+      return 1
+    fi
+    if [[ ! -f "${extras_dir}/phase2-ubuntu-prerequisites.tar.gz.sha256" ]]; then
+      printf '%s\n' "sha_sidecar_missing"
+      return 1
+    fi
+    if [[ ! -f "${extras_dir}/phase2-ubuntu-prerequisites.manifest.json" ]]; then
+      printf '%s\n' "manifest_missing"
+      return 1
+    fi
+  fi
+  printf '%s\n' "required"
+  return 0
+}
+
 dp2_prereq_find_state() {
   local cand
   for cand in \
@@ -244,8 +323,21 @@ dp2_install_phase2_ubuntu_prerequisites() {
   dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL_STRATEGY=local_deb_closure"
 
   if state="$(dp2_prereq_find_state)"; then
+    local verdict="" state_rc=0 prev_e=0
+    [[ $- == *e* ]] && prev_e=1
+    set +e
+    verdict="$(dp2_prereq_validate_state_contract "$state")"
+    state_rc=$?
+    [[ "$prev_e" -eq 1 ]] && set -e
     required="$(dp2_prereq_read_state_value "$state" PHASE2_PREREQ_REQUIRED || true)"
-    dp2_prereq_log INFO "PHASE2_PREREQ_STATE=${state} required=${required:-unknown}"
+    dp2_prereq_log INFO "PHASE2_PREREQ_STATE=${state} required=${required:-unknown} verdict=${verdict:-unknown}"
+    if [[ "$state_rc" -ne 0 ]]; then
+      dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=state_${verdict:-invalid}"
+      return 1
+    fi
+    if [[ "$verdict" == "not_required" ]]; then
+      required="NO"
+    fi
   fi
 
   if [[ -n "${PHASE2_PREREQ_APT_SIMULATION:-}" ]]; then
@@ -255,17 +347,17 @@ dp2_install_phase2_ubuntu_prerequisites() {
     fi
   fi
 
-  if ! artifact="$(dp2_prereq_find_artifact)"; then
-    if [[ "${required}" == "NO" ]]; then
-      dp2_prereq_log INFO "PHASE2_PREREQ_ARTIFACT=ABSENT"
-      if ! dp2_validate_apt_dependency_graph prerequisites; then
-        dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=apt_dependency_check"
-        return 1
-      fi
-      dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL=SKIP reason=not_required"
-      dp2_prereq_log INFO "PHASE2_PREREQ_STAGE=NOT_REQUIRED"
-      return 0
+  if [[ "${required}" == "NO" ]]; then
+    dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL=SKIP reason=not_required"
+    if ! dp2_validate_apt_dependency_graph prerequisites; then
+      dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=apt_dependency_check"
+      return 1
     fi
+    dp2_prereq_log INFO "PHASE2_PREREQ_STAGE=NOT_REQUIRED"
+    return 0
+  fi
+
+  if ! artifact="$(dp2_prereq_find_artifact)"; then
     dp2_prereq_log ERROR "PHASE2_PREREQ_ARTIFACT=ABSENT"
     dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=artifact_absent_required"
     return 1
