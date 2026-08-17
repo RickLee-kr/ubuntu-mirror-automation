@@ -145,7 +145,9 @@ validate_remote_role_identity() {
     expected_canonical="$(_phase2_canonical_role "$expected_role")"
     actual_canonical="$(_phase2_canonical_role "$actual_role")"
     if [[ "$actual_canonical" != "$expected_canonical" ]]; then
-        log "WORKER_RESULT ip=${worker_ip} role=${expected_role} result=FAIL reason=role_mismatch expected=${expected_role} actual=${actual_role}"
+        # Keep the legacy `reason=role_mismatch actual=...` prefix stable for
+        # existing diagnostics/tests, then append the stricter expected role.
+        log "WORKER_RESULT ip=${worker_ip} role=${expected_role} result=FAIL reason=role_mismatch actual=${actual_role} expected=${expected_role}"
         return 1
     fi
     log "REMOTE_ROLE_IDENTITY ip=${worker_ip} expected=${expected_role} actual=${actual_role} result=PASS"
