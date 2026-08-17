@@ -273,6 +273,10 @@ orchestrate_workers() {
             fi
         fi
 
+        # Create directories on worker (sudo needed for aella user) and
+        # prepare staging paths before artifact copy.
+        worker_ssh "$worker_ip" "sudo mkdir -p $STAGING_DIR $AELLADEB_DIR"
+
         log "Copying script to $worker_ip..."
         worker_scp "$SCRIPT_PATH" "$worker_ip" "/tmp/${SCRIPT_NAME}"
 
