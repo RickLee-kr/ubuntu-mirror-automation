@@ -47,6 +47,7 @@ UM_RUNTIME_SCRIPT_LIB_SHELL=(
   http_publication_permissions.sh
   client_mirror_gates.sh
   local_client_signing.sh
+  phase2_helper_generation.sh
 )
 
 # ---------------------------------------------------------------------------
@@ -110,6 +111,7 @@ UM_RUNTIME_CLIENT_FILES=(
   stage-dp-phase2.sh
   stage-dp-phase2-6.5.0.sh
   bringup_py3_dp_lifecycle.sh
+  phase2-helper-generation.manifest
   dp-client-command-runner.sh
 )
 
@@ -152,6 +154,7 @@ UM_RUNTIME_REQUIRED_RELATIVE_PATHS=(
   scripts/lib/build_client_launchers.py
   scripts/lib/patch_dp_phase2_bringup.py
   scripts/lib/phase2_ubuntu_prerequisites.py
+  scripts/lib/phase2_helper_generation.sh
   scripts/lib/xenial_bionic_upgrade_analysis.py
   scripts/lib/selective_mirror.py
   scripts/prepare-phase2-ubuntu-prerequisites.sh
@@ -166,6 +169,7 @@ UM_RUNTIME_REQUIRED_RELATIVE_PATHS=(
   client/lib/dp-phase2-operation-progress.sh
   client/lib/dp-phase2-bringup-lifecycle.sh
   client/lib/dp-phase2-ubuntu-prerequisites.sh
+  client/phase2-helper-generation.manifest
   client/dp-client-command-runner.sh
   client/dp-client-hop-launcher.sh.in
   client/bringup_py3_dp_lifecycle.sh

@@ -5,7 +5,6 @@ After=network-online.target local-fs.target
 Wants=network-online.target
 ConditionPathExists=/opt/aelladata/os-upgrade/state.json
 ConditionPathExists=/opt/aelladata/os-upgrade/runtime/dp-os-upgrade-runner.sh
-Conflicts=dp-os-upgrade.service
 
 [Service]
 Type=oneshot

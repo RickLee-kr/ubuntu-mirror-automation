@@ -31,6 +31,54 @@ CANONICAL="${TMP}/canonical.txt"
 DISPLAY="${TMP}/display.txt"
 FORMAT_LOG="${TMP}/format.log"
 
+HTTP_ROOT="${TMP}/http"
+CLIENT_ROOT="${HTTP_ROOT}/client"
+mkdir -p "${CLIENT_ROOT}/lib" "${TMP}/fakebin"
+cat >"${CLIENT_ROOT}/stage-dp-phase2.sh" <<'STAGE'
+#!/usr/bin/env bash
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+for req in \
+  lib/dp-offline-source-product-version.sh \
+  lib/dp-phase2-operation-progress.sh \
+  lib/dp-phase2-bringup-lifecycle.sh \
+  lib/dp-phase2-ubuntu-prerequisites.sh \
+  bringup_py3_dp_lifecycle.sh \
+  phase2-helper-generation.manifest
+do
+  [[ -s "${here}/${req}" ]] || { printf 'MISSING=%s\n' "$req"; exit 1; }
+done
+source "${here}/lib/dp-offline-source-product-version.sh"
+source "${here}/lib/dp-phase2-operation-progress.sh"
+printf 'PHASE2_HELPER_FETCH_E2E=PASS\n'
+printf 'PHASE2_STUB_ARGS=%s\n' "$*"
+STAGE
+cat >"${CLIENT_ROOT}/lib/dp-offline-source-product-version.sh" <<'HELPER1'
+#!/usr/bin/env bash
+SOURCE_HELPER_LOADED=YES
+HELPER1
+cat >"${CLIENT_ROOT}/lib/dp-phase2-operation-progress.sh" <<'HELPER2'
+#!/usr/bin/env bash
+PROGRESS_HELPER_LOADED=YES
+HELPER2
+cat >"${CLIENT_ROOT}/lib/dp-phase2-bringup-lifecycle.sh" <<'HELPER3'
+#!/usr/bin/env bash
+LIFECYCLE_LIB_LOADED=YES
+HELPER3
+cat >"${CLIENT_ROOT}/lib/dp-phase2-ubuntu-prerequisites.sh" <<'HELPER5'
+#!/usr/bin/env bash
+PREREQ_HELPER_LOADED=YES
+HELPER5
+cat >"${CLIENT_ROOT}/bringup_py3_dp_lifecycle.sh" <<'HELPER4'
+#!/usr/bin/env bash
+LIFECYCLE_WRAPPER_LOADED=YES
+HELPER4
+chmod +x "${CLIENT_ROOT}/stage-dp-phase2.sh" "${CLIENT_ROOT}/bringup_py3_dp_lifecycle.sh"
+# shellcheck source=/dev/null
+source "${ROOT}/scripts/lib/phase2_helper_generation.sh"
+phase2_helper_generation_write "$CLIENT_ROOT" >/dev/null
+GEN_SHA="$(phase2_helper_generation_sha256 "${CLIENT_ROOT}/phase2-helper-generation.manifest")"
+
 {
   cat <<'EOF_HEADER'
 DP Client Upgrade Commands
@@ -67,9 +115,9 @@ Use the SAME staging command on every node.
 
 Copy all three lines of the following block into the DP terminal once:
 
-( [[ \${BASH_SUBSHELL:-0} -gt 0 ]] || { printf '%s\n' 'DP_COMMAND_SUBSHELL_REQUIRED=YES' >&2; exit 97; }; cd /home/aella && MIRROR='${MIRROR}' && VER='6.5.0' && SCRIPT='stage-dp-phase2.sh' && W=\$(mktemp -d)&&trap 'rm -rf "\$W"' EXIT&&cd "\$W" && \\
-curl -fsSLo "\$SCRIPT" "\$MIRROR/client/\$SCRIPT" && curl -fsSLo "\$SCRIPT.sha256" "\$MIRROR/client/\$SCRIPT.sha256" && test -s "\$SCRIPT" && test -s "\$SCRIPT.sha256" && \\
-sha256sum -c "\$SCRIPT.sha256" && { sudo bash "./\$SCRIPT" --target-version "\$VER" --same-version-recovery --mirror-url "\$MIRROR"; })
+( [[ \${BASH_SUBSHELL:-0} -gt 0 ]] || { printf '%s\n' 'DP_COMMAND_SUBSHELL_REQUIRED=YES' >&2; exit 97; }; cd /home/aella && MIRROR='${MIRROR}' && VER='6.5.0' && SCRIPT='stage-dp-phase2.sh' && GEN='phase2-helper-generation.manifest' && H='${GEN_SHA}' && W=\$(mktemp -d)&&trap 'rm -rf "\$W"' EXIT&&cd "\$W" && \\
+  mkdir -p lib && for F in "\$GEN" "\$SCRIPT" bringup_py3_dp_lifecycle.sh lib/dp-{offline-source-product-version,phase2-operation-progress,phase2-bringup-lifecycle,phase2-ubuntu-prerequisites}.sh; do curl -fsSLo "\$F" "\$MIRROR/client/\$F" || exit; done && \\
+  printf '%s  %s\\n' "\$H" "\$GEN" | sha256sum -c - && sha256sum -c "\$GEN" && sudo bash "./\$SCRIPT" --target-version "\$VER" --same-version-recovery --mirror-url "\$MIRROR"; )
 EOF_PHASE2
 } >"$CANONICAL"
 
@@ -80,7 +128,7 @@ canonical_after="$(sha256sum "$CANONICAL" | awk '{print $1}')"
 
 grep -q 'MENU7_DISPLAY_FORMAT=PASS wrapped_launchers=4 wrapped_phase2=1' "$FORMAT_LOG"
 grep -q 'Copy and paste all three physical lines below into the DP terminal.' "$DISPLAY"
-grep -q 'Copy and paste all four physical lines below into the DP terminal.' "$DISPLAY"
+grep -q 'Copy and paste all five physical lines below into the DP terminal.' "$DISPLAY"
 grep -q 'complete Phase 2 client helper unit' "$DISPLAY"
 grep -Fq 'CLUSTER:' "$DISPLAY"
 grep -Fq 'Run STEP 6 on the DL master, every DL worker,' "$DISPLAY"
@@ -88,17 +136,19 @@ grep -Fq 'Complete STEP 6 on ALL cluster nodes before starting STEP 7.' "$DISPLA
 grep -Fq 'Use the SAME staging command on every node.' "$DISPLAY"
 [[ "$(grep -c '^cd /home/aella && L=' "$DISPLAY")" -eq 4 ]]
 [[ "$(grep -c '^  U=' "$DISPLAY")" -eq 4 ]]
-[[ "$(grep -c "^  printf '%s  %s" "$DISPLAY")" -eq 4 ]]
+[[ "$(grep -c 'sha256sum -c - && mv -f' "$DISPLAY")" -eq 4 ]]
 [[ "$(grep -c '^( C=' "$DISPLAY")" -eq 1 ]]
 
 grep -Fq 'bringup_py3_dp_lifecycle.sh' "$DISPLAY"
-grep -Fq 'lib/dp-{offline-source-product-version,phase2-operation-progress,phase2-bringup-lifecycle}.sh' "$DISPLAY"
+grep -Fq 'phase2-helper-generation.manifest' "$DISPLAY"
+grep -Fq 'lib/dp-{offline-source-product-version,phase2-operation-progress,phase2-bringup-lifecycle,phase2-ubuntu-prerequisites}.sh' "$DISPLAY"
 grep -Fq 'curl -fsSLo "$F" "$C/$F"' "$DISPLAY"
 grep -Fq -- "--target-version '6.5.0' --same-version-recovery" "$DISPLAY"
-grep -Fq 'sha256sum -c "$S.sha256"' "$DISPLAY"
+grep -Fq 'sha256sum -c "$G"' "$DISPLAY"
+grep -Fq "H='${GEN_SHA}'" "$DISPLAY"
+! grep -Fq 'sha256sum -c "$S.sha256"' "$DISPLAY"
 ! grep -Fq -- "--create-dirs -fsSLo '#1'" "$DISPLAY"
 ! grep -Eq 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)' "$DISPLAY"
-# No whitespace after line-continuation backslashes.
 ! grep -Eq '\\[[:space:]]+$' "$DISPLAY"
 
 max_line="$(awk '{ if (length > max) max=length } END { print max+0 }' "$DISPLAY")"
@@ -123,60 +173,19 @@ phase2_block="${TMP}/phase2.sh"
 awk '
   /^\( C=/ { p=1; n=0 }
   p { print; n++ }
-  p && n==4 { exit }
+  p && n==5 { exit }
 ' "$DISPLAY" >"$phase2_block"
-[[ "$(wc -l <"$phase2_block" | tr -d ' ')" -eq 4 ]]
-[[ "$(grep -c '\\$' "$phase2_block")" -eq 3 ]]
+[[ "$(wc -l <"$phase2_block" | tr -d ' ')" -eq 5 ]]
+[[ "$(grep -c '\\$' "$phase2_block")" -eq 4 ]]
 ! grep -Eq 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)' "$phase2_block"
 ! grep -Eq '\\[[:space:]]+$' "$phase2_block"
 bash -n "$phase2_block"
 
-# Hermetic end-to-end check of the exact displayed Phase 2 command.
-HTTP_ROOT="${TMP}/http"
-CLIENT_ROOT="${HTTP_ROOT}/client"
-mkdir -p "${CLIENT_ROOT}/lib" "${TMP}/fakebin"
-cat >"${CLIENT_ROOT}/stage-dp-phase2.sh" <<'STAGE'
-#!/usr/bin/env bash
-set -euo pipefail
-here="$(cd "$(dirname "$0")" && pwd)"
-for req in \
-  lib/dp-offline-source-product-version.sh \
-  lib/dp-phase2-operation-progress.sh \
-  lib/dp-phase2-bringup-lifecycle.sh \
-  bringup_py3_dp_lifecycle.sh
-do
-  [[ -s "${here}/${req}" ]] || { printf 'MISSING=%s\n' "$req"; exit 1; }
-done
-source "${here}/lib/dp-offline-source-product-version.sh"
-source "${here}/lib/dp-phase2-operation-progress.sh"
-printf 'PHASE2_HELPER_FETCH_E2E=PASS\n'
-printf 'PHASE2_STUB_ARGS=%s\n' "$*"
-STAGE
-cat >"${CLIENT_ROOT}/lib/dp-offline-source-product-version.sh" <<'HELPER1'
-#!/usr/bin/env bash
-SOURCE_HELPER_LOADED=YES
-HELPER1
-cat >"${CLIENT_ROOT}/lib/dp-phase2-operation-progress.sh" <<'HELPER2'
-#!/usr/bin/env bash
-PROGRESS_HELPER_LOADED=YES
-HELPER2
-cat >"${CLIENT_ROOT}/lib/dp-phase2-bringup-lifecycle.sh" <<'HELPER3'
-#!/usr/bin/env bash
-LIFECYCLE_LIB_LOADED=YES
-HELPER3
-cat >"${CLIENT_ROOT}/bringup_py3_dp_lifecycle.sh" <<'HELPER4'
-#!/usr/bin/env bash
-LIFECYCLE_WRAPPER_LOADED=YES
-HELPER4
-(
-  cd "$CLIENT_ROOT"
-  sha256sum stage-dp-phase2.sh >stage-dp-phase2.sh.sha256
-)
 cat >"${TMP}/fakebin/sudo" <<'SUDO'
 #!/usr/bin/env bash
 exec "$@"
 SUDO
-chmod +x "${TMP}/fakebin/sudo" "${CLIENT_ROOT}/stage-dp-phase2.sh"
+chmod +x "${TMP}/fakebin/sudo"
 python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$HTTP_ROOT" \
   >"${TMP}/http.log" 2>&1 &
 HTTP_PID=$!
@@ -184,55 +193,31 @@ for _ in $(seq 1 50); do
   curl -fsS "${MIRROR}/client/stage-dp-phase2.sh" >/dev/null 2>&1 && break
   sleep 0.1
 done
-curl -fsS "${MIRROR}/client/stage-dp-phase2.sh" >/dev/null
 PATH="${TMP}/fakebin:${PATH}" bash "$phase2_block" >"${TMP}/phase2.out"
-grep -q '^stage-dp-phase2.sh: OK$' "${TMP}/phase2.out"
 grep -q '^PHASE2_HELPER_FETCH_E2E=PASS$' "${TMP}/phase2.out"
 grep -q -- '--target-version 6.5.0 --same-version-recovery --mirror-url' "${TMP}/phase2.out"
 
-# Backward compatibility: old Menu 7 command (stage+sha256 only) still works
-# because stage prefetches missing helpers via --mirror-url.
-printf 'HTTP_SOURCE_HELPER=YES\n' >"${CLIENT_ROOT}/lib/dp-offline-source-product-version.sh"
-printf 'HTTP_PROGRESS_HELPER=YES\n' >"${CLIENT_ROOT}/lib/dp-phase2-operation-progress.sh"
-# Use a stage copy whose only recovery path is the early mirror fetch (no
-# absolute checkout fallback), so this fixture cannot silently reuse the repo.
-python3 - "${ROOT}/client/stage-dp-phase2.sh" "${CLIENT_ROOT}/stage-dp-phase2.sh" <<'PY'
-from pathlib import Path
-import sys
-src, dst = Path(sys.argv[1]), Path(sys.argv[2])
-text = src.read_text(encoding="utf-8")
-text = text.replace("/home/aella/ubuntu-mirror-automation/client/lib", "/nonexistent/ubuntu-mirror-automation/client/lib")
-text = text.replace('"${SCRIPT_DIR}/../client/lib"', '"/nonexistent/relative/client/lib"')
-dst.write_text(text, encoding="utf-8")
-PY
-(
-  cd "$CLIENT_ROOT"
-  sha256sum stage-dp-phase2.sh >stage-dp-phase2.sh.sha256
-)
+# Legacy sidecar-only Menu 7 command must fail closed: no curl+bash -n source path.
 OLD_WORK="${TMP}/old-work"
 mkdir -p "$OLD_WORK"
 curl -fsSLo "${OLD_WORK}/stage-dp-phase2.sh" "${MIRROR}/client/stage-dp-phase2.sh"
-rm -rf "${OLD_WORK}/lib"
-PATH="${TMP}/fakebin:${PATH}" bash "${OLD_WORK}/stage-dp-phase2.sh" \
-  --help --mirror-url "${MIRROR}" >/dev/null
-grep -qx 'HTTP_SOURCE_HELPER=YES' "${OLD_WORK}/lib/dp-offline-source-product-version.sh"
-grep -qx 'HTTP_PROGRESS_HELPER=YES' "${OLD_WORK}/lib/dp-phase2-operation-progress.sh"
-bash -n "${OLD_WORK}/lib/dp-offline-source-product-version.sh"
-bash -n "${OLD_WORK}/lib/dp-phase2-operation-progress.sh"
-echo "PHASE2_OLD_MENU7_HELPER_PREFETCH=PASS"
-
-# Invalid HTML payload must fail closed before helpers are sourced.
-printf '<html>nope</html>\n' >"${CLIENT_ROOT}/lib/dp-phase2-operation-progress.sh"
-BAD_WORK="${TMP}/bad-work"
-mkdir -p "$BAD_WORK"
-curl -fsSLo "${BAD_WORK}/stage-dp-phase2.sh" "${MIRROR}/client/stage-dp-phase2.sh"
+# Use the real stage script (generation-bound) without a local manifest.
+python3 - "${ROOT}/client/stage-dp-phase2.sh" "${OLD_WORK}/stage-dp-phase2.sh" <<'PY'
+from pathlib import Path
+import sys
+src, dst = Path(sys.argv[1]), Path(sys.argv[2])
+dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+PY
+chmod +x "${OLD_WORK}/stage-dp-phase2.sh"
 set +e
-PATH="${TMP}/fakebin:${PATH}" bash "${BAD_WORK}/stage-dp-phase2.sh" \
-  --help --mirror-url "${MIRROR}" >"${TMP}/bad.out" 2>&1
-BAD_RC=$?
+PATH="${TMP}/fakebin:${PATH}" bash "${OLD_WORK}/stage-dp-phase2.sh" \
+  --help --mirror-url "${MIRROR}" >"${TMP}/old.out" 2>&1
+OLD_RC=$?
 set -e
-[[ "$BAD_RC" -ne 0 ]]
-grep -Eiq 'missing Phase 2 helper|ERROR:' "${TMP}/bad.out"
+[[ "$OLD_RC" -ne 0 ]]
+grep -q 'PHASE2_HELPER_GENERATION=FAIL' "${TMP}/old.out"
+grep -q 'manifest_missing' "${TMP}/old.out"
 
 echo "MENU7_NORMAL_WIDTH_DISPLAY=PASS"
 echo "PHASE2_HELPER_FETCH_E2E=PASS"
+echo "PHASE2_OLD_MENU7_HELPER_PREFETCH=FAILCLOSED"

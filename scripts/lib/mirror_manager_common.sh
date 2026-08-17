@@ -1694,6 +1694,12 @@ MM_CLIENT_REQUIRED_FILES=(
 MM_CLIENT_PHASE2_REQUIRED_FILES=(
   stage-dp-phase2.sh
   stage-dp-phase2.sh.sha256
+  bringup_py3_dp_lifecycle.sh
+  phase2-helper-generation.manifest
+  lib/dp-offline-source-product-version.sh
+  lib/dp-phase2-operation-progress.sh
+  lib/dp-phase2-bringup-lifecycle.sh
+  lib/dp-phase2-ubuntu-prerequisites.sh
 )
 
 mm_client_files_ready_phase2() {
@@ -1704,6 +1710,13 @@ mm_client_files_ready_phase2() {
     [[ -f "${root}/${f}" ]] || return 1
   done
   (cd "$root" && sha256sum -c stage-dp-phase2.sh.sha256 >/dev/null 2>&1) || return 1
+  if [[ -f "${MM_PROJECT_ROOT:-}/scripts/lib/phase2_helper_generation.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${MM_PROJECT_ROOT}/scripts/lib/phase2_helper_generation.sh"
+    phase2_helper_generation_verify "$root" || return 1
+  else
+    (cd "$root" && sha256sum -c phase2-helper-generation.manifest >/dev/null 2>&1) || return 1
+  fi
   return 0
 }
 
@@ -1877,7 +1890,7 @@ mm_check_phase2_helpers_ready() {
     return 0
   fi
   mm_state_set PHASE2_HELPERS_READY FAIL
-  mm_error "PHASE2_HELPERS_READY=FAIL (stage-dp-phase2.sh/.sha256 missing under ${MM_CLIENT_ROOT})"
+  mm_error "PHASE2_HELPERS_READY=FAIL (generation-bound Phase 2 helper unit missing under ${MM_CLIENT_ROOT})"
   return 1
 }
 

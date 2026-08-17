@@ -427,6 +427,12 @@ if [[ -d "${ROOT}/client/lib" ]]; then
   chmod 0755 "${STAGE_DIR}/lib"
   cp -a "${ROOT}/client/lib/." "${STAGE_DIR}/lib/"
 fi
+# shellcheck source=lib/phase2_helper_generation.sh
+source "${ROOT}/scripts/lib/phase2_helper_generation.sh"
+if ! phase2_helper_generation_write "$STAGE_DIR" >/dev/null; then
+  fail_build "" "phase2_helper_generation" "PHASE2_HELPER_GENERATION=FAIL" 1
+fi
+evidence_echo "PHASE2_HELPER_GENERATION=PASS"
 
 local_signing_assert_private_not_published "$STAGE_DIR" || {
   evidence "PRIVATE_KEY_HTTP_PUBLISHED=YES"

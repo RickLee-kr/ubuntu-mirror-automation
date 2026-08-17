@@ -210,18 +210,25 @@ dp2_run_download_with_progress() {
 
 # Ensure the complete Phase 2 client helper unit is present before starting the
 # expensive extraction. Current Menu 7 downloads the full unit up front; this
-# preflight remains for standalone execution and older generated commands that
-# only fetched a subset. Already-present valid files are reported as REUSED.
-# Trust boundary: payloads are checked non-empty / non-HTML / bash -n only.
-# Stage script integrity remains anchored on stage-dp-phase2.sh.sha256.
+# preflight remains for standalone execution that is missing a subset.
+# Trust boundary: every helper must match the generation manifest. bash -n is
+# never sufficient integrity validation. A HTTP .sha256 sidecar is not the
+# trust anchor — the local generation manifest (pinned by Menu 7) is.
 dp2_prepare_bringup_controller_dependencies() {
   local lib_dir="${_STAGE_LIB_DIR:-}"
   local mirror="${MIRROR_URL:-}"
-  local stage_dir rel dest tmp url action
+  local stage_dir rel dest tmp url action expected actual man
+  local man_name="${PHASE2_HELPER_GENERATION_MANIFEST_NAME:-phase2-helper-generation.manifest}"
 
   # Outside the Phase 2 stage script these globals are intentionally absent.
   [[ -n "$lib_dir" && -n "$mirror" ]] || return 0
   stage_dir="$(dirname "$lib_dir")"
+  man="${stage_dir}/${man_name}"
+  if [[ ! -s "$man" ]]; then
+    printf 'PHASE2_CONTROLLER_DEPENDENCY=FAIL path=%s reason=manifest_missing\n' \
+      "$man_name" >&2
+    return 1
+  fi
 
   for rel in \
     bringup_py3_dp_lifecycle.sh \
@@ -231,12 +238,19 @@ dp2_prepare_bringup_controller_dependencies() {
     lib/dp-phase2-ubuntu-prerequisites.sh
   do
     dest="${stage_dir}/${rel}"
-    if [[ -s "$dest" ]] \
-      && ! head -c 256 "$dest" | tr -d '\0' | grep -qiE '<!DOCTYPE[[:space:]]*html|<html[[:space:]]|<html>' \
-      && bash -n "$dest" >/dev/null 2>&1
-    then
-      printf 'PHASE2_CONTROLLER_DEPENDENCY=REUSED path=%s\n' "$rel"
-      continue
+    expected="$(awk -v p="$rel" '$2 == p {print $1; exit}' "$man")"
+    if [[ ! "$expected" =~ ^[0-9a-fA-F]{64}$ ]]; then
+      printf 'PHASE2_CONTROLLER_DEPENDENCY=FAIL path=%s reason=unlisted\n' "$rel" >&2
+      return 1
+    fi
+    if [[ -s "$dest" ]]; then
+      actual="$(sha256sum "$dest" | awk '{print $1}')"
+      if [[ "${actual,,}" == "${expected,,}" ]]; then
+        printf 'PHASE2_CONTROLLER_DEPENDENCY=REUSED path=%s\n' "$rel"
+        continue
+      fi
+      printf 'PHASE2_CONTROLLER_DEPENDENCY=FAIL path=%s reason=hash_mismatch\n' "$rel" >&2
+      return 1
     fi
 
     mkdir -p "$(dirname "$dest")"
@@ -251,13 +265,10 @@ dp2_prepare_bringup_controller_dependencies() {
         "$rel" "$(dp2_progress_sanitize_target "$url")" >&2
       return 1
     fi
-    if [[ ! -s "$tmp" ]] \
-      || head -c 256 "$tmp" | tr -d '\0' | grep -qiE '<!DOCTYPE[[:space:]]*html|<html[[:space:]]|<html>' \
-      || ! bash -n "$tmp" >/dev/null 2>&1
-    then
+    actual="$(sha256sum "$tmp" | awk '{print $1}')"
+    if [[ "${actual,,}" != "${expected,,}" ]]; then
       rm -f "$tmp"
-      printf 'PHASE2_CONTROLLER_DEPENDENCY=FAIL path=%s reason=invalid_shell_payload\n' \
-        "$rel" >&2
+      printf 'PHASE2_CONTROLLER_DEPENDENCY=FAIL path=%s reason=hash_mismatch\n' "$rel" >&2
       return 1
     fi
     chmod 0755 "$tmp"

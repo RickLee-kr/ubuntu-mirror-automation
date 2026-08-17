@@ -117,6 +117,7 @@ for f in \
   "${INSTALL_LIB_DIR}/lib/runtime_manifest.sh" \
   "${INSTALL_LIB_DIR}/scripts/lib/patch_dp_phase2_bringup.py" \
   "${INSTALL_LIB_DIR}/scripts/lib/phase2_ubuntu_prerequisites.py" \
+  "${INSTALL_LIB_DIR}/scripts/lib/phase2_helper_generation.sh" \
   "${INSTALL_LIB_DIR}/scripts/lib/xenial_bionic_upgrade_analysis.py" \
   "${INSTALL_LIB_DIR}/scripts/lib/selective_mirror.py" \
   "${INSTALL_LIB_DIR}/scripts/prepare-phase2-ubuntu-prerequisites.sh" \
@@ -126,6 +127,7 @@ for f in \
   "${INSTALL_LIB_DIR}/templates/nginx.conf" \
   "${BASE_PATH}/client/stage-dp-phase2.sh" \
   "${BASE_PATH}/client/stage-dp-phase2.sh.sha256" \
+  "${BASE_PATH}/client/phase2-helper-generation.manifest" \
   "${BASE_PATH}/client/public.gpg" \
   "${INSTALL_CONF_DIR}/client-signing/public.gpg" \
   "${INSTALL_CONF_DIR}/client-signing/private.gpg" \

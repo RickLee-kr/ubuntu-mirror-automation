@@ -146,6 +146,7 @@ mm_acps_verify_payload_checksums "$CACHE" >"$VERIFY_LOG" 2>&1
 ACPS_V_RC=$?
 set -e
 [[ "$ACPS_V_RC" -eq 0 ]] || fail "mm_acps_verify_payload_checksums rc=${ACPS_V_RC}"
+acps_write_verified_marker "$CACHE" || fail "acps_write_verified_marker"
 
 ACPS_START="$(count_exact 'ACPS_CHECKSUM_VERIFY_START.*images-6\.5\.0\.tar.*algorithm=SHA256' "$VERIFY_LOG")"
 ACPS_HB="$(count_exact 'ACPS_CHECKSUM_VERIFY_HEARTBEAT.*images-6\.5\.0\.tar.*algorithm=SHA256' "$VERIFY_LOG")"
@@ -159,8 +160,8 @@ if grep -E 'images-6\.5\.0\.tar.*algorithm=SHA1|algorithm=SHA1.*images-6\.5\.0\.
 fi
 pass "ACPS checksum START/HEARTBEAT/COMPLETE + algorithm labels"
 
-# Count source images full reads so far (verify path only).
-SOURCE_READS_AFTER_ACPS="$(grep -c 'images-6.5.0.tar' "$SHA256_CALL_LOG" || true)"
+# Count source images full reads so far (verify path only; ignore sidecar hashes).
+SOURCE_READS_AFTER_ACPS="$(grep -cE '(^|[[:space:]/])images-6\.5\.0\.tar($|[[:space:]])' "$SHA256_CALL_LOG" || true)"
 [[ "$SOURCE_READS_AFTER_ACPS" -eq 1 ]] || fail "expected 1 source images sha256 after ACPS verify got=${SOURCE_READS_AFTER_ACPS}"
 
 WORK="${MM_CACHE_ROOT}/acps-work/6.5.0/long-run"
@@ -247,7 +248,8 @@ ADJ="$(adjacent_dup_count "$PLACE_LOG")"
 pass "PROGRESS_ADJACENT_DUPLICATES=0"
 
 # Full-read counts: source images once; bundle at most twice (create + final verify).
-SOURCE_TOTAL="$(grep -c 'images-6.5.0.tar' "$SHA256_CALL_LOG" || true)"
+# Sidecar sha256sum calls contain images-6.5.0.tar.sha256 and must not count.
+SOURCE_TOTAL="$(grep -cE '(^|[[:space:]/])images-6\.5\.0\.tar($|[[:space:]])' "$SHA256_CALL_LOG" || true)"
 [[ "$SOURCE_TOTAL" -eq 1 ]] || fail "SOURCE_IMAGES_SHA256_FULL_READ_COUNT=${SOURCE_TOTAL} want=1"
 BUNDLE_READS="$(grep -c 'dp_bundle_6.5.0-current.tar' "$SHA256_CALL_LOG" || true)"
 [[ "$BUNDLE_READS" -le 2 ]] || fail "BUNDLE_SHA256_FULL_READ_COUNT=${BUNDLE_READS} want<=2"

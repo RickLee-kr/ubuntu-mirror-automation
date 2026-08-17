@@ -553,7 +553,12 @@ _install_systemd_units() {
   if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload 2>/dev/null || true
     systemctl enable dp-os-upgrade.service 2>/dev/null || true
-    systemctl enable dp-os-upgrade-resume.timer 2>/dev/null || true
+    if [[ "${POLICY_AUTO_RETRY_ENABLED}" == "true" ]]; then
+      systemctl enable dp-os-upgrade-resume.timer 2>/dev/null || true
+    else
+      systemctl disable dp-os-upgrade-resume.timer 2>/dev/null || true
+      osu_log INFO "DP_OS_RETRY_TIMER=NOT_ENABLED policy=AUTO_RETRY_ENABLED=false"
+    fi
   fi
   return 0
 }
@@ -770,26 +775,72 @@ cmd_resume() {
 }
 
 cmd_validate() {
+  local osver code expected_ver expected_code have_state=0
   if [[ -f "$(osu_state_path)" ]]; then
     osu_verify_state_checksum || exit "$EXIT_INTEGRITY"
     osu_load_state_into_vars || exit "$EXIT_INTEGRITY"
+    have_state=1
   fi
-  local osver code
   osver="$(osu_current_os_version)"
   code="$(osu_current_os_codename)"
   printf 'current_os: %s (%s)\n' "$osver" "$code"
+  printf 'current_state: %s\n' "${ST_STATE:-NO_STATE}"
   if [[ -d "$(osu_hostpath /opt/aelladata)" ]]; then
     printf 'aelladata: present\n'
   else
     printf 'aelladata: MISSING\n'
+    printf 'validate: FAIL reason=aelladata_missing\n'
     exit "$EXIT_FAILED"
   fi
-  if [[ -n "${ST_TARGET_OS:-}" && "$ST_STATE" == "HOP_VALIDATING" || "$ST_STATE" == "RESUMED" || "$ST_STATE" == "HOP_COMPLETED" || "$ST_STATE" == "COMPLETED" ]]; then
-    if [[ "$osver" == "${ST_TARGET_OS:-$osver}" || "$osver" == "$POLICY_TARGET_OS_VERSION" ]]; then
-      printf 'validate: OK\n'
-      exit 0
-    fi
+  if [[ "$have_state" -eq 0 ]]; then
+    printf 'validate: OK (read-only, no durable state)\n'
+    exit 0
   fi
+
+  case "${ST_STATE:-}" in
+    HOP_VALIDATING|RESUMED|HOP_COMPLETED)
+      expected_ver="${ST_TARGET_OS:-}"
+      expected_code="${ST_TARGET_CODENAME:-}"
+      if [[ -z "$expected_ver" ]]; then
+        printf 'validate: FAIL reason=missing_hop_target state=%s\n' "$ST_STATE"
+        exit "$EXIT_FAILED"
+      fi
+      if [[ "$osver" != "$expected_ver" ]]; then
+        printf 'validate: FAIL reason=os_mismatch current=%s expected=%s state=%s\n' \
+          "$osver" "$expected_ver" "$ST_STATE"
+        exit "$EXIT_FAILED"
+      fi
+      if [[ -n "$expected_code" && "$code" != "$expected_code" ]]; then
+        printf 'validate: FAIL reason=codename_mismatch current=%s expected=%s state=%s\n' \
+          "$code" "$expected_code" "$ST_STATE"
+        exit "$EXIT_FAILED"
+      fi
+      if ! osu_post_hop_validate "$expected_ver" "$expected_code"; then
+        printf 'validate: FAIL reason=post_hop_validate state=%s current=%s expected=%s\n' \
+          "$ST_STATE" "$osver" "$expected_ver"
+        exit "$EXIT_FAILED"
+      fi
+      ;;
+    COMPLETED)
+      expected_ver="${ST_FINAL_TARGET_OS:-$POLICY_TARGET_OS_VERSION}"
+      expected_code="${ST_FINAL_TARGET_CODENAME:-$POLICY_TARGET_OS_CODENAME}"
+      if [[ "$osver" != "$expected_ver" ]]; then
+        printf 'validate: FAIL reason=os_mismatch current=%s expected=%s state=COMPLETED\n' \
+          "$osver" "$expected_ver"
+        exit "$EXIT_FAILED"
+      fi
+      if [[ -n "$expected_code" && "$code" != "$expected_code" ]]; then
+        printf 'validate: FAIL reason=codename_mismatch current=%s expected=%s state=COMPLETED\n' \
+          "$code" "$expected_code"
+        exit "$EXIT_FAILED"
+      fi
+      if ! osu_post_hop_validate "$expected_ver" "$expected_code"; then
+        printf 'validate: FAIL reason=post_hop_validate state=COMPLETED current=%s expected=%s\n' \
+          "$osver" "$expected_ver"
+        exit "$EXIT_FAILED"
+      fi
+      ;;
+  esac
   printf 'validate: OK (read-only)\n'
 }
 

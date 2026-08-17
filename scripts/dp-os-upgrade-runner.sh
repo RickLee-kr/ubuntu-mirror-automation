@@ -739,14 +739,52 @@ runner_next_hop_or_complete() {
   runner_execute_hop "$hop_num" "$from_ver" "$from_code" "$to_ver" "$to_code"
 }
 
-main() {
+# MODE=retry is strictly retry-only. A timer firing while a normal runner
+# holds the lock is expected and must exit 0 without mutating state.
+runner_retry_begin() {
+  local lock_class
+  lock_class="$(osu_lock_classify 2>/dev/null || true)"
+  case "$lock_class" in
+    HELD_LIVE|BLOCKED_ACTIVITY)
+      osu_log INFO "DP_OS_RETRY_ACTION=SKIPPED reason=runner_lock_busy lock_class=${lock_class}"
+      exit 0
+      ;;
+  esac
   if ! osu_acquire_lock; then
-    osu_log ERROR "unable to acquire lock"
-    exit "$EXIT_INTEGRITY"
+    osu_log INFO "DP_OS_RETRY_ACTION=SKIPPED reason=runner_lock_busy"
+    exit 0
   fi
   trap 'osu_release_lock' EXIT
 
+  if [[ ! -f "$(osu_state_path)" ]]; then
+    osu_log INFO "DP_OS_RETRY_ACTION=SKIPPED reason=no_state"
+    exit 0
+  fi
+  osu_verify_state_checksum || {
+    osu_log ERROR "state checksum mismatch"
+    exit "$EXIT_INTEGRITY"
+  }
+  osu_load_state_into_vars || exit "$EXIT_INTEGRITY"
+
+  if [[ "${ST_STATE:-}" != "BLOCKED" || "${ST_RETRYABLE}" != "true" ]]; then
+    osu_log INFO "DP_OS_RETRY_ACTION=SKIPPED reason=state_not_retryable state=${ST_STATE:-unknown} retryable=${ST_RETRYABLE:-false}"
+    exit 0
+  fi
+  osu_log INFO "DP_OS_RETRY_ACTION=EXECUTE state=BLOCKED retryable=true"
   runner_init_state
+}
+
+main() {
+  if [[ "$MODE" == "retry" ]]; then
+    runner_retry_begin
+  else
+    if ! osu_acquire_lock; then
+      osu_log ERROR "unable to acquire lock"
+      exit "$EXIT_INTEGRITY"
+    fi
+    trap 'osu_release_lock' EXIT
+    runner_init_state
+  fi
 
   case "$ST_STATE" in
     COMPLETED)
@@ -772,7 +810,7 @@ main() {
           exit "$EXIT_BLOCKED"
         fi
       fi
-      # retryable resume: go back to hop precheck
+      # retryable resume / MODE=retry: go back to hop precheck
       osu_transition_state HOP_PRECHECK "retry_from_blocked" || true
       ;;
   esac

@@ -12,8 +12,9 @@ set +x
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Peek --mirror-url before helper sourcing so older Menu 7 commands that only
-# fetched stage-dp-phase2.sh (+sha256) can still pull the required lib helpers.
+# Peek --mirror-url before helper sourcing so a complete published unit that is
+# missing one helper can fetch that helper and verify it against the trusted
+# generation manifest. A sidecar-only / bash -n fetch is never sufficient.
 _STAGE_EARLY_MIRROR=""
 _stage_early_args=("$@")
 for ((_stage_i = 0; _stage_i < ${#_stage_early_args[@]}; _stage_i++)); do
@@ -24,29 +25,42 @@ for ((_stage_i = 0; _stage_i < ${#_stage_early_args[@]}; _stage_i++)); do
 done
 _STAGE_EARLY_MIRROR="${_STAGE_EARLY_MIRROR%/}"
 
-_stage_fetch_helper_if_missing() {
+PHASE2_HELPER_GENERATION_MANIFEST_NAME="phase2-helper-generation.manifest"
+PHASE2_HELPER_GENERATION_FILES=(
+  stage-dp-phase2.sh
+  bringup_py3_dp_lifecycle.sh
+  lib/dp-offline-source-product-version.sh
+  lib/dp-phase2-operation-progress.sh
+  lib/dp-phase2-bringup-lifecycle.sh
+  lib/dp-phase2-ubuntu-prerequisites.sh
+)
+
+_stage_generation_manifest_hash_for() {
+  local man="$1" rel="$2"
+  awk -v p="$rel" '$2 == p {print $1; exit}' "$man" 2>/dev/null || true
+}
+
+_stage_fetch_helper_verified() {
   local dest="$1"
   local rel="$2"
-  local tmp url
-  if [[ -s "$dest" ]] \
-    && ! head -c 256 "$dest" | tr -d '\0' | grep -qiE '<!DOCTYPE[[:space:]]*html|<html[[:space:]]|<html>' \
-    && bash -n "$dest" >/dev/null 2>&1
-  then
-    return 0
-  fi
+  local man="${SCRIPT_DIR}/${PHASE2_HELPER_GENERATION_MANIFEST_NAME}"
+  local expected tmp url actual
+  [[ -f "$man" ]] || return 1
+  expected="$(_stage_generation_manifest_hash_for "$man" "$rel")"
+  [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
   [[ -n "$_STAGE_EARLY_MIRROR" ]] || return 1
   mkdir -p "$(dirname "$dest")"
   tmp="$(mktemp "$(dirname "$dest")/.stage-helper.XXXXXX")"
   url="${_STAGE_EARLY_MIRROR}/client/${rel}"
   if ! curl -fsSL --connect-timeout 30 --retry 3 --retry-delay 2 -o "$tmp" "$url"; then
     rm -f "$tmp"
+    printf 'ERROR: PHASE2_HELPER_GENERATION=FAIL reason=download_failed path=%s\n' "$rel" >&2
     return 1
   fi
-  if [[ ! -s "$tmp" ]] \
-    || head -c 256 "$tmp" | tr -d '\0' | grep -qiE '<!DOCTYPE[[:space:]]*html|<html[[:space:]]|<html>' \
-    || ! bash -n "$tmp" >/dev/null 2>&1
-  then
+  actual="$(sha256sum "$tmp" | awk '{print $1}')"
+  if [[ "${actual,,}" != "${expected,,}" ]]; then
     rm -f "$tmp"
+    printf 'ERROR: PHASE2_HELPER_GENERATION=FAIL reason=hash_mismatch path=%s\n' "$rel" >&2
     return 1
   fi
   chmod 0755 "$tmp"
@@ -54,38 +68,39 @@ _stage_fetch_helper_if_missing() {
   return 0
 }
 
-# Shared helpers (Phase 2 staging + source version + progress). Prefer helpers
-# beside the downloaded stage script (Menu 7 temp tree / published client/).
+_stage_verify_generation_unit() {
+  local man="${SCRIPT_DIR}/${PHASE2_HELPER_GENERATION_MANIFEST_NAME}"
+  local rel dest expected listed
+  if [[ ! -s "$man" ]]; then
+    printf 'ERROR: PHASE2_HELPER_GENERATION=FAIL reason=manifest_missing\n' >&2
+    printf 'ERROR: this Phase 2 client unit is incomplete; copy the current Menu 7 Phase 2 command\n' >&2
+    return 1
+  fi
+  for rel in "${PHASE2_HELPER_GENERATION_FILES[@]}"; do
+    dest="${SCRIPT_DIR}/${rel}"
+    expected="$(_stage_generation_manifest_hash_for "$man" "$rel")"
+    if [[ ! "$expected" =~ ^[0-9a-fA-F]{64}$ ]]; then
+      printf 'ERROR: PHASE2_HELPER_GENERATION=FAIL reason=required_file_unlisted path=%s\n' "$rel" >&2
+      return 1
+    fi
+    if [[ ! -s "$dest" ]]; then
+      if ! _stage_fetch_helper_verified "$dest" "$rel"; then
+        printf 'ERROR: PHASE2_HELPER_GENERATION=FAIL reason=helper_missing path=%s\n' "$rel" >&2
+        return 1
+      fi
+    fi
+  done
+  if ! (cd "$SCRIPT_DIR" && sha256sum -c "$PHASE2_HELPER_GENERATION_MANIFEST_NAME" >/dev/null); then
+    printf 'ERROR: PHASE2_HELPER_GENERATION=FAIL reason=hash_mismatch\n' >&2
+    return 1
+  fi
+  printf 'PHASE2_HELPER_GENERATION=PASS\n'
+  return 0
+}
+
 _STAGE_LIB_DIR="${SCRIPT_DIR}/lib"
 mkdir -p "${_STAGE_LIB_DIR}"
-for _rel in \
-  dp-offline-source-product-version.sh \
-  dp-phase2-operation-progress.sh \
-  dp-phase2-ubuntu-prerequisites.sh
-do
-  if [[ ! -s "${_STAGE_LIB_DIR}/${_rel}" ]]; then
-    if ! _stage_fetch_helper_if_missing "${_STAGE_LIB_DIR}/${_rel}" "lib/${_rel}"; then
-      # Fall back to a local checkout path when present (dev/test hosts).
-      for _cand in \
-        "${SCRIPT_DIR}/../client/lib" \
-        /home/aella/ubuntu-mirror-automation/client/lib
-      do
-        if [[ -s "${_cand}/${_rel}" ]]; then
-          cp -a "${_cand}/${_rel}" "${_STAGE_LIB_DIR}/${_rel}"
-          break
-        fi
-      done
-    fi
-  fi
-done
-# dp-phase2-ubuntu-prerequisites.sh is optional on older published client trees.
-if [[ ! -s "${_STAGE_LIB_DIR}/dp-offline-source-product-version.sh" \
-  || ! -s "${_STAGE_LIB_DIR}/dp-phase2-operation-progress.sh" ]]
-then
-  printf 'ERROR: missing Phase 2 helper libraries under %s (and mirror fetch failed)\n' \
-    "${_STAGE_LIB_DIR}" >&2
-  exit 1
-fi
+_stage_verify_generation_unit || exit 1
 # shellcheck source=/dev/null
 source "${_STAGE_LIB_DIR}/dp-offline-source-product-version.sh"
 # shellcheck source=/dev/null
@@ -1415,13 +1430,10 @@ install_bringup_lifecycle_wrapper() {
   vendor_src="${STAGE_ROOT}/bringup_py3_dp_after_os_upgrade.sh"
   wrapper_src="$LIFECYCLE_WRAPPER_SRC"
   if [[ ! -f "$wrapper_src" ]]; then
-    # Fetch from mirror client tree when stage was downloaded alone
-    local wurl="${MIRROR_URL}/client/bringup_py3_dp_lifecycle.sh"
-    wrapper_src="$(mktemp)"
-    if ! curl -fsSL --connect-timeout 30 --retry 3 -o "$wrapper_src" "$wurl"; then
-      rm -f "$wrapper_src"
-      die "lifecycle wrapper missing locally and download failed from client/"
+    if ! _stage_fetch_helper_verified "$LIFECYCLE_WRAPPER_SRC" "bringup_py3_dp_lifecycle.sh"; then
+      die "lifecycle wrapper missing and generation-verified download failed"
     fi
+    wrapper_src="$LIFECYCLE_WRAPPER_SRC"
   fi
 
   install -o "$AELLA_UID" -g "$AELLA_PRIMARY_GID" -m 0755 \

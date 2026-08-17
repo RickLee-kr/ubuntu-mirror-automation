@@ -20,12 +20,78 @@ acps_cache_dir() {
   printf '%s/acps/%s\n' "${MM_CACHE_ROOT}" "$ver"
 }
 
-acps_is_verified_cache() {
-  # Trust .VERIFIED written after a successful full checksum pass.
-  # Avoid a second silent full read of images-*.tar (~30GiB) on every reuse.
+# Metadata-bound verified-cache contract.
+# Fast reuse trusts .VERIFIED only when every required file's mutation-sensitive
+# identity still matches the marker written after a successful checksum pass.
+# Large payloads are not SHA256-read on an unchanged cache; checksum sidecars
+# (small) are re-hashed because they are the payload trust source.
+acps_file_metadata_fp() {
+  local path="$1"
+  # size|dev|ino|mtime_epoch|ctime_epoch
+  stat -c '%s|%d|%i|%Y|%Z' "$path" 2>/dev/null || true
+}
+
+acps_is_checksum_sidecar() {
+  case "$1" in
+    *.sha1|*.sha256) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+acps_sidecar_checksum_id() {
+  local path="$1"
+  sha256sum "$path" 2>/dev/null | awk '{print $1}'
+}
+
+acps_payload_checksum_id() {
+  local dir="$1" name="$2"
+  local side=""
+  case "$name" in
+    *.sha1|*.sha256) return 0 ;;
+  esac
+  if [[ -f "${dir}/${name}.sha256" ]]; then
+    side="${dir}/${name}.sha256"
+  elif [[ -f "${dir}/${name}.sha1" ]]; then
+    side="${dir}/${name}.sha1"
+  else
+    printf '\n'
+    return 0
+  fi
+  awk 'NF {print $1; exit}' "$side" 2>/dev/null || true
+}
+
+acps_write_verified_marker() {
   local dir="$1"
-  [[ -f "${dir}/.VERIFIED" ]] || return 1
-  local f
+  local tmp f fp cid
+  tmp="${dir}/.VERIFIED.tmp.$$"
+  {
+    printf 'ACPS_VERIFIED_FORMAT=1\n'
+    printf 'VERIFIED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    for f in "${DP_PHASE2_REQUIRED_FILES[@]}"; do
+      fp="$(acps_file_metadata_fp "${dir}/${f}")"
+      [[ -n "$fp" ]] || { rm -f "$tmp"; return 1; }
+      if acps_is_checksum_sidecar "$f"; then
+        cid="$(acps_sidecar_checksum_id "${dir}/${f}")"
+      else
+        cid="$(acps_payload_checksum_id "$dir" "$f")"
+      fi
+      printf 'FILE path=%s fp=%s checksum_id=%s\n' "$f" "$fp" "$cid"
+    done
+  } >"$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 0644 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "${dir}/.VERIFIED"
+}
+
+acps_is_verified_cache() {
+  # Trust .VERIFIED only when format=1 metadata still matches on-disk files.
+  # Legacy timestamp-only / malformed markers never reuse.
+  local dir="$1"
+  local marker="${dir}/.VERIFIED"
+  local f line path fp stored_fp stored_cid cur_fp cur_cid fmt
+  [[ -f "$marker" ]] || return 1
+  fmt="$(head -n 1 "$marker" 2>/dev/null || true)"
+  [[ "$fmt" == "ACPS_VERIFIED_FORMAT=1" ]] || return 1
+
   for f in "${DP_PHASE2_REQUIRED_FILES[@]}"; do
     [[ -f "${dir}/${f}" ]] || return 1
   done
@@ -38,6 +104,32 @@ acps_is_verified_cache() {
   ); then
     return 1
   fi
+
+  local -A seen_paths=()
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == FILE' '* ]] || continue
+    path="$(printf '%s\n' "$line" | awk '{for(i=1;i<=NF;i++) if($i ~ /^path=/) {print substr($i,6); exit}}')"
+    stored_fp="$(printf '%s\n' "$line" | awk '{for(i=1;i<=NF;i++) if($i ~ /^fp=/) {print substr($i,4); exit}}')"
+    stored_cid="$(printf '%s\n' "$line" | awk '{for(i=1;i<=NF;i++) if($i ~ /^checksum_id=/) {print substr($i,13); exit}}')"
+    [[ -n "$path" && -n "$stored_fp" ]] || return 1
+    [[ -f "${dir}/${path}" ]] || return 1
+    cur_fp="$(acps_file_metadata_fp "${dir}/${path}")"
+    [[ "$cur_fp" == "$stored_fp" ]] || return 1
+    if acps_is_checksum_sidecar "$path"; then
+      cur_cid="$(acps_sidecar_checksum_id "${dir}/${path}")"
+      [[ -n "$stored_cid" && "$cur_cid" == "$stored_cid" ]] || return 1
+    else
+      cur_cid="$(acps_payload_checksum_id "$dir" "$path")"
+      if [[ -n "$stored_cid" && -n "$cur_cid" && "$cur_cid" != "$stored_cid" ]]; then
+        return 1
+      fi
+    fi
+    seen_paths["$path"]=1
+  done <"$marker"
+
+  for f in "${DP_PHASE2_REQUIRED_FILES[@]}"; do
+    [[ -n "${seen_paths[$f]:-}" ]] || return 1
+  done
   return 0
 }
 
@@ -537,15 +629,18 @@ acps_acquire_all() {
   local cache
   cache="$(acps_cache_dir "$ver")"
   mkdir -p "$cache"
-  acps_setup_curl_auth
 
   mm_set_phase "Downloading ACPS Artifacts"
+  # Verified unchanged cache must reuse without contacting ACPS or requiring
+  # credentials. Auth is only needed when a download is about to start.
   if acps_is_verified_cache "$cache"; then
     mm_ok "ACPS_DOWNLOAD=REUSED cache=${cache}"
     mm_state_set ACPS_PHASE2_DOWNLOADED REUSED
     mm_state_set ACPS_CHECKSUM PASS
     return 0
   fi
+
+  acps_setup_curl_auth
 
   rm -f "${cache}/.VERIFIED"
 
@@ -564,7 +659,10 @@ acps_acquire_all() {
     mm_die "ACPS_CHECKSUM=FAIL"
   fi
   mm_state_set ACPS_CHECKSUM PASS
-  date -u +%Y-%m-%dT%H:%M:%SZ >"${cache}/.VERIFIED"
+  acps_write_verified_marker "$cache" || {
+    rm -f "${cache}/.VERIFIED"
+    mm_die "ACPS_VERIFIED_MARKER=FAIL"
+  }
   mm_ok "ACPS_DOWNLOAD=PASS"
   mm_state_set ACPS_PHASE2_DOWNLOADED PASS
 }

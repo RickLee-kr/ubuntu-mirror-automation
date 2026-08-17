@@ -329,10 +329,22 @@ grep -q 'DOWNLOAD_AND_PREPARE_RESULT=FAIL_CLIENT_SET_FINALIZATION\|CLIENT_SET_FI
 PREPARATION_MODE=PHASE2_ONLY
 export PREPARATION_MODE
 rm -f "${MM_CLIENT_ROOT}/dp-offline-upgrade-"*.sh
-# Keep / restore only phase2 helper
-printf '#!/bin/bash\necho stage\n' >"${MM_CLIENT_ROOT}/stage-dp-phase2.sh"
-chmod +x "${MM_CLIENT_ROOT}/stage-dp-phase2.sh"
+mkdir -p "${MM_CLIENT_ROOT}/lib"
+cp -a "${ROOT}/client/stage-dp-phase2.sh" "${MM_CLIENT_ROOT}/stage-dp-phase2.sh"
+cp -a "${ROOT}/client/bringup_py3_dp_lifecycle.sh" "${MM_CLIENT_ROOT}/bringup_py3_dp_lifecycle.sh"
+cp -a "${ROOT}/client/lib/dp-offline-source-product-version.sh" \
+  "${MM_CLIENT_ROOT}/lib/dp-offline-source-product-version.sh"
+cp -a "${ROOT}/client/lib/dp-phase2-operation-progress.sh" \
+  "${MM_CLIENT_ROOT}/lib/dp-phase2-operation-progress.sh"
+cp -a "${ROOT}/client/lib/dp-phase2-bringup-lifecycle.sh" \
+  "${MM_CLIENT_ROOT}/lib/dp-phase2-bringup-lifecycle.sh"
+cp -a "${ROOT}/client/lib/dp-phase2-ubuntu-prerequisites.sh" \
+  "${MM_CLIENT_ROOT}/lib/dp-phase2-ubuntu-prerequisites.sh"
+chmod +x "${MM_CLIENT_ROOT}/stage-dp-phase2.sh" "${MM_CLIENT_ROOT}/bringup_py3_dp_lifecycle.sh"
 (cd "$MM_CLIENT_ROOT" && sha256sum stage-dp-phase2.sh >stage-dp-phase2.sh.sha256)
+# shellcheck source=/dev/null
+source "${ROOT}/scripts/lib/phase2_helper_generation.sh"
+phase2_helper_generation_write "$MM_CLIENT_ROOT" >/dev/null
 if mm_check_client_build_prerequisites_ready; then
   pass "PHASE2_ONLY prerequisites PASS without hop clients"
 else

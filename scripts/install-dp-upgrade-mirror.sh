@@ -1055,7 +1055,8 @@ gui_expected_signing_fingerprint() {
 #   mv verified download to final launcher name
 #   bash ./dp-launch-<hop>.sh
 # The launcher authenticates the existing runner; the runner retains sudo.
-# Phase 2 staging remains DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2 (three lines).
+# Phase 2 staging remains DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2 (three lines)
+# with a literal generation-manifest SHA256 as the operator trust anchor.
 gui_client_launcher_sha256() {
   local hop="$1"
   local root="${MM_CLIENT_ROOT:-}"
@@ -1104,12 +1105,42 @@ gui_client_hop_command() {
 }
 
 # Phase 2 staging: three physical lines, one Bash logical command (SUBSHELL_V2).
+# Trust anchor is a literal SHA256 of the generation manifest (not an HTTP sidecar).
+gui_phase2_helper_generation_manifest_path() {
+  if [[ -n "${MM_CLIENT_ROOT:-}" && -f "${MM_CLIENT_ROOT}/phase2-helper-generation.manifest" ]]; then
+    printf '%s\n' "${MM_CLIENT_ROOT}/phase2-helper-generation.manifest"
+    return 0
+  fi
+  if [[ -n "${MM_PROJECT_ROOT:-}" && -f "${MM_PROJECT_ROOT}/client/phase2-helper-generation.manifest" ]]; then
+    printf '%s\n' "${MM_PROJECT_ROOT}/client/phase2-helper-generation.manifest"
+    return 0
+  fi
+  return 1
+}
+
+gui_phase2_helper_generation_sha256() {
+  local path sha
+  path="$(gui_phase2_helper_generation_manifest_path 2>/dev/null || true)"
+  [[ -n "$path" && -f "$path" ]] || return 1
+  sha="$(sha256sum "$path" | awk '{print $1}')"
+  [[ "$sha" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+  printf '%s\n' "$sha"
+}
+
 gui_phase2_stage_command_line() {
   local mirror="$1" ver="$2"
+  local sha="${3:-}"
+  mirror="${mirror%/}"
+  if [[ -z "$sha" ]]; then
+    sha="$(gui_phase2_helper_generation_sha256 2>/dev/null || true)"
+  fi
+  if [[ -z "$sha" || ! "$sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    sha="MISSING_PHASE2_HELPER_GENERATION_SHA256"
+  fi
   printf '%s\n' \
-    "( [[ \${BASH_SUBSHELL:-0} -gt 0 ]] || { printf '%s\\n' 'DP_COMMAND_SUBSHELL_REQUIRED=YES' >&2; exit 97; }; cd /home/aella && MIRROR='${mirror}' && VER='${ver}' && SCRIPT='stage-dp-phase2.sh' && W=\$(mktemp -d)&&trap 'rm -rf \"\$W\"' EXIT&&cd \"\$W\" && \\" \
-    "  curl -fsSLo \"\$SCRIPT\" \"\$MIRROR/client/\$SCRIPT\" && curl -fsSLo \"\$SCRIPT.sha256\" \"\$MIRROR/client/\$SCRIPT.sha256\" && test -s \"\$SCRIPT\" && test -s \"\$SCRIPT.sha256\" && \\" \
-    "  sha256sum -c \"\$SCRIPT.sha256\" && { sudo bash \"./\$SCRIPT\" --target-version \"\$VER\" --same-version-recovery --mirror-url \"\$MIRROR\"; })"
+    "( [[ \${BASH_SUBSHELL:-0} -gt 0 ]] || { printf '%s\\n' 'DP_COMMAND_SUBSHELL_REQUIRED=YES' >&2; exit 97; }; cd /home/aella && MIRROR='${mirror}' && VER='${ver}' && SCRIPT='stage-dp-phase2.sh' && GEN='phase2-helper-generation.manifest' && H='${sha}' && W=\$(mktemp -d)&&trap 'rm -rf \"\$W\"' EXIT&&cd \"\$W\" && \\" \
+    "  mkdir -p lib && for F in \"\$GEN\" \"\$SCRIPT\" bringup_py3_dp_lifecycle.sh lib/dp-{offline-source-product-version,phase2-operation-progress,phase2-bringup-lifecycle,phase2-ubuntu-prerequisites}.sh; do curl -fsSLo \"\$F\" \"\$MIRROR/client/\$F\" || exit; done && \\" \
+    "  printf '%s  %s\\n' \"\$H\" \"\$GEN\" | sha256sum -c - && sha256sum -c \"\$GEN\" && sudo bash \"./\$SCRIPT\" --target-version \"\$VER\" --same-version-recovery --mirror-url \"\$MIRROR\"; )"
 }
 
 gui_phase2_stage_command_block() {

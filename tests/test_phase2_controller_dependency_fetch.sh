@@ -47,6 +47,14 @@ cat >"${CLIENT_ROOT}/lib/dp-phase2-ubuntu-prerequisites.sh" <<'LIB'
 #!/usr/bin/env bash
 PREREQ_HELPER_LOADED=YES
 LIB
+# Dummy stage script so the generation manifest can list the complete unit.
+printf '#!/usr/bin/env bash\ntrue\n' >"${CLIENT_ROOT}/stage-dp-phase2.sh"
+chmod +x "${CLIENT_ROOT}/stage-dp-phase2.sh" "${CLIENT_ROOT}/bringup_py3_dp_lifecycle.sh"
+# shellcheck source=/dev/null
+source "${ROOT}/scripts/lib/phase2_helper_generation.sh"
+phase2_helper_generation_write "$CLIENT_ROOT" >/dev/null
+cp -a "${CLIENT_ROOT}/phase2-helper-generation.manifest" \
+  "${WORK_ROOT}/phase2-helper-generation.manifest"
 
 PORT="$(python3 - <<'PY'
 import socket
@@ -113,7 +121,7 @@ dp2_run_extract_with_progress phase2_tar_extract "${TMP}/extract" -- \
 RC=$?
 set -e
 [[ "$RC" -eq 1 ]]
-grep -q '^PHASE2_CONTROLLER_DEPENDENCY=FAIL path=lib/dp-phase2-bringup-lifecycle.sh reason=invalid_shell_payload$' "$FAIL_OUT"
+grep -q '^PHASE2_CONTROLLER_DEPENDENCY=FAIL path=lib/dp-phase2-bringup-lifecycle.sh reason=hash_mismatch$' "$FAIL_OUT"
 grep -q '^OPERATION_END name=phase2_tar_extract rc=1 elapsed_seconds=0$' "$FAIL_OUT"
 test ! -e "${TMP}/extract/invalid.txt"
 

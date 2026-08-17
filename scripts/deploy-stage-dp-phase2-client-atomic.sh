@@ -9,6 +9,8 @@
 #   lib/dp-offline-source-product-version.sh
 #   lib/dp-phase2-operation-progress.sh
 #   lib/dp-phase2-bringup-lifecycle.sh
+#   lib/dp-phase2-ubuntu-prerequisites.sh
+#   phase2-helper-generation.manifest
 #
 # Does NOT touch selective READY, OS upgrade client manifests, Phase 2 bundles,
 # or nginx reload unless HTTP verify requires an already-published /client/.
@@ -17,6 +19,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/mirror_host_ip.sh
 source "${ROOT}/scripts/lib/mirror_host_ip.sh"
+# shellcheck source=lib/phase2_helper_generation.sh
+source "${ROOT}/scripts/lib/phase2_helper_generation.sh"
 DEST_ROOT="${DEST_ROOT:-/var/spool/apt-mirror/client}"
 READY_PATH="${READY_PATH:-/var/spool/apt-mirror/selective/state/READY}"
 SKIP_HTTP_VERIFY="${SKIP_HTTP_VERIFY:-0}"
@@ -176,6 +180,9 @@ for h in "${PHASE2_CLIENT_UNIT_LIBS[@]}"; do
   deploy_lib_helper "$h"
 done
 
+phase2_helper_generation_write "$DEST_ROOT" >/dev/null
+echo "ARTIFACT_SHA256=$(sha256sum "${DEST_ROOT}/${PHASE2_HELPER_GENERATION_MANIFEST_NAME}" | awk '{print $1}') name=${PHASE2_HELPER_GENERATION_MANIFEST_NAME}"
+
 # Leave no partial temp files behind.
 find "$DEST_ROOT" -maxdepth 3 -type f \( -name '*.tmp.*' -o -name '.dp2-*.XXXXXX' \) -delete 2>/dev/null || true
 
@@ -212,3 +219,9 @@ for h in "${PHASE2_CLIENT_UNIT_LIBS[@]}"; do
   [[ "$http_sha" == "$local_sha" ]] || { echo "HTTP SHA mismatch for ${h}" >&2; exit 1; }
   echo "HTTP_VERIFY=PASS name=${h} sha256=${http_sha}"
 done
+man="${PHASE2_HELPER_GENERATION_MANIFEST_NAME}"
+local_sha="$(sha256sum "${DEST_ROOT}/${man}" | awk '{print $1}')"
+curl -fsS -o "${TMPD}/${man}" "${MIRROR_BASE}/client/${man}"
+http_sha="$(sha256sum "${TMPD}/${man}" | awk '{print $1}')"
+[[ "$http_sha" == "$local_sha" ]] || { echo "HTTP SHA mismatch for ${man}" >&2; exit 1; }
+echo "HTTP_VERIFY=PASS name=${man} sha256=${http_sha}"

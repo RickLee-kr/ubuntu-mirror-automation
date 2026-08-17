@@ -410,12 +410,22 @@ um_bootstrap_publish_phase2_helpers_only() {
     for f in \
       dp-offline-source-product-version.sh \
       dp-phase2-operation-progress.sh \
-      dp-phase2-bringup-lifecycle.sh
+      dp-phase2-bringup-lifecycle.sh \
+      dp-phase2-ubuntu-prerequisites.sh
     do
       if [[ -f "${src_root}/client/lib/${f}" ]]; then
         install -m 0755 "${src_root}/client/lib/${f}" "${stage}/lib/${f}"
       fi
     done
+  fi
+  if [[ -f "${src_root}/scripts/lib/phase2_helper_generation.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${src_root}/scripts/lib/phase2_helper_generation.sh"
+    phase2_helper_generation_write "$stage" >/dev/null || {
+      um_error "PHASE2_HELPER_GENERATION=FAIL"
+      rm -rf "$stage"
+      return 1
+    }
   fi
   if [[ -n "${LOCAL_SIGNING_PUBLIC_KEY:-}" && -f "${LOCAL_SIGNING_PUBLIC_KEY}" ]]; then
     if ! local_signing_stage_http_public_artifacts "$stage" \

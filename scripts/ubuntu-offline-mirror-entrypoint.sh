@@ -44,9 +44,9 @@ hop_replacement_guidance = [
 ]
 phase2_guidance = "Copy all three lines of the following block into the DP terminal once:"
 phase2_replacement_guidance = [
-    "Copy and paste all four physical lines below into the DP terminal.",
+    "Copy and paste all five physical lines below into the DP terminal.",
     "The command downloads the complete Phase 2 client helper unit",
-    "(stage script, checksum, lifecycle wrapper, and required lib helpers).",
+    "(generation manifest, stage script, lifecycle wrapper, and required lib helpers).",
 ]
 
 lines = src.read_text(encoding="utf-8").splitlines()
@@ -88,28 +88,31 @@ while i < len(lines):
         i += 1
         continue
 
-    # The canonical SUBSHELL_V2 Phase 2 block downloads only the stage script.
-    # The stage script sources two helper libraries from ./lib, so Menu 7 must
-    # present a complete executable unit. Use a shell loop rather than curl URL
-    # globbing: curl's -o '#1' mapping varies by invocation shape and previously
-    # left ./lib empty on the DP.
+    # Canonical SUBSHELL_V2 Phase 2 block: download the complete helper unit and
+    # pin the generation manifest SHA256 (not an HTTP sidecar).
     if (
         i + 2 < len(lines)
         and line.startswith("( [[ ${BASH_SUBSHELL:-0} -gt 0 ]]")
         and "SCRIPT='stage-dp-phase2.sh'" in line
-        and "$MIRROR/client/$SCRIPT" in lines[i + 1]
-        and 'sha256sum -c "$SCRIPT.sha256"' in lines[i + 2]
+        and "GEN='phase2-helper-generation.manifest'" in line
+        and "H='" in line
+        and "$MIRROR/client/$F" in lines[i + 1]
+        and 'sha256sum -c -' in lines[i + 2]
         and 'sudo bash "./$SCRIPT"' in lines[i + 2]
     ):
         mirror_match = re.search(r"MIRROR='([^']+)'", line)
         version_match = re.search(r"VER='([^']+)'", line)
         script_match = re.search(r"SCRIPT='([^']+)'", line)
-        if not (mirror_match and version_match and script_match):
+        gen_match = re.search(r"GEN='([^']+)'", line)
+        hash_match = re.search(r"H='([0-9a-fA-F]{64}|MISSING_PHASE2_HELPER_GENERATION_SHA256)'", line)
+        if not (mirror_match and version_match and script_match and gen_match and hash_match):
             raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=phase2_parse")
         mirror = mirror_match.group(1).rstrip("/")
         version = version_match.group(1)
         script = script_match.group(1)
-        if script != "stage-dp-phase2.sh" or not mirror:
+        gen = gen_match.group(1)
+        sha = hash_match.group(1)
+        if script != "stage-dp-phase2.sh" or gen != "phase2-helper-generation.manifest" or not mirror:
             raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=phase2_shape")
         same_version = " --same-version-recovery" if "--same-version-recovery" in lines[i + 2] else ""
 
@@ -119,15 +122,15 @@ while i < len(lines):
                 break
 
         client_base = f"{mirror}/client"
-        # Four physical lines, one logical Bash command. Explicit per-file
-        # downloads (no curl URL globbing) land the complete helper unit in the
-        # same temp tree: stage + sidecar + lifecycle wrapper + three lib helpers.
+        # Five physical lines, one logical Bash command. Literal H is the trust
+        # anchor; sha256sum -c of the manifest then binds every helper.
         out.extend(
             [
-                f"( C='{client_base}' S='{script}' W=$(mktemp -d); trap 'rm -rf \"$W\"' EXIT; cd \"$W\" && \\",
-                "  mkdir -p lib && for F in \"$S\"{,.sha256} bringup_py3_dp_lifecycle.sh \\",
-                "    lib/dp-{offline-source-product-version,phase2-operation-progress,phase2-bringup-lifecycle}.sh; do curl -fsSLo \"$F\" \"$C/$F\" || exit; done && \\",
-                f"  sha256sum -c \"$S.sha256\" && sudo bash \"./$S\" --target-version '{version}'{same_version} --mirror-url \"${{C%/client}}\" )",
+                f"( C='{client_base}' S='{script}' G='{gen}' && \\",
+                f"  H='{sha}' V='{version}' W=$(mktemp -d); trap 'rm -rf \"$W\"' EXIT; cd \"$W\" && \\",
+                "  mkdir -p lib && for F in \"$G\" \"$S\" bringup_py3_dp_lifecycle.sh \\",
+                "    lib/dp-{offline-source-product-version,phase2-operation-progress,phase2-bringup-lifecycle,phase2-ubuntu-prerequisites}.sh; do curl -fsSLo \"$F\" \"$C/$F\" || exit; done && \\",
+                f"  printf '%s  %s\\n' \"$H\" \"$G\" | sha256sum -c - && sha256sum -c \"$G\" && sudo bash \"./$S\" --target-version '{version}'{same_version} --mirror-url \"${{C%/client}}\" )",
             ]
         )
         phase2_wrapped += 1

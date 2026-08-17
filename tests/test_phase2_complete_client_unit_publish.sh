@@ -83,6 +83,7 @@ UNIT=(
   lib/dp-phase2-operation-progress.sh
   lib/dp-phase2-bringup-lifecycle.sh
   lib/dp-phase2-ubuntu-prerequisites.sh
+  phase2-helper-generation.manifest
 )
 
 for f in "${UNIT[@]}"; do
@@ -105,7 +106,8 @@ for f in \
   lib/dp-offline-source-product-version.sh \
   lib/dp-phase2-operation-progress.sh \
   lib/dp-phase2-bringup-lifecycle.sh \
-  lib/dp-phase2-ubuntu-prerequisites.sh
+  lib/dp-phase2-ubuntu-prerequisites.sh \
+  phase2-helper-generation.manifest
 do
   code="$(curl -sS -o "${TMP}/http-${f////_}" -w '%{http_code}' \
     "http://127.0.0.1:${PORT}/client/${f}")"

@@ -299,6 +299,21 @@ verify_helpers_http() {
     [[ "$src_sha" == "$http_sha" ]] || fail_step "helpers_sha_${name}"
     echo "HELPER_HTTP_VERIFY=PASS name=${name} sha256=${src_sha}"
   done
+  name="phase2-helper-generation.manifest"
+  for u in \
+    "${MIRROR_LOCAL}/client/${name}" \
+    "${MIRROR_BASE}/client/${name}"
+  do
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$u" || true)"
+    [[ "$code" == "200" ]] || {
+      echo "HTTP ${code} ${u}" >&2
+      fail_step "helpers_http_${name}"
+    }
+  done
+  src_sha="$(sha256sum "${ROOT}/client/${name}" | awk '{print $1}')"
+  http_sha="$(curl -fsS --max-time 15 "${MIRROR_LOCAL}/client/${name}" | sha256sum | awk '{print $1}')"
+  [[ "$src_sha" == "$http_sha" ]] || fail_step "helpers_sha_${name}"
+  echo "HELPER_HTTP_VERIFY=PASS name=${name} sha256=${src_sha}"
   HELPERS_HTTP_VERIFY="PASS"
 }
 

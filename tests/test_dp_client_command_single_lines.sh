@@ -92,6 +92,15 @@ grep -q 'stage-dp-phase2.sh' "${TMP}/stage.sh" \
   && pass "stage: script name" || fail "stage: script name"
 grep -q "MIRROR='${MIRROR}'" "${TMP}/stage.sh" \
   && pass "stage: configured mirror" || fail "stage: mirror"
+grep -q "GEN='phase2-helper-generation.manifest'" "${TMP}/stage.sh" \
+  && pass "stage: generation manifest" || fail "stage: generation manifest"
+grep -q 'sha256sum -c -' "${TMP}/stage.sh" \
+  && pass "stage: pinned manifest hash" || fail "stage: pinned manifest hash"
+grep -q 'sha256sum -c "$GEN"' "${TMP}/stage.sh" \
+  && pass "stage: verify helpers against manifest" || fail "stage: helper verify"
+grep -qE 'SCRIPT\.sha256' "${TMP}/stage.sh" \
+  && fail "stage: HTTP sidecar still used as trust anchor" \
+  || pass "stage: no sidecar trust anchor"
 bash -n "${TMP}/stage.sh" && pass "stage: bash -n" || fail "stage: bash -n"
 grep -qE 'BASH_SUBSHELL' "${TMP}/stage.sh" \
   && pass "stage: BASH_SUBSHELL guard" || fail "stage: missing BASH_SUBSHELL"

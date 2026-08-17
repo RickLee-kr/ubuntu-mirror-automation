@@ -38,6 +38,7 @@ TEST_LIST=(
   test_collect_dp_upgrade_readiness.sh
   test_dp_upgrade_preflight.sh
   test_dp_os_upgrade.sh
+  test_dp_os_upgrade_retry_and_validate.sh
   test_discover_upgrade_requirements.sh
   test_destructive_confirmation.sh
   test_phase1_finalize.sh
@@ -105,6 +106,8 @@ TEST_LIST=(
   test_menu7_normal_width_display.sh
   test_phase2_extract_progress_separator.sh
   test_phase2_controller_dependency_fetch.sh
+  test_phase2_helper_generation_trust.sh
+  test_acps_verified_cache_metadata.sh
   test_reused_artifact_status.sh
   test_mirror_workflow_state_without_logger.sh
   test_current_hop_env_path_runner.sh
@@ -120,7 +123,7 @@ INTEGRATION_REQUIRED=(
 
 is_long_test() {
   case "$1" in
-    test_dp_offline_upgrade_*.sh|test_dp_os_upgrade.sh|test_selective_mirror.py|test_offline_mirror.sh|test_dp_upgrade_mirror_manager.sh|test_client_finalization_local_fs_integration.sh|test_client_os_userspace_matrix.sh)
+    test_dp_offline_upgrade_*.sh|test_dp_os_upgrade.sh|test_dp_upgrade_preflight.sh|test_selective_mirror.py|test_offline_mirror.sh|test_dp_upgrade_mirror_manager.sh|test_client_finalization_local_fs_integration.sh|test_client_os_userspace_matrix.sh)
       return 0
       ;;
     *)

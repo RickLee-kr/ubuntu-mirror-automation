@@ -169,6 +169,17 @@ engine_ensure_phase2_helpers() {
     chmod 0755 "${stage}/lib"
     cp -a "${root}/client/lib/." "${stage}/lib/"
   fi
+  if [[ -f "${root}/scripts/lib/phase2_helper_generation.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${root}/scripts/lib/phase2_helper_generation.sh"
+    if ! phase2_helper_generation_write "$stage" >/dev/null; then
+      rm -rf "$stage"
+      return 1
+    fi
+  else
+    rm -rf "$stage"
+    return 1
+  fi
   if declare -F mm_normalize_http_public_tree_permissions >/dev/null 2>&1; then
     mm_normalize_http_public_tree_permissions "$stage" client || {
       rm -rf "$stage"
@@ -493,7 +504,13 @@ engine_link_acps_file_into_work() {
 engine_stage_acps_work_from_cache() {
   local cache="$1"
   local work="$2"
-  local f
+  local f verified=0
+  # Capture verification before hardlink: linking updates inode ctime and would
+  # otherwise invalidate a metadata-bound .VERIFIED marker.
+  if declare -F acps_is_verified_cache >/dev/null 2>&1 \
+    && acps_is_verified_cache "$cache"; then
+    verified=1
+  fi
   rm -rf "$work"
   mkdir -p "$work" || mm_die "ACPS_WORK_STAGE=FAIL mkdir"
   for f in "${DP_PHASE2_REQUIRED_FILES[@]}"; do
@@ -504,6 +521,9 @@ engine_stage_acps_work_from_cache() {
     esac
     engine_link_acps_file_into_work "${cache}/${f}" "${work}/${f}"
   done
+  if [[ "$verified" -eq 1 ]] && declare -F acps_write_verified_marker >/dev/null 2>&1; then
+    acps_write_verified_marker "$cache" || true
+  fi
 }
 
 # Inner checksums for payloads reused from an existing final. Bringup is excluded
@@ -1177,15 +1197,20 @@ engine_assert_work_ready_for_bundle() {
   w_dev="$(stat -c %d "$img_w")"
   w_ino="$(stat -c %i "$img_w")"
   if [[ "$c_dev" == "$w_dev" && "$c_ino" == "$w_ino" ]]; then
-    mm_ok "ACPS_WORK_IMAGES_HARDLINK_TRUSTED=YES device=${c_dev} inode=${c_ino}"
-    mm_info "Skipping redundant SHA256 of hard-linked images-${ver}.tar (already verified in ACPS cache)."
-    mm_verify_sha1_pair_logged \
-      "${work_dir}/bringup_py3_dp_after_os_upgrade.sh" \
-      "${work_dir}/bringup_py3_dp_after_os_upgrade.sh.sha1" \
-      "ACPS_CHECKSUM_VERIFY" || return 1
-    return 0
+    if declare -F acps_is_verified_cache >/dev/null 2>&1 \
+      && acps_is_verified_cache "$cache_dir"; then
+      mm_ok "ACPS_WORK_IMAGES_HARDLINK_TRUSTED=YES device=${c_dev} inode=${c_ino}"
+      mm_info "Skipping redundant SHA256 of hard-linked images-${ver}.tar (already verified in ACPS cache)."
+      mm_verify_sha1_pair_logged \
+        "${work_dir}/bringup_py3_dp_after_os_upgrade.sh" \
+        "${work_dir}/bringup_py3_dp_after_os_upgrade.sh.sha1" \
+        "ACPS_CHECKSUM_VERIFY" || return 1
+      return 0
+    fi
+    mm_warn "ACPS_WORK_IMAGES_HARDLINK_TRUSTED=NO reason=cache_not_verified cache=${c_dev}:${c_ino}"
+  else
+    mm_warn "ACPS_WORK_IMAGES_HARDLINK_TRUSTED=NO cache=${c_dev}:${c_ino} work=${w_dev}:${w_ino}"
   fi
-  mm_warn "ACPS_WORK_IMAGES_HARDLINK_TRUSTED=NO cache=${c_dev}:${c_ino} work=${w_dev}:${w_ino}"
   mm_acps_verify_payload_checksums "$work_dir" || return 1
   return 0
 }
