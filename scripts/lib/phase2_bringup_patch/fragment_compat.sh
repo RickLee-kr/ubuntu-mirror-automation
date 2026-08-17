@@ -6,6 +6,115 @@ PHASE2_CRITICAL_PYTHON_IMPORTS="${PHASE2_CRITICAL_PYTHON_IMPORTS:-click flask we
 MASTER_TOKEN_API_PORT="${MASTER_TOKEN_API_PORT:-8003}"
 MASTER_TOKEN_API_WAIT_SECONDS="${MASTER_TOKEN_API_WAIT_SECONDS:-180}"
 CLUSTER_JOIN_WAIT_SECONDS="${CLUSTER_JOIN_WAIT_SECONDS:-300}"
+# Bounded per-target Ready wait used by orchestrate_workers. Tests may lower this.
+CLUSTER_TARGET_READY_ATTEMPTS="${CLUSTER_TARGET_READY_ATTEMPTS:-60}"
+CLUSTER_TARGET_READY_SLEEP_SECONDS="${CLUSTER_TARGET_READY_SLEEP_SECONDS:-5}"
+
+# WORKER_PASSWORD is the SSH password for ALL remote orchestration nodes
+# (workers from --worker-ips and standby from --standby). The CLI flag name
+# is kept for compatibility; it is not worker-only.
+
+has_remote_orchestration_nodes() {
+    [[ -n "${WORKER_IPS:-}" || -n "${STANDBY_IPS:-}" ]]
+}
+
+_phase2_trim_ip() {
+    local s="${1:-}"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
+# Split a comma-separated IP list. Empty tokens after trim fail closed.
+# Does not attempt a general network parser.
+_phase2_split_ip_csv() {
+    local csv="${1:-}"
+    local -n _phase2_split_out="$2"
+    _phase2_split_out=()
+    [[ -n "$csv" ]] || return 0
+    local IFS=','
+    local -a _phase2_parts=()
+    read -ra _phase2_parts <<< "$csv"
+    local _phase2_p _phase2_t
+    for _phase2_p in "${_phase2_parts[@]}"; do
+        _phase2_t="$(_phase2_trim_ip "$_phase2_p")"
+        if [[ -z "$_phase2_t" ]]; then
+            log "ERROR: REMOTE_ORCH_NODES=FAIL reason=empty_ip"
+            return 1
+        fi
+        _phase2_split_out+=("$_phase2_t")
+    done
+    return 0
+}
+
+# Canonical remote-node lists. Fail-closed policy:
+#   duplicate worker IP          -> FAIL
+#   duplicate standby IP         -> FAIL
+#   same IP as worker and standby -> FAIL (conflicting desired roles)
+# Harmless exact duplicates are NOT silently deduplicated: this is an
+# upgrade orchestration path. Rewrites WORKER_IPS / STANDBY_IPS with
+# whitespace normalized. Workers remain first; standby remains second.
+normalize_remote_orchestration_nodes() {
+    local -a _phase2_workers=() _phase2_standbys=()
+    local _phase2_ip
+    local -A _phase2_seen_worker=() _phase2_seen_standby=()
+
+    _phase2_split_ip_csv "${WORKER_IPS:-}" _phase2_workers || return 1
+    _phase2_split_ip_csv "${STANDBY_IPS:-}" _phase2_standbys || return 1
+
+    for _phase2_ip in "${_phase2_workers[@]}"; do
+        if [[ -n "${_phase2_seen_worker[$_phase2_ip]:-}" ]]; then
+            log "ERROR: REMOTE_ORCH_NODES=FAIL reason=duplicate_worker_ip"
+            return 1
+        fi
+        _phase2_seen_worker[$_phase2_ip]=1
+    done
+    for _phase2_ip in "${_phase2_standbys[@]}"; do
+        if [[ -n "${_phase2_seen_standby[$_phase2_ip]:-}" ]]; then
+            log "ERROR: REMOTE_ORCH_NODES=FAIL reason=duplicate_standby_ip"
+            return 1
+        fi
+        if [[ -n "${_phase2_seen_worker[$_phase2_ip]:-}" ]]; then
+            log "ERROR: REMOTE_ORCH_NODES=FAIL reason=role_conflict_ip"
+            return 1
+        fi
+        _phase2_seen_standby[$_phase2_ip]=1
+    done
+
+    local IFS=','
+    WORKER_IPS="${_phase2_workers[*]}"
+    STANDBY_IPS="${_phase2_standbys[*]}"
+    log "REMOTE_ORCH_NODES workers=${#_phase2_workers[@]} standby=${#_phase2_standbys[@]}"
+    return 0
+}
+
+# Print canonical ip:role specs, workers first (vendor f1a73 order), then standby.
+remote_orchestration_node_specs() {
+    local default_worker_role="${1:-DR-worker}"
+    local -a _phase2_workers=() _phase2_standbys=()
+    local _phase2_ip
+    _phase2_split_ip_csv "${WORKER_IPS:-}" _phase2_workers || return 1
+    _phase2_split_ip_csv "${STANDBY_IPS:-}" _phase2_standbys || return 1
+    for _phase2_ip in "${_phase2_workers[@]}"; do
+        printf '%s:%s\n' "$_phase2_ip" "$default_worker_role"
+    done
+    for _phase2_ip in "${_phase2_standbys[@]}"; do
+        printf '%s:standby\n' "$_phase2_ip"
+    done
+}
+
+count_remote_orchestration_nodes() {
+    local -a _phase2_workers=() _phase2_standbys=()
+    _phase2_split_ip_csv "${WORKER_IPS:-}" _phase2_workers || { printf '0\n'; return 1; }
+    _phase2_split_ip_csv "${STANDBY_IPS:-}" _phase2_standbys || { printf '0\n'; return 1; }
+    printf '%s\n' $((${#_phase2_workers[@]} + ${#_phase2_standbys[@]}))
+}
+
+# Diagnostic helper only. Not a cluster-size correctness criterion.
+# Returns the number of requested remote orchestration nodes (workers+standby).
+count_expected_cluster_nodes() {
+    count_remote_orchestration_nodes
+}
 
 phase2_prereq_lib_paths() {
     printf '%s\n' \
@@ -24,22 +133,6 @@ source_phase2_prereq_lib() {
         fi
     done < <(phase2_prereq_lib_paths)
     return 1
-}
-
-count_expected_cluster_nodes() {
-    local ips="$1"
-    local n=0 ip
-    [[ -n "$ips" ]] || { printf '0\n'; return 0; }
-    IFS=',' read -ra _exp_workers <<< "$ips"
-    for ip in "${_exp_workers[@]}"; do
-        ip="${ip//[[:space:]]/}"
-        [[ -n "$ip" ]] && n=$((n + 1))
-    done
-    if [[ "$n" -eq 0 ]]; then
-        printf '0\n'
-    else
-        printf '%s\n' $((n + 1))
-    fi
 }
 
 validate_apt_dependency_graph() {
@@ -236,7 +329,8 @@ wait_for_master_token_api() {
     local loopback_code=000 master_ip_code=000
     local loopback_ready=0 master_ip_ready=0
     local cluster_mode=0
-    if [[ -n "${WORKER_IPS:-}" ]]; then
+    # Remote workers and/or standby are cluster nodes; loopback-only is not enough.
+    if [[ -n "${WORKER_IPS:-}" || -n "${STANDBY_IPS:-}" ]]; then
         cluster_mode=1
     fi
     started="$(date +%s)"
@@ -317,28 +411,19 @@ kubectl_ready_node_count() {
 }
 
 validate_expected_cluster_nodes() {
-    local expected timeout_s started now elapsed ready
-    expected="$(count_expected_cluster_nodes "${WORKER_IPS:-}")"
-    if [[ "${expected:-0}" -le 1 ]]; then
-        log "CLUSTER_JOIN_STATE skipped (no worker IPs; single-node/AIO)"
+    local requested ready
+    # Diagnostic only. Per-target hostname Ready validation in
+    # orchestrate_workers is the correctness criterion. Extra existing
+    # Ready nodes are expected on retry / incremental worker add and must
+    # never cause a false FAIL or hide a missing requested target.
+    requested="$(count_remote_orchestration_nodes)"
+    ready="$(kubectl_ready_node_count)"
+    if [[ "${requested:-0}" -eq 0 ]]; then
+        log "CLUSTER_JOIN_STATE skipped (no remote orchestration nodes; single-node/AIO)"
+        log "CLUSTER_JOIN_STATE ready=${ready:-0} requested=0 diagnostic=YES"
         return 0
     fi
-    timeout_s="${1:-$CLUSTER_JOIN_WAIT_SECONDS}"
-    started="$(date +%s)"
-    while true; do
-        ready="$(kubectl_ready_node_count)"
-        log "CLUSTER_JOIN_STATE ready=${ready} expected=${expected}"
-        if [[ "${ready:-0}" -eq "$expected" ]]; then
-            return 0
-        fi
-        now="$(date +%s)"
-        elapsed=$((now - started))
-        if [[ "$elapsed" -ge "$timeout_s" ]]; then
-            log "ERROR: CLUSTER_JOIN_STATE ready=${ready} expected=${expected} waited=${elapsed}s"
-            log "BRINGUP_RESULT=FAIL"
-            return 1
-        fi
-        sleep 5
-    done
+    log "CLUSTER_JOIN_STATE ready=${ready:-0} requested=${requested} diagnostic=YES"
+    return 0
 }
 

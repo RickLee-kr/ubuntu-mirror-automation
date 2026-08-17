@@ -1485,7 +1485,7 @@ verify_installed_bringup_vendor_compat() {
     log "BRINGUP_VENDOR_COMPAT=FAIL reason=vendor_missing_worker_password"
     return 1
   fi
-  if ! grep -q 'WORKER_IPS requires --worker-password\|--worker-ips requires --worker-password' "$vendor"; then
+  if ! grep -q 'WORKER_IPS requires --worker-password\|--worker-ips requires --worker-password\|--worker-ips/--standby requires --worker-password' "$vendor"; then
     log "BRINGUP_VENDOR_COMPAT=FAIL reason=vendor_missing_worker_password_validation"
     return 1
   fi

@@ -73,8 +73,8 @@ B2_RC=$?
 set -e
 [[ "$B2_RC" -ne 0 ]] || fail "B2 unexpectedly PASS"
 [[ "$(p2b_read_state)" == "FAILED" ]] || fail "B2 state=$(p2b_read_state)"
-grep -q 'FAILURE_REASON=CLUSTER_JOIN_INCOMPLETE' "$(p2b_dir)/completion.sentinel" \
-  || fail "B2 missing CLUSTER_JOIN_INCOMPLETE"
+grep -q 'FAILURE_REASON=WORKER_ORCHESTRATION' "$(p2b_dir)/completion.sentinel" \
+  || fail "B2 missing WORKER_ORCHESTRATION failure"
 pass "B2 historical CLUSTER_JOIN_STATE 3/3 does not make current run PASS"
 
 # ---------------------------------------------------------------------------
@@ -315,32 +315,25 @@ set -e
 pass "ID-B2 historical APT FAIL is ignored"
 
 # ---------------------------------------------------------------------------
-# ID-B3. HISTORICAL 3/3 ignored; current 1/3 is not PASS
+# ID-B3. HISTORICAL 3/3 ignored; current missing orch PASS is not PASS
 # ---------------------------------------------------------------------------
 reset_lifecycle_files
-printf 'CLUSTER_JOIN_STATE ready=3 expected=3\n' >"$PHASE2_BRINGUP_LOG_DEFAULT"
+printf 'CLUSTER_JOIN_STATE ready=3 expected=3\nWORKER_ORCHESTRATION=PASS\n' \
+  >"$PHASE2_BRINGUP_LOG_DEFAULT"
 offset="$(wc -c <"$PHASE2_BRINGUP_LOG_DEFAULT" | tr -d ' ')"
 write_file "$(p2b_dir)/run-id" "run-idb3"
 write_file "$(p2b_dir)/log-start-offset" "$offset"
 p2b_write_current_run_log_marker "$PHASE2_BRINGUP_LOG_DEFAULT" "run-idb3"
-printf 'CLUSTER_JOIN_STATE ready=1 expected=3\n' >>"$PHASE2_BRINGUP_LOG_DEFAULT"
-join_ok=0
-if p2b_current_run_log_stream "$PHASE2_BRINGUP_LOG_DEFAULT" >/dev/null \
-  && p2b_current_run_log_stream "$PHASE2_BRINGUP_LOG_DEFAULT" \
-  | grep -E 'CLUSTER_JOIN_STATE ready=([0-9]+) expected=([0-9]+)' \
-  | awk '{
-      ready=""; expected="";
-      for(i=1;i<=NF;i++){
-        if($i ~ /^ready=/){ split($i,a,"="); ready=a[2] }
-        if($i ~ /^expected=/){ split($i,b,"="); expected=b[2] }
-      }
-      if(ready!="" && expected!="" && ready==expected && expected+0>1) ok=1
-    }
-    END { exit ok?0:1 }'
-then
-  join_ok=1
-fi
-[[ "$join_ok" -eq 0 ]] || fail "ID-B3 historical 3/3 made current topology PASS"
+printf 'CLUSTER_JOIN_STATE ready=1 requested=2 diagnostic=YES\n' \
+  >>"$PHASE2_BRINGUP_LOG_DEFAULT"
+set +e
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'WORKER_ORCHESTRATION=PASS'
+IDB3_ORCH=$?
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'CLUSTER_JOIN_STATE ready=3 expected=3'
+IDB3_HIST=$?
+set -e
+[[ "$IDB3_ORCH" -ne 0 ]] || fail "ID-B3 historical WORKER_ORCHESTRATION=PASS treated as current"
+[[ "$IDB3_HIST" -ne 0 ]] || fail "ID-B3 historical CLUSTER_JOIN 3/3 treated as current"
 pass "ID-B3 historical CLUSTER_JOIN 3/3 is not current-run PASS"
 
 # ---------------------------------------------------------------------------
@@ -660,6 +653,9 @@ grep -q 'FAILURE_REASON=CURRENT_RUN_LOG_IDENTITY_INVALID' "$(p2b_dir)/completion
   || fail "T4 missing CURRENT_RUN_LOG_IDENTITY_INVALID"
 if grep -q 'FAILURE_REASON=CLUSTER_JOIN_INCOMPLETE' "$(p2b_dir)/completion.sentinel"; then
   fail "T4 fell through to CLUSTER_JOIN_INCOMPLETE"
+fi
+if grep -q 'FAILURE_REASON=WORKER_ORCHESTRATION' "$(p2b_dir)/completion.sentinel"; then
+  fail "T4 fell through to WORKER_ORCHESTRATION instead of log identity"
 fi
 pass "T4 cluster invalid log identity fails early"
 

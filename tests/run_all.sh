@@ -82,6 +82,7 @@ TEST_LIST=(
   test_phase2_prereq_worker_contract.sh
   test_phase2_prereq_version_aware.sh
   test_phase2_cluster_readiness.sh
+  test_phase2_remote_orchestration_semantics.sh
   test_client_manifest_signing.sh
   test_worktree_isolation.sh
   test_distupgrade_config_ascii.sh

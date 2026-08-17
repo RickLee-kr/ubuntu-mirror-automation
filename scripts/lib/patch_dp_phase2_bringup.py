@@ -47,6 +47,9 @@ RESULT_MARKERS = (
     'WORKER_RESULT',
     'WORKER_ORCHESTRATION',
     'copy_phase2_prereq_contract_to_worker',
+    'normalize_remote_orchestration_nodes',
+    'has_remote_orchestration_nodes',
+    '--worker-ips/--standby requires --worker-password',
 )
 
 
@@ -237,7 +240,7 @@ def apply_worker_password_docs(text):
     text = replace_exactly_once(
         text,
         '#   --worker-key <path>       (deprecated) Workers use sshpass (aella/aelladata)',
-        '#   --worker-password <pass>  SSH password for aella on worker nodes (required with --worker-ips)\n'
+        '#   --worker-password <pass>  SSH password for aella on remote nodes (required with --worker-ips/--standby)\n'
         '#   --worker-key <path>       (deprecated) Use --worker-password instead',
         'args_doc_worker_password',
     )
@@ -290,13 +293,13 @@ def apply_parse_args_worker_password(text):
             (
                 help_prev,
                 '                echo "  --worker-ips <ip,ip>    Comma-separated worker IPs (master orchestrates)"\n'
-                '                echo "  --worker-password <pw>  SSH password for aella on workers (required with --worker-ips)"\n'
+                '                echo "  --worker-password <pw>  SSH password for aella on remote nodes (required with --worker-ips/--standby)"\n'
                 '                echo "  --role <role>           Override auto-detect (AIO|DR-master|DL-master|DR-worker|DL-worker)"\n',
             ),
             (
                 help_f1a73,
                 '                echo "  --worker-ips <ip,ip>    Comma-separated worker IPs (master orchestrates)"\n'
-                '                echo "  --worker-password <pw>  SSH password for aella on workers (required with --worker-ips)"\n'
+                '                echo "  --worker-password <pw>  SSH password for aella on remote nodes (required with --worker-ips/--standby)"\n'
                 '                echo "  --standby <ip[,ip]>     Standby node IP(s) -- orchestrated like workers but with"\n'
                 '                echo "                          role standby, always AFTER the workers. May be used with"\n'
                 '                echo "                          or without --worker-ips."\n'
@@ -314,8 +317,12 @@ def apply_parse_args_worker_password(text):
         '        esac\n'
         '    done\n'
         '\n'
-        '    if [[ -n "$WORKER_IPS" && -z "$WORKER_PASSWORD" ]]; then\n'
-        '        die "--worker-ips requires --worker-password"\n'
+        '    # WORKER_PASSWORD applies to all remote orchestration nodes (workers and standby).\n'
+        '    if [[ ( -n "$WORKER_IPS" || -n "${STANDBY_IPS:-}" ) && -z "$WORKER_PASSWORD" ]]; then\n'
+        '        die "--worker-ips/--standby requires --worker-password"\n'
+        '    fi\n'
+        '    if declare -F normalize_remote_orchestration_nodes >/dev/null 2>&1; then\n'
+        '        normalize_remote_orchestration_nodes || die "REMOTE_ORCH_NODES=FAIL"\n'
         '    fi\n'
         '\n'
         '    # --version not required for pre-upgrade cleanup, auto-os-upgrade, or the\n',
@@ -420,7 +427,7 @@ def apply_overlay2_worker_password(text):
         '    local workers worker_ip dry_flag=""\n',
         '    local WORKER_USER="aella" WORKER_PASS="${WORKER_PASSWORD}"\n'
         '    if [[ -z "$WORKER_PASS" ]]; then\n'
-        '        die "--worker-ips requires --worker-password"\n'
+        '        die "--worker-ips/--standby requires --worker-password"\n'
         '    fi\n'
         '    local workers worker_ip dry_flag=""\n',
         'overlay2_worker_password',
@@ -438,7 +445,10 @@ def apply_orchestrate_workers(text):
         '    local WORKER_PASS="${WORKER_PASSWORD}"\n'
         '    local WORKER_USER="aella"\n'
         '    if [[ -z "$WORKER_PASS" ]]; then\n'
-        '        die "--worker-ips requires --worker-password"\n'
+        '        die "--worker-ips/--standby requires --worker-password"\n'
+        '    fi\n'
+        '    if declare -F normalize_remote_orchestration_nodes >/dev/null 2>&1; then\n'
+        '        normalize_remote_orchestration_nodes || die "REMOTE_ORCH_NODES=FAIL"\n'
         '    fi\n'
         '    if ! command -v sshpass &>/dev/null; then\n',
         'orchestrate_workers_password',
@@ -500,6 +510,47 @@ def apply_orchestrate_workers(text):
         '                orch_failed=1\n'
         '                continue\n',
         'orchestrate_workers_ssh_fail',
+    )
+    role_mismatch_f1a73 = (
+        '        if [[ "$remote_role" == "standby" && "$node_role" != "standby" ]]; then\n'
+        '            log "ERROR: $worker_ip has aella_role: standby but was listed in --worker-ips -- SKIPPING."\n'
+        '            log "  Use --standby $worker_ip (or run on the node itself with --role standby)."\n'
+        '            continue\n'
+        '        fi\n'
+        '        if [[ "$node_role" == "standby" && -n "$remote_role" && "$remote_role" != "standby" ]]; then\n'
+        '            log "ERROR: $worker_ip was listed in --standby but has aella_role: ${remote_role} -- SKIPPING."\n'
+        '            log "  Use --worker-ips for workers; fix da_conf/role assignment first."\n'
+        '            continue\n'
+        '        fi\n'
+    )
+    role_mismatch_f1a73_fixed = (
+        '        if [[ "$remote_role" == "standby" && "$node_role" != "standby" ]]; then\n'
+        '            log "ERROR: $worker_ip has aella_role: standby but was listed in --worker-ips"\n'
+        '            log "WORKER_RESULT ip=${worker_ip} role=${node_role} result=FAIL reason=role_mismatch actual=${remote_role}"\n'
+        '            orch_failed=1\n'
+        '            continue\n'
+        '        fi\n'
+        '        if [[ "$node_role" == "standby" && -n "$remote_role" && "$remote_role" != "standby" ]]; then\n'
+        '            log "ERROR: $worker_ip was listed in --standby but has aella_role: ${remote_role}"\n'
+        '            log "WORKER_RESULT ip=${worker_ip} role=${node_role} result=FAIL reason=role_mismatch actual=${remote_role}"\n'
+        '            orch_failed=1\n'
+        '            continue\n'
+        '        fi\n'
+    )
+    # Previous upstream has no standby role-mismatch guard. Identity-map a
+    # prev-only site so the transform remains exact-one-of on both fixtures.
+    role_mismatch_prev_identity = (
+        '        log "--- Deploying worker: $worker_ip ---"\n'
+        '        local worker_failed=0\n'
+        '        local worker_reason=""\n'
+    )
+    text = replace_exactly_one_mapping(
+        text,
+        (
+            (role_mismatch_f1a73, role_mismatch_f1a73_fixed),
+            (role_mismatch_prev_identity, role_mismatch_prev_identity),
+        ),
+        'orchestrate_workers_role_mismatch',
     )
     text = replace_exactly_once(
         text,
@@ -629,25 +680,37 @@ def apply_orchestrate_workers(text):
         '    log "Cluster state after worker deployment:"\n'
         '    kubectl get nodes -o wide 2>/dev/null || true\n'
         '}\n',
-        '        # Verify worker appeared in cluster and became Ready (bounded wait).\n'
+        '        # Verify the requested target hostname is Ready (bounded wait).\n'
+        '        # Identity of THIS target is authoritative; global Ready count is not.\n'
         '        local worker_hostname ready_wait=0 ready_ok=0\n'
-        '        worker_hostname=$(worker_ssh "$worker_ip" "hostname" 2>/dev/null || echo "unknown")\n'
-        '        while [[ "$ready_wait" -lt 60 ]]; do\n'
+        '        local ready_attempts="${CLUSTER_TARGET_READY_ATTEMPTS:-60}"\n'
+        '        local ready_sleep="${CLUSTER_TARGET_READY_SLEEP_SECONDS:-5}"\n'
+        '        local result_role="${node_role:-${worker_role:-}}"\n'
+        '        worker_hostname=$(worker_ssh "$worker_ip" "hostname" 2>/dev/null || true)\n'
+        '        worker_hostname="${worker_hostname//$\'\\r\'/}"\n'
+        '        worker_hostname="${worker_hostname#"${worker_hostname%%[![:space:]]*}"}"\n'
+        '        worker_hostname="${worker_hostname%"${worker_hostname##*[![:space:]]}"}"\n'
+        '        if [[ -z "$worker_hostname" || "$worker_hostname" == "unknown" ]]; then\n'
+        '            log "WORKER_RESULT ip=${worker_ip} role=${result_role} result=FAIL reason=hostname"\n'
+        '            orch_failed=1\n'
+        '            continue\n'
+        '        fi\n'
+        '        while [[ "$ready_wait" -lt "$ready_attempts" ]]; do\n'
         '            if kubectl get nodes --no-headers 2>/dev/null \\\n'
         '                | awk -v h="$worker_hostname" \'BEGIN{IGNORECASE=1} $1==h && $2 ~ /^Ready($|,)/ {found=1} END{exit found?0:1}\'; then\n'
         '                ready_ok=1\n'
         '                break\n'
         '            fi\n'
-        '            sleep 5\n'
+        '            sleep "$ready_sleep"\n'
         '            ready_wait=$((ready_wait + 1))\n'
         '        done\n'
         '        if [[ "$ready_ok" -ne 1 ]]; then\n'
-        '            log "WORKER_RESULT ip=${worker_ip} result=FAIL reason=not_ready host=${worker_hostname}"\n'
+        '            log "WORKER_RESULT ip=${worker_ip} role=${result_role} result=FAIL reason=not_ready host=${worker_hostname}"\n'
         '            orch_failed=1\n'
         '            continue\n'
         '        fi\n'
         '\n'
-        '        log "WORKER_RESULT ip=${worker_ip} result=PASS"\n'
+        '        log "WORKER_RESULT ip=${worker_ip} role=${result_role} result=PASS"\n'
         '        log "Worker $worker_ip ($worker_hostname) joined cluster successfully"\n'
         '    done\n'
         '\n'

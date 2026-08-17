@@ -56,6 +56,9 @@ Detached Phase 2 bringup with authoritative lifecycle state and foreground monit
 Options:
   --version VER       Target DP version (required for start)
   --skip-download     Passed through to vendor bringup
+  --worker-ips IPS    Passed through to vendor bringup
+  --worker-password   Passed through to vendor bringup (not logged)
+  --standby IPS       Passed through to vendor bringup
   --detach            Return immediately after verified worker handoff
   --status            Read-only lifecycle status
   --diagnose          Read-only diagnostics (status + log tail + markers)
@@ -97,12 +100,23 @@ parse_args() {
         usage
         exit 0
         ;;
-      --skip-download|--worker-ips|--worker-password|--dry-run)
-        PASSTHRU+=("$1")
-        if [[ "$1" == "--worker-ips" || "$1" == "--worker-password" ]]; then
-          PASSTHRU+=("${2:-}")
+      --skip-download|--worker-ips|--worker-password|--dry-run|--standby)
+        if [[ "$1" == "--worker-password" ]]; then
+          if [[ $# -lt 2 ]]; then
+            echo "ERROR: $1 requires a value" >&2
+            exit 1
+          fi
+          PASSTHRU+=("$1" "$2")
+          shift 2
+        elif [[ "$1" == "--worker-ips" || "$1" == "--standby" ]]; then
+          if [[ $# -lt 2 || -z "${2:-}" || "$2" == --* ]]; then
+            echo "ERROR: $1 requires a value" >&2
+            exit 1
+          fi
+          PASSTHRU+=("$1" "$2")
           shift 2
         else
+          PASSTHRU+=("$1")
           shift
         fi
         ;;

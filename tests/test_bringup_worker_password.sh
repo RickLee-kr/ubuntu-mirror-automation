@@ -27,7 +27,7 @@ grep -n 'WORKER_PASS="aelladata"' "$BRINGUP" \
 
 grep -q -- '--worker-password' "$BRINGUP" \
   || fail "--worker-password not in bringup"
-grep -q 'WORKER_IPS requires --worker-password\|--worker-ips requires --worker-password' "$BRINGUP" \
+grep -q 'WORKER_IPS requires --worker-password\|--worker-ips requires --worker-password\|--worker-ips/--standby requires --worker-password' "$BRINGUP" \
   || fail "missing --worker-ips/--worker-password validation"
 
 # Extract parse_args + orchestrate_workers with local stubs.
@@ -57,6 +57,7 @@ run_parse() {
     VERSION=""
     WORKER_IPS=""
     WORKER_PASSWORD=""
+    STANDBY_IPS=""
     ROLE=""
     DRY_RUN=false
     SKIP_DOWNLOAD=false
@@ -103,7 +104,7 @@ fi
 # worker-ips without password → error
 run_parse --version 6.5.0 --skip-download --worker-ips "192.168.124.23,192.168.124.25"
 [[ "$PARSE_RC" -ne 0 ]] || fail "worker-ips without password accepted"
-echo "$PARSE_ERR" | grep -q -- '--worker-ips requires --worker-password' \
+echo "$PARSE_ERR" | grep -q -- '--worker-ips/--standby requires --worker-password\|--worker-ips requires --worker-password' \
   || fail "missing validation error: ${PARSE_ERR}"
 pass "worker-ips without password is rejected"
 
@@ -186,6 +187,8 @@ SCP_OPTS="-o StrictHostKeyChecking=no"
 die() { echo "FATAL: \$*" >&2; exit 1; }
 log() { echo "\$*"; }
 log_phase() { echo "PHASE: \$*"; }
+copy_phase2_prereq_contract_to_worker() { return 0; }
+normalize_remote_orchestration_nodes() { return 0; }
 # shellcheck disable=SC1090
 source $(printf '%q' "$ORCH_SRC")
 orchestrate_workers

@@ -713,18 +713,18 @@ p2b_worker_main() {
       p2b_fail_run "$d" "$run_id" "$$" "$target" "$started" "$logf" "$rc" "CURRENT_RUN_LOG_IDENTITY_INVALID"
     fi
 
-    # Worker-IP runs cannot become PASS unless the vendor recorded a complete
-    # Ready topology. This prevents a 1/3-node vendor "Bringup complete" from
-    # being converted into BRINGUP_RESULT=PASS.
-    local want_workers=""
+    # Remote orchestration runs cannot become PASS unless the vendor recorded
+    # WORKER_ORCHESTRATION=PASS. Per-target hostname Ready validation in the
+    # vendor script is authoritative; global Ready-count equality is not.
+    local want_remote=""
     local arg next=""
     for arg in "$@"; do
       if [[ -n "$next" ]]; then
-        want_workers="$arg"
+        want_remote="$arg"
         next=""
         continue
       fi
-      if [[ "$arg" == "--worker-ips" ]]; then
+      if [[ "$arg" == "--worker-ips" || "$arg" == "--standby" ]]; then
         next=1
       fi
     done
@@ -762,24 +762,12 @@ p2b_worker_main() {
       p2b_write_state "FAILED"
       exit "$rc"
     fi
-    if [[ -n "$want_workers" ]]; then
-      local join_ok=0
-      if p2b_current_run_log_stream "$logf" >/dev/null \
-        && p2b_current_run_log_stream "$logf" \
-        | grep -E 'CLUSTER_JOIN_STATE ready=([0-9]+) expected=([0-9]+)' \
-        | awk '{
-            ready=""; expected="";
-            for(i=1;i<=NF;i++){
-              if($i ~ /^ready=/){ split($i,a,"="); ready=a[2] }
-              if($i ~ /^expected=/){ split($i,b,"="); expected=b[2] }
-            }
-            if(ready!="" && expected!="" && ready==expected && expected+0>1) ok=1
-          }
-          END { exit ok?0:1 }'
-      then
-        join_ok=1
+    if [[ -n "$want_remote" ]]; then
+      local orch_ok=0
+      if p2b_current_run_log_contains "$logf" 'WORKER_ORCHESTRATION=PASS'; then
+        orch_ok=1
       fi
-      if [[ "$join_ok" -ne 1 ]]; then
+      if [[ "$orch_ok" -ne 1 ]]; then
         rc=1
         completed="$(p2b_utc_now)"
         printf '%s\n' "$rc" | p2b_atomic_write "${d}/exit-code"
@@ -787,7 +775,7 @@ p2b_worker_main() {
         {
           echo "BRINGUP_TERMINAL_STATE=FAILED"
           echo "BRINGUP_RESULT=FAIL"
-          echo "FAILURE_REASON=CLUSTER_JOIN_INCOMPLETE"
+          echo "FAILURE_REASON=WORKER_ORCHESTRATION"
           echo "BRINGUP_EXIT_CODE=${rc}"
           echo "BRINGUP_RUN_ID=${run_id}"
           echo "BRINGUP_COMPLETION_SENTINEL=FAIL"

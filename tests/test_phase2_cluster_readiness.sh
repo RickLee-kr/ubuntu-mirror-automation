@@ -326,21 +326,28 @@ grep -q 'Bringup complete' "$JOIN_OUT" && fail "E misleading success after curl 
   pass "E no misleading success after curl fail"
 
 # ---------------------------------------------------------------------------
-# F + G. Worker orchestration + expected node count
+# F + G. Worker orchestration + cluster join diagnostics
 # ---------------------------------------------------------------------------
 extract_fn orchestrate_workers "${WORKDIR}/orch.sh"
-extract_fn count_expected_cluster_nodes "${WORKDIR}/count.sh"
-extract_fn validate_expected_cluster_nodes "${WORKDIR}/topo.sh"
-extract_fn kubectl_ready_node_count "${WORKDIR}/ready.sh"
-
+COMPAT="${ROOT}/scripts/lib/phase2_bringup_patch/fragment_compat.sh"
 # shellcheck disable=SC1090
-source "${WORKDIR}/count.sh"
-[[ "$(count_expected_cluster_nodes '')" == "0" ]] \
-  && pass "H no worker IPs => expected 0 (single-node skip)" \
-  || fail "H empty worker IPs count"
-[[ "$(count_expected_cluster_nodes '192.168.12.26,192.168.12.27')" == "3" ]] \
-  && pass "G two workers => expected 3" \
+source "$COMPAT"
+log() { echo "$*"; }
+WORKER_IPS=""
+STANDBY_IPS=""
+[[ "$(count_remote_orchestration_nodes)" == "0" ]] \
+  && pass "H no remote nodes => count 0 (single-node skip)" \
+  || fail "H empty remote node count"
+WORKER_IPS='192.168.12.26,192.168.12.27'
+STANDBY_IPS=""
+[[ "$(count_remote_orchestration_nodes)" == "2" ]] \
+  && pass "G two workers => requested 2 (not master+workers exact size)" \
   || fail "G two workers count"
+WORKER_IPS=""
+STANDBY_IPS="192.168.12.30"
+[[ "$(count_remote_orchestration_nodes)" == "1" ]] \
+  && pass "G standby only => requested 1" \
+  || fail "G standby only count"
 
 write_kubectl_nodes() {
   local dest="$1"
@@ -356,17 +363,15 @@ EOF
 }
 
 run_topo() {
-  local ips="$1"
+  local workers="$1"
   local timeout="$2"
-  WORKER_IPS="$ips"
+  local standby="${3:-}"
+  WORKER_IPS="$workers"
+  STANDBY_IPS="$standby"
   CLUSTER_JOIN_WAIT_SECONDS="$timeout"
   log() { echo "$*"; }
   # shellcheck disable=SC1090
-  source "${WORKDIR}/count.sh"
-  # shellcheck disable=SC1090
-  source "${WORKDIR}/ready.sh"
-  # shellcheck disable=SC1090
-  source "${WORKDIR}/topo.sh"
+  source "$COMPAT"
   validate_expected_cluster_nodes "$timeout"
 }
 
@@ -378,35 +383,24 @@ set +e
 TOPO1="$(PATH="${KBIN}:$PATH" run_topo "192.168.12.26,192.168.12.27" 0 2>&1)"
 TOPO1_RC=$?
 set -e
-echo "$TOPO1" | grep -q 'CLUSTER_JOIN_STATE ready=1 expected=3' \
-  && [[ "$TOPO1_RC" -ne 0 ]] \
-  && pass "G only master Ready => FAIL" \
-  || fail "G only master Ready: rc=${TOPO1_RC} ${TOPO1}"
-
-write_kubectl_nodes "${KBIN}/kubectl" \
-  '  printf "dl-master Ready  1d  v1.31.0\n"' \
-  '  printf "dl-worker1 Ready 1d  v1.31.0\n"'
-set +e
-TOPO2="$(PATH="${KBIN}:$PATH" run_topo "192.168.12.26,192.168.12.27" 0 2>&1)"
-TOPO2_RC=$?
-set -e
-echo "$TOPO2" | grep -q 'CLUSTER_JOIN_STATE ready=2 expected=3' \
-  && [[ "$TOPO2_RC" -ne 0 ]] \
-  && pass "G master+worker1 Ready => FAIL" \
-  || fail "G master+worker1: rc=${TOPO2_RC} ${TOPO2}"
+echo "$TOPO1" | grep -q 'CLUSTER_JOIN_STATE ready=1 requested=2 diagnostic=YES' \
+  && [[ "$TOPO1_RC" -eq 0 ]] \
+  && pass "G global Ready count is diagnostic only (not a FAIL gate)" \
+  || fail "G diagnostic ready count: rc=${TOPO1_RC} ${TOPO1}"
 
 write_kubectl_nodes "${KBIN}/kubectl" \
   '  printf "dl-master Ready  1d  v1.31.0\n"' \
   '  printf "dl-worker1 Ready 1d  v1.31.0\n"' \
+  '  printf "old-worker Ready 1d  v1.31.0\n"' \
   '  printf "dl-worker2 Ready 1d  v1.31.0\n"'
 set +e
-TOPO3="$(PATH="${KBIN}:$PATH" run_topo "192.168.12.26,192.168.12.27" 5 2>&1)"
-TOPO3_RC=$?
+TOPO_EXTRA="$(PATH="${KBIN}:$PATH" run_topo "192.168.12.26" 5 2>&1)"
+TOPO_EXTRA_RC=$?
 set -e
-echo "$TOPO3" | grep -q 'CLUSTER_JOIN_STATE ready=3 expected=3' \
-  && [[ "$TOPO3_RC" -eq 0 ]] \
-  && pass "G master+2 workers Ready => PASS" \
-  || fail "G full cluster: rc=${TOPO3_RC} ${TOPO3}"
+echo "$TOPO_EXTRA" | grep -q 'CLUSTER_JOIN_STATE ready=4 requested=1 diagnostic=YES' \
+  && [[ "$TOPO_EXTRA_RC" -eq 0 ]] \
+  && pass "G extra existing Ready nodes do not fail global diagnostic" \
+  || fail "G extra Ready: rc=${TOPO_EXTRA_RC} ${TOPO_EXTRA}"
 
 set +e
 TOPO_AIO="$(PATH="${KBIN}:$PATH" run_topo "" 5 2>&1)"
@@ -464,6 +458,8 @@ ORCH_FAIL_OUT="$(
   die() { echo "FATAL: $*" >&2; exit 1; }
   log() { echo "$*"; }
   log_phase() { echo "PHASE: $*"; }
+  copy_phase2_prereq_contract_to_worker() { return 0; }
+  normalize_remote_orchestration_nodes() { return 0; }
   # shellcheck disable=SC1090
   source "${WORKDIR}/orch.sh"
   set +e
@@ -484,17 +480,18 @@ fi
 
 # I. --worker-password still accepted
 if grep -q -- '--worker-password' "$BRINGUP" \
-  && grep -q -- '--worker-ips requires --worker-password' "$BRINGUP"; then
+  && grep -qE -- '--worker-ips(/--standby)? requires --worker-password' "$BRINGUP"; then
   pass "I --worker-password still required with --worker-ips"
 else
   fail "I --worker-password contract missing"
 fi
 
-# Lifecycle wrapper cannot convert incomplete topology into PASS
-if grep -q 'FAILURE_REASON=CLUSTER_JOIN_INCOMPLETE' "$LIFECYCLE"; then
-  pass "G lifecycle wrapper rejects incomplete CLUSTER_JOIN_STATE"
+# Lifecycle wrapper requires WORKER_ORCHESTRATION=PASS for remote nodes
+if grep -q 'FAILURE_REASON=WORKER_ORCHESTRATION' "$LIFECYCLE" \
+  && grep -q 'WORKER_ORCHESTRATION=PASS' "$LIFECYCLE"; then
+  pass "G lifecycle wrapper requires WORKER_ORCHESTRATION=PASS for remote nodes"
 else
-  fail "G lifecycle wrapper missing CLUSTER_JOIN_INCOMPLETE gate"
+  fail "G lifecycle wrapper missing WORKER_ORCHESTRATION remote gate"
 fi
 if grep -q 'FAILURE_REASON=APT_DEPENDENCY_CHECK' "$LIFECYCLE"; then
   pass "K lifecycle wrapper rejects APT_DEPENDENCY_CHECK=FAIL"

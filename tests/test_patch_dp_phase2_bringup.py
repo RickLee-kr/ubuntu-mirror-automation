@@ -68,7 +68,7 @@ class FreshUpstreamPatchTests(unittest.TestCase):
     def test_a_adds_worker_password(self):
         out, _applied = patcher.patch_bringup_text(self.upstream, emit=False)
         self.assertIn('--worker-password', out)
-        self.assertIn('--worker-ips requires --worker-password', out)
+        self.assertIn('--worker-ips/--standby requires --worker-password', out)
 
     def test_b_preserves_new_upstream_vendor_marker(self):
         src = self.upstream.replace(
