@@ -91,6 +91,35 @@ dp2_prereq_deb_install_decision() {
   return 2
 }
 
+# Evaluate every member of one SCC install group before any dpkg invocation.
+# Filename order must not change the decision. A newer installed member is
+# always a fail-closed conflict, even if an earlier member needs installation.
+# Returns: 0 all exact (skip group), 1 any member needs install, 2 conflict.
+dp2_prereq_scc_group_decision() {
+  local any_install_needed=0 all_exact=1 decision=0 fpath pkg prev_e=0
+  for fpath in "$@"; do
+    prev_e=0
+    [[ $- == *e* ]] && prev_e=1
+    set +e
+    dp2_prereq_deb_install_decision "$fpath"
+    decision=$?
+    [[ "$prev_e" -eq 1 ]] && set -e
+    if [[ "$decision" -eq 2 ]]; then
+      pkg="$(dpkg-deb -f "$fpath" Package 2>/dev/null || true)"
+      dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=version_conflict package=${pkg}"
+      return 2
+    fi
+    if [[ "$decision" -eq 1 ]]; then
+      any_install_needed=1
+      all_exact=0
+    fi
+  done
+  if [[ "$all_exact" -eq 1 && "$any_install_needed" -eq 0 ]]; then
+    return 0
+  fi
+  return 1
+}
+
 dp2_prereq_parse_simulation_removals() {
   local text="$1"
   printf '%s\n' "$text" | awk '
@@ -595,43 +624,19 @@ dp2_install_phase2_ubuntu_prerequisites() {
       fi
     done
     pkg="$(dpkg-deb -f "${files[0]}" Package 2>/dev/null || true)"
-    if [[ ${#files[@]} -eq 1 ]]; then
-      local decision=1
-      prev_e=0
-      [[ $- == *e* ]] && prev_e=1
-      set +e
-      dp2_prereq_deb_install_decision "${files[0]}"
-      decision=$?
-      [[ "$prev_e" -eq 1 ]] && set -e
-      if [[ "$decision" -eq 0 ]]; then
-        continue
-      fi
-      if [[ "$decision" -eq 2 ]]; then
-        rm -rf "$extract"
-        dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=version_conflict package=${pkg}"
-        return 1
-      fi
-    else
-      local fpath group_decision=1
-      for fpath in "${files[@]}"; do
-        prev_e=0
-        [[ $- == *e* ]] && prev_e=1
-        set +e
-        dp2_prereq_deb_install_decision "$fpath"
-        group_decision=$?
-        [[ "$prev_e" -eq 1 ]] && set -e
-        if [[ "$group_decision" -eq 2 ]]; then
-          rm -rf "$extract"
-          dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=version_conflict package=$(dpkg-deb -f "$fpath" Package 2>/dev/null || true)"
-          return 1
-        fi
-        if [[ "$group_decision" -eq 1 ]]; then
-          break
-        fi
-      done
-      if [[ "$group_decision" -eq 0 ]]; then
-        continue
-      fi
+    local decision=1
+    prev_e=0
+    [[ $- == *e* ]] && prev_e=1
+    set +e
+    dp2_prereq_scc_group_decision "${files[@]}"
+    decision=$?
+    [[ "$prev_e" -eq 1 ]] && set -e
+    if [[ "$decision" -eq 2 ]]; then
+      rm -rf "$extract"
+      return 1
+    fi
+    if [[ "$decision" -eq 0 ]]; then
+      continue
     fi
     dp2_prereq_dpkg_install "${files[@]}"
     rc=$?

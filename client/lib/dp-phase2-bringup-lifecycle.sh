@@ -138,13 +138,35 @@ p2b_read_log_start_offset() {
   printf '%s' "$off"
 }
 
-# Stream only current-run log bytes. Never loads the whole file into memory.
+p2b_current_run_log_marker_line() {
+  local run_id="${1:-}"
+  [[ -n "$run_id" ]] || run_id="$(p2b_read_file "$(p2b_dir)/run-id")"
+  printf 'PHASE2_LIFECYCLE_RUN_BEGIN run_id=%s' "$run_id"
+}
+
+p2b_write_current_run_log_marker() {
+  local logf="$1"
+  local run_id="${2:-}"
+  local line
+  [[ -n "$run_id" ]] || run_id="$(p2b_read_file "$(p2b_dir)/run-id")"
+  if [[ -z "$logf" || -z "$run_id" ]]; then
+    return 1
+  fi
+  if [[ ! "$run_id" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+    return 1
+  fi
+  mkdir -p "$(dirname "$logf")" 2>/dev/null || true
+  line="$(p2b_current_run_log_marker_line "$run_id")"
+  printf '%s\n' "$line" >>"$logf"
+}
+
+# Offset-scoped bytes only. Does not prove current-run identity.
+# Never loads the whole file into memory.
 # Return codes:
-#   0  current-run view streamed (may be empty if offset==size)
+#   0  offset-scoped view streamed (may be empty if offset==size)
 #   1  log file missing
-#   2  truncation/rotation: recorded offset is past current size. Historical
-#      evidence must not be reused. Callers that need current-run proof FAIL.
-p2b_current_run_log_stream() {
+#   2  truncation/rotation: recorded offset is past current size
+p2b_current_run_log_offset_stream() {
   local logf="$1"
   local offset="${2:-}"
   local size
@@ -169,22 +191,84 @@ p2b_current_run_log_stream() {
   return 0
 }
 
-p2b_current_run_log_contains() {
+# Current-run evidence is valid only when the active run-id marker exists in
+# the offset-scoped stream. Historical pre-offset bytes are never searched.
+# Return codes:
+#   0  current run-id marker present in scoped stream
+#   1  log file missing
+#   2  truncation/rotation or invalid offset
+#   3  marker missing or belongs to a different run-id
+p2b_current_run_log_identity_valid() {
   local logf="$1"
-  local pattern="$2"
-  local offset size
-  offset="$(p2b_read_log_start_offset)"
+  local run_id="${2:-}"
+  local offset="${3:-}"
+  local marker prev_e=0 stream_rc=0 grep_rc=0
+  [[ -n "$run_id" ]] || run_id="$(p2b_read_file "$(p2b_dir)/run-id")"
   if [[ ! -f "$logf" ]]; then
     return 1
   fi
-  if [[ ! "$offset" =~ ^[0-9]+$ ]]; then
+  if [[ -z "$run_id" || ! "$run_id" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+    return 3
+  fi
+  marker="$(p2b_current_run_log_marker_line "$run_id")"
+  [[ $- == *e* ]] && prev_e=1
+  set +e
+  p2b_current_run_log_offset_stream "$logf" "$offset" >/dev/null
+  stream_rc=$?
+  if [[ "$stream_rc" -ne 0 ]]; then
+    [[ "$prev_e" -eq 1 ]] && set -e
+    return "$stream_rc"
+  fi
+  p2b_current_run_log_offset_stream "$logf" "$offset" | grep -qxF -- "$marker"
+  grep_rc=$?
+  [[ "$prev_e" -eq 1 ]] && set -e
+  if [[ "$grep_rc" -eq 0 ]]; then
+    return 0
+  fi
+  return 3
+}
+
+# Stream current-run log bytes only when offset arithmetic and run identity
+# are both valid. Never loads the whole file into memory.
+# Return codes:
+#   0  current-run view streamed
+#   1  log file missing
+#   2  current-run evidence invalid (truncation/rotation/missing or wrong marker)
+p2b_current_run_log_stream() {
+  local logf="$1"
+  local offset="${2:-}"
+  local ident_rc=0 prev_e=0
+  [[ $- == *e* ]] && prev_e=1
+  set +e
+  p2b_current_run_log_identity_valid "$logf" "" "$offset"
+  ident_rc=$?
+  [[ "$prev_e" -eq 1 ]] && set -e
+  if [[ "$ident_rc" -ne 0 ]]; then
+    if [[ "$ident_rc" -eq 1 ]]; then
+      return 1
+    fi
     return 2
   fi
-  size="$(wc -c <"$logf" | tr -d ' ')"
-  if [[ ! "$size" =~ ^[0-9]+$ || "$offset" -gt "$size" ]]; then
-    return 2
+  p2b_current_run_log_offset_stream "$logf" "$offset"
+  return 0
+}
+
+p2b_current_run_log_contains() {
+  local logf="$1"
+  local pattern="$2"
+  local prev_e=0 stream_rc=0 grep_rc=0
+  [[ $- == *e* ]] && prev_e=1
+  set +e
+  p2b_current_run_log_stream "$logf" >/dev/null
+  stream_rc=$?
+  if [[ "$stream_rc" -ne 0 ]]; then
+    [[ "$prev_e" -eq 1 ]] && set -e
+    return "$stream_rc"
   fi
-  tail -c "+$((offset + 1))" "$logf" | grep -qE -- "$pattern"
+  p2b_current_run_log_stream "$logf" | grep -qE -- "$pattern"
+  grep_rc=$?
+  [[ "$prev_e" -eq 1 ]] && set -e
+  return "$grep_rc"
 }
 
 # Exact anchored vendor completion line for current run context (optional corroboration).
@@ -517,6 +601,10 @@ p2b_worker_main() {
   else
     printf '0\n' | p2b_atomic_write "${d}/log-start-offset"
   fi
+  # Identity marker lives in the current-run stream (after the recorded offset).
+  # Secondary log gates must not accept a later truncated/regrown file as the
+  # same stream if this marker is gone. This is not a completion sentinel.
+  p2b_write_current_run_log_marker "$logf" "$run_id" || true
   p2b_write_state "RUNNING"
   printf '%s\n' "$$" | p2b_atomic_write "${d}/worker.pid"
   if [[ -r /proc/$$/stat ]]; then

@@ -255,4 +255,274 @@ grep -q '^BRINGUP_RESULT=FAIL_POSTCONDITION$' "${TMP}/c5.post.status" \
   || fail "C5 postcondition=$(grep ^BRINGUP_RESULT= "${TMP}/c5.post.status")"
 pass "C5 CLI postcondition remains FAIL_POSTCONDITION"
 
+fill_bytes() {
+  local file="$1" n="$2" ch="${3:-H}"
+  python3 -c 'import sys; p,n,ch=sys.argv[1],int(sys.argv[2]),sys.argv[3][:1]; open(p,"wb").write((ch.encode()*n)[:n])' \
+    "$file" "$n" "$ch"
+}
+
+reset_lifecycle_files() {
+  p2b_ensure_dir
+  rm -f "$(p2b_dir)/result.env" "$(p2b_dir)/completion.sentinel" "$(p2b_dir)/state" \
+    "$(p2b_dir)/log-start-offset" "$(p2b_dir)/exit-code"
+}
+
+# ---------------------------------------------------------------------------
+# ID-B1. NORMAL APPEND: historical log + current marker after offset
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+fill_bytes "$PHASE2_BRINGUP_LOG_DEFAULT" 2048 H
+printf '\nHIST APT_DEPENDENCY_CHECK=FAIL\n' >>"$PHASE2_BRINGUP_LOG_DEFAULT"
+offset="$(wc -c <"$PHASE2_BRINGUP_LOG_DEFAULT" | tr -d ' ')"
+write_file "$(p2b_dir)/run-id" "run-idb1"
+write_file "$(p2b_dir)/log-start-offset" "$offset"
+p2b_write_current_run_log_marker "$PHASE2_BRINGUP_LOG_DEFAULT" "run-idb1"
+printf 'APT_DEPENDENCY_CHECK=PASS\n' >>"$PHASE2_BRINGUP_LOG_DEFAULT"
+set +e
+p2b_current_run_log_identity_valid "$PHASE2_BRINGUP_LOG_DEFAULT" "run-idb1"
+IDB1_IDENT=$?
+p2b_current_run_log_stream "$PHASE2_BRINGUP_LOG_DEFAULT" >/dev/null
+IDB1_STREAM=$?
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'APT_DEPENDENCY_CHECK=PASS'
+IDB1_PASS=$?
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'APT_DEPENDENCY_CHECK=FAIL'
+IDB1_FAIL=$?
+set -e
+[[ "$IDB1_IDENT" -eq 0 ]] || fail "ID-B1 identity rc=${IDB1_IDENT}"
+[[ "$IDB1_STREAM" -eq 0 ]] || fail "ID-B1 stream rc=${IDB1_STREAM}"
+[[ "$IDB1_PASS" -eq 0 ]] || fail "ID-B1 current PASS not found"
+[[ "$IDB1_FAIL" -ne 0 ]] || fail "ID-B1 historical FAIL leaked into current stream"
+pass "ID-B1 normal append current-run stream is valid"
+
+# ---------------------------------------------------------------------------
+# ID-B2. HISTORICAL FAIL ignored when current marker + PASS exist
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+printf 'HIST APT_DEPENDENCY_CHECK=FAIL\n' >"$PHASE2_BRINGUP_LOG_DEFAULT"
+offset="$(wc -c <"$PHASE2_BRINGUP_LOG_DEFAULT" | tr -d ' ')"
+write_file "$(p2b_dir)/run-id" "run-idb2"
+write_file "$(p2b_dir)/log-start-offset" "$offset"
+p2b_write_current_run_log_marker "$PHASE2_BRINGUP_LOG_DEFAULT" "run-idb2"
+printf 'APT_DEPENDENCY_CHECK=PASS\n' >>"$PHASE2_BRINGUP_LOG_DEFAULT"
+set +e
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'APT_DEPENDENCY_CHECK=FAIL'
+IDB2_FAIL=$?
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'APT_DEPENDENCY_CHECK=PASS'
+IDB2_PASS=$?
+set -e
+[[ "$IDB2_FAIL" -ne 0 ]] || fail "ID-B2 historical FAIL treated as current"
+[[ "$IDB2_PASS" -eq 0 ]] || fail "ID-B2 current PASS missing"
+pass "ID-B2 historical APT FAIL is ignored"
+
+# ---------------------------------------------------------------------------
+# ID-B3. HISTORICAL 3/3 ignored; current 1/3 is not PASS
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+printf 'CLUSTER_JOIN_STATE ready=3 expected=3\n' >"$PHASE2_BRINGUP_LOG_DEFAULT"
+offset="$(wc -c <"$PHASE2_BRINGUP_LOG_DEFAULT" | tr -d ' ')"
+write_file "$(p2b_dir)/run-id" "run-idb3"
+write_file "$(p2b_dir)/log-start-offset" "$offset"
+p2b_write_current_run_log_marker "$PHASE2_BRINGUP_LOG_DEFAULT" "run-idb3"
+printf 'CLUSTER_JOIN_STATE ready=1 expected=3\n' >>"$PHASE2_BRINGUP_LOG_DEFAULT"
+join_ok=0
+if p2b_current_run_log_stream "$PHASE2_BRINGUP_LOG_DEFAULT" >/dev/null \
+  && p2b_current_run_log_stream "$PHASE2_BRINGUP_LOG_DEFAULT" \
+  | grep -E 'CLUSTER_JOIN_STATE ready=([0-9]+) expected=([0-9]+)' \
+  | awk '{
+      ready=""; expected="";
+      for(i=1;i<=NF;i++){
+        if($i ~ /^ready=/){ split($i,a,"="); ready=a[2] }
+        if($i ~ /^expected=/){ split($i,b,"="); expected=b[2] }
+      }
+      if(ready!="" && expected!="" && ready==expected && expected+0>1) ok=1
+    }
+    END { exit ok?0:1 }'
+then
+  join_ok=1
+fi
+[[ "$join_ok" -eq 0 ]] || fail "ID-B3 historical 3/3 made current topology PASS"
+pass "ID-B3 historical CLUSTER_JOIN 3/3 is not current-run PASS"
+
+# ---------------------------------------------------------------------------
+# ID-B4. SIMPLE TRUNCATION: recorded offset > current size
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+printf 'CLUSTER_JOIN_STATE ready=3 expected=3\n' >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-idb4"
+write_file "$(p2b_dir)/log-start-offset" "999999"
+set +e
+p2b_current_run_log_stream "$PHASE2_BRINGUP_LOG_DEFAULT" >/dev/null
+IDB4_STREAM=$?
+p2b_current_run_log_identity_valid "$PHASE2_BRINGUP_LOG_DEFAULT" "run-idb4"
+IDB4_IDENT=$?
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'CLUSTER_JOIN_STATE ready=3 expected=3'
+IDB4_JOIN=$?
+set -e
+[[ "$IDB4_STREAM" -eq 2 ]] || fail "ID-B4 stream rc=${IDB4_STREAM} expected 2"
+[[ "$IDB4_IDENT" -eq 2 ]] || fail "ID-B4 identity rc=${IDB4_IDENT} expected 2"
+[[ "$IDB4_JOIN" -eq 2 ]] || fail "ID-B4 contains rc=${IDB4_JOIN} expected 2"
+pass "ID-B4 truncated offset fail-closes current-run evidence"
+
+# ---------------------------------------------------------------------------
+# ID-B5. TRUNCATE THEN REGROW PAST OLD OFFSET without current marker
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+fill_bytes "$PHASE2_BRINGUP_LOG_DEFAULT" 8192 H
+offset="$(wc -c <"$PHASE2_BRINGUP_LOG_DEFAULT" | tr -d ' ')"
+write_file "$(p2b_dir)/run-id" "run-idb5"
+write_file "$(p2b_dir)/log-start-offset" "$offset"
+p2b_write_current_run_log_marker "$PHASE2_BRINGUP_LOG_DEFAULT" "run-idb5"
+set +e
+p2b_current_run_log_identity_valid "$PHASE2_BRINGUP_LOG_DEFAULT" "run-idb5"
+IDB5_BEFORE=$?
+set -e
+[[ "$IDB5_BEFORE" -eq 0 ]] || fail "ID-B5 precondition identity rc=${IDB5_BEFORE}"
+{
+  fill_bytes "${TMP}/idb5.pad" 10000 N
+  cat "${TMP}/idb5.pad"
+  printf 'CLUSTER_JOIN_STATE ready=3 expected=3\n'
+  printf 'APT_DEPENDENCY_CHECK=PASS\n'
+  printf 'Bringup complete: all nodes ready\n'
+} >"$PHASE2_BRINGUP_LOG_DEFAULT"
+new_size="$(wc -c <"$PHASE2_BRINGUP_LOG_DEFAULT" | tr -d ' ')"
+[[ "$new_size" -gt "$offset" ]] || fail "ID-B5 replacement size ${new_size} not > offset ${offset}"
+set +e
+p2b_current_run_log_identity_valid "$PHASE2_BRINGUP_LOG_DEFAULT" "run-idb5"
+IDB5_IDENT=$?
+p2b_current_run_log_stream "$PHASE2_BRINGUP_LOG_DEFAULT" >/dev/null
+IDB5_STREAM=$?
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'CLUSTER_JOIN_STATE ready=3 expected=3'
+IDB5_JOIN=$?
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'APT_DEPENDENCY_CHECK=PASS'
+IDB5_APT=$?
+set -e
+[[ "$IDB5_IDENT" -eq 3 ]] || fail "ID-B5 identity rc=${IDB5_IDENT} expected 3"
+[[ "$IDB5_STREAM" -eq 2 ]] || fail "ID-B5 stream rc=${IDB5_STREAM} expected 2"
+[[ "$IDB5_JOIN" -eq 2 ]] || fail "ID-B5 join contains rc=${IDB5_JOIN} expected 2"
+[[ "$IDB5_APT" -eq 2 ]] || fail "ID-B5 apt contains rc=${IDB5_APT} expected 2"
+pass "ID-B5 truncate-then-regrow rejects current-run evidence"
+
+# ---------------------------------------------------------------------------
+# ID-B6. WRONG RUN MARKER cannot satisfy current-run identity
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+: >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "new-run"
+write_file "$(p2b_dir)/log-start-offset" "0"
+printf 'PHASE2_LIFECYCLE_RUN_BEGIN run_id=old-run\n' >>"$PHASE2_BRINGUP_LOG_DEFAULT"
+printf 'CLUSTER_JOIN_STATE ready=3 expected=3\n' >>"$PHASE2_BRINGUP_LOG_DEFAULT"
+set +e
+p2b_current_run_log_identity_valid "$PHASE2_BRINGUP_LOG_DEFAULT" "new-run"
+IDB6_IDENT=$?
+p2b_current_run_log_stream "$PHASE2_BRINGUP_LOG_DEFAULT" >/dev/null
+IDB6_STREAM=$?
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'CLUSTER_JOIN_STATE ready=3 expected=3'
+IDB6_JOIN=$?
+set -e
+[[ "$IDB6_IDENT" -eq 3 ]] || fail "ID-B6 identity rc=${IDB6_IDENT} expected 3"
+[[ "$IDB6_STREAM" -eq 2 ]] || fail "ID-B6 stream rc=${IDB6_STREAM} expected 2"
+[[ "$IDB6_JOIN" -eq 2 ]] || fail "ID-B6 contains rc=${IDB6_JOIN} expected 2"
+pass "ID-B6 wrong-run marker is rejected"
+
+# ---------------------------------------------------------------------------
+# ID-B7. CURRENT MARKER + 3/3 => topology evidence accepted
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+: >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-idb7"
+write_file "$(p2b_dir)/target-version" "6.5.0"
+write_file "$(p2b_dir)/log-path" "$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/started-at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+VENDOR_IDB7="${TMP}/vendor-idb7.sh"
+cat >"$VENDOR_IDB7" <<'EOF'
+#!/usr/bin/env bash
+echo "CLUSTER_JOIN_STATE ready=3 expected=3"
+echo "WORKER_ORCHESTRATION=PASS"
+exit 0
+EOF
+chmod +x "$VENDOR_IDB7"
+set +e
+( p2b_worker_main "$VENDOR_IDB7" --worker-ips 192.0.2.10,192.0.2.11 >/dev/null 2>&1 )
+IDB7_RC=$?
+set -e
+[[ "$IDB7_RC" -eq 0 ]] || fail "ID-B7 worker rc=${IDB7_RC}"
+[[ "$(p2b_read_state)" == "COMPLETED" ]] || fail "ID-B7 state=$(p2b_read_state)"
+grep -qxF "PHASE2_LIFECYCLE_RUN_BEGIN run_id=run-idb7" "$PHASE2_BRINGUP_LOG_DEFAULT" \
+  || fail "ID-B7 current run marker missing"
+set +e
+p2b_current_run_log_identity_valid "$PHASE2_BRINGUP_LOG_DEFAULT" "run-idb7"
+IDB7_IDENT=$?
+set -e
+[[ "$IDB7_IDENT" -eq 0 ]] || fail "ID-B7 identity rc=${IDB7_IDENT}"
+pass "ID-B7 current marker + 3/3 topology evidence is accepted"
+
+# ---------------------------------------------------------------------------
+# ID-B8. CURRENT MARKER + APT FAIL => current run FAIL
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+: >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-idb8"
+write_file "$(p2b_dir)/target-version" "6.5.0"
+write_file "$(p2b_dir)/log-path" "$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/started-at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+VENDOR_IDB8="${TMP}/vendor-idb8.sh"
+cat >"$VENDOR_IDB8" <<'EOF'
+#!/usr/bin/env bash
+echo "APT_DEPENDENCY_CHECK=FAIL"
+exit 0
+EOF
+chmod +x "$VENDOR_IDB8"
+set +e
+( p2b_worker_main "$VENDOR_IDB8" >/dev/null 2>&1 )
+IDB8_RC=$?
+set -e
+[[ "$IDB8_RC" -ne 0 ]] || fail "ID-B8 unexpectedly PASS"
+[[ "$(p2b_read_state)" == "FAILED" ]] || fail "ID-B8 state=$(p2b_read_state)"
+grep -q 'FAILURE_REASON=APT_DEPENDENCY_CHECK' "$(p2b_dir)/completion.sentinel" \
+  || fail "ID-B8 missing APT_DEPENDENCY_CHECK failure"
+pass "ID-B8 current marker + APT FAIL is current-run FAIL"
+
+# ---------------------------------------------------------------------------
+# ID-B9. CURRENT MARKER LOST AFTER COPYTRUNCATE: success text is not PASS
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+fill_bytes "$PHASE2_BRINGUP_LOG_DEFAULT" 8192 H
+printf '\nHIST leftover\n' >>"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-idb9"
+write_file "$(p2b_dir)/target-version" "6.5.0"
+write_file "$(p2b_dir)/log-path" "$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/started-at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+VENDOR_IDB9="${TMP}/vendor-idb9.sh"
+cat >"$VENDOR_IDB9" <<'EOF'
+#!/usr/bin/env bash
+# copytruncate: wipe the inode contents so the current-run marker is gone,
+# then regrow past the recorded offset with apparently successful evidence.
+: >"${PHASE2_BRINGUP_LOG_DEFAULT}"
+python3 -c 'import sys; sys.stdout.write("N"*10000)'
+echo
+echo "Bringup complete: all nodes ready"
+echo "CLUSTER_JOIN_STATE ready=3 expected=3"
+echo "APT_DEPENDENCY_CHECK=PASS"
+echo "WORKER_ORCHESTRATION=PASS"
+exit 0
+EOF
+chmod +x "$VENDOR_IDB9"
+set +e
+( p2b_worker_main "$VENDOR_IDB9" --worker-ips 192.0.2.10,192.0.2.11 >/dev/null 2>&1 )
+IDB9_RC=$?
+set -e
+[[ "$IDB9_RC" -ne 0 ]] || fail "ID-B9 unexpectedly PASS after copytruncate"
+[[ "$(p2b_read_state)" == "FAILED" ]] || fail "ID-B9 state=$(p2b_read_state)"
+grep -q 'FAILURE_REASON=CLUSTER_JOIN_INCOMPLETE' "$(p2b_dir)/completion.sentinel" \
+  || fail "ID-B9 missing CLUSTER_JOIN_INCOMPLETE after marker loss"
+set +e
+p2b_current_run_log_identity_valid "$PHASE2_BRINGUP_LOG_DEFAULT" "run-idb9"
+IDB9_IDENT=$?
+p2b_current_run_log_stream "$PHASE2_BRINGUP_LOG_DEFAULT" >/dev/null
+IDB9_STREAM=$?
+set -e
+[[ "$IDB9_IDENT" -eq 3 ]] || fail "ID-B9 identity rc=${IDB9_IDENT} expected 3"
+[[ "$IDB9_STREAM" -eq 2 ]] || fail "ID-B9 stream rc=${IDB9_STREAM} expected 2"
+pass "ID-B9 copytruncate without current marker cannot PASS from log text"
+
 echo "TEST_BRINGUP_LIFECYCLE_RUN_CONTRACT=PASS"

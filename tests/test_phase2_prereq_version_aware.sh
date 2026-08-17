@@ -73,19 +73,34 @@ for arg in "$@"; do
     *) pkg="$arg" ;;
   esac
 done
-if [[ "$*" == *'${Status}'* ]]; then
-  if [[ -n "${INSTALLED_VERSION:-}" ]]; then
-    echo "install ok installed"
-    exit 0
+lookup_ver() {
+  local p="$1" pair
+  if [[ -n "${INSTALLED_VERSIONS:-}" ]]; then
+    for pair in $INSTALLED_VERSIONS; do
+      if [[ "${pair%%=*}" == "$p" ]]; then
+        printf '%s\n' "${pair#*=}"
+        return 0
+      fi
+    done
+    return 1
   fi
-  exit 1
-fi
-if [[ "$*" == *'${Version}'* ]]; then
   if [[ -n "${INSTALLED_VERSION:-}" ]]; then
     printf '%s\n' "$INSTALLED_VERSION"
-    exit 0
+    return 0
   fi
+  return 1
+}
+ver=""
+if ! ver="$(lookup_ver "$pkg")"; then
   exit 1
+fi
+if [[ "$*" == *'${Status}'* ]]; then
+  echo "install ok installed"
+  exit 0
+fi
+if [[ "$*" == *'${Version}'* ]]; then
+  printf '%s\n' "$ver"
+  exit 0
 fi
 exit 1
 EOF
@@ -101,6 +116,22 @@ pack_foo() {
   mkdir -p "${dest_dir}/debs"
   build_tiny_deb "${dest_dir}/debs/foo_${version}_all.deb" foo "$version" "$depends"
   printf 'foo_%s_all.deb\n' "$version" >"${dest_dir}/install-order.txt"
+  tar -C "$dest_dir" -czf "${dest_dir}/phase2-ubuntu-prerequisites.tar.gz" \
+    install-order.txt debs
+}
+
+pack_scc() {
+  local dest_dir="$1"
+  local order_line="$2"
+  shift 2
+  local spec pkg ver
+  mkdir -p "${dest_dir}/debs"
+  for spec in "$@"; do
+    pkg="${spec%%:*}"
+    ver="${spec#*:}"
+    build_tiny_deb "${dest_dir}/debs/${pkg}_${ver}_all.deb" "$pkg" "$ver"
+  done
+  printf '%s\n' "$order_line" >"${dest_dir}/install-order.txt"
   tar -C "$dest_dir" -czf "${dest_dir}/phase2-ubuntu-prerequisites.tar.gz" \
     install-order.txt debs
 }
@@ -203,6 +234,162 @@ echo "$OUT" | grep -q 'PHASE2_PREREQ_INSTALL_NEEDED' \
   && ! echo "$OUT" | grep -q 'PHASE2_PREREQ_ALREADY_INSTALLED' \
   && pass "D4 older installed version is not false ALREADY_INSTALLED" \
   || fail "D4: ${OUT} dpkg=$(cat "$DPKG_LOG")"
+
+# ---------------------------------------------------------------------------
+# A1. SCC foo older + bar newer-conflict: FAIL, no dpkg, no downgrade
+# ---------------------------------------------------------------------------
+A1="${WORKDIR}/a1"
+pack_scc "$A1" "foo_2.1_all.deb bar_2.1_all.deb" foo:2.1 bar:2.1
+write_yes_contract "${A1}/phase2-ubuntu-prerequisites.tar.gz" 2 >/dev/null
+DPKG_LOG="${WORKDIR}/a1-dpkg.log"
+: >"$DPKG_LOG"
+set +e
+OUT="$(
+  INSTALLED_VERSIONS="foo=1.5 bar=3.0"
+  export INSTALLED_VERSIONS
+  run_case "$A1"
+)"
+set -e
+echo "$OUT" | grep -q 'PHASE2_PREREQ_VERSION_CONFLICT package=bar installed=3.0 selected=2.1' \
+  && echo "$OUT" | grep -q 'RC=1' \
+  && [[ ! -s "$DPKG_LOG" ]] \
+  && ! echo "$OUT" | grep -q 'PHASE2_PREREQ_DPKG=PASS' \
+  && pass "A1 SCC older-then-newer-conflict fail-closes without dpkg" \
+  || fail "A1: ${OUT} dpkg=$(cat "$DPKG_LOG")"
+
+# ---------------------------------------------------------------------------
+# A2. Reverse filename order must still FAIL with no dpkg
+# ---------------------------------------------------------------------------
+A2="${WORKDIR}/a2"
+pack_scc "$A2" "bar_2.1_all.deb foo_2.1_all.deb" foo:2.1 bar:2.1
+write_yes_contract "${A2}/phase2-ubuntu-prerequisites.tar.gz" 2 >/dev/null
+DPKG_LOG="${WORKDIR}/a2-dpkg.log"
+: >"$DPKG_LOG"
+set +e
+OUT="$(
+  INSTALLED_VERSIONS="foo=1.5 bar=3.0"
+  export INSTALLED_VERSIONS
+  run_case "$A2"
+)"
+set -e
+echo "$OUT" | grep -q 'PHASE2_PREREQ_VERSION_CONFLICT package=bar installed=3.0 selected=2.1' \
+  && echo "$OUT" | grep -q 'RC=1' \
+  && [[ ! -s "$DPKG_LOG" ]] \
+  && pass "A2 reverse SCC order still fail-closes without dpkg" \
+  || fail "A2: ${OUT} dpkg=$(cat "$DPKG_LOG")"
+
+# ---------------------------------------------------------------------------
+# A3. Exact foo + older bar => one dpkg -i of the entire SCC group
+# ---------------------------------------------------------------------------
+A3="${WORKDIR}/a3"
+pack_scc "$A3" "foo_2.1_all.deb bar_2.1_all.deb" foo:2.1 bar:2.1
+write_yes_contract "${A3}/phase2-ubuntu-prerequisites.tar.gz" 2 >/dev/null
+DPKG_LOG="${WORKDIR}/a3-dpkg.log"
+: >"$DPKG_LOG"
+set +e
+OUT="$(
+  INSTALLED_VERSIONS="foo=2.1 bar=1.5"
+  export INSTALLED_VERSIONS
+  run_case "$A3"
+)"
+set -e
+echo "$OUT" | grep -q 'PHASE2_PREREQ_DPKG=PASS' \
+  && echo "$OUT" | grep -q 'RC=0' \
+  && [[ "$(grep -c '^DPKG_CALL' "$DPKG_LOG")" -eq 1 ]] \
+  && grep -q 'foo_2.1_all.deb' "$DPKG_LOG" \
+  && grep -q 'bar_2.1_all.deb' "$DPKG_LOG" \
+  && awk '/^DPKG_CALL/ && /foo_2.1_all.deb/ && /bar_2.1_all.deb/ {found=1} END {exit found?0:1}' "$DPKG_LOG" \
+  && pass "A3 exact+older installs entire SCC in one dpkg -i" \
+  || fail "A3: ${OUT} dpkg=$(cat "$DPKG_LOG")"
+
+# ---------------------------------------------------------------------------
+# A4. Older foo + exact bar => entire SCC installed
+# ---------------------------------------------------------------------------
+A4="${WORKDIR}/a4"
+pack_scc "$A4" "foo_2.1_all.deb bar_2.1_all.deb" foo:2.1 bar:2.1
+write_yes_contract "${A4}/phase2-ubuntu-prerequisites.tar.gz" 2 >/dev/null
+DPKG_LOG="${WORKDIR}/a4-dpkg.log"
+: >"$DPKG_LOG"
+set +e
+OUT="$(
+  INSTALLED_VERSIONS="foo=1.5 bar=2.1"
+  export INSTALLED_VERSIONS
+  run_case "$A4"
+)"
+set -e
+echo "$OUT" | grep -q 'PHASE2_PREREQ_DPKG=PASS' \
+  && echo "$OUT" | grep -q 'RC=0' \
+  && [[ "$(grep -c '^DPKG_CALL' "$DPKG_LOG")" -eq 1 ]] \
+  && awk '/^DPKG_CALL/ && /foo_2.1_all.deb/ && /bar_2.1_all.deb/ {found=1} END {exit found?0:1}' "$DPKG_LOG" \
+  && pass "A4 older+exact installs entire SCC group" \
+  || fail "A4: ${OUT} dpkg=$(cat "$DPKG_LOG")"
+
+# ---------------------------------------------------------------------------
+# A5. All exact => skip entire SCC, no dpkg -i
+# ---------------------------------------------------------------------------
+A5="${WORKDIR}/a5"
+pack_scc "$A5" "foo_2.1_all.deb bar_2.1_all.deb" foo:2.1 bar:2.1
+write_yes_contract "${A5}/phase2-ubuntu-prerequisites.tar.gz" 2 >/dev/null
+DPKG_LOG="${WORKDIR}/a5-dpkg.log"
+: >"$DPKG_LOG"
+set +e
+OUT="$(
+  INSTALLED_VERSIONS="foo=2.1 bar=2.1"
+  export INSTALLED_VERSIONS
+  run_case "$A5"
+)"
+set -e
+echo "$OUT" | grep -q 'PHASE2_PREREQ_ALREADY_INSTALLED package=foo version=2.1' \
+  && echo "$OUT" | grep -q 'PHASE2_PREREQ_ALREADY_INSTALLED package=bar version=2.1' \
+  && echo "$OUT" | grep -q 'RC=0' \
+  && [[ ! -s "$DPKG_LOG" ]] \
+  && pass "A5 all-exact SCC is skipped with no dpkg -i" \
+  || fail "A5: ${OUT} dpkg=$(cat "$DPKG_LOG")"
+
+# ---------------------------------------------------------------------------
+# A6. Multiple install-needed members => exactly one SCC dpkg -i
+# ---------------------------------------------------------------------------
+A6="${WORKDIR}/a6"
+pack_scc "$A6" "foo_2.1_all.deb bar_2.1_all.deb" foo:2.1 bar:2.1
+write_yes_contract "${A6}/phase2-ubuntu-prerequisites.tar.gz" 2 >/dev/null
+DPKG_LOG="${WORKDIR}/a6-dpkg.log"
+: >"$DPKG_LOG"
+set +e
+OUT="$(
+  INSTALLED_VERSIONS="foo=1.0 bar=1.5"
+  export INSTALLED_VERSIONS
+  run_case "$A6"
+)"
+set -e
+echo "$OUT" | grep -q 'PHASE2_PREREQ_DPKG=PASS' \
+  && echo "$OUT" | grep -q 'RC=0' \
+  && [[ "$(grep -c '^DPKG_CALL' "$DPKG_LOG")" -eq 1 ]] \
+  && awk '/^DPKG_CALL/ && /foo_2.1_all.deb/ && /bar_2.1_all.deb/ {found=1} END {exit found?0:1}' "$DPKG_LOG" \
+  && pass "A6 multiple install-needed members use one SCC dpkg -i" \
+  || fail "A6: ${OUT} dpkg=$(cat "$DPKG_LOG")"
+
+# ---------------------------------------------------------------------------
+# A7. Conflict after more than one valid member (exact + older + newer)
+# ---------------------------------------------------------------------------
+A7="${WORKDIR}/a7"
+pack_scc "$A7" "foo_2.1_all.deb bar_2.1_all.deb baz_2.1_all.deb" \
+  foo:2.1 bar:2.1 baz:2.1
+write_yes_contract "${A7}/phase2-ubuntu-prerequisites.tar.gz" 3 >/dev/null
+DPKG_LOG="${WORKDIR}/a7-dpkg.log"
+: >"$DPKG_LOG"
+set +e
+OUT="$(
+  INSTALLED_VERSIONS="foo=2.1 bar=1.5 baz=3.0"
+  export INSTALLED_VERSIONS
+  run_case "$A7"
+)"
+set -e
+echo "$OUT" | grep -q 'PHASE2_PREREQ_VERSION_CONFLICT package=baz installed=3.0 selected=2.1' \
+  && echo "$OUT" | grep -q 'RC=1' \
+  && [[ ! -s "$DPKG_LOG" ]] \
+  && ! echo "$OUT" | grep -q 'PHASE2_PREREQ_DPKG=PASS' \
+  && pass "A7 conflict after exact+older still fail-closes without dpkg" \
+  || fail "A7: ${OUT} dpkg=$(cat "$DPKG_LOG")"
 
 echo "SUMMARY pass=${PASS} fail=${FAIL}"
 [[ "$FAIL" -eq 0 ]]
