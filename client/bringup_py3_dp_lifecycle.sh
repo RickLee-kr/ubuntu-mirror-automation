@@ -193,7 +193,7 @@ start_or_monitor() {
     return 0
   fi
 
-  if [[ "${BRINGUP_STATE}" == "COMPLETED" && "${BRINGUP_COMPLETION_SENTINEL}" == "PASS" ]]; then
+  if p2b_current_run_completion_coherent; then
     echo "BRINGUP_ALREADY_COMPLETED=YES"
     p2b_print_status
     if p2b_discover_aella_cli; then

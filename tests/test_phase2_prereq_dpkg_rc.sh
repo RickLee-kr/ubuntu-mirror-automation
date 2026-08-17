@@ -49,10 +49,13 @@ exit ${want_rc}
 EOF
   cat >"${BIN}/dpkg-deb" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$1" == "-f" && "$3" == "Package" ]]; then
+if [[ "$1" == "-f" ]]; then
   base="$(basename "$2")"
-  echo "${base%%_*}"
-  exit 0
+  case "$3" in
+    Package) echo "${base%%_*}"; exit 0 ;;
+    Version) echo 1; exit 0 ;;
+    Architecture) echo all; exit 0 ;;
+  esac
 fi
 exit 0
 EOF
@@ -76,11 +79,23 @@ EOF
   TAR="${WORKDIR}/phase2-ubuntu-prerequisites-${want_rc}.tar.gz"
   tar -C "$ART" -czf "$TAR" install-order.txt debs
   sha256sum "$TAR" | awk '{print $1"  phase2-ubuntu-prerequisites.tar.gz"}' >"${TAR}.sha256"
+  TAR_SHA="$(awk '{print $1; exit}' "${TAR}.sha256")"
+  cat >"${WORKDIR}/yes-${want_rc}.state" <<EOF
+PHASE2_PREREQ_REQUIRED=YES
+PHASE2_PREREQ_PACKAGE_COUNT=1
+PHASE2_PREREQ_BUILD=PASS
+PHASE2_PREREQ_PUBLICATION=PASS
+PHASE2_PREREQ_ARTIFACT=phase2-ubuntu-prerequisites.tar.gz
+PHASE2_PREREQ_SHA256=${TAR_SHA}
+EOF
+  printf '{"package_count": 1, "sha256": "%s"}\n' "$TAR_SHA" \
+    >"$(dirname "$TAR")/phase2-ubuntu-prerequisites.manifest.json"
 
   set +e
   OUT="$(
     PATH="${BIN}:$PATH"
     PHASE2_PREREQ_ARTIFACT="$TAR"
+    PHASE2_PREREQ_STATE="${WORKDIR}/yes-${want_rc}.state"
     # shellcheck source=/dev/null
     source "$PREREQ_LIB"
     dp2_prereq_package_installed() { return 1; }
@@ -110,10 +125,13 @@ exit 0
 EOF
 cat >"${ORD_BIN}/dpkg-deb" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$1" == "-f" && "$3" == "Package" ]]; then
+if [[ "$1" == "-f" ]]; then
   base="$(basename "$2")"
-  echo "${base%%_*}"
-  exit 0
+  case "$3" in
+    Package) echo "${base%%_*}"; exit 0 ;;
+    Version) echo 1; exit 0 ;;
+    Architecture) echo all; exit 0 ;;
+  esac
 fi
 exit 0
 EOF
@@ -136,9 +154,21 @@ cat >"${ART2}/install-order.txt" <<'EOF'
 python3-colorama_1_all.deb
 python3-click_1_all.deb
 EOF
-TAR2="${WORKDIR}/phase2-ubuntu-prerequisites-order.tar.gz"
+TAR2="${WORKDIR}/order-art/phase2-ubuntu-prerequisites.tar.gz"
+mkdir -p "$(dirname "$TAR2")"
 tar -C "$ART2" -czf "$TAR2" install-order.txt debs
 sha256sum "$TAR2" | awk '{print $1"  phase2-ubuntu-prerequisites.tar.gz"}' >"${TAR2}.sha256"
+TAR2_SHA="$(awk '{print $1; exit}' "${TAR2}.sha256")"
+cat >"${WORKDIR}/yes-order.state" <<EOF
+PHASE2_PREREQ_REQUIRED=YES
+PHASE2_PREREQ_PACKAGE_COUNT=2
+PHASE2_PREREQ_BUILD=PASS
+PHASE2_PREREQ_PUBLICATION=PASS
+PHASE2_PREREQ_ARTIFACT=phase2-ubuntu-prerequisites.tar.gz
+PHASE2_PREREQ_SHA256=${TAR2_SHA}
+EOF
+printf '{"package_count": 2, "sha256": "%s"}\n' "$TAR2_SHA" \
+  >"$(dirname "$TAR2")/phase2-ubuntu-prerequisites.manifest.json"
 DPKG_LOG="${WORKDIR}/dpkg-order.log"
 : >"$DPKG_LOG"
 set +e
@@ -146,6 +176,7 @@ OUT2="$(
   PATH="${ORD_BIN}:$PATH"
   export DPKG_LOG="$DPKG_LOG"
   PHASE2_PREREQ_ARTIFACT="$TAR2"
+  PHASE2_PREREQ_STATE="${WORKDIR}/yes-order.state"
   # shellcheck source=/dev/null
   source "$PREREQ_LIB"
   dp2_prereq_package_installed() { return 1; }
@@ -168,13 +199,26 @@ echo "$first" | grep -q 'python3-colorama_1_all.deb' \
 ART3="${WORKDIR}/art-no-order"
 mkdir -p "${ART3}/debs"
 cp -a "${ART2}/debs/"*.deb "${ART3}/debs/"
-TAR3="${WORKDIR}/phase2-ubuntu-prerequisites-no-order.tar.gz"
+TAR3="${WORKDIR}/no-order-art/phase2-ubuntu-prerequisites.tar.gz"
+mkdir -p "$(dirname "$TAR3")"
 tar -C "$ART3" -czf "$TAR3" debs
 sha256sum "$TAR3" | awk '{print $1"  phase2-ubuntu-prerequisites.tar.gz"}' >"${TAR3}.sha256"
+TAR3_SHA="$(awk '{print $1; exit}' "${TAR3}.sha256")"
+cat >"${WORKDIR}/yes-no-order.state" <<EOF
+PHASE2_PREREQ_REQUIRED=YES
+PHASE2_PREREQ_PACKAGE_COUNT=2
+PHASE2_PREREQ_BUILD=PASS
+PHASE2_PREREQ_PUBLICATION=PASS
+PHASE2_PREREQ_ARTIFACT=phase2-ubuntu-prerequisites.tar.gz
+PHASE2_PREREQ_SHA256=${TAR3_SHA}
+EOF
+printf '{"package_count": 2, "sha256": "%s"}\n' "$TAR3_SHA" \
+  >"$(dirname "$TAR3")/phase2-ubuntu-prerequisites.manifest.json"
 set +e
 OUT3="$(
   PATH="${ORD_BIN}:$PATH"
   PHASE2_PREREQ_ARTIFACT="$TAR3"
+  PHASE2_PREREQ_STATE="${WORKDIR}/yes-no-order.state"
   # shellcheck source=/dev/null
   source "$PREREQ_LIB"
   dp2_prereq_package_installed() { return 1; }
@@ -216,7 +260,7 @@ echo "$OUT4" | grep -q 'not_required' \
 set +e
 OUT5="$(
   PATH="${ORD_BIN}:$PATH"
-  unset PHASE2_PREREQ_ARTIFACT PHASE2_PREREQ_STATE
+  unset PHASE2_PREREQ_ARTIFACT PHASE2_PREREQ_STATE PHASE2_PREREQ_MANIFEST
   # shellcheck source=/dev/null
   source "$PREREQ_LIB"
   dp2_prereq_find_artifact() { return 1; }
@@ -225,9 +269,9 @@ OUT5="$(
   echo RC=$?
 )"
 set -e
-echo "$OUT5" | grep -q 'artifact_absent_required' \
+echo "$OUT5" | grep -q 'state_missing' \
   && echo "$OUT5" | grep -q 'RC=1' \
-  && pass "absent artifact without NOT_REQUIRED metadata FAIL" \
+  && pass "absent state without NOT_REQUIRED metadata FAIL" \
   || fail "absent required: ${OUT5}"
 
 echo "SUMMARY pass=${PASS} fail=${FAIL}"

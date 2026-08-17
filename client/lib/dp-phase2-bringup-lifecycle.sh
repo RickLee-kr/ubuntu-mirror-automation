@@ -128,16 +128,85 @@ p2b_write_result_env() {
   } | p2b_atomic_write "$(p2b_dir)/result.env"
 }
 
+p2b_read_log_start_offset() {
+  local off
+  off="$(p2b_read_file "$(p2b_dir)/log-start-offset")"
+  if [[ ! "$off" =~ ^[0-9]+$ ]]; then
+    printf '0'
+    return 0
+  fi
+  printf '%s' "$off"
+}
+
+# Stream only current-run log bytes. Never loads the whole file into memory.
+# Return codes:
+#   0  current-run view streamed (may be empty if offset==size)
+#   1  log file missing
+#   2  truncation/rotation: recorded offset is past current size. Historical
+#      evidence must not be reused. Callers that need current-run proof FAIL.
+p2b_current_run_log_stream() {
+  local logf="$1"
+  local offset="${2:-}"
+  local size
+  if [[ -z "$offset" ]]; then
+    offset="$(p2b_read_log_start_offset)"
+  fi
+  if [[ ! -f "$logf" ]]; then
+    return 1
+  fi
+  if [[ ! "$offset" =~ ^[0-9]+$ ]]; then
+    return 2
+  fi
+  size="$(wc -c <"$logf" | tr -d ' ')"
+  if [[ ! "$size" =~ ^[0-9]+$ ]]; then
+    return 2
+  fi
+  if [[ "$offset" -gt "$size" ]]; then
+    return 2
+  fi
+  # GNU tail -c +N is 1-based: skip the first `offset` bytes.
+  tail -c "+$((offset + 1))" "$logf"
+  return 0
+}
+
+p2b_current_run_log_contains() {
+  local logf="$1"
+  local pattern="$2"
+  local offset size
+  offset="$(p2b_read_log_start_offset)"
+  if [[ ! -f "$logf" ]]; then
+    return 1
+  fi
+  if [[ ! "$offset" =~ ^[0-9]+$ ]]; then
+    return 2
+  fi
+  size="$(wc -c <"$logf" | tr -d ' ')"
+  if [[ ! "$size" =~ ^[0-9]+$ || "$offset" -gt "$size" ]]; then
+    return 2
+  fi
+  tail -c "+$((offset + 1))" "$logf" | grep -qE -- "$pattern"
+}
+
 # Exact anchored vendor completion line for current run context (optional corroboration).
 # Does NOT accept instructional text. Pattern: timestamped "Bringup complete:" at line start
 # after optional spaces, not preceded by instructional keywords on same line.
 p2b_log_has_anchored_completion() {
   local logf="$1"
   local run_started_epoch="${2:-0}"
+  local stream_rc=0 prev_e=0
   [[ -f "$logf" ]] || return 1
   # Prefer machine-readable PHASE2_BRINGUP=COMPLETE written by post notice — still not
   # sufficient alone; lifecycle sentinel is authoritative. This is corroboration only.
-  awk -v since="$run_started_epoch" '
+  # Historical log bytes before log-start-offset are ignored.
+  [[ $- == *e* ]] && prev_e=1
+  set +e
+  p2b_current_run_log_stream "$logf" >/dev/null
+  stream_rc=$?
+  [[ "$prev_e" -eq 1 ]] && set -e
+  if [[ "$stream_rc" -ne 0 ]]; then
+    return 1
+  fi
+  p2b_current_run_log_stream "$logf" | awk -v since="$run_started_epoch" '
     /^[[:space:]]*\[[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9:.]+\][[:space:]]+Bringup complete:/ { found=1 }
     /^[[:space:]]*Bringup complete:[[:space:]]/ {
       # Reject lines that are clearly instructional
@@ -146,7 +215,7 @@ p2b_log_has_anchored_completion() {
       found=1
     }
     END { exit found ? 0 : 1 }
-  ' "$logf" 2>/dev/null
+  ' 2>/dev/null
 }
 
 p2b_discover_aella_cli() {
@@ -238,6 +307,7 @@ p2b_current_phase_from_log() {
 p2b_status_snapshot() {
   local d pid state run_id started logf alive="NO" identity="NO"
   local result_file result_run_id result_terminal="NO" sentinel="NOT_PRESENT" exit_code="" elapsed=""
+  local result_env="" terminal_state=""
   d="$(p2b_dir)"
   state="$(p2b_read_state)"
   [[ -n "$state" ]] || state="NOT_STARTED"
@@ -269,6 +339,8 @@ p2b_status_snapshot() {
     if grep -qE '^BRINGUP_TERMINAL_STATE=(COMPLETED|FAILED)$' "$result_file" 2>/dev/null; then
       result_terminal="YES"
     fi
+    terminal_state="$(grep -E '^BRINGUP_TERMINAL_STATE=' "$result_file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    result_env="$(grep -E '^BRINGUP_RESULT=' "$result_file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
     if grep -qE '^BRINGUP_COMPLETION_SENTINEL=PASS$' "$result_file" 2>/dev/null; then
       sentinel="PASS"
     elif grep -qE '^BRINGUP_COMPLETION_SENTINEL=' "$result_file" 2>/dev/null; then
@@ -315,7 +387,21 @@ p2b_status_snapshot() {
   BRINGUP_ELAPSED_SECONDS="${elapsed:-}"
   BRINGUP_COMPLETION_SENTINEL="$sentinel"
   BRINGUP_EXIT_CODE="$exit_code"
+  BRINGUP_TERMINAL_STATE="${terminal_state:-}"
+  BRINGUP_RESULT_ENV="${result_env:-}"
   BRINGUP_LOG="$logf"
+}
+
+# A lifecycle PASS requires a coherent current-run terminal record. A persisted
+# state=COMPLETED file is not sufficient by itself.
+p2b_current_run_completion_coherent() {
+  [[ "${BRINGUP_STATE}" == "COMPLETED" ]] || return 1
+  [[ -n "${BRINGUP_RUN_ID}" ]] || return 1
+  [[ "${BRINGUP_TERMINAL_STATE}" == "COMPLETED" ]] || return 1
+  [[ "${BRINGUP_RESULT_ENV}" == "PASS" ]] || return 1
+  [[ "${BRINGUP_EXIT_CODE}" == "0" ]] || return 1
+  [[ "${BRINGUP_COMPLETION_SENTINEL}" == "PASS" ]] || return 1
+  return 0
 }
 
 p2b_print_status() {
@@ -329,15 +415,16 @@ p2b_print_status() {
       AELLA_CLI_AVAILABLE="${AELLA_CLI_AVAILABLE:-NOT_CHECKED}"
       ;;
     COMPLETED)
-      if [[ "${BRINGUP_COMPLETION_SENTINEL}" == "PASS" && "${AELLA_CLI_AVAILABLE}" == "YES" ]]; then
+      if p2b_current_run_completion_coherent \
+        && [[ "${AELLA_CLI_AVAILABLE}" == "YES" ]]; then
         result="PASS"
         do_not="NO"
-      elif [[ "${BRINGUP_COMPLETION_SENTINEL}" == "PASS" ]]; then
+      elif p2b_current_run_completion_coherent; then
         result="FAIL_POSTCONDITION"
         do_not="NO"
       else
-        result="PASS"
-        do_not="NO"
+        result="FAIL_INCONSISTENT_STATE"
+        do_not="YES"
       fi
       ;;
     FAILED|STALE_OR_UNKNOWN)
@@ -381,7 +468,8 @@ p2b_archive_failed_run() {
   mkdir -p "$dest"
   chmod 0700 "$dest" 2>/dev/null || true
   for f in state result.env completion.sentinel run-id exit-code \
-    completed-at started-at log-path worker.pid worker-start-ticks target-version
+    completed-at started-at log-path worker.pid worker-start-ticks target-version \
+    log-start-offset
   do
     if [[ -f "${d}/${f}" ]]; then
       cp -a "${d}/${f}" "${dest}/${f}" 2>/dev/null || true
@@ -501,7 +589,7 @@ p2b_worker_main() {
         next=1
       fi
     done
-    if [[ -f "$logf" ]] && grep -q 'APT_DEPENDENCY_CHECK=FAIL' "$logf"; then
+    if p2b_current_run_log_contains "$logf" 'APT_DEPENDENCY_CHECK=FAIL'; then
       rc=1
       completed="$(p2b_utc_now)"
       printf '%s\n' "$rc" | p2b_atomic_write "${d}/exit-code"
@@ -518,9 +606,28 @@ p2b_worker_main() {
       p2b_write_state "FAILED"
       exit "$rc"
     fi
+    if p2b_current_run_log_contains "$logf" 'WORKER_ORCHESTRATION=FAIL'; then
+      rc=1
+      completed="$(p2b_utc_now)"
+      printf '%s\n' "$rc" | p2b_atomic_write "${d}/exit-code"
+      printf '%s\n' "$completed" | p2b_atomic_write "${d}/completed-at"
+      {
+        echo "BRINGUP_TERMINAL_STATE=FAILED"
+        echo "BRINGUP_RESULT=FAIL"
+        echo "FAILURE_REASON=WORKER_ORCHESTRATION"
+        echo "BRINGUP_EXIT_CODE=${rc}"
+        echo "BRINGUP_RUN_ID=${run_id}"
+        echo "BRINGUP_COMPLETION_SENTINEL=FAIL"
+      } | p2b_atomic_write "${d}/completion.sentinel"
+      p2b_write_result_env "$run_id" "$$" "$target" "$started" "$completed" "$rc" "FAIL" "FAILED" "$logf"
+      p2b_write_state "FAILED"
+      exit "$rc"
+    fi
     if [[ -n "$want_workers" ]]; then
       local join_ok=0
-      if [[ -f "$logf" ]] && grep -E 'CLUSTER_JOIN_STATE ready=([0-9]+) expected=([0-9]+)' "$logf" \
+      if p2b_current_run_log_stream "$logf" >/dev/null \
+        && p2b_current_run_log_stream "$logf" \
+        | grep -E 'CLUSTER_JOIN_STATE ready=([0-9]+) expected=([0-9]+)' \
         | awk '{
             ready=""; expected="";
             for(i=1;i<=NF;i++){
@@ -636,7 +743,7 @@ EOF
       last_log_age=$((now_e - mtime))
     fi
 
-    if [[ "$state" == "COMPLETED" || "$BRINGUP_COMPLETION_SENTINEL" == "PASS" ]]; then
+    if p2b_current_run_completion_coherent; then
       # Verified completion — check CLI postcondition
       AELLA_CLI_AVAILABLE="NO"
       AELLA_CLI_PATH=""
@@ -684,6 +791,20 @@ AELLA_CLI_AVAILABLE=NO
 FAILURE_REASON=AELLA_CLI_MISSING_AFTER_BRINGUP_COMPLETE
 EXPECTED_PACKAGE_STATUS=aella_cli not found in PATH or known install paths
 NEXT_ACTION=Review the current run's bringup log and installed UVP package
+EOF
+      return 1
+    fi
+
+    if [[ "$state" == "COMPLETED" ]]; then
+      cat <<EOF
+BRINGUP_PROGRESS run_id=${run_id} state=COMPLETED elapsed_seconds=${elapsed} worker=${BRINGUP_WORKER_ALIVE} last_log_age_seconds=${last_log_age} current_phase=${CURRENT_PHASE:-UNKNOWN} current_operation=${CURRENT_OPERATION:-UNKNOWN}
+BRINGUP_RESULT=FAIL_INCONSISTENT_STATE
+BRINGUP_STATE=COMPLETED
+BRINGUP_COMPLETION_SENTINEL=${BRINGUP_COMPLETION_SENTINEL}
+BRINGUP_EXIT_CODE=${BRINGUP_EXIT_CODE}
+AELLA_CLI_AVAILABLE=NOT_CHECKED
+DO_NOT_RUN_AELLA_CLI_YET=YES
+FAILURE_REASON=INCONSISTENT_COMPLETION_RECORD
 EOF
       return 1
     fi

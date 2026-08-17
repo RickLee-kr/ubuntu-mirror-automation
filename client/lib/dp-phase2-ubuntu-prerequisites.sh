@@ -46,6 +46,51 @@ dp2_prereq_package_installed() {
   [[ "$status" == "install ok installed" ]]
 }
 
+dp2_prereq_installed_version() {
+  local pkg="$1"
+  dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true
+}
+
+dp2_prereq_compare_versions() {
+  # Debian version semantics only. Never use string comparison.
+  dpkg --compare-versions "$1" "$2" "$3"
+}
+
+# Skip only when the installed package is exactly the selected artifact
+# version. Older installed versions must be replaced. A newer or otherwise
+# different installed version is a fail-closed conflict (no silent downgrade).
+# Returns: 0 skip, 1 install, 2 conflict.
+dp2_prereq_deb_install_decision() {
+  local deb="$1"
+  local pkg ver arch inst_ver
+  pkg="$(dpkg-deb -f "$deb" Package 2>/dev/null || true)"
+  ver="$(dpkg-deb -f "$deb" Version 2>/dev/null || true)"
+  arch="$(dpkg-deb -f "$deb" Architecture 2>/dev/null || true)"
+  if [[ -z "$pkg" || -z "$ver" ]]; then
+    dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=deb_control_missing file=$(basename "$deb")"
+    return 2
+  fi
+  if ! dp2_prereq_package_installed "$pkg"; then
+    dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL_NEEDED package=${pkg} version=${ver} arch=${arch} reason=not_installed"
+    return 1
+  fi
+  inst_ver="$(dp2_prereq_installed_version "$pkg")"
+  if [[ -z "$inst_ver" ]]; then
+    dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL_NEEDED package=${pkg} version=${ver} reason=installed_version_unknown"
+    return 1
+  fi
+  if dp2_prereq_compare_versions "$inst_ver" eq "$ver"; then
+    dp2_prereq_log INFO "PHASE2_PREREQ_ALREADY_INSTALLED package=${pkg} version=${ver} arch=${arch}"
+    return 0
+  fi
+  if dp2_prereq_compare_versions "$inst_ver" lt "$ver"; then
+    dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL_NEEDED package=${pkg} installed=${inst_ver} selected=${ver} reason=older_installed"
+    return 1
+  fi
+  dp2_prereq_log ERROR "PHASE2_PREREQ_VERSION_CONFLICT package=${pkg} installed=${inst_ver} selected=${ver} arch=${arch}"
+  return 2
+}
+
 dp2_prereq_parse_simulation_removals() {
   local text="$1"
   printf '%s\n' "$text" | awk '
@@ -316,28 +361,140 @@ dp2_prereq_find_state() {
   return 1
 }
 
+dp2_prereq_find_manifest() {
+  local artifact="$1"
+  local cand dir=""
+  [[ -n "$artifact" ]] && dir="$(dirname "$artifact")"
+  for cand in \
+    "${PHASE2_PREREQ_MANIFEST:-}" \
+    "${dir}/phase2-ubuntu-prerequisites.manifest.json" \
+    "${STAGING_DIR:-/opt/aelladata/aelladeb_py3}/phase2-ubuntu-prerequisites.manifest.json" \
+    "/opt/aelladata/aelladeb_py3/phase2-ubuntu-prerequisites.manifest.json" \
+    "/home/aella/phase2-ubuntu-prerequisites.manifest.json"
+  do
+    [[ -n "$cand" && -f "$cand" ]] || continue
+    printf '%s\n' "$cand"
+    return 0
+  done
+  return 1
+}
+
+dp2_prereq_json_field() {
+  local file="$1" key="$2"
+  if ! command -v python3 >/dev/null 2>&1; then
+    return 1
+  fi
+  python3 -c '
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+value = data.get(sys.argv[2], "")
+if value is None:
+    print("")
+else:
+    print(value)
+' "$file" "$key"
+}
+
+dp2_prereq_normalize_sha() {
+  printf '%s' "$1" | tr 'A-F' 'a-f'
+}
+
+# REQUIRED=YES: state SHA, sidecar SHA, and actual artifact digest must agree.
+dp2_prereq_verify_sha_contract() {
+  local artifact="$1" state_sha="$2"
+  local sidecar="${artifact}.sha256"
+  local sidecar_sha actual
+  if [[ ! -f "$sidecar" ]]; then
+    dp2_prereq_log ERROR "PHASE2_PREREQ_SHA256=FAIL reason=sidecar_missing"
+    return 1
+  fi
+  sidecar_sha="$(awk 'NF {print $1; exit}' "$sidecar")"
+  actual="$(sha256sum "$artifact" | awk '{print $1}')"
+  state_sha="$(dp2_prereq_normalize_sha "$state_sha")"
+  sidecar_sha="$(dp2_prereq_normalize_sha "$sidecar_sha")"
+  actual="$(dp2_prereq_normalize_sha "$actual")"
+  if [[ -z "$state_sha" || -z "$sidecar_sha" || -z "$actual" ]]; then
+    dp2_prereq_log ERROR "PHASE2_PREREQ_SHA256=FAIL reason=sha_blank"
+    return 1
+  fi
+  if [[ "$state_sha" != "$actual" ]]; then
+    dp2_prereq_log ERROR "PHASE2_PREREQ_SHA256=FAIL reason=state_artifact_mismatch"
+    return 1
+  fi
+  if [[ "$sidecar_sha" != "$actual" ]]; then
+    dp2_prereq_log ERROR "PHASE2_PREREQ_SHA256=FAIL reason=sidecar_artifact_mismatch"
+    return 1
+  fi
+  if [[ "$state_sha" != "$sidecar_sha" ]]; then
+    dp2_prereq_log ERROR "PHASE2_PREREQ_SHA256=FAIL reason=state_sidecar_mismatch"
+    return 1
+  fi
+  dp2_prereq_log INFO "PHASE2_PREREQ_SHA256=PASS"
+  return 0
+}
+
+dp2_prereq_verify_manifest_contract() {
+  local manifest="$1" expected_count="$2" expected_sha="$3"
+  local got_count got_sha
+  if [[ ! -f "$manifest" ]]; then
+    dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=manifest_missing"
+    return 1
+  fi
+  got_count="$(dp2_prereq_json_field "$manifest" package_count || true)"
+  got_sha="$(dp2_prereq_json_field "$manifest" sha256 || true)"
+  if [[ -z "$got_count" || ! "$got_count" =~ ^[0-9]+$ ]]; then
+    dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=manifest_count_invalid"
+    return 1
+  fi
+  if [[ "$got_count" != "$expected_count" ]]; then
+    dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=manifest_count_mismatch"
+    return 1
+  fi
+  if [[ -n "$got_sha" ]]; then
+    got_sha="$(dp2_prereq_normalize_sha "$got_sha")"
+    expected_sha="$(dp2_prereq_normalize_sha "$expected_sha")"
+    if [[ "$got_sha" != "$expected_sha" ]]; then
+      dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=manifest_sha_mismatch"
+      return 1
+    fi
+  fi
+  dp2_prereq_log INFO "PHASE2_PREREQ_MANIFEST=PASS"
+  return 0
+}
+
 dp2_install_phase2_ubuntu_prerequisites() {
   local artifact extract rc=0
-  local state="" required=""
+  local state="" required="" count="" sha=""
+  local verdict="" state_rc=0 prev_e=0
+  local manifest=""
   dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL=START"
   dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL_STRATEGY=local_deb_closure"
 
-  if state="$(dp2_prereq_find_state)"; then
-    local verdict="" state_rc=0 prev_e=0
-    [[ $- == *e* ]] && prev_e=1
-    set +e
-    verdict="$(dp2_prereq_validate_state_contract "$state")"
-    state_rc=$?
-    [[ "$prev_e" -eq 1 ]] && set -e
-    required="$(dp2_prereq_read_state_value "$state" PHASE2_PREREQ_REQUIRED || true)"
-    dp2_prereq_log INFO "PHASE2_PREREQ_STATE=${state} required=${required:-unknown} verdict=${verdict:-unknown}"
-    if [[ "$state_rc" -ne 0 ]]; then
-      dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=state_${verdict:-invalid}"
-      return 1
-    fi
-    if [[ "$verdict" == "not_required" ]]; then
-      required="NO"
-    fi
+  # State is mandatory for both REQUIRED=YES and REQUIRED=NO. Artifact
+  # presence alone never authorizes install, and a missing state is never
+  # treated as NOT_REQUIRED.
+  if ! state="$(dp2_prereq_find_state)"; then
+    dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=state_missing"
+    return 1
+  fi
+  [[ $- == *e* ]] && prev_e=1
+  set +e
+  verdict="$(dp2_prereq_validate_state_contract "$state")"
+  state_rc=$?
+  [[ "$prev_e" -eq 1 ]] && set -e
+  required="$(dp2_prereq_read_state_value "$state" PHASE2_PREREQ_REQUIRED || true)"
+  count="$(dp2_prereq_read_state_value "$state" PHASE2_PREREQ_PACKAGE_COUNT || true)"
+  sha="$(dp2_prereq_read_state_value "$state" PHASE2_PREREQ_SHA256 || true)"
+  dp2_prereq_log INFO "PHASE2_PREREQ_STATE=${state} required=${required:-unknown} verdict=${verdict:-unknown}"
+  if [[ "$state_rc" -ne 0 ]]; then
+    dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=state_${verdict:-invalid}"
+    return 1
+  fi
+  if [[ "$verdict" == "not_required" ]]; then
+    required="NO"
   fi
 
   if [[ -n "${PHASE2_PREREQ_APT_SIMULATION:-}" ]]; then
@@ -348,6 +505,8 @@ dp2_install_phase2_ubuntu_prerequisites() {
   fi
 
   if [[ "${required}" == "NO" ]]; then
+    # Current state is authoritative. A leftover tarball from a previous
+    # REQUIRED=YES run must not be consumed.
     dp2_prereq_log INFO "PHASE2_PREREQ_INSTALL=SKIP reason=not_required"
     if ! dp2_validate_apt_dependency_graph prerequisites; then
       dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=apt_dependency_check"
@@ -364,17 +523,14 @@ dp2_install_phase2_ubuntu_prerequisites() {
   fi
   dp2_prereq_log INFO "PHASE2_PREREQ_ARTIFACT=${artifact}"
 
-  if [[ -f "${artifact}.sha256" ]]; then
-    local expected actual
-    expected="$(awk 'NF {print $1; exit}' "${artifact}.sha256")"
-    actual="$(sha256sum "$artifact" | awk '{print $1}')"
-    if [[ -n "$expected" && "${expected,,}" != "${actual,,}" ]]; then
-      dp2_prereq_log ERROR "PHASE2_PREREQ_SHA256=FAIL"
-      return 1
-    fi
-    dp2_prereq_log INFO "PHASE2_PREREQ_SHA256=PASS"
-  elif [[ "${required}" == "YES" ]]; then
-    dp2_prereq_log ERROR "PHASE2_PREREQ_SHA256=FAIL reason=sidecar_missing"
+  if ! dp2_prereq_verify_sha_contract "$artifact" "$sha"; then
+    return 1
+  fi
+  if ! manifest="$(dp2_prereq_find_manifest "$artifact")"; then
+    dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=manifest_missing"
+    return 1
+  fi
+  if ! dp2_prereq_verify_manifest_contract "$manifest" "$count" "$sha"; then
     return 1
   fi
 
@@ -383,6 +539,13 @@ dp2_install_phase2_ubuntu_prerequisites() {
     rm -rf "$extract"
     dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=extract"
     return 1
+  fi
+  if [[ -f "${extract}/phase2-ubuntu-prerequisites.manifest.json" ]]; then
+    if ! dp2_prereq_verify_manifest_contract \
+      "${extract}/phase2-ubuntu-prerequisites.manifest.json" "$count" "$sha"; then
+      rm -rf "$extract"
+      return 1
+    fi
   fi
 
   local order_file="${extract}/install-order.txt"
@@ -432,9 +595,43 @@ dp2_install_phase2_ubuntu_prerequisites() {
       fi
     done
     pkg="$(dpkg-deb -f "${files[0]}" Package 2>/dev/null || true)"
-    if [[ ${#files[@]} -eq 1 ]] && dp2_prereq_package_installed "$pkg"; then
-      dp2_prereq_log INFO "PHASE2_PREREQ_ALREADY_INSTALLED package=${pkg}"
-      continue
+    if [[ ${#files[@]} -eq 1 ]]; then
+      local decision=1
+      prev_e=0
+      [[ $- == *e* ]] && prev_e=1
+      set +e
+      dp2_prereq_deb_install_decision "${files[0]}"
+      decision=$?
+      [[ "$prev_e" -eq 1 ]] && set -e
+      if [[ "$decision" -eq 0 ]]; then
+        continue
+      fi
+      if [[ "$decision" -eq 2 ]]; then
+        rm -rf "$extract"
+        dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=version_conflict package=${pkg}"
+        return 1
+      fi
+    else
+      local fpath group_decision=1
+      for fpath in "${files[@]}"; do
+        prev_e=0
+        [[ $- == *e* ]] && prev_e=1
+        set +e
+        dp2_prereq_deb_install_decision "$fpath"
+        group_decision=$?
+        [[ "$prev_e" -eq 1 ]] && set -e
+        if [[ "$group_decision" -eq 2 ]]; then
+          rm -rf "$extract"
+          dp2_prereq_log ERROR "PHASE2_PREREQ_INSTALL=FAIL reason=version_conflict package=$(dpkg-deb -f "$fpath" Package 2>/dev/null || true)"
+          return 1
+        fi
+        if [[ "$group_decision" -eq 1 ]]; then
+          break
+        fi
+      done
+      if [[ "$group_decision" -eq 0 ]]; then
+        continue
+      fi
     fi
     dp2_prereq_dpkg_install "${files[@]}"
     rc=$?

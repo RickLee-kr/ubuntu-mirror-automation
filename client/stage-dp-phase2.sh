@@ -1315,13 +1315,17 @@ stage_phase2_ubuntu_prerequisites() {
   artifact_name="$(awk -F= '$1=="PHASE2_PREREQ_ARTIFACT"{print $2; exit}' "$state_dest")"
   sha="$(awk -F= '$1=="PHASE2_PREREQ_SHA256"{print $2; exit}' "$state_dest")"
   log "PHASE2_PREREQ_REQUIRED=${required:-unknown} PHASE2_PREREQ_PACKAGE_COUNT=${count:-unknown} PHASE2_PREREQ_BUILD=${build:-unknown} PHASE2_PREREQ_PUBLICATION=${publication:-unknown}"
-  if [[ "$build" != "PASS" ]]; then
+  retract_staged_phase2_prereq_artifacts() {
+    # Remove only the currently consumable prerequisite artifact set.
     rm -f "$dest" "${dest}.sha256" "${ARTIFACT_DIR}/phase2-ubuntu-prerequisites.manifest.json"
+  }
+  if [[ "$build" != "PASS" ]]; then
+    retract_staged_phase2_prereq_artifacts
     log "PHASE2_PREREQ_STAGE=FAIL reason=build_not_pass"
     return 1
   fi
   if [[ "$publication" != "PASS" ]]; then
-    rm -f "$dest" "${dest}.sha256" "${ARTIFACT_DIR}/phase2-ubuntu-prerequisites.manifest.json"
+    retract_staged_phase2_prereq_artifacts
     log "PHASE2_PREREQ_STAGE=FAIL reason=publication_not_pass"
     return 1
   fi
@@ -1334,6 +1338,7 @@ stage_phase2_ubuntu_prerequisites() {
     return 1
   fi
   if [[ "$required" == "NO" ]]; then
+    retract_staged_phase2_prereq_artifacts
     if [[ "$count" != "0" ]]; then
       log "PHASE2_PREREQ_STAGE=FAIL reason=count_nonzero_when_not_required"
       return 1

@@ -46,6 +46,7 @@ RESULT_MARKERS = (
     'emit_dp_resume_notice_line',
     'WORKER_RESULT',
     'WORKER_ORCHESTRATION',
+    'copy_phase2_prereq_contract_to_worker',
 )
 
 
@@ -543,6 +544,19 @@ def apply_orchestrate_workers(text):
         '    return 0\n'
         '}\n',
         'orchestrate_workers_ready_gate',
+    )
+    text = replace_exactly_once(
+        text,
+        '        log "Copying UVP debs to $worker_ip..."\n',
+        '        # Explicit Phase 2 prerequisite contract. Do not rely on\n'
+        '        # filename-extension globs as the prerequisite protocol.\n'
+        '        if ! copy_phase2_prereq_contract_to_worker "$worker_ip"; then\n'
+        '            log "WORKER_RESULT ip=${worker_ip} result=FAIL reason=prereq_contract_copy"\n'
+        '            orch_failed=1\n'
+        '            continue\n'
+        '        fi\n'
+        '        log "Copying UVP debs to $worker_ip..."\n',
+        'orchestrate_workers_prereq_contract',
     )
     return text
 

@@ -132,6 +132,7 @@ grep -q 'NEW_UPSTREAM_VENDOR_FIX_MARKER=YES' "${WORKB}/bringup_py3_dp_after_os_u
 grep -q 'MASTER_TOKEN_API_READY' "${WORKB}/bringup_py3_dp_after_os_upgrade.sh" \
   && grep -q 'APT_DEPENDENCY_CHECK' "${WORKB}/bringup_py3_dp_after_os_upgrade.sh" \
   && grep -q 'CLUSTER_JOIN_STATE' "${WORKB}/bringup_py3_dp_after_os_upgrade.sh" \
+  && grep -q 'copy_phase2_prereq_contract_to_worker' "${WORKB}/bringup_py3_dp_after_os_upgrade.sh" \
   && pass "B project gates present with new upstream marker" \
   || fail "B project gates present with new upstream marker"
 

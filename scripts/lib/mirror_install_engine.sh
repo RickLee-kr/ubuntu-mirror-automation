@@ -938,7 +938,8 @@ engine_bringup_required_patch_result_markers() {
     'CLUSTER_JOIN_STATE' \
     'APT_DEPENDENCY_CHECK' \
     'CRITICAL_PYTHON_RUNTIME' \
-    'WORKER_RESULT'
+    'WORKER_RESULT' \
+    'copy_phase2_prereq_contract_to_worker'
 }
 
 # vendor/dp-phase2/bringup_py3_dp_after_os_upgrade.sh is a reference / golden

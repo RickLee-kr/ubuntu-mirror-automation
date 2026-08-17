@@ -269,7 +269,7 @@ echo "$OUT" | grep -q 'PHASE2_PREREQ_STAGE=PASS' \
   && pass "P valid REQUIRED=YES => PASS" \
   || fail "P valid YES: ${OUT}"
 
-# Q. valid REQUIRED=NO => NOT_REQUIRED PASS
+# Q. valid REQUIRED=NO => NOT_REQUIRED PASS and stale YES artifacts retracted
 cat >"${HTTP_ROOT}/dp-phase2/6.5.0/extras/phase2-ubuntu-prerequisites.state" <<'EOF'
 PHASE2_PREREQ_REQUIRED=NO
 PHASE2_PREREQ_PACKAGE_COUNT=0
@@ -279,7 +279,11 @@ EOF
 OUT="$(run_stage)"
 echo "$OUT" | grep -q 'PHASE2_PREREQ_STAGE=NOT_REQUIRED' \
   && echo "$OUT" | grep -q 'RC=0' \
-  && pass "Q valid REQUIRED=NO => NOT_REQUIRED/PASS" \
+  && [[ ! -f "${WORKDIR}/artifacts/phase2-ubuntu-prerequisites.tar.gz" ]] \
+  && [[ ! -f "${WORKDIR}/artifacts/phase2-ubuntu-prerequisites.tar.gz.sha256" ]] \
+  && [[ ! -f "${WORKDIR}/artifacts/phase2-ubuntu-prerequisites.manifest.json" ]] \
+  && [[ -f "${WORKDIR}/artifacts/phase2-ubuntu-prerequisites.state" ]] \
+  && pass "Q valid REQUIRED=NO => NOT_REQUIRED/PASS; stale artifact retracted" \
   || fail "Q valid NO: ${OUT}"
 
 echo "SUMMARY pass=${PASS} fail=${FAIL}"

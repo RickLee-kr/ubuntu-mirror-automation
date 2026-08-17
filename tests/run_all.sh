@@ -65,6 +65,8 @@ TEST_LIST=(
   test_bringup_acps_sha_policy.sh
   test_patch_dp_phase2_bringup.py
   test_phase2_bringup_fresh_upstream.sh
+  test_bringup_lifecycle.sh
+  test_bringup_lifecycle_run_contract.sh
   test_bringup_lifecycle_failed_retry.sh
   test_mirror_download_and_space_regressions.sh
   test_phase2_bundle_reuse_disk.sh
@@ -77,6 +79,8 @@ TEST_LIST=(
   test_phase2_ubuntu_prerequisites.py
   test_phase2_prereq_dpkg_rc.sh
   test_phase2_prereq_stage_failclosed.sh
+  test_phase2_prereq_worker_contract.sh
+  test_phase2_prereq_version_aware.sh
   test_phase2_cluster_readiness.sh
   test_client_manifest_signing.sh
   test_worktree_isolation.sh

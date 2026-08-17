@@ -110,74 +110,122 @@ install_phase2_ubuntu_prerequisites() {
         dp2_install_phase2_ubuntu_prerequisites
         return $?
     fi
-    local artifact="${STAGING_DIR}/${PHASE2_PREREQ_ARTIFACT_NAME}"
-    local state="${STAGING_DIR}/phase2-ubuntu-prerequisites.state"
-    local required=""
-    if [[ -f "$state" ]]; then
-        required="$(awk -F= '$1=="PHASE2_PREREQ_REQUIRED"{print $2; exit}' "$state")"
-    fi
-    if [[ ! -f "$artifact" ]]; then
-        if [[ "$required" == "NO" ]]; then
-            validate_apt_dependency_graph prerequisites || return 1
-            log "PHASE2_PREREQ_INSTALL=SKIP reason=not_required"
+    log "ERROR: PHASE2_PREREQ_INSTALL=FAIL reason=prereq_lib_missing"
+    return 1
+}
+
+# Exact prerequisite contract filenames. Do not use extension globs as the
+# protocol: workers must receive these files intentionally.
+phase2_prereq_contract_state_name() { printf '%s\n' "phase2-ubuntu-prerequisites.state"; }
+phase2_prereq_contract_artifact_name() { printf '%s\n' "phase2-ubuntu-prerequisites.tar.gz"; }
+phase2_prereq_contract_sidecar_name() { printf '%s\n' "phase2-ubuntu-prerequisites.tar.gz.sha256"; }
+phase2_prereq_contract_manifest_name() { printf '%s\n' "phase2-ubuntu-prerequisites.manifest.json"; }
+phase2_prereq_contract_lib_name() { printf '%s\n' "dp-phase2-ubuntu-prerequisites.sh"; }
+
+phase2_prereq_lib_source_path() {
+    local p
+    for p in \
+        "${STAGING_DIR}/lib/dp-phase2-ubuntu-prerequisites.sh" \
+        "/home/aella/lib/dp-phase2-ubuntu-prerequisites.sh" \
+        "/opt/aelladata/os-upgrade/offline/phase2-bringup/lib/dp-phase2-ubuntu-prerequisites.sh"
+    do
+        if [[ -f "$p" ]]; then
+            printf '%s\n' "$p"
             return 0
         fi
-        log "ERROR: PHASE2_PREREQ_INSTALL=FAIL reason=artifact_absent_required"
+    done
+    return 1
+}
+
+# Remove only the current-generation prerequisite contract files. Never
+# glob-delete unrelated staged artifacts.
+clean_phase2_prereq_contract_files() {
+    local dir="${1:-${STAGING_DIR:-/opt/aelladata/aelladeb_py3}}"
+    rm -f \
+        "${dir}/phase2-ubuntu-prerequisites.state" \
+        "${dir}/phase2-ubuntu-prerequisites.tar.gz" \
+        "${dir}/phase2-ubuntu-prerequisites.tar.gz.sha256" \
+        "${dir}/phase2-ubuntu-prerequisites.manifest.json"
+}
+
+# Copy the current prerequisite contract to one worker. MUST run after the
+# generic staging glob copy so a leftover REQUIRED=YES tarball cannot remain
+# as the worker's current artifact when the new state is REQUIRED=NO.
+copy_phase2_prereq_contract_to_worker() {
+    local worker_ip="$1"
+    local staging="${STAGING_DIR:-/opt/aelladata/aelladeb_py3}"
+    local state="${staging}/phase2-ubuntu-prerequisites.state"
+    local artifact="${staging}/phase2-ubuntu-prerequisites.tar.gz"
+    local sidecar="${artifact}.sha256"
+    local manifest="${staging}/phase2-ubuntu-prerequisites.manifest.json"
+    local lib_src="" required=""
+    local remote_clean remote_mkdir
+
+    if ! declare -F worker_ssh >/dev/null 2>&1 || ! declare -F worker_scp >/dev/null 2>&1; then
+        log "ERROR: PHASE2_PREREQ_WORKER_COPY=FAIL reason=ssh_helpers_missing"
         return 1
     fi
-    local extract pkg rc=0 line fn
-    local -a files
-    extract="$(mktemp -d /tmp/phase2-prereq-inst.XXXXXX)"
-    tar -xzf "$artifact" -C "$extract" || { rm -rf "$extract"; return 1; }
-    if [[ ! -f "${extract}/install-order.txt" ]]; then
-        shopt -s nullglob
-        files=("${extract}/debs/"*.deb)
-        shopt -u nullglob
-        if [[ ${#files[@]} -gt 0 ]]; then
-            rm -rf "$extract"
-            log "ERROR: PHASE2_PREREQ_INSTALL=FAIL reason=install_order_missing"
-            return 1
-        fi
-        rm -rf "$extract"
-        validate_apt_dependency_graph prerequisites || return 1
-        log "PHASE2_PREREQ_INSTALL=PASS"
+
+    remote_clean="sudo rm -f \
+'${staging}/phase2-ubuntu-prerequisites.state' \
+'${staging}/phase2-ubuntu-prerequisites.tar.gz' \
+'${staging}/phase2-ubuntu-prerequisites.tar.gz.sha256' \
+'${staging}/phase2-ubuntu-prerequisites.manifest.json' \
+'${staging}/lib/dp-phase2-ubuntu-prerequisites.sh'"
+    remote_mkdir="sudo mkdir -p '${staging}' '${staging}/lib' && sudo chmod 777 '${staging}' '${staging}/lib'"
+    if ! worker_ssh "$worker_ip" "$remote_mkdir"; then
+        log "ERROR: PHASE2_PREREQ_WORKER_COPY=FAIL reason=worker_mkdir"
+        return 1
+    fi
+    if ! worker_ssh "$worker_ip" "$remote_clean"; then
+        log "ERROR: PHASE2_PREREQ_WORKER_COPY=FAIL reason=worker_clean"
+        return 1
+    fi
+
+    if [[ ! -f "$state" ]]; then
+        log "ERROR: PHASE2_PREREQ_WORKER_COPY=FAIL reason=state_missing"
+        return 1
+    fi
+    if ! worker_scp "$state" "$worker_ip" "${staging}/"; then
+        log "ERROR: PHASE2_PREREQ_WORKER_COPY=FAIL reason=state_copy"
+        return 1
+    fi
+
+    if ! lib_src="$(phase2_prereq_lib_source_path)"; then
+        log "ERROR: PHASE2_PREREQ_WORKER_COPY=FAIL reason=lib_missing"
+        return 1
+    fi
+    if ! worker_scp "$lib_src" "$worker_ip" "${staging}/lib/dp-phase2-ubuntu-prerequisites.sh"; then
+        log "ERROR: PHASE2_PREREQ_WORKER_COPY=FAIL reason=lib_copy"
+        return 1
+    fi
+
+    required="$(awk -F= '$1=="PHASE2_PREREQ_REQUIRED"{print $2; exit}' "$state")"
+    if [[ "$required" == "NO" ]]; then
+        log "PHASE2_PREREQ_WORKER_COPY=NOT_REQUIRED"
         return 0
     fi
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        line="${line#"${line%%[![:space:]]*}"}"
-        [[ -z "$line" || "$line" == \#* ]] && continue
-        files=()
-        # shellcheck disable=SC2086
-        for fn in $line; do
-            files+=("${extract}/debs/${fn}")
-        done
-        [[ ${#files[@]} -gt 0 ]] || continue
-        pkg="$(dpkg-deb -f "${files[0]}" Package 2>/dev/null || true)"
-        if [[ -z "$pkg" ]]; then
-            rm -rf "$extract"
-            log "ERROR: PHASE2_PREREQ_INSTALL=FAIL reason=deb_control_missing"
-            return 1
-        fi
-        if [[ ${#files[@]} -eq 1 ]] && dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -qx 'install ok installed'; then
-            log "PHASE2_PREREQ_ALREADY_INSTALLED package=${pkg}"
-            continue
-        fi
-        local prev_e=0
-        [[ $- == *e* ]] && prev_e=1
-        set +e
-        dpkg -i "${files[@]}"
-        rc=$?
-        [[ "$prev_e" -eq 1 ]] && set -e
-        if [[ "$rc" -ne 0 ]]; then
-            rm -rf "$extract"
-            log "ERROR: PHASE2_PREREQ_DPKG=FAIL package=${pkg} rc=${rc}"
-            return "$rc"
-        fi
-        log "PHASE2_PREREQ_DPKG=PASS package=${pkg}"
-    done < "${extract}/install-order.txt"
-    rm -rf "$extract"
-    validate_apt_dependency_graph prerequisites || return 1
-    log "PHASE2_PREREQ_INSTALL=PASS"
+    if [[ "$required" != "YES" ]]; then
+        log "ERROR: PHASE2_PREREQ_WORKER_COPY=FAIL reason=required_invalid"
+        return 1
+    fi
+    if [[ ! -f "$artifact" || ! -f "$sidecar" || ! -f "$manifest" ]]; then
+        log "ERROR: PHASE2_PREREQ_WORKER_COPY=FAIL reason=required_file_missing"
+        return 1
+    fi
+    if ! worker_scp "$artifact" "$worker_ip" "${staging}/"; then
+        log "ERROR: PHASE2_PREREQ_WORKER_COPY=FAIL reason=artifact_copy"
+        return 1
+    fi
+    if ! worker_scp "$sidecar" "$worker_ip" "${staging}/"; then
+        log "ERROR: PHASE2_PREREQ_WORKER_COPY=FAIL reason=sidecar_copy"
+        return 1
+    fi
+    if ! worker_scp "$manifest" "$worker_ip" "${staging}/"; then
+        log "ERROR: PHASE2_PREREQ_WORKER_COPY=FAIL reason=manifest_copy"
+        return 1
+    fi
+    log "PHASE2_PREREQ_WORKER_COPY=PASS"
     return 0
 }
 
