@@ -111,25 +111,29 @@ unset EXPECT_DASH
   || fail "vendor equals-form password rc=$PARSE_RC err=$PARSE_ERR"
 
 # Direct helper behavior: role mismatch, master mismatch, alias, and self IP.
+# Keep the helper call as the last command in a redirected group so its rc is
+# the command-substitution rc; a trailing redirection command must not mask it.
 run_role() {
   local expected="$1" actual="$2" self="${3:-NO}" marker="${TMP}/ssh-called"
   rm -f "$marker"
   set +e
   ROLE_OUT="$(
-    log() { echo "$*"; }
-    source "$COMPAT"
-    phase2_is_local_ipv4_address() { [[ "$self" == YES ]]; }
-    worker_ssh() { touch "$marker"; echo "$actual"; }
-    validate_remote_role_identity 192.0.2.10 "$expected"
-  2>&1)"
+    {
+      log() { echo "$*"; }
+      source "$COMPAT"
+      phase2_is_local_ipv4_address() { [[ "$self" == YES ]]; }
+      worker_ssh() { touch "$marker"; echo "$actual"; }
+      validate_remote_role_identity 192.0.2.10 "$expected"
+    } 2>&1
+  )"
   ROLE_RC=$?
   set -e
 }
 run_role DL-worker DR-worker
-[[ "$ROLE_RC" -ne 0 ]] && grep -q 'reason=role_mismatch expected=DL-worker actual=DR-worker' <<<"$ROLE_OUT" \
+[[ "$ROLE_RC" -ne 0 ]] && grep -q 'reason=role_mismatch actual=DR-worker expected=DL-worker' <<<"$ROLE_OUT" \
   && pass "DL-worker rejects DR-worker" || fail "DL/DR mismatch rc=$ROLE_RC out=$ROLE_OUT"
 run_role DL-worker DL-master
-[[ "$ROLE_RC" -ne 0 ]] && grep -q 'reason=role_mismatch expected=DL-worker actual=DL-master' <<<"$ROLE_OUT" \
+[[ "$ROLE_RC" -ne 0 ]] && grep -q 'reason=role_mismatch actual=DL-master expected=DL-worker' <<<"$ROLE_OUT" \
   && pass "worker rejects master role" || fail "worker/master mismatch rc=$ROLE_RC out=$ROLE_OUT"
 run_role DR-worker DA-worker
 [[ "$ROLE_RC" -eq 0 ]] && grep -q 'REMOTE_ROLE_IDENTITY .*result=PASS' <<<"$ROLE_OUT" \
@@ -155,12 +159,14 @@ run_join() {
   rm -f "$CONF"; [[ "$conf" == YES ]] && printf 'apiVersion: v1\n' >"$CONF"
   set +e
   JOIN_OUT="$(
-    PATH="${BIN}:$PATH"; SYS_ACTIVE="$active"; FLANNEL_PRESENT="$flannel"
-    export SYS_ACTIVE FLANNEL_PRESENT
-    ROLE=standby; log() { echo "$*"; }; source "$COMPAT"
-    PHASE2_KUBELET_CONF_PATH="$CONF"; PHASE2_FLANNEL_INTERFACE=flannel.1
-    validate_local_remote_join_state
-  2>&1)"
+    {
+      PATH="${BIN}:$PATH"; SYS_ACTIVE="$active"; FLANNEL_PRESENT="$flannel"
+      export PATH SYS_ACTIVE FLANNEL_PRESENT
+      ROLE=standby; log() { echo "$*"; }; source "$COMPAT"
+      PHASE2_KUBELET_CONF_PATH="$CONF"; PHASE2_FLANNEL_INTERFACE=flannel.1
+      validate_local_remote_join_state
+    } 2>&1
+  )"
   JOIN_RC=$?
   set -e
 }
