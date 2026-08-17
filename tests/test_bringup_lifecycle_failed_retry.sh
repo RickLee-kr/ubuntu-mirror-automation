@@ -52,6 +52,15 @@ set +e
 run_wrapper --version 6.5.0 --skip-download --detach >"${TMP}/run1.out" 2>&1
 run1_rc=$?
 set -e
+# --detach guarantees verified worker handoff, not that the asynchronous worker
+# has already reached the vendor call. Wait briefly for the observable vendor
+# invocation instead of racing the detached prerequisite/marker setup path.
+for _ in $(seq 1 50); do
+  if [[ "$(vendor_invocations)" -ge 1 ]]; then
+    break
+  fi
+  sleep 0.1
+done
 # Fast vendor failure may return 1 from the starter after FAILED handoff.
 [[ "$(vendor_invocations)" -ge 1 ]] || {
   cat "${TMP}/run1.out"
