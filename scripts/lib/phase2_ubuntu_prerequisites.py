@@ -483,12 +483,19 @@ def format_dep_expression(group):
     return ' | '.join(parts) if parts else ''
 
 
-def select_alternative_candidate(group, candidates_by_name):
-    """Left-to-right alternative that has a candidate satisfying its constraint."""
+def select_alternative_candidate(group, candidates_by_name, ensure_constraint=None):
+    """Left-to-right alternative that has a candidate satisfying its constraint.
+
+    ``ensure_constraint(name, constraint)``, when provided, is invoked for each
+    alternative before selection so authoritative Noble metadata can be loaded
+    when a local name exists but no loaded candidate satisfies the constraint.
+    """
     evidence = []
     expression = format_dep_expression(group)
     for alt in group or []:
         name, constraint, _arch = alt
+        if ensure_constraint is not None and name not in VIRTUAL_OR_BASE_SKIP:
+            ensure_constraint(name, constraint)
         stanzas = candidates_by_name.get(name) or []
         evidence.extend(candidate_evidence(name, stanzas, constraint))
         if name in VIRTUAL_OR_BASE_SKIP:
@@ -654,8 +661,9 @@ def resolve_phase2_dependency_closure(
     """Resolve recursive Depends/Pre-Depends with version/alternative policy.
 
     ``packages`` may be name->stanza (legacy last-wins) or name->list of
-    stanzas. Newly discovered packages missing from the local selective
-    index are filled via ``on_missing_name`` (authoritative Noble lookup).
+    stanzas. ``on_missing_name`` loads authoritative Noble metadata when a
+    package name is absent from the local selective index, or when every
+    currently loaded candidate fails the dependency constraint.
     """
     candidates = OrderedDict()
     if candidate_index:
@@ -675,18 +683,25 @@ def resolve_phase2_dependency_closure(
     selected = OrderedDict()
     authoritative_queries = []
 
-    def ensure_candidates(name):
-        if name in candidates and candidates[name]:
+    def ensure_candidates_for_constraint(name, constraint):
+        """Load authoritative candidates when no current stanza satisfies.
+
+        A local name is not enough: the loaded set must contain a candidate
+        that ``select_best_candidate`` accepts for ``constraint``.
+        """
+        if name in VIRTUAL_OR_BASE_SKIP:
             return True
         if name in extra:
             return True
-        if name in VIRTUAL_OR_BASE_SKIP:
+        stanzas = candidates.get(name) or []
+        if select_best_candidate(stanzas, constraint) is not None:
             return True
         if on_missing_name is None:
             return False
         authoritative_queries.append(name)
-        added = on_missing_name(name, candidates)
-        return bool(added and candidates.get(name))
+        on_missing_name(name, candidates)
+        stanzas = candidates.get(name) or []
+        return select_best_candidate(stanzas, constraint) is not None
 
     while queue:
         name = queue.pop(0)
@@ -700,31 +715,33 @@ def resolve_phase2_dependency_closure(
             selected[name] = extra_info
             info = extra_info
         else:
-            if not ensure_candidates(name):
-                missing.append(name)
-                continue
-            stanzas = candidates.get(name) or []
-            local = [
-                s for s in stanzas
-                if (s.get('_source') or 'local_selective') == 'local_selective'
-            ]
-            chosen = select_best_candidate(local, constraint=None)
-            if chosen is None:
-                chosen = select_best_candidate(stanzas, constraint=None)
-            if chosen is None:
-                missing.append(name)
-                continue
-            selected[name] = chosen
-            info = chosen
+            # A dependency alternative may already have stored the constraint-
+            # satisfying stanza. Do not re-select unconstrained local versions.
+            if name not in selected:
+                if not ensure_candidates_for_constraint(name, None):
+                    missing.append(name)
+                    continue
+                stanzas = candidates.get(name) or []
+                local = [
+                    s for s in stanzas
+                    if (s.get('_source') or 'local_selective') == 'local_selective'
+                ]
+                chosen = select_best_candidate(local, constraint=None)
+                if chosen is None:
+                    chosen = select_best_candidate(stanzas, constraint=None)
+                if chosen is None:
+                    missing.append(name)
+                    continue
+                selected[name] = chosen
+            info = selected[name]
         for field in PHASE2_PREREQ_FIELDS:
             for group in xba.parse_dep_field(info.get(field)):
                 if not group:
                     continue
-                for alt in group:
-                    alt_name = alt[0]
-                    if alt_name not in VIRTUAL_OR_BASE_SKIP:
-                        ensure_candidates(alt_name)
-                chosen, reason, _ev = select_alternative_candidate(group, candidates)
+                chosen, reason, _ev = select_alternative_candidate(
+                    group, candidates,
+                    ensure_constraint=ensure_candidates_for_constraint,
+                )
                 expression = format_dep_expression(group)
                 if reason:
                     # Extra/ACPS roots may depend on another extra root.
@@ -768,6 +785,13 @@ def resolve_phase2_dependency_closure(
                     ('from', name), ('field', field), ('to', dep_name),
                     ('expression', expression),
                 ]))
+                if (
+                    dep_name not in selected
+                    and dep_name not in extra
+                    and dep_name not in VIRTUAL_OR_BASE_SKIP
+                    and not chosen.get('_virtual_or_base')
+                ):
+                    selected[dep_name] = chosen
                 if dep_name not in seen:
                     queue.append(dep_name)
 

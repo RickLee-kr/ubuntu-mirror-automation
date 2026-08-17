@@ -970,6 +970,292 @@ class CandidatePolicyTests(unittest.TestCase):
         self.assertTrue(any(sorted(g) == ['x', 'y'] for g in cycle['install_groups']))
 
 
+class ConstraintAwareAuthoritativeEnrichmentTests(unittest.TestCase):
+    """Local name present is not enough; the constraint must be satisfiable."""
+
+    def _local(self, name, version, depends='', suite='noble'):
+        return OrderedDict([
+            ('Package', name),
+            ('Version', version),
+            ('Depends', depends),
+            ('_suite', suite),
+            ('_source', 'local_selective'),
+        ])
+
+    def _auth(self, name, version, depends='', suite='noble'):
+        return OrderedDict([
+            ('Package', name),
+            ('Version', version),
+            ('Depends', depends),
+            ('_suite', suite),
+            ('_source', 'authoritative_noble'),
+        ])
+
+    def _root(self, depends):
+        return OrderedDict([
+            ('root', OrderedDict([
+                ('Package', 'root'),
+                ('Version', '1'),
+                ('Depends', depends),
+            ])),
+        ])
+
+    def _loader(self, auth_by_name, calls):
+        loaded = {'done': False}
+
+        def on_missing(name, candidates):
+            calls.append(name)
+            if not loaded['done']:
+                merged = p2p.merge_candidate_indexes(candidates, auth_by_name)
+                candidates.clear()
+                candidates.update(merged)
+                loaded['done'] = True
+            return bool(candidates.get(name))
+
+        return on_missing
+
+    def test_local_unsatisfied_authoritative_satisfied(self):
+        calls = []
+        extra = self._root('foo (>= 1.2)')
+        local = {'foo': [self._local('foo', '1.0')]}
+        auth = {'foo': [self._auth('foo', '1.3')]}
+        closure = p2p.resolve_phase2_dependency_closure(
+            ['root'], None, extra,
+            candidate_index=local,
+            on_missing_name=self._loader(auth, calls),
+        )
+        self.assertEqual(calls, ['foo'])
+        self.assertFalse(closure['constraint_failures'])
+        self.assertNotIn('foo', closure['missing_from_index'])
+        self.assertEqual(closure['selected']['foo']['Version'], '1.3')
+        self.assertEqual(
+            closure['selected']['foo'].get('_source'), 'authoritative_noble',
+        )
+
+    def test_local_unsatisfied_authoritative_also_unsatisfied(self):
+        calls = []
+        extra = self._root('foo (>= 1.2)')
+        local = {'foo': [self._local('foo', '1.0')]}
+        auth = {'foo': [self._auth('foo', '1.1')]}
+        closure = p2p.resolve_phase2_dependency_closure(
+            ['root'], None, extra,
+            candidate_index=local,
+            on_missing_name=self._loader(auth, calls),
+        )
+        self.assertEqual(calls, ['foo'])
+        self.assertTrue(closure['constraint_failures'])
+        reason = closure['constraint_failures'][0]['reason']
+        self.assertIn('foo (>= 1.2)', reason)
+        self.assertIn('1.0', reason)
+        self.assertIn('1.1', reason)
+
+    def test_satisfying_local_candidate_preserved(self):
+        calls = []
+        extra = self._root('foo (>= 1.2)')
+        local = {'foo': [self._local('foo', '1.3')]}
+        auth = {'foo': [self._auth('foo', '9.0')]}
+        closure = p2p.resolve_phase2_dependency_closure(
+            ['root'], None, extra,
+            candidate_index=local,
+            on_missing_name=self._loader(auth, calls),
+        )
+        self.assertEqual(calls, [])
+        self.assertFalse(closure['constraint_failures'])
+        self.assertEqual(closure['selected']['foo']['Version'], '1.3')
+        self.assertEqual(
+            closure['selected']['foo'].get('_source'), 'local_selective',
+        )
+
+    def test_alternative_first_becomes_valid(self):
+        calls = []
+        extra = self._root('foo (>= 2.0) | bar (>= 3.0)')
+        local = {
+            'foo': [self._local('foo', '1.0')],
+            'bar': [self._local('bar', '2.0')],
+        }
+        auth = {'foo': [self._auth('foo', '2.5')]}
+        closure = p2p.resolve_phase2_dependency_closure(
+            ['root'], None, extra,
+            candidate_index=local,
+            on_missing_name=self._loader(auth, calls),
+        )
+        self.assertIn('foo', calls)
+        self.assertNotIn('bar', calls)
+        self.assertFalse(closure['constraint_failures'])
+        self.assertEqual(closure['selected']['foo']['Version'], '2.5')
+        self.assertNotIn('bar', closure['selected'])
+
+    def test_alternative_second_becomes_valid(self):
+        calls = []
+        extra = self._root('foo (>= 2.0) | bar (>= 3.0)')
+        local = {
+            'foo': [self._local('foo', '1.0')],
+            'bar': [self._local('bar', '2.0')],
+        }
+        auth = {
+            'foo': [self._auth('foo', '1.9')],
+            'bar': [self._auth('bar', '3.1')],
+        }
+        closure = p2p.resolve_phase2_dependency_closure(
+            ['root'], None, extra,
+            candidate_index=local,
+            on_missing_name=self._loader(auth, calls),
+        )
+        self.assertIn('foo', calls)
+        self.assertFalse(closure['constraint_failures'])
+        self.assertEqual(closure['selected']['bar']['Version'], '3.1')
+        self.assertNotIn('foo', closure['selected'])
+
+    def test_recursive_auth_closure_after_local_version_miss(self):
+        calls = []
+        extra = self._root('foo (>= 2)')
+        local = {'foo': [self._local('foo', '1.0')]}
+        auth = {
+            'foo': [self._auth('foo', '2.1', depends='bar (>= 3)')],
+            'bar': [self._auth('bar', '3.2', depends='baz')],
+            'baz': [self._auth('baz', '1.0')],
+        }
+        closure = p2p.resolve_phase2_dependency_closure(
+            ['root'], None, extra,
+            candidate_index=local,
+            on_missing_name=self._loader(auth, calls),
+        )
+        self.assertFalse(closure['constraint_failures'])
+        self.assertFalse(closure['missing_from_index'])
+        self.assertEqual(closure['selected']['foo']['Version'], '2.1')
+        self.assertEqual(closure['selected']['bar']['Version'], '3.2')
+        self.assertEqual(closure['selected']['baz']['Version'], '1.0')
+        plan = p2p.build_install_plan(
+            ['foo', 'bar', 'baz'], closure['selected'],
+        )
+        self.assertEqual(set(plan['install_order']), set(['foo', 'bar', 'baz']))
+        self.assertLess(plan['install_order'].index('baz'), plan['install_order'].index('bar'))
+        self.assertLess(plan['install_order'].index('bar'), plan['install_order'].index('foo'))
+
+    def test_authoritative_lookup_failure_fails_closed(self):
+        calls = []
+
+        def on_missing(name, candidates):
+            calls.append(name)
+            return False
+
+        extra = self._root('foo (>= 2)')
+        local = {'foo': [self._local('foo', '1.0')]}
+        closure = p2p.resolve_phase2_dependency_closure(
+            ['root'], None, extra,
+            candidate_index=local,
+            on_missing_name=on_missing,
+        )
+        self.assertEqual(calls, ['foo'])
+        self.assertTrue(
+            closure['constraint_failures'] or closure['missing_from_index'],
+        )
+
+    def test_backports_pin500_still_wins_after_enrichment(self):
+        calls = []
+        extra = self._root('foo (>= 2)')
+        local = {'foo': [self._local('foo', '1.0')]}
+        auth = {
+            'foo': [
+                self._auth('foo', '2.1', suite='noble'),
+                self._auth('foo', '9.0', suite='noble-backports'),
+            ],
+        }
+        closure = p2p.resolve_phase2_dependency_closure(
+            ['root'], None, extra,
+            candidate_index=local,
+            on_missing_name=self._loader(auth, calls),
+        )
+        self.assertEqual(calls, ['foo'])
+        self.assertFalse(closure['constraint_failures'])
+        self.assertEqual(closure['selected']['foo']['Version'], '2.1')
+        self.assertEqual(closure['selected']['foo'].get('_suite'), 'noble')
+
+
+class ConstraintAwareAuthoritativeBuildTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix='phase2-auth-constraint-')
+        self.ubuntu = os.path.join(self.tmp, 'selective')
+        self.auth = os.path.join(self.tmp, 'authoritative')
+        os.makedirs(self.ubuntu)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _acps(self, depends):
+        inner = os.path.join(self.tmp, 'py3-inner')
+        os.makedirs(inner)
+        deb = os.path.join(inner, 'python3-flask_1_all.deb')
+        with open(deb, 'wb') as fh:
+            fh.write(b'acps\n')
+        with open(deb + '.control', 'w') as fh:
+            fh.write(
+                'Package: python3-flask\nVersion: 1\nArchitecture: all\nDepends: %s\n' % depends
+            )
+        tarball = os.path.join(self.tmp, 'py3-apt-packages.tar.gz')
+        with tarfile.open(tarball, 'w:gz') as tf:
+            for fn in os.listdir(inner):
+                tf.add(os.path.join(inner, fn), arcname=fn)
+        return tarball
+
+    def test_build_selects_authoritative_version_when_local_is_too_old(self):
+        tarball = self._acps('foo (>= 1.2)')
+        local_foo = indexed_deb(self.ubuntu, 'foo', version='1.0', component='universe')
+        write_packages_index(self.ubuntu, 'noble', 'universe', [local_foo])
+        auth_foo = indexed_deb(self.auth, 'foo', version='1.3', component='universe')
+        write_packages_index(self.auth, 'noble', 'universe', [auth_foo])
+        src = os.path.join(self.auth, auth_foo['Filename'])
+        dst = os.path.join(self.ubuntu, auth_foo['Filename'])
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
+        dest = os.path.join(self.tmp, 'extras')
+        rc = p2p.run_build(build_args(
+            source=tarball,
+            ubuntu_root=self.ubuntu,
+            dest=dest,
+            skip_acquire=True,
+            skip_authoritative_fetch=True,
+            authoritative_root=self.auth,
+        ))
+        self.assertEqual(rc, 0, msg=open(os.path.join(dest, p2p.STATE_NAME)).read()
+                         if os.path.isfile(os.path.join(dest, p2p.STATE_NAME)) else 'no state')
+        with tarfile.open(os.path.join(dest, p2p.ARTIFACT_NAME), 'r:gz') as tf:
+            names = tf.getnames()
+        self.assertTrue(any('foo_1.3_all.deb' in n for n in names))
+        self.assertFalse(any('foo_1.0_all.deb' in n for n in names))
+
+    def test_authoritative_fetch_failure_retracts_stale_artifact(self):
+        tarball = self._acps('foo (>= 2)')
+        local_foo = indexed_deb(self.ubuntu, 'foo', version='1.0', component='universe')
+        write_packages_index(self.ubuntu, 'noble', 'universe', [local_foo])
+        dest = os.path.join(self.tmp, 'extras-fail')
+        os.makedirs(dest, exist_ok=True)
+        stale = os.path.join(dest, p2p.ARTIFACT_NAME)
+        with open(stale, 'wb') as fh:
+            fh.write(b'stale-artifact\n')
+
+        def boom(*args, **kwargs):
+            raise RuntimeError('authoritative fetch unavailable')
+
+        orig = p2p.load_authoritative_noble_candidates
+        p2p.load_authoritative_noble_candidates = boom
+        try:
+            rc = p2p.run_build(build_args(
+                source=tarball,
+                ubuntu_root=self.ubuntu,
+                dest=dest,
+                skip_acquire=True,
+                skip_authoritative_fetch=False,
+            ))
+        finally:
+            p2p.load_authoritative_noble_candidates = orig
+        self.assertNotEqual(rc, 0)
+        text = open(os.path.join(dest, p2p.STATE_NAME)).read()
+        self.assertIn('PHASE2_PREREQ_BUILD=FAIL', text)
+        self.assertIn('PHASE2_PREREQ_PUBLICATION=FAIL', text)
+        self.assertFalse(os.path.isfile(stale))
+
+
 class StateContractUnitTests(unittest.TestCase):
     def test_yes_and_no_contracts(self):
         yes = OrderedDict([
