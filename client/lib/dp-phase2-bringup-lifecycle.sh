@@ -128,6 +128,33 @@ p2b_write_result_env() {
   } | p2b_atomic_write "$(p2b_dir)/result.env"
 }
 
+# Deterministic FAILED lifecycle artifacts. Does not return.
+p2b_fail_run() {
+  local d="$1"
+  local run_id="$2"
+  local worker_pid="$3"
+  local target="$4"
+  local started="$5"
+  local logf="$6"
+  local rc="$7"
+  local reason="$8"
+  local completed
+  completed="$(p2b_utc_now)"
+  printf '%s\n' "$rc" | p2b_atomic_write "${d}/exit-code"
+  printf '%s\n' "$completed" | p2b_atomic_write "${d}/completed-at"
+  {
+    echo "BRINGUP_TERMINAL_STATE=FAILED"
+    echo "BRINGUP_RESULT=FAIL"
+    echo "FAILURE_REASON=${reason}"
+    echo "BRINGUP_EXIT_CODE=${rc}"
+    echo "BRINGUP_RUN_ID=${run_id}"
+    echo "BRINGUP_COMPLETION_SENTINEL=FAIL"
+  } | p2b_atomic_write "${d}/completion.sentinel"
+  p2b_write_result_env "$run_id" "$worker_pid" "$target" "$started" "$completed" "$rc" "FAIL" "FAILED" "$logf"
+  p2b_write_state "FAILED"
+  exit "$rc"
+}
+
 p2b_read_log_start_offset() {
   local off
   off="$(p2b_read_file "$(p2b_dir)/log-start-offset")"
@@ -157,7 +184,7 @@ p2b_write_current_run_log_marker() {
   fi
   mkdir -p "$(dirname "$logf")" 2>/dev/null || true
   line="$(p2b_current_run_log_marker_line "$run_id")"
-  printf '%s\n' "$line" >>"$logf"
+  printf '%s\n' "$line" >>"$logf" || return 1
 }
 
 # Offset-scoped bytes only. Does not prove current-run identity.
@@ -253,6 +280,10 @@ p2b_current_run_log_stream() {
   return 0
 }
 
+# Return codes:
+#   0  pattern found in a valid current-run stream
+#   1  valid current-run stream, pattern absent
+#   2  current-run stream invalid (never treat as pattern-absent)
 p2b_current_run_log_contains() {
   local logf="$1"
   local pattern="$2"
@@ -587,6 +618,7 @@ p2b_worker_main() {
   local vendor="$1"
   shift
   local d run_id target logf started completed rc=0 start_tick
+  local marker_rc=0 current_log_rc=0
   d="$(p2b_dir)"
   run_id="$(p2b_read_file "${d}/run-id")"
   target="$(p2b_read_file "${d}/target-version")"
@@ -604,7 +636,15 @@ p2b_worker_main() {
   # Identity marker lives in the current-run stream (after the recorded offset).
   # Secondary log gates must not accept a later truncated/regrown file as the
   # same stream if this marker is gone. This is not a completion sentinel.
-  p2b_write_current_run_log_marker "$logf" "$run_id" || true
+  # Marker write is mandatory: do not start vendor bringup without it.
+  set +e
+  p2b_write_current_run_log_marker "$logf" "$run_id"
+  marker_rc=$?
+  set -e
+  if [[ "$marker_rc" -ne 0 ]]; then
+    rc=1
+    p2b_fail_run "$d" "$run_id" "$$" "$target" "$started" "$logf" "$rc" "CURRENT_RUN_LOG_MARKER_WRITE"
+  fi
   p2b_write_state "RUNNING"
   printf '%s\n' "$$" | p2b_atomic_write "${d}/worker.pid"
   if [[ -r /proc/$$/stat ]]; then
@@ -662,6 +702,17 @@ p2b_worker_main() {
   printf '%s\n' "$completed" | p2b_atomic_write "${d}/completed-at"
 
   if [[ "$rc" -eq 0 ]]; then
+    # Current-run log identity is a mandatory prerequisite for any secondary
+    # log-based PASS decision. Invalid evidence is not "pattern absent".
+    set +e
+    p2b_current_run_log_stream "$logf" >/dev/null
+    current_log_rc=$?
+    set -e
+    if [[ "$current_log_rc" -ne 0 ]]; then
+      rc=1
+      p2b_fail_run "$d" "$run_id" "$$" "$target" "$started" "$logf" "$rc" "CURRENT_RUN_LOG_IDENTITY_INVALID"
+    fi
+
     # Worker-IP runs cannot become PASS unless the vendor recorded a complete
     # Ready topology. This prevents a 1/3-node vendor "Bringup complete" from
     # being converted into BRINGUP_RESULT=PASS.

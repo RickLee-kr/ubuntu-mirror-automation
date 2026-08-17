@@ -513,8 +513,8 @@ IDB9_RC=$?
 set -e
 [[ "$IDB9_RC" -ne 0 ]] || fail "ID-B9 unexpectedly PASS after copytruncate"
 [[ "$(p2b_read_state)" == "FAILED" ]] || fail "ID-B9 state=$(p2b_read_state)"
-grep -q 'FAILURE_REASON=CLUSTER_JOIN_INCOMPLETE' "$(p2b_dir)/completion.sentinel" \
-  || fail "ID-B9 missing CLUSTER_JOIN_INCOMPLETE after marker loss"
+grep -q 'FAILURE_REASON=CURRENT_RUN_LOG_IDENTITY_INVALID' "$(p2b_dir)/completion.sentinel" \
+  || fail "ID-B9 missing CURRENT_RUN_LOG_IDENTITY_INVALID after marker loss"
 set +e
 p2b_current_run_log_identity_valid "$PHASE2_BRINGUP_LOG_DEFAULT" "run-idb9"
 IDB9_IDENT=$?
@@ -524,5 +524,282 @@ set -e
 [[ "$IDB9_IDENT" -eq 3 ]] || fail "ID-B9 identity rc=${IDB9_IDENT} expected 3"
 [[ "$IDB9_STREAM" -eq 2 ]] || fail "ID-B9 stream rc=${IDB9_STREAM} expected 2"
 pass "ID-B9 copytruncate without current marker cannot PASS from log text"
+
+# ---------------------------------------------------------------------------
+# T1 — AIO COPYTRUNCATE + VENDOR RC=0 MUST FAIL
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+fill_bytes "$PHASE2_BRINGUP_LOG_DEFAULT" 8192 H
+printf '\nHIST leftover\n' >>"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-t1"
+write_file "$(p2b_dir)/target-version" "6.5.0"
+write_file "$(p2b_dir)/log-path" "$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/started-at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+VENDOR_T1="${TMP}/vendor-t1.sh"
+cat >"$VENDOR_T1" <<'EOF'
+#!/usr/bin/env bash
+: >"${PHASE2_BRINGUP_LOG_DEFAULT}"
+python3 -c 'import sys; sys.stdout.write("N"*10000)'
+echo
+echo "APT_DEPENDENCY_CHECK=PASS"
+echo "Bringup complete: all services ready"
+exit 0
+EOF
+chmod +x "$VENDOR_T1"
+set +e
+( p2b_worker_main "$VENDOR_T1" >/dev/null 2>&1 )
+T1_RC=$?
+set -e
+[[ "$T1_RC" -ne 0 ]] || fail "T1 unexpectedly PASS after AIO copytruncate"
+[[ "$(p2b_read_state)" == "FAILED" ]] || fail "T1 state=$(p2b_read_state)"
+grep -q '^BRINGUP_RESULT=FAIL$' "$(p2b_dir)/result.env" || fail "T1 result.env not FAIL"
+grep -q '^BRINGUP_COMPLETION_SENTINEL=FAIL$' "$(p2b_dir)/result.env" \
+  || fail "T1 sentinel not FAIL"
+grep -q 'FAILURE_REASON=CURRENT_RUN_LOG_IDENTITY_INVALID' "$(p2b_dir)/completion.sentinel" \
+  || fail "T1 missing CURRENT_RUN_LOG_IDENTITY_INVALID"
+if grep -q '^BRINGUP_RESULT=PASS$' "$(p2b_dir)/result.env"; then
+  fail "T1 became PASS"
+fi
+[[ "$(p2b_read_state)" != "COMPLETED" ]] || fail "T1 became COMPLETED"
+pass "T1 AIO copytruncate + vendor rc=0 fails closed"
+
+# ---------------------------------------------------------------------------
+# T2 — AIO NORMAL VALID CURRENT-RUN STREAM STILL PASSES
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+: >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-t2"
+write_file "$(p2b_dir)/target-version" "6.5.0"
+write_file "$(p2b_dir)/log-path" "$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/started-at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+VENDOR_T2="${TMP}/vendor-t2.sh"
+cat >"$VENDOR_T2" <<'EOF'
+#!/usr/bin/env bash
+echo "APT_DEPENDENCY_CHECK=PASS"
+echo "Bringup complete: all services ready"
+exit 0
+EOF
+chmod +x "$VENDOR_T2"
+set +e
+( p2b_worker_main "$VENDOR_T2" >/dev/null 2>&1 )
+T2_RC=$?
+set -e
+[[ "$T2_RC" -eq 0 ]] || fail "T2 worker rc=${T2_RC}"
+[[ "$(p2b_read_state)" == "COMPLETED" ]] || fail "T2 state=$(p2b_read_state)"
+grep -q '^BRINGUP_RESULT=PASS$' "$(p2b_dir)/result.env" || fail "T2 result.env not PASS"
+grep -q '^BRINGUP_COMPLETION_SENTINEL=PASS$' "$(p2b_dir)/result.env" \
+  || fail "T2 sentinel not PASS"
+grep -qxF "PHASE2_LIFECYCLE_RUN_BEGIN run_id=run-t2" "$PHASE2_BRINGUP_LOG_DEFAULT" \
+  || fail "T2 current run marker missing"
+set +e
+p2b_current_run_log_identity_valid "$PHASE2_BRINGUP_LOG_DEFAULT" "run-t2"
+T2_IDENT=$?
+set -e
+[[ "$T2_IDENT" -eq 0 ]] || fail "T2 identity rc=${T2_IDENT}"
+pass "T2 AIO valid current-run stream still PASSES"
+
+# ---------------------------------------------------------------------------
+# T3 — AIO CURRENT MARKER + APT FAIL STILL FAILS
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+: >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-t3"
+write_file "$(p2b_dir)/target-version" "6.5.0"
+write_file "$(p2b_dir)/log-path" "$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/started-at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+VENDOR_T3="${TMP}/vendor-t3.sh"
+cat >"$VENDOR_T3" <<'EOF'
+#!/usr/bin/env bash
+echo "APT_DEPENDENCY_CHECK=FAIL"
+exit 0
+EOF
+chmod +x "$VENDOR_T3"
+set +e
+( p2b_worker_main "$VENDOR_T3" >/dev/null 2>&1 )
+T3_RC=$?
+set -e
+[[ "$T3_RC" -ne 0 ]] || fail "T3 unexpectedly PASS"
+[[ "$(p2b_read_state)" == "FAILED" ]] || fail "T3 state=$(p2b_read_state)"
+grep -q 'FAILURE_REASON=APT_DEPENDENCY_CHECK' "$(p2b_dir)/completion.sentinel" \
+  || fail "T3 missing APT_DEPENDENCY_CHECK failure"
+if grep -q 'FAILURE_REASON=CURRENT_RUN_LOG_IDENTITY_INVALID' "$(p2b_dir)/completion.sentinel"; then
+  fail "T3 valid identity was reported as log identity failure"
+fi
+pass "T3 AIO current marker + APT FAIL remains APT_DEPENDENCY_CHECK"
+
+# ---------------------------------------------------------------------------
+# T4 — CLUSTER INVALID LOG IDENTITY FAILS EARLY
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+fill_bytes "$PHASE2_BRINGUP_LOG_DEFAULT" 8192 H
+printf '\nHIST leftover\n' >>"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-t4"
+write_file "$(p2b_dir)/target-version" "6.5.0"
+write_file "$(p2b_dir)/log-path" "$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/started-at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+VENDOR_T4="${TMP}/vendor-t4.sh"
+cat >"$VENDOR_T4" <<'EOF'
+#!/usr/bin/env bash
+: >"${PHASE2_BRINGUP_LOG_DEFAULT}"
+python3 -c 'import sys; sys.stdout.write("N"*10000)'
+echo
+echo "CLUSTER_JOIN_STATE ready=3 expected=3"
+echo "APT_DEPENDENCY_CHECK=PASS"
+echo "WORKER_ORCHESTRATION=PASS"
+echo "Bringup complete: all nodes ready"
+exit 0
+EOF
+chmod +x "$VENDOR_T4"
+set +e
+( p2b_worker_main "$VENDOR_T4" --worker-ips 192.0.2.10,192.0.2.11 >/dev/null 2>&1 )
+T4_RC=$?
+set -e
+[[ "$T4_RC" -ne 0 ]] || fail "T4 unexpectedly PASS after cluster copytruncate"
+[[ "$(p2b_read_state)" == "FAILED" ]] || fail "T4 state=$(p2b_read_state)"
+grep -q 'FAILURE_REASON=CURRENT_RUN_LOG_IDENTITY_INVALID' "$(p2b_dir)/completion.sentinel" \
+  || fail "T4 missing CURRENT_RUN_LOG_IDENTITY_INVALID"
+if grep -q 'FAILURE_REASON=CLUSTER_JOIN_INCOMPLETE' "$(p2b_dir)/completion.sentinel"; then
+  fail "T4 fell through to CLUSTER_JOIN_INCOMPLETE"
+fi
+pass "T4 cluster invalid log identity fails early"
+
+# ---------------------------------------------------------------------------
+# T5 — MARKER WRITE FAILURE PREVENTS VENDOR EXECUTION
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+: >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-t5"
+write_file "$(p2b_dir)/target-version" "6.5.0"
+write_file "$(p2b_dir)/log-path" "$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/started-at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+VENDOR_T5_RAN="${TMP}/vendor-t5-ran"
+rm -f "$VENDOR_T5_RAN"
+VENDOR_T5="${TMP}/vendor-t5.sh"
+cat >"$VENDOR_T5" <<EOF
+#!/usr/bin/env bash
+touch '${VENDOR_T5_RAN}'
+echo "APT_DEPENDENCY_CHECK=PASS"
+echo "Bringup complete: all services ready"
+exit 0
+EOF
+chmod +x "$VENDOR_T5"
+__save_write_marker="$(declare -f p2b_write_current_run_log_marker)"
+p2b_write_current_run_log_marker() { return 1; }
+set +e
+( p2b_worker_main "$VENDOR_T5" >/dev/null 2>&1 )
+T5_RC=$?
+set -e
+eval "$__save_write_marker"
+[[ "$T5_RC" -ne 0 ]] || fail "T5 unexpectedly PASS on marker write failure"
+[[ "$(p2b_read_state)" == "FAILED" ]] || fail "T5 state=$(p2b_read_state)"
+grep -q 'FAILURE_REASON=CURRENT_RUN_LOG_MARKER_WRITE' "$(p2b_dir)/completion.sentinel" \
+  || fail "T5 missing CURRENT_RUN_LOG_MARKER_WRITE"
+[[ ! -e "$VENDOR_T5_RAN" ]] || fail "T5 vendor fixture executed despite marker write failure"
+pass "T5 marker write failure prevents vendor execution"
+
+# ---------------------------------------------------------------------------
+# T6 — PATTERN ABSENT VS STREAM INVALID ARE DISTINCT
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+: >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-t6-valid"
+write_file "$(p2b_dir)/log-start-offset" "0"
+p2b_write_current_run_log_marker "$PHASE2_BRINGUP_LOG_DEFAULT" "run-t6-valid"
+printf 'APT_DEPENDENCY_CHECK=PASS\n' >>"$PHASE2_BRINGUP_LOG_DEFAULT"
+set +e
+p2b_current_run_log_stream "$PHASE2_BRINGUP_LOG_DEFAULT" >/dev/null
+T6_VALID_STREAM=$?
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'APT_DEPENDENCY_CHECK=FAIL'
+T6_ABSENT=$?
+set -e
+[[ "$T6_VALID_STREAM" -eq 0 ]] || fail "T6 valid stream rc=${T6_VALID_STREAM}"
+[[ "$T6_ABSENT" -eq 1 ]] || fail "T6 valid+absent rc=${T6_ABSENT} expected 1"
+
+reset_lifecycle_files
+: >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-t6-invalid"
+write_file "$(p2b_dir)/log-start-offset" "0"
+printf 'APT_DEPENDENCY_CHECK=PASS\nBringup complete: all services ready\n' \
+  >>"$PHASE2_BRINGUP_LOG_DEFAULT"
+set +e
+p2b_current_run_log_stream "$PHASE2_BRINGUP_LOG_DEFAULT" >/dev/null
+T6_INVALID_STREAM=$?
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'APT_DEPENDENCY_CHECK=FAIL'
+T6_INVALID_CONTAINS=$?
+set -e
+[[ "$T6_INVALID_STREAM" -eq 2 ]] || fail "T6 invalid stream rc=${T6_INVALID_STREAM} expected 2"
+[[ "$T6_INVALID_CONTAINS" -eq 2 ]] || fail "T6 invalid contains rc=${T6_INVALID_CONTAINS} expected 2"
+[[ "$T6_ABSENT" -ne "$T6_INVALID_CONTAINS" ]] \
+  || fail "T6 pattern-absent and invalid-stream collapsed to ${T6_ABSENT}"
+pass "T6 pattern absent vs invalid stream are distinct"
+
+# ---------------------------------------------------------------------------
+# T7 — WRONG RUN MARKER REMAINS FAIL CLOSED
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+: >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-new"
+write_file "$(p2b_dir)/target-version" "6.5.0"
+write_file "$(p2b_dir)/log-path" "$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/started-at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+VENDOR_T7="${TMP}/vendor-t7.sh"
+cat >"$VENDOR_T7" <<'EOF'
+#!/usr/bin/env bash
+: >"${PHASE2_BRINGUP_LOG_DEFAULT}"
+echo "PHASE2_LIFECYCLE_RUN_BEGIN run_id=run-old"
+echo "APT_DEPENDENCY_CHECK=PASS"
+echo "Bringup complete: all services ready"
+exit 0
+EOF
+chmod +x "$VENDOR_T7"
+set +e
+( p2b_worker_main "$VENDOR_T7" >/dev/null 2>&1 )
+T7_RC=$?
+set -e
+[[ "$T7_RC" -ne 0 ]] || fail "T7 unexpectedly PASS with wrong run marker"
+[[ "$(p2b_read_state)" == "FAILED" ]] || fail "T7 state=$(p2b_read_state)"
+grep -q 'FAILURE_REASON=CURRENT_RUN_LOG_IDENTITY_INVALID' "$(p2b_dir)/completion.sentinel" \
+  || fail "T7 missing CURRENT_RUN_LOG_IDENTITY_INVALID"
+pass "T7 wrong-run marker remains fail closed"
+
+# ---------------------------------------------------------------------------
+# T8 — HISTORICAL SUCCESS CANNOT RESCUE INVALID CURRENT RUN
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+{
+  echo "APT_DEPENDENCY_CHECK=PASS"
+  echo "CLUSTER_JOIN_STATE ready=3 expected=3"
+  echo "Bringup complete: all nodes ready"
+} >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-t8"
+write_file "$(p2b_dir)/target-version" "6.5.0"
+write_file "$(p2b_dir)/log-path" "$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/started-at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+VENDOR_T8="${TMP}/vendor-t8.sh"
+cat >"$VENDOR_T8" <<'EOF'
+#!/usr/bin/env bash
+python3 - "${PHASE2_BRINGUP_LOG_DEFAULT}" <<'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+text = p.read_text(errors="replace")
+lines = [ln for ln in text.splitlines(True) if "PHASE2_LIFECYCLE_RUN_BEGIN" not in ln]
+p.write_text("".join(lines))
+PY
+echo "APT_DEPENDENCY_CHECK=PASS"
+echo "CLUSTER_JOIN_STATE ready=3 expected=3"
+echo "Bringup complete: all services ready"
+exit 0
+EOF
+chmod +x "$VENDOR_T8"
+set +e
+( p2b_worker_main "$VENDOR_T8" --worker-ips 192.0.2.10,192.0.2.11 >/dev/null 2>&1 )
+T8_RC=$?
+set -e
+[[ "$T8_RC" -ne 0 ]] || fail "T8 unexpectedly PASS from historical success"
+[[ "$(p2b_read_state)" == "FAILED" ]] || fail "T8 state=$(p2b_read_state)"
+grep -q 'FAILURE_REASON=CURRENT_RUN_LOG_IDENTITY_INVALID' "$(p2b_dir)/completion.sentinel" \
+  || fail "T8 missing CURRENT_RUN_LOG_IDENTITY_INVALID"
+pass "T8 historical success cannot rescue invalid current run"
 
 echo "TEST_BRINGUP_LIFECYCLE_RUN_CONTRACT=PASS"
