@@ -170,6 +170,7 @@ def inspect_one_deb(path, source_label='acps_deb'):
         ('architecture', fields.get('Architecture', '')),
         ('depends', fields.get('Depends', '')),
         ('pre_depends', fields.get('Pre-Depends', '')),
+        ('provides', fields.get('Provides', '')),
         ('filename', fn),
         ('path', path),
         ('source', source_label),
@@ -278,8 +279,10 @@ def roots_as_index(roots):
             ('Architecture', rec.get('architecture') or ''),
             ('Depends', rec.get('depends') or ''),
             ('Pre-Depends', rec.get('pre_depends') or ''),
+            ('Provides', rec.get('provides') or ''),
             ('_suite', 'acps'),
             ('_component', 'acps'),
+            ('_source', rec.get('source') or 'acps'),
         ])
         packages[name] = stanza
     return packages
@@ -343,6 +346,222 @@ def version_satisfies_constraint(version, constraint):
     return _dpkg_compare_versions(version, dpkg_op, other)
 
 
+def parse_packages_stanzas(text):
+    """Yield Packages stanzas, preserving folded field continuations.
+
+    Debian Packages indexes fold long Depends/Provides onto continuation
+    lines. Dropping those lines would truncate virtual Provides and break
+    provider resolution. OS-hop last-wins loading is unchanged.
+    """
+    if sm is not None:
+        for stanza in sm.iter_packages_stanzas(text):
+            yield stanza
+        return
+    cur = OrderedDict()
+    key = None
+    for line in text.splitlines():
+        if not line.strip():
+            if cur:
+                yield cur
+                cur = OrderedDict()
+                key = None
+            continue
+        if key and line[:1] in ' \t':
+            cur[key] = (cur.get(key, '') + ' ' + line.strip()).strip()
+            continue
+        if ':' in line:
+            k, v = line.split(':', 1)
+            key = k.strip()
+            cur[key] = v.strip()
+    if cur:
+        yield cur
+
+
+def parse_provides_entries(field):
+    """Parse Provides into (virtual_name, provided_version, versioned).
+
+    Debian Policy 7.5: a versioned Provide uses ``(= version)``. Only that
+    form carries a virtual version. Unversioned Provides have an empty
+    provided version and cannot satisfy versioned dependencies. The provider
+    package's own Version field is never treated as the virtual version.
+    """
+    entries = []
+    for group in xba.parse_dep_field(field):
+        for name, constraint, _arch in group:
+            versioned = False
+            provided = ''
+            parsed = parse_version_constraint(constraint)
+            if parsed is not None and parsed[0] == '=':
+                versioned = True
+                provided = parsed[1]
+            entries.append((name, provided, versioned))
+    return entries
+
+
+def provider_satisfies_constraint(provided_version, versioned_provides, constraint):
+    """Evaluate a virtual dependency against the provided version only."""
+    parsed = parse_version_constraint(constraint)
+    if parsed is None:
+        return True
+    if parsed[0] == 'invalid':
+        return False
+    if not versioned_provides or not provided_version:
+        return False
+    return version_satisfies_constraint(provided_version, constraint)
+
+
+def _provider_record(virtual_name, provided_version, versioned, stanza):
+    return OrderedDict([
+        ('virtual', virtual_name),
+        ('provided_version', provided_version or ''),
+        ('versioned_provides', bool(versioned)),
+        ('package', stanza.get('Package') or ''),
+        ('stanza', stanza),
+    ])
+
+
+def build_provider_index(candidates, extra=None):
+    """Map virtual names to provider records from real package stanzas.
+
+    Augments the real Package-name index; it does not replace direct-package
+    lookup. Duplicate identities (same Package/suite/Version/Filename) are
+    skipped so local + authoritative copies of one stanza do not double-count.
+    """
+    index = OrderedDict()
+    seen = set()
+
+    def add_stanza(stanza):
+        if not stanza:
+            return
+        ident = (
+            _candidate_identity(stanza),
+            stanza.get('Provides') or '',
+        )
+        if ident in seen:
+            return
+        seen.add(ident)
+        for vname, provided, versioned in parse_provides_entries(
+            stanza.get('Provides') or '',
+        ):
+            if not vname:
+                continue
+            index.setdefault(vname, [])
+            index[vname].append(
+                _provider_record(vname, provided, versioned, stanza)
+            )
+
+    for _name, stanzas in (candidates or {}).items():
+        if isinstance(stanzas, dict):
+            stanzas = [stanzas]
+        for stanza in stanzas or []:
+            add_stanza(stanza)
+    extra_names = sorted((extra or {}).keys())
+    for name in extra_names:
+        add_stanza((extra or {}).get(name))
+    return index
+
+
+def select_best_provider(provider_records, constraint=None):
+    """Pick one satisfying provider using existing pin + version policy.
+
+    Constraint is evaluated against the Provides version. Ranking among
+    satisfying providers uses the real package Version and suite pin, matching
+    select_best_candidate. Preference order matches direct-package lookup:
+
+    1. ACPS/extra providers (suite=acps) when they satisfy
+    2. local_selective providers when they satisfy
+    3. remaining candidates (authoritative Noble)
+
+    Remaining ties keep the first record in deterministic index order.
+    """
+    satisfying = []
+    for rec in provider_records or []:
+        if provider_satisfies_constraint(
+            rec.get('provided_version') or '',
+            rec.get('versioned_provides'),
+            constraint,
+        ):
+            satisfying.append(rec)
+    if not satisfying:
+        return None
+    acps_hits = [
+        rec for rec in satisfying
+        if (rec.get('stanza') or {}).get('_suite') == 'acps'
+    ]
+    local_hits = [
+        rec for rec in satisfying
+        if (rec.get('stanza') or {}).get('_source') == 'local_selective'
+    ]
+    if acps_hits:
+        pool = acps_hits
+    elif local_hits:
+        pool = local_hits
+    else:
+        pool = satisfying
+    stanzas = [rec.get('stanza') for rec in pool if rec.get('stanza')]
+    chosen_stanza = select_best_candidate(stanzas, constraint=None)
+    if chosen_stanza is None:
+        return pool[0]
+    ident = _candidate_identity(chosen_stanza)
+    for rec in pool:
+        if _candidate_identity(rec.get('stanza') or {}) == ident:
+            return rec
+    return pool[0]
+
+
+def format_provider_summaries(provider_records, constraint=None, limit=8):
+    rows = []
+    records = list(provider_records or [])
+    for rec in records[:limit]:
+        st = rec.get('stanza') or {}
+        ok = provider_satisfies_constraint(
+            rec.get('provided_version') or '',
+            rec.get('versioned_provides'),
+            constraint,
+        )
+        rows.append(
+            '%s provided_version=%s versioned=%s suite=%s component=%s source=%s satisfies=%s' % (
+                rec.get('package') or '',
+                rec.get('provided_version') or '-',
+                'YES' if rec.get('versioned_provides') else 'NO',
+                st.get('_suite') or '',
+                st.get('_component') or '',
+                st.get('_source') or '',
+                'YES' if ok else 'NO',
+            )
+        )
+    extra = len(records) - limit
+    if extra > 0:
+        rows.append('and %d more' % extra)
+    return rows
+
+
+def emit_virtual_provider_pass(rec, constraint=None):
+    st = rec.get('stanza') or {}
+    eprint(
+        'PHASE2_PREREQ_VIRTUAL_PROVIDER=PASS virtual=%s constraint=%s provider=%s provided_version=%s suite=%s component=%s source=%s' % (
+            rec.get('virtual') or '',
+            constraint or '-',
+            rec.get('package') or '',
+            rec.get('provided_version') or '-',
+            st.get('_suite') or '',
+            st.get('_component') or '',
+            st.get('_source') or '',
+        )
+    )
+
+
+def emit_virtual_provider_fail(virtual_name, constraint, provider_records):
+    summaries = format_provider_summaries(provider_records, constraint)
+    eprint(
+        'PHASE2_PREREQ_VIRTUAL_PROVIDER=FAIL virtual=%s constraint=%s providers=%s' % (
+            virtual_name,
+            constraint or '-',
+            ';'.join(summaries) if summaries else 'none',
+        )
+    )
+
+
 def suite_pin(suite):
     suite = suite or ''
     if suite in SUITE_PIN:
@@ -399,7 +618,7 @@ def load_all_package_candidates(ubuntu_root, suites=None, components=None, arch=
                 text = xba.open_packages_text(gz)
             else:
                 text = xba.read_text(path)
-            for stanza in xba.parse_packages_index(text):
+            for stanza in parse_packages_stanzas(text):
                 name = stanza.get('Package')
                 if not name:
                     continue
@@ -483,15 +702,25 @@ def format_dep_expression(group):
     return ' | '.join(parts) if parts else ''
 
 
-def select_alternative_candidate(group, candidates_by_name, ensure_constraint=None):
+def select_alternative_candidate(
+    group, candidates_by_name, ensure_constraint=None,
+    provider_index=None,
+):
     """Left-to-right alternative that has a candidate satisfying its constraint.
 
-    ``ensure_constraint(name, constraint)``, when provided, is invoked for each
-    alternative before selection so authoritative Noble metadata can be loaded
-    when a local name exists but no loaded candidate satisfies the constraint.
+    Direct Package-name lookup is unchanged. When no real package of that
+    name satisfies the constraint, virtual Provides are considered. The
+    returned stanza is always the real provider package, never a virtual
+    name. ``ensure_constraint(name, constraint)``, when provided, is invoked
+    for each alternative before selection so authoritative Noble metadata can
+    be loaded when a local name exists but no loaded candidate satisfies the
+    constraint, including when only a virtual provider can satisfy it.
     """
     evidence = []
     expression = format_dep_expression(group)
+    if provider_index is None:
+        provider_index = {}
+    virtual_failures = []
     for alt in group or []:
         name, constraint, _arch = alt
         if ensure_constraint is not None and name not in VIRTUAL_OR_BASE_SKIP:
@@ -513,6 +742,15 @@ def select_alternative_candidate(group, candidates_by_name, ensure_constraint=No
             chosen = select_best_candidate(stanzas, constraint)
         if chosen is not None:
             return chosen, None, evidence
+        providers = list(provider_index.get(name) or [])
+        rec = select_best_provider(providers, constraint)
+        if rec is not None:
+            emit_virtual_provider_pass(rec, constraint)
+            return rec.get('stanza'), None, evidence
+        if providers:
+            virtual_failures.append((name, constraint, providers))
+    for vname, vconstraint, providers in virtual_failures:
+        emit_virtual_provider_fail(vname, vconstraint, providers)
     reason = (
         'unsatisfied_dependency expression=%s candidates=%s'
         % (expression, json.dumps(evidence, sort_keys=True))
@@ -682,12 +920,21 @@ def resolve_phase2_dependency_closure(
     edges = []
     selected = OrderedDict()
     authoritative_queries = []
+    provider_index = OrderedDict()
+
+    def rebuild_provider_index():
+        provider_index.clear()
+        provider_index.update(build_provider_index(candidates, extra))
+
+    def providers_satisfy(name, constraint):
+        return select_best_provider(provider_index.get(name), constraint) is not None
 
     def ensure_candidates_for_constraint(name, constraint):
         """Load authoritative candidates when no current stanza satisfies.
 
         A local name is not enough: the loaded set must contain a candidate
-        that ``select_best_candidate`` accepts for ``constraint``.
+        that ``select_best_candidate`` accepts for ``constraint``, or a
+        virtual provider whose Provides version satisfies it.
         """
         if name in VIRTUAL_OR_BASE_SKIP:
             return True
@@ -696,12 +943,19 @@ def resolve_phase2_dependency_closure(
         stanzas = candidates.get(name) or []
         if select_best_candidate(stanzas, constraint) is not None:
             return True
+        if providers_satisfy(name, constraint):
+            return True
         if on_missing_name is None:
             return False
         authoritative_queries.append(name)
         on_missing_name(name, candidates)
+        rebuild_provider_index()
         stanzas = candidates.get(name) or []
-        return select_best_candidate(stanzas, constraint) is not None
+        if select_best_candidate(stanzas, constraint) is not None:
+            return True
+        return providers_satisfy(name, constraint)
+
+    rebuild_provider_index()
 
     while queue:
         name = queue.pop(0)
@@ -741,6 +995,7 @@ def resolve_phase2_dependency_closure(
                 chosen, reason, _ev = select_alternative_candidate(
                     group, candidates,
                     ensure_constraint=ensure_candidates_for_constraint,
+                    provider_index=provider_index,
                 )
                 expression = format_dep_expression(group)
                 if reason:
@@ -757,6 +1012,7 @@ def resolve_phase2_dependency_closure(
                         for alt in group:
                             if (
                                 (candidates.get(alt[0]))
+                                or provider_index.get(alt[0])
                                 or alt[0] in extra
                                 or alt[0] in VIRTUAL_OR_BASE_SKIP
                             ):
@@ -853,6 +1109,7 @@ def package_record(name, info):
         ('size', (info or {}).get('Size', '')),
         ('depends', (info or {}).get('Depends', '')),
         ('pre_depends', (info or {}).get('Pre-Depends', '')),
+        ('provides', (info or {}).get('Provides', '')),
     ])
 
 
@@ -1004,16 +1261,58 @@ def verify_local_package_file(path, rec):
     return ''
 
 
+def _provider_in_install_set(virtual_name, constraint, packages, install_set):
+    """Return the real package in install_set that provides virtual_name."""
+    matches = []
+    for pkg in sorted(install_set):
+        info = (packages or {}).get(pkg) or {}
+        for vname, provided, versioned in parse_provides_entries(
+            info.get('Provides') or '',
+        ):
+            if vname != virtual_name:
+                continue
+            if provider_satisfies_constraint(provided, versioned, constraint):
+                matches.append(pkg)
+                break
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    stanzas = [(packages or {}).get(pkg) for pkg in matches if (packages or {}).get(pkg)]
+    chosen = select_best_candidate(stanzas, constraint=None)
+    if chosen is not None and chosen.get('Package'):
+        return chosen.get('Package')
+    return matches[0]
+
+
 def direct_install_deps(name, packages, install_set):
-    """Depends/Pre-Depends of name that are also in the install set."""
+    """Depends/Pre-Depends of name that are also in the install set.
+
+    Virtual dependencies resolve to the real provider package present in the
+    install set. The virtual name itself is never treated as an installable
+    artifact package.
+    """
     info = (packages or {}).get(name) or {}
     deps = []
     seen = set()
     for field in PHASE2_PREREQ_FIELDS:
-        for dep in xba.dep_names(info.get(field), packages):
-            if dep in install_set and dep != name and dep not in seen:
-                seen.add(dep)
-                deps.append(dep)
+        for group in xba.parse_dep_field(info.get(field)):
+            chosen = None
+            for alt_name, constraint, _arch in group:
+                if alt_name in VIRTUAL_OR_BASE_SKIP:
+                    continue
+                if alt_name in install_set:
+                    chosen = alt_name
+                    break
+                provided_by = _provider_in_install_set(
+                    alt_name, constraint, packages, install_set,
+                )
+                if provided_by:
+                    chosen = provided_by
+                    break
+            if chosen and chosen != name and chosen not in seen:
+                seen.add(chosen)
+                deps.append(chosen)
     return deps
 
 
@@ -1487,6 +1786,7 @@ def build_prerequisite_artifact(package_rows, dest_dir, include_missing=False,
                     ('Package', rec.get('package') or ''),
                     ('Depends', rec.get('depends') or ''),
                     ('Pre-Depends', rec.get('pre_depends') or ''),
+                    ('Provides', rec.get('provides') or ''),
                 ])
             plan = build_install_plan(
                 [rec.get('package') for rec in packed if rec.get('package')],
@@ -1661,7 +1961,7 @@ def run_inspect(args):
         ('roots', [
             OrderedDict((k, r[k]) for k in (
                 'package', 'version', 'architecture', 'depends', 'pre_depends',
-                'filename', 'source',
+                'provides', 'filename', 'source',
             ) if k in r)
             for r in roots
         ]),
