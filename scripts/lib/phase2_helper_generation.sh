@@ -121,7 +121,7 @@ for F in "\$GEN" "\$SCRIPT" bringup_py3_dp_lifecycle.sh lib/dp-{offline-source-p
 done
 printf '%s  %s\\n' "\$H" "\$GEN" | sha256sum -c -
 sha256sum -c "\$GEN"
-exec sudo bash "./\$SCRIPT" --target-version "\$VER" --same-version-recovery --mirror-url "\$MIRROR"
+sudo bash "./\$SCRIPT" --target-version "\$VER" --same-version-recovery --mirror-url "\$MIRROR"
 EOF
   chmod 0644 "$dest"
   bash -n "$dest" || {
