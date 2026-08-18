@@ -2640,8 +2640,13 @@ engine_enable_http_distribution() {
   local site_en="${MM_NGINX_SITE_ENABLED:-/etc/nginx/sites-enabled/${site_name}}"
   local nginx_bin systemctl_bin ngx_tmp backup=""
   local prev_active=0 prev_enabled=0
+  local prev_avail_existed=0
+  local prev_en_kind=missing prev_en_target="" prev_en_backup=""
+  local prev_default_kind=missing prev_default_target="" prev_default_backup=""
+  local default_site
   nginx_bin="$(engine_nginx_bin)"
   systemctl_bin="$(engine_systemctl_bin)"
+  default_site="$(dirname "$site_en")/default"
 
   command -v "$nginx_bin" >/dev/null 2>&1 || mm_die "NGINX_PACKAGE=FAIL binary missing"
   command -v "$systemctl_bin" >/dev/null 2>&1 || mm_die "SYSTEMCTL=FAIL missing"
@@ -2661,37 +2666,83 @@ engine_enable_http_distribution() {
   fi
 
   mkdir -p "$(dirname "$site_avail")" "$(dirname "$site_en")"
-  if [[ -f "$site_avail" ]]; then
+  # Snapshot only the Menu 3 publication topology (not a recursive /etc/nginx backup).
+  if [[ -e "$site_avail" || -L "$site_avail" ]]; then
+    prev_avail_existed=1
     backup="${site_avail}.bak.mm.$(date -u +%Y%m%d%H%M%S)"
     cp -a "$site_avail" "$backup"
   fi
+  if [[ -L "$site_en" ]]; then
+    prev_en_kind=symlink
+    prev_en_target="$(readlink "$site_en")"
+  elif [[ -f "$site_en" ]]; then
+    prev_en_kind=file
+    prev_en_backup="${site_en}.bak.mm.en.$(date -u +%Y%m%d%H%M%S)"
+    cp -a "$site_en" "$prev_en_backup"
+  elif [[ -e "$site_en" ]]; then
+    prev_en_kind=other
+    prev_en_backup="${site_en}.bak.mm.en.$(date -u +%Y%m%d%H%M%S)"
+    cp -a "$site_en" "$prev_en_backup"
+  fi
+  if [[ -L "$default_site" ]]; then
+    prev_default_kind=symlink
+    prev_default_target="$(readlink "$default_site")"
+  elif [[ -f "$default_site" ]]; then
+    prev_default_kind=file
+    prev_default_backup="${default_site}.bak.mm.default.$(date -u +%Y%m%d%H%M%S)"
+    cp -a "$default_site" "$prev_default_backup"
+  elif [[ -e "$default_site" ]]; then
+    prev_default_kind=other
+    prev_default_backup="${default_site}.bak.mm.default.$(date -u +%Y%m%d%H%M%S)"
+    cp -a "$default_site" "$prev_default_backup"
+  fi
+
   install -m 0644 "$ngx_tmp" "$site_avail"
   rm -f "$ngx_tmp"
   ln -sfn "$site_avail" "$site_en"
-  local default_site
-  default_site="$(dirname "$site_en")/default"
-  if [[ -e "$default_site" ]]; then
+  if [[ -e "$default_site" || -L "$default_site" ]]; then
     rm -f "$default_site"
   fi
 
   local restore_nginx
   restore_nginx() {
     local rollback_config=FAIL rollback_svc=FAIL
-    if [[ -n "${backup:-}" && -f "$backup" ]]; then
+    if [[ "$prev_avail_existed" -eq 1 && -n "${backup:-}" && -e "$backup" ]]; then
       cp -a "$backup" "$site_avail"
-      rollback_config=PASS
-      mm_ok "NGINX_ROLLBACK_CONFIG=PASS"
-      mm_warn "NGINX_ROLLBACK=YES restored ${backup}"
     else
-      # No prior site: remove the site we just installed.
-      rm -f "$site_en" 2>/dev/null || true
-      if [[ -z "${backup:-}" ]]; then
-        rm -f "$site_avail" 2>/dev/null || true
-      fi
-      rollback_config=PASS
-      mm_ok "NGINX_ROLLBACK_CONFIG=PASS"
-      mm_warn "NGINX_ROLLBACK=YES removed new site"
+      rm -f "$site_avail" 2>/dev/null || true
     fi
+    case "${prev_en_kind}" in
+      symlink)
+        ln -sfn "$prev_en_target" "$site_en"
+        ;;
+      file|other)
+        rm -f "$site_en" 2>/dev/null || true
+        if [[ -n "${prev_en_backup:-}" && -e "$prev_en_backup" ]]; then
+          cp -a "$prev_en_backup" "$site_en"
+        fi
+        ;;
+      *)
+        rm -f "$site_en" 2>/dev/null || true
+        ;;
+    esac
+    case "${prev_default_kind}" in
+      symlink)
+        ln -sfn "$prev_default_target" "$default_site"
+        ;;
+      file|other)
+        rm -f "$default_site" 2>/dev/null || true
+        if [[ -n "${prev_default_backup:-}" && -e "$prev_default_backup" ]]; then
+          cp -a "$prev_default_backup" "$default_site"
+        fi
+        ;;
+      *)
+        rm -f "$default_site" 2>/dev/null || true
+        ;;
+    esac
+    rollback_config=PASS
+    mm_ok "NGINX_ROLLBACK_CONFIG=PASS"
+    mm_warn "NGINX_ROLLBACK=YES restored previous publication topology"
     if command -v "$nginx_bin" >/dev/null 2>&1; then
       "$nginx_bin" -t >/dev/null 2>&1 || true
     fi
@@ -2703,7 +2754,9 @@ engine_enable_http_distribution() {
       else
         "$systemctl_bin" stop nginx 2>/dev/null || true
       fi
-      if [[ "$prev_enabled" -eq 0 ]]; then
+      if [[ "$prev_enabled" -eq 1 ]]; then
+        "$systemctl_bin" enable nginx 2>/dev/null || true
+      else
         "$systemctl_bin" disable nginx 2>/dev/null || true
       fi
       rollback_svc=PASS
@@ -2725,7 +2778,14 @@ engine_enable_http_distribution() {
   fi
   mm_ok "NGINX_TEST=PASS"
 
-  "$systemctl_bin" enable nginx >/dev/null 2>&1 || true
+  if ! "$systemctl_bin" enable nginx >/dev/null 2>&1; then
+    restore_nginx
+    mm_die "NGINX_ENABLE=FAIL"
+  fi
+  if ! "$systemctl_bin" is-enabled --quiet nginx 2>/dev/null; then
+    restore_nginx
+    mm_die "NGINX_ENABLE=FAIL"
+  fi
   if "$systemctl_bin" is-active --quiet nginx 2>/dev/null; then
     if ! "$systemctl_bin" reload nginx; then
       "$systemctl_bin" restart nginx || {

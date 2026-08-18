@@ -40,7 +40,7 @@ mm_wf_mark_client_set_published 'gen-fixture-1' 'FPRTEST' 'sha-fixture-1'
 }
 
 mm_wf_get_from_file() {
-  awk -F= -v k="$1" '$1==k {print substr($0, index($0,$2)); exit}' "$MM_WORKFLOW_FILE"
+  awk -F= -v k="$1" '$1==k { print substr($0, length($1) + 2); exit }' "$MM_WORKFLOW_FILE"
 }
 
 # Case A: no logger helpers, no mm_status_set.

@@ -218,6 +218,17 @@ p2b_current_run_log_offset_stream() {
   return 0
 }
 
+# Drain stdin while searching. grep -q / head close the pipe on the first match
+# and can SIGPIPE a still-writing producer; under pipefail that becomes a
+# false FAIL on valid current-run evidence. These consumers always read to EOF.
+p2b_stdin_has_exact_line() {
+  awk -v m="$1" '$0 == m { found = 1 } END { exit found ? 0 : 1 }'
+}
+
+p2b_stdin_has_ere() {
+  awk -v pat="$1" '$0 ~ pat { found = 1 } END { exit found ? 0 : 1 }'
+}
+
 # Current-run evidence is valid only when the active run-id marker exists in
 # the offset-scoped stream. Historical pre-offset bytes are never searched.
 # Return codes:
@@ -246,7 +257,7 @@ p2b_current_run_log_identity_valid() {
     [[ "$prev_e" -eq 1 ]] && set -e
     return "$stream_rc"
   fi
-  p2b_current_run_log_offset_stream "$logf" "$offset" | grep -qxF -- "$marker"
+  p2b_current_run_log_offset_stream "$logf" "$offset" | p2b_stdin_has_exact_line "$marker"
   grep_rc=$?
   [[ "$prev_e" -eq 1 ]] && set -e
   if [[ "$grep_rc" -eq 0 ]]; then
@@ -297,7 +308,7 @@ p2b_current_run_log_contains() {
     # Missing/truncated/wrong-run evidence is invalid, not "pattern absent".
     return 2
   fi
-  p2b_current_run_log_stream "$logf" | grep -qE -- "$pattern"
+  p2b_current_run_log_stream "$logf" | p2b_stdin_has_ere "$pattern"
   grep_rc=$?
   [[ "$prev_e" -eq 1 ]] && set -e
   if [[ "$grep_rc" -eq 0 ]]; then

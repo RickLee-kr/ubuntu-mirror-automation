@@ -97,6 +97,8 @@ TEST_LIST=(
   test_mirror_manager_ip_configuration.sh
   test_http_publication_permissions.sh
   test_http_enable_local_smoke.sh
+  test_http_enable_nginx_transaction.sh
+  test_workflow_kv_getters.sh
   test_client_mirror_pin_gates.sh
   test_per_mirror_local_signing.sh
   test_client_ready_circular_gate.sh

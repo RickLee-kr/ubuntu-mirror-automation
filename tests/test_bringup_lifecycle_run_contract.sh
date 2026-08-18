@@ -1101,4 +1101,154 @@ set -e
 assert_failed_identity "RC-T10"
 pass "RC-T10 historical success cannot rescue invalid current run"
 
+append_current_run_lines() {
+  local file="$1" n="${2:-30000}"
+  python3 -c 'import sys
+p, n = sys.argv[1], int(sys.argv[2])
+line = b"bringup current-run output " + (b"x" * 80) + b"\n"
+with open(p, "ab") as f:
+    f.write(line * n)
+' "$file" "$n"
+}
+
+# ---------------------------------------------------------------------------
+# SP-T1. Marker near start + multi-MB trailing current-run log => identity PASS
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+: >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-sp-t1"
+write_file "$(p2b_dir)/log-start-offset" "0"
+p2b_write_current_run_log_marker "$PHASE2_BRINGUP_LOG_DEFAULT" "run-sp-t1"
+append_current_run_lines "$PHASE2_BRINGUP_LOG_DEFAULT" 30000
+set +e
+p2b_current_run_log_identity_valid "$PHASE2_BRINGUP_LOG_DEFAULT" "run-sp-t1" "0"
+SP_T1=$?
+set -e
+[[ "$SP_T1" -eq 0 ]] || fail "SP-T1 identity rc=${SP_T1} on multi-MB current-run log"
+pass "SP-T1 marker near start + multi-MB trailing log identity PASS"
+
+# ---------------------------------------------------------------------------
+# SP-T2. Failure/success pattern near start + multi-MB trailing log
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+: >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-sp-t2"
+write_file "$(p2b_dir)/log-start-offset" "0"
+p2b_write_current_run_log_marker "$PHASE2_BRINGUP_LOG_DEFAULT" "run-sp-t2"
+printf 'APT_DEPENDENCY_CHECK=FAIL\nWORKER_ORCHESTRATION=PASS\n' >>"$PHASE2_BRINGUP_LOG_DEFAULT"
+append_current_run_lines "$PHASE2_BRINGUP_LOG_DEFAULT" 30000
+set +e
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'APT_DEPENDENCY_CHECK=FAIL'
+SP_T2_FAIL=$?
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'WORKER_ORCHESTRATION=PASS'
+SP_T2_PASS=$?
+set -e
+[[ "$SP_T2_FAIL" -eq 0 ]] || fail "SP-T2 FAIL pattern rc=${SP_T2_FAIL} expected 0"
+[[ "$SP_T2_PASS" -eq 0 ]] || fail "SP-T2 PASS pattern rc=${SP_T2_PASS} expected 0"
+[[ "$SP_T2_FAIL" -ne 141 && "$SP_T2_PASS" -ne 141 ]] \
+  || fail "SP-T2 SIGPIPE rc141 false negative"
+pass "SP-T2 pattern near start + multi-MB trailing log found without rc141"
+
+# ---------------------------------------------------------------------------
+# SP-T3. Pattern genuinely absent in large current-run log
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+: >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-sp-t3"
+write_file "$(p2b_dir)/log-start-offset" "0"
+p2b_write_current_run_log_marker "$PHASE2_BRINGUP_LOG_DEFAULT" "run-sp-t3"
+printf 'APT_DEPENDENCY_CHECK=PASS\n' >>"$PHASE2_BRINGUP_LOG_DEFAULT"
+append_current_run_lines "$PHASE2_BRINGUP_LOG_DEFAULT" 30000
+set +e
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'APT_DEPENDENCY_CHECK=FAIL'
+SP_T3=$?
+set -e
+[[ "$SP_T3" -eq 1 ]] || fail "SP-T3 absent pattern rc=${SP_T3} expected 1"
+pass "SP-T3 genuinely absent pattern in large log"
+
+# ---------------------------------------------------------------------------
+# SP-T4. Recorded offset past file size remains fail-closed
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+printf 'PHASE2_LIFECYCLE_RUN_BEGIN run_id=run-sp-t4\n' >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-sp-t4"
+write_file "$(p2b_dir)/log-start-offset" "999999"
+set +e
+p2b_current_run_log_identity_valid "$PHASE2_BRINGUP_LOG_DEFAULT" "run-sp-t4"
+SP_T4_IDENT=$?
+p2b_current_run_log_stream "$PHASE2_BRINGUP_LOG_DEFAULT" >/dev/null
+SP_T4_STREAM=$?
+p2b_current_run_log_contains "$PHASE2_BRINGUP_LOG_DEFAULT" 'PHASE2_LIFECYCLE_RUN_BEGIN'
+SP_T4_CONTAINS=$?
+set -e
+[[ "$SP_T4_IDENT" -eq 2 ]] || fail "SP-T4 identity rc=${SP_T4_IDENT} expected 2"
+[[ "$SP_T4_STREAM" -eq 2 ]] || fail "SP-T4 stream rc=${SP_T4_STREAM} expected 2"
+[[ "$SP_T4_CONTAINS" -eq 2 ]] || fail "SP-T4 contains rc=${SP_T4_CONTAINS} expected 2"
+pass "SP-T4 offset past file size fail-closed"
+
+# ---------------------------------------------------------------------------
+# SP-T7. vendor rc=0 + valid large current-run log completes normally
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+: >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-sp-t7"
+write_file "$(p2b_dir)/target-version" "6.5.0"
+write_file "$(p2b_dir)/log-path" "$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/started-at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+VENDOR_SP_T7="${TMP}/vendor-sp-t7.sh"
+cat >"$VENDOR_SP_T7" <<'EOF'
+#!/usr/bin/env bash
+python3 -c 'import os,sys
+p=os.environ["PHASE2_BRINGUP_LOG_DEFAULT"]
+line=b"bringup current-run output "+(b"x"*80)+b"\n"
+with open(p,"ab") as f:
+    f.write(b"APT_DEPENDENCY_CHECK=PASS\n")
+    f.write(line*30000)
+'
+exit 0
+EOF
+chmod +x "$VENDOR_SP_T7"
+set +e
+( p2b_worker_main "$VENDOR_SP_T7" >/dev/null 2>&1 )
+SP_T7_RC=$?
+set -e
+[[ "$SP_T7_RC" -eq 0 ]] || fail "SP-T7 worker rc=${SP_T7_RC}"
+[[ "$(p2b_read_state)" == "COMPLETED" ]] || fail "SP-T7 state=$(p2b_read_state)"
+grep -q '^BRINGUP_COMPLETION_SENTINEL=PASS$' "$(p2b_dir)/result.env" \
+  || fail "SP-T7 result not PASS"
+pass "SP-T7 vendor rc=0 + valid large current-run log completes"
+
+# ---------------------------------------------------------------------------
+# SP-T8. vendor rc=0 + invalid current-run identity still FAIL
+# ---------------------------------------------------------------------------
+reset_lifecycle_files
+: >"$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/run-id" "run-sp-t8"
+write_file "$(p2b_dir)/target-version" "6.5.0"
+write_file "$(p2b_dir)/log-path" "$PHASE2_BRINGUP_LOG_DEFAULT"
+write_file "$(p2b_dir)/started-at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+VENDOR_SP_T8="${TMP}/vendor-sp-t8.sh"
+cat >"$VENDOR_SP_T8" <<'EOF'
+#!/usr/bin/env bash
+python3 - "${PHASE2_BRINGUP_LOG_DEFAULT}" <<'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+text = p.read_text(errors="replace")
+lines = [ln for ln in text.splitlines(True) if "PHASE2_LIFECYCLE_RUN_BEGIN" not in ln]
+p.write_text("".join(lines))
+line = "bringup current-run output " + ("x" * 80) + "\n"
+p.write_text(p.read_text(errors="replace") + "APT_DEPENDENCY_CHECK=PASS\n" + line * 2000)
+PY
+exit 0
+EOF
+chmod +x "$VENDOR_SP_T8"
+set +e
+( p2b_worker_main "$VENDOR_SP_T8" >/dev/null 2>&1 )
+SP_T8_RC=$?
+set -e
+[[ "$SP_T8_RC" -ne 0 ]] || fail "SP-T8 unexpectedly PASS with invalid identity"
+assert_failed_identity "SP-T8"
+pass "SP-T8 vendor rc=0 + invalid current-run identity still FAIL"
+
 echo "TEST_BRINGUP_LIFECYCLE_RUN_CONTRACT=PASS"

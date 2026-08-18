@@ -1026,7 +1026,7 @@ mm_status_get() {
   local key="$1"
   local f="${MM_STATUS_FILE}"
   [[ -f "$f" ]] || { printf ''; return 0; }
-  awk -F= -v k="$key" '$1==k {print substr($0, index($0,$2)); exit}' "$f"
+  awk -F= -v k="$key" '$1==k { print substr($0, length($1) + 2); exit }' "$f"
 }
 
 # Cheap file identity for menu completion (no full-file hash).

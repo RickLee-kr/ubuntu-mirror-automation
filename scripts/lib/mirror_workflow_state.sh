@@ -132,7 +132,7 @@ mm_wf_get() {
   f="$(mm_wf_file)"
   # Missing or unreadable → empty (do not abort callers under set -e).
   [[ -f "$f" && -r "$f" ]] || { printf ''; return 0; }
-  awk -F= -v k="$key" '$1==k {print substr($0, index($0,$2)); exit}' "$f" 2>/dev/null || true
+  awk -F= -v k="$key" '$1==k { print substr($0, length($1) + 2); exit }' "$f" 2>/dev/null || true
 }
 
 mm_wf_set_many() {
