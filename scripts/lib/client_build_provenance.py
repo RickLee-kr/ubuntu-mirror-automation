@@ -61,6 +61,10 @@ CATEGORY_PATTERNS = {
         "client/lib/dp-offline-durable-write.sh",
         "client/lib/dp-offline-source-product-version.sh",
         "client/lib/dp-offline-lxd-inventory.sh",
+        "client/bringup_py3_dp_lifecycle.sh",
+        "client/lib/dp-phase2-operation-progress.sh",
+        "client/lib/dp-phase2-bringup-lifecycle.sh",
+        "client/lib/dp-phase2-ubuntu-prerequisites.sh",
     ),
     "runner": ("client/dp-client-command-runner.sh",),
     "command_generators": (
@@ -75,6 +79,7 @@ CATEGORY_PATTERNS = {
         "scripts/lib/client_mirror_gates.sh",
         "scripts/lib/http_publication_permissions.sh",
         "scripts/lib/atomic_dir_swap.py",
+        "scripts/lib/phase2_helper_generation.sh",
         "client/stage-dp-phase2.sh",
         "client/stage-dp-phase2-6.5.0.sh",
     ),

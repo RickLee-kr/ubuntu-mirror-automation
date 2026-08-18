@@ -292,6 +292,74 @@ export MM_PROJECT_ROOT="$ROOT"
 rm -rf "$SCRATCH"
 SCRATCH=""
 
+# --- Phase 2 helper CURRENT-SOURCE freshness ---
+# A published helper generation can be internally valid while current source
+# has moved on. CLIENT_BUILD_INPUT_SHA256 must include every file listed by
+# phase2_helper_generation_files() plus the generator itself.
+# shellcheck source=../scripts/lib/phase2_helper_generation.sh
+source "${ROOT}/scripts/lib/phase2_helper_generation.sh"
+PHASE2_HELPER_N=0
+while IFS= read -r rel; do
+  [[ -n "$rel" ]] || continue
+  PHASE2_HELPER_N=$((PHASE2_HELPER_N + 1))
+  assert_digest_changes "phase2-helper-${PHASE2_HELPER_N}" "client/${rel}"
+done < <(phase2_helper_generation_files)
+[[ "$PHASE2_HELPER_N" -gt 0 ]] \
+  && pass "phase2 helper set: ${PHASE2_HELPER_N} files bound into provenance" \
+  || fail "phase2 helper set: phase2_helper_generation_files returned empty"
+assert_digest_changes "phase2-generator" "scripts/lib/phase2_helper_generation.sh"
+
+# Production bug: published client set stays internally valid; only current
+# source Phase 2 helper bytes change → STALE_BUILD_INPUT, not CURRENT_VERIFIED.
+make_scratch
+printf '\n# stale-phase2-helper-source\n' >>"${SCRATCH}/client/lib/dp-phase2-bringup-lifecycle.sh"
+DIGEST_HELPER_BEFORE="$(compute_digest "$ROOT")"
+DIGEST_HELPER_AFTER="$(compute_digest "$SCRATCH")"
+if [[ -n "$DIGEST_HELPER_BEFORE" && "$DIGEST_HELPER_BEFORE" != "$DIGEST_HELPER_AFTER" ]]; then
+  pass "phase2 helper-only source change → digest changed"
+else
+  fail "phase2 helper-only source change did not change digest"
+fi
+HELPER_STALE_CLIENT="${WORKDIR}/helper-stale-client"
+cp -a "$GOLDEN_CLIENT" "$HELPER_STALE_CLIENT"
+OUT_HELPER="$(classify_client "$SCRATCH" "$HELPER_STALE_CLIENT" || true)"
+echo "$OUT_HELPER" | grep -q 'CLIENT_SET_STATE=STALE_BUILD_INPUT' \
+  && pass "phase2 helper-only: CLIENT_SET_STATE=STALE_BUILD_INPUT" \
+  || fail "phase2 helper-only: state not STALE_BUILD_INPUT (${OUT_HELPER})"
+echo "$OUT_HELPER" | grep -q 'CLIENT_SET_ACTION=REBUILD_SIGN_PUBLISH' \
+  && pass "phase2 helper-only: CLIENT_SET_ACTION=REBUILD_SIGN_PUBLISH" \
+  || fail "phase2 helper-only: action not REBUILD_SIGN_PUBLISH"
+echo "$OUT_HELPER" | grep -q 'CLIENT_SET_STATE=CURRENT_VERIFIED' \
+  && fail "phase2 helper-only: false CURRENT_VERIFIED reuse" \
+  || true
+echo "$OUT_HELPER" | grep -q 'CLIENT_SET_ACTION=REUSE_CURRENT' \
+  && fail "phase2 helper-only: false REUSE_CURRENT" \
+  || true
+
+export MM_PROJECT_ROOT="$SCRATCH"
+export MM_CLIENT_ROOT="$HELPER_STALE_CLIENT"
+engine_assess_client_set_for_finalize || true
+if [[ "$CLIENT_SET_STATE" == "STALE_BUILD_INPUT" ]]; then
+  pass "engine helper-only: CLIENT_SET_STATE=STALE_BUILD_INPUT"
+else
+  fail "engine helper-only: state=${CLIENT_SET_STATE} action=${CLIENT_SET_ACTION}"
+fi
+[[ "$CLIENT_SET_ACTION" == "REBUILD_SIGN_PUBLISH" ]] \
+  && pass "engine helper-only: CLIENT_SET_ACTION=REBUILD_SIGN_PUBLISH" \
+  || fail "engine helper-only: action=${CLIENT_SET_ACTION}"
+export MM_PROJECT_ROOT="$ROOT"
+export MM_CLIENT_ROOT="$CLIENT_ROOT"
+rm -rf "$SCRATCH"
+SCRATCH=""
+
+OUT_UNCHANGED="$(classify_client "$ROOT" "$GOLDEN_CLIENT" || true)"
+echo "$OUT_UNCHANGED" | grep -q 'CLIENT_SET_STATE=CURRENT_VERIFIED' \
+  && pass "unchanged source: CLIENT_SET_STATE=CURRENT_VERIFIED" \
+  || fail "unchanged source: not CURRENT_VERIFIED"
+echo "$OUT_UNCHANGED" | grep -q 'CLIENT_SET_ACTION=REUSE_CURRENT' \
+  && pass "unchanged source: CLIENT_SET_ACTION=REUSE_CURRENT" \
+  || fail "unchanged source: not REUSE_CURRENT"
+
 # mm_record_download_validated must not demote CLIENT_SET_PUBLISHED
 export MM_DP_PHASE2_ROOT="${MIRROR_ROOT}/dp-phase2"
 mkdir -p "${MM_DP_PHASE2_ROOT}/6.5.0"
