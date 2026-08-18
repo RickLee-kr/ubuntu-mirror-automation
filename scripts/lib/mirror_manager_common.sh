@@ -929,23 +929,28 @@ mm_client_commands_stale() {
   if ! grep -qE '^DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2$' "$f"; then
     return 0
   fi
-  # Phase 2 stage block still requires the SUBSHELL_V2 guard markers.
-  if ! grep -qE 'BASH_SUBSHELL' "$f" || ! grep -qE 'DP_COMMAND_SUBSHELL_REQUIRED=YES' "$f"; then
-    return 0
-  fi
   mm_normalize_preparation_mode
   if [[ "${PREPARATION_MODE}" == "FULL" ]]; then
-    # FULL mode OS hops must use LAUNCHER_V1 one-liners.
-    if ! grep -qE '^DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1$' "$f"; then
+    if ! grep -qE '^DP_OS_HOP_COMMAND_VERSION=WRAPPER_V1$' "$f"; then
       return 0
     fi
-    # Legacy three-line OS-hop bootstrap blocks are stale.
+    # Legacy launcher or three-line OS-hop bootstrap blocks are stale.
     if grep -qE "^\( .*HOP=" "$f"; then
       return 0
     fi
-    if ! grep -qE '^cd /home/aella && curl -fsSLo dp-launch-' "$f"; then
+    if grep -qE '^cd /home/aella && curl -fsSLo dp-launch-' "$f"; then
       return 0
     fi
+    if ! grep -qE '^cd /home/aella && curl -fsSLo upgrade-' "$f"; then
+      return 0
+    fi
+  fi
+  # Phase 2 operator command must be the upgrade-phase2.sh wrapper one-liner.
+  if grep -qE 'BASH_SUBSHELL|DP_COMMAND_SUBSHELL_REQUIRED=YES' "$f"; then
+    return 0
+  fi
+  if ! grep -qE '^cd /home/aella && curl -fsSLo upgrade-phase2\.sh\.download ' "$f"; then
+    return 0
   fi
   mode_saved="$(mm_status_get CLIENT_COMMANDS_MODE)"
   [[ "$mode_saved" == "${PREPARATION_MODE}" ]] || return 0
@@ -1200,12 +1205,17 @@ mm_http_required_urls_ok() {
   mm_http_probe_ok "${base}/dp-phase2/${ver}/${stable}.sha256" || return 1
   mm_http_probe_ok "${base}/client/stage-dp-phase2.sh" || return 1
   mm_http_probe_ok "${base}/client/stage-dp-phase2.sh.sha256" || return 1
+  mm_http_probe_ok "${base}/client/upgrade-phase2.sh" || return 1
   if ! mm_is_phase2_only; then
     mm_http_probe_ok "${base}/client/dp-offline-upgrade-xenial-to-bionic.sh" || return 1
     mm_http_probe_ok "${base}/client/dp-launch-xenial-to-bionic.sh" || return 1
     mm_http_probe_ok "${base}/client/dp-launch-bionic-to-focal.sh" || return 1
     mm_http_probe_ok "${base}/client/dp-launch-focal-to-jammy.sh" || return 1
     mm_http_probe_ok "${base}/client/dp-launch-jammy-to-noble.sh" || return 1
+    mm_http_probe_ok "${base}/client/upgrade-xenial-to-bionic.sh" || return 1
+    mm_http_probe_ok "${base}/client/upgrade-bionic-to-focal.sh" || return 1
+    mm_http_probe_ok "${base}/client/upgrade-focal-to-jammy.sh" || return 1
+    mm_http_probe_ok "${base}/client/upgrade-jammy-to-noble.sh" || return 1
     mm_http_probe_ok "${base}/offline/meta-release-lts" || return 1
   fi
   return 0
@@ -1681,6 +1691,16 @@ MM_CLIENT_REQUIRED_FILES=(
   dp-launch-focal-to-jammy.sh.sha256
   dp-launch-jammy-to-noble.sh
   dp-launch-jammy-to-noble.sh.sha256
+  upgrade-xenial-to-bionic.sh
+  upgrade-xenial-to-bionic.sh.sha256
+  upgrade-bionic-to-focal.sh
+  upgrade-bionic-to-focal.sh.sha256
+  upgrade-focal-to-jammy.sh
+  upgrade-focal-to-jammy.sh.sha256
+  upgrade-jammy-to-noble.sh
+  upgrade-jammy-to-noble.sh.sha256
+  upgrade-phase2.sh
+  upgrade-phase2.sh.sha256
   stage-dp-phase2.sh
   stage-dp-phase2.sh.sha256
   dp-client-command-runner.sh
@@ -1694,6 +1714,8 @@ MM_CLIENT_REQUIRED_FILES=(
 MM_CLIENT_PHASE2_REQUIRED_FILES=(
   stage-dp-phase2.sh
   stage-dp-phase2.sh.sha256
+  upgrade-phase2.sh
+  upgrade-phase2.sh.sha256
   bringup_py3_dp_lifecycle.sh
   phase2-helper-generation.manifest
   lib/dp-offline-source-product-version.sh
@@ -1710,10 +1732,23 @@ mm_client_files_ready_phase2() {
     [[ -f "${root}/${f}" ]] || return 1
   done
   (cd "$root" && sha256sum -c stage-dp-phase2.sh.sha256 >/dev/null 2>&1) || return 1
+  (cd "$root" && sha256sum -c upgrade-phase2.sh.sha256 >/dev/null 2>&1) || return 1
+  bash -n "${root}/upgrade-phase2.sh" || return 1
+  grep -q 'phase2-helper-generation.manifest' "${root}/upgrade-phase2.sh" || return 1
+  grep -q 'stage-dp-phase2.sh' "${root}/upgrade-phase2.sh" || return 1
+  grep -q -- '--target-version' "${root}/upgrade-phase2.sh" || return 1
+  grep -q -- '--same-version-recovery' "${root}/upgrade-phase2.sh" || return 1
+  grep -q -- '--mirror-url' "${root}/upgrade-phase2.sh" || return 1
+  if grep -qE 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)' "${root}/upgrade-phase2.sh"; then
+    return 1
+  fi
   if [[ -f "${MM_PROJECT_ROOT:-}/scripts/lib/phase2_helper_generation.sh" ]]; then
     # shellcheck source=/dev/null
     source "${MM_PROJECT_ROOT}/scripts/lib/phase2_helper_generation.sh"
     phase2_helper_generation_verify "$root" || return 1
+    local gen_sha
+    gen_sha="$(phase2_helper_generation_sha256 "${root}/phase2-helper-generation.manifest")" || return 1
+    grep -Fq "H='${gen_sha}'" "${root}/upgrade-phase2.sh" || return 1
   else
     (cd "$root" && sha256sum -c phase2-helper-generation.manifest >/dev/null 2>&1) || return 1
   fi
@@ -1736,6 +1771,11 @@ mm_client_files_ready() {
     dp-launch-bionic-to-focal.sh \
     dp-launch-focal-to-jammy.sh \
     dp-launch-jammy-to-noble.sh \
+    upgrade-xenial-to-bionic.sh \
+    upgrade-bionic-to-focal.sh \
+    upgrade-focal-to-jammy.sh \
+    upgrade-jammy-to-noble.sh \
+    upgrade-phase2.sh \
     stage-dp-phase2.sh \
     dp-client-command-runner.sh
   do
@@ -1752,6 +1792,7 @@ mm_client_files_ready() {
 mm_client_launchers_ready() {
   local root="${1:-${MM_CLIENT_ROOT}}"
   local hop launcher meta_key meta_sha file_sha mirror fpr
+  local wrapper wrapper_sha wkey wmeta
   local meta="${root}/client-set.env"
   [[ -d "$root" && -f "$meta" ]] || return 1
   mirror="$(awk -F= '$1=="CLIENT_MIRROR_BASE_URL"{print substr($0,index($0,"=")+1);exit}' "$meta")"
@@ -1778,7 +1819,25 @@ mm_client_launchers_ready() {
       return 1
     fi
     bash -n "${root}/${launcher}" || return 1
+    wrapper="upgrade-${hop}.sh"
+    [[ -f "${root}/${wrapper}" && -s "${root}/${wrapper}" ]] || return 1
+    [[ -f "${root}/${wrapper}.sha256" ]] || return 1
+    (cd "$root" && sha256sum -c "${wrapper}.sha256" >/dev/null 2>&1) || return 1
+    wrapper_sha="$(sha256sum "${root}/${wrapper}" | awk '{print $1}')"
+    wkey="CLIENT_WRAPPER_$(printf '%s' "$hop" | tr 'a-z-' 'A-Z_')_SHA256"
+    wmeta="$(awk -F= -v k="$wkey" '$1==k{print substr($0,index($0,"=")+1);exit}' "$meta")"
+    [[ -n "$wmeta" && "$wmeta" == "$wrapper_sha" ]] || return 1
+    grep -Fq "${launcher}" "${root}/${wrapper}" || return 1
+    grep -Fq "LAUNCHER_SHA256='${file_sha}'" "${root}/${wrapper}" || return 1
+    grep -Fq "${mirror%/}" "${root}/${wrapper}" || return 1
+    bash -n "${root}/${wrapper}" || return 1
+    if grep -qE 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)' "${root}/${wrapper}"; then
+      return 1
+    fi
   done
+  [[ -f "${root}/upgrade-phase2.sh" && -f "${root}/upgrade-phase2.sh.sha256" ]] || return 1
+  (cd "$root" && sha256sum -c upgrade-phase2.sh.sha256 >/dev/null 2>&1) || return 1
+  bash -n "${root}/upgrade-phase2.sh" || return 1
   return 0
 }
 

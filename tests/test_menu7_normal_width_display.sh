@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Verify Menu 7 display-only wrapping for normal-width terminals, including a
-# real loopback fetch of the complete Phase 2 client helper unit.
+# Verify Menu 7 display keeps WRAPPER_V1 commands as one physical line and that
+# upgrade-phase2.sh still fetches the complete helper unit over HTTP.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -77,7 +77,9 @@ chmod +x "${CLIENT_ROOT}/stage-dp-phase2.sh" "${CLIENT_ROOT}/bringup_py3_dp_life
 # shellcheck source=/dev/null
 source "${ROOT}/scripts/lib/phase2_helper_generation.sh"
 phase2_helper_generation_write "$CLIENT_ROOT" >/dev/null
-GEN_SHA="$(phase2_helper_generation_sha256 "${CLIENT_ROOT}/phase2-helper-generation.manifest")"
+phase2_upgrade_wrapper_write "$CLIENT_ROOT" "$MIRROR" "6.5.0" >/dev/null
+P2_SHA="$(sha256sum "${CLIENT_ROOT}/upgrade-phase2.sh" | awk '{print $1}')"
+bash -n "${CLIENT_ROOT}/upgrade-phase2.sh"
 
 {
   cat <<'EOF_HEADER'
@@ -85,20 +87,20 @@ DP Client Upgrade Commands
 ==========================
 
 DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2
-DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1
+DP_OS_HOP_COMMAND_VERSION=WRAPPER_V1
 
-OS-hop steps use one hash-pinned launcher command per hop (DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1).
-The Phase 2 staging step remains a three-line SUBSHELL_V2 block.
+OS-hop steps use one hash-pinned wrapper command per hop (DP_OS_HOP_COMMAND_VERSION=WRAPPER_V1).
+The Phase 2 staging step uses one hash-pinned wrapper command (upgrade-phase2.sh).
 EOF_HEADER
   for hop in "${HOPS[@]}"; do
-    launcher="dp-launch-${hop}.sh"
+    wrapper="upgrade-${hop}.sh"
     cat <<EOF_HOP
 
 STEP — ${hop}
 
 Copy and paste the following entire line into the DP terminal:
 
-cd /home/aella && curl -fsSLo ${launcher}.download ${MIRROR}/client/${launcher} && printf '%s  %s\\n' '${SHA}' '${launcher}.download' | sha256sum -c - && mv -f ${launcher}.download ${launcher} && bash ./${launcher}
+cd /home/aella && curl -fsSLo ${wrapper}.download ${MIRROR}/client/${wrapper} && printf '%s  %s\\n' '${SHA}' '${wrapper}.download' | sha256sum -c - && mv -f ${wrapper}.download ${wrapper} && bash ./${wrapper}
 EOF_HOP
   done
   cat <<EOF_PHASE2
@@ -113,11 +115,9 @@ Complete STEP 6 on ALL cluster nodes before starting STEP 7.
 
 Use the SAME staging command on every node.
 
-Copy all three lines of the following block into the DP terminal once:
+Copy and paste the following entire line into the DP terminal:
 
-( [[ \${BASH_SUBSHELL:-0} -gt 0 ]] || { printf '%s\n' 'DP_COMMAND_SUBSHELL_REQUIRED=YES' >&2; exit 97; }; cd /home/aella && MIRROR='${MIRROR}' && VER='6.5.0' && SCRIPT='stage-dp-phase2.sh' && GEN='phase2-helper-generation.manifest' && H='${GEN_SHA}' && W=\$(mktemp -d)&&trap 'rm -rf "\$W"' EXIT&&cd "\$W" && \\
-  mkdir -p lib && for F in "\$GEN" "\$SCRIPT" bringup_py3_dp_lifecycle.sh lib/dp-{offline-source-product-version,phase2-operation-progress,phase2-bringup-lifecycle,phase2-ubuntu-prerequisites}.sh; do curl -fsSLo "\$F" "\$MIRROR/client/\$F" || exit; done && \\
-  printf '%s  %s\\n' "\$H" "\$GEN" | sha256sum -c - && sha256sum -c "\$GEN" && sudo bash "./\$SCRIPT" --target-version "\$VER" --same-version-recovery --mirror-url "\$MIRROR"; )
+cd /home/aella && curl -fsSLo upgrade-phase2.sh.download ${MIRROR}/client/upgrade-phase2.sh && printf '%s  %s\\n' '${P2_SHA}' 'upgrade-phase2.sh.download' | sha256sum -c - && mv -f upgrade-phase2.sh.download upgrade-phase2.sh && bash ./upgrade-phase2.sh
 EOF_PHASE2
 } >"$CANONICAL"
 
@@ -127,58 +127,36 @@ canonical_after="$(sha256sum "$CANONICAL" | awk '{print $1}')"
 [[ "$canonical_before" == "$canonical_after" ]]
 
 grep -q 'MENU7_DISPLAY_FORMAT=PASS wrapped_launchers=4 wrapped_phase2=1' "$FORMAT_LOG"
-grep -q 'Copy and paste all three physical lines below into the DP terminal.' "$DISPLAY"
-grep -q 'Copy and paste all five physical lines below into the DP terminal.' "$DISPLAY"
-grep -q 'complete Phase 2 client helper unit' "$DISPLAY"
 grep -Fq 'CLUSTER:' "$DISPLAY"
 grep -Fq 'Run STEP 6 on the DL master, every DL worker,' "$DISPLAY"
 grep -Fq 'Complete STEP 6 on ALL cluster nodes before starting STEP 7.' "$DISPLAY"
 grep -Fq 'Use the SAME staging command on every node.' "$DISPLAY"
-[[ "$(grep -c '^cd /home/aella && L=' "$DISPLAY")" -eq 4 ]]
-[[ "$(grep -c '^  U=' "$DISPLAY")" -eq 4 ]]
-[[ "$(grep -c 'sha256sum -c - && mv -f' "$DISPLAY")" -eq 4 ]]
-[[ "$(grep -c '^( C=' "$DISPLAY")" -eq 1 ]]
-
-grep -Fq 'bringup_py3_dp_lifecycle.sh' "$DISPLAY"
-grep -Fq 'phase2-helper-generation.manifest' "$DISPLAY"
-grep -Fq 'lib/dp-{offline-source-product-version,phase2-operation-progress,phase2-bringup-lifecycle,phase2-ubuntu-prerequisites}.sh' "$DISPLAY"
-grep -Fq 'curl -fsSLo "$F" "$C/$F"' "$DISPLAY"
-grep -Fq -- "--target-version '6.5.0' --same-version-recovery" "$DISPLAY"
-grep -Fq 'sha256sum -c "$G"' "$DISPLAY"
-grep -Fq "H='${GEN_SHA}'" "$DISPLAY"
-! grep -Fq 'sha256sum -c "$S.sha256"' "$DISPLAY"
-! grep -Fq -- "--create-dirs -fsSLo '#1'" "$DISPLAY"
+[[ "$(grep -cE '^cd /home/aella && curl -fsSLo upgrade-' "$DISPLAY")" -eq 5 ]]
+[[ "$(grep -c '^cd /home/aella && L=' "$DISPLAY")" -eq 0 ]]
+[[ "$(grep -c '^( C=' "$DISPLAY")" -eq 0 ]]
+! grep -q 'for F in' "$DISPLAY"
+! grep -q 'BASH_SUBSHELL' "$DISPLAY"
 ! grep -Eq 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)' "$DISPLAY"
 ! grep -Eq '\\[[:space:]]+$' "$DISPLAY"
-
-max_line="$(awk '{ if (length > max) max=length } END { print max+0 }' "$DISPLAY")"
-[[ "$max_line" -le 190 ]]
+! grep -Eq '\\[[:space:]]*$' "$DISPLAY"
 
 for hop in "${HOPS[@]}"; do
   block="${TMP}/${hop}.sh"
-  awk -v name="dp-launch-${hop}.sh" '
-    index($0, "L=\047" name "\047") { p=1; n=0 }
-    p { print; n++ }
-    p && n==3 { exit }
-  ' "$DISPLAY" >"$block"
-  [[ "$(wc -l <"$block" | tr -d ' ')" -eq 3 ]]
-  [[ "$(grep -c '\\$' "$block")" -eq 2 ]]
-  grep -Fq "H='${SHA}'" "$block"
-  grep -Fq 'sha256sum -c - && mv -f "$D" "$L" && bash "./$L"' "$block"
-  ! grep -Eq 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)|\.sha256' "$block"
+  grep -E "^cd /home/aella && curl -fsSLo upgrade-${hop}\\.sh\\.download " "$DISPLAY" >"$block"
+  [[ "$(wc -l <"$block" | tr -d ' ')" -eq 1 ]]
+  grep -Fq "upgrade-${hop}.sh" "$block"
+  grep -Fq "'${SHA}'" "$block"
+  ! grep -Eq 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)|\\.sha256|dp-launch-' "$block"
   bash -n "$block"
 done
 
 phase2_block="${TMP}/phase2.sh"
-awk '
-  /^\( C=/ { p=1; n=0 }
-  p { print; n++ }
-  p && n==5 { exit }
-' "$DISPLAY" >"$phase2_block"
-[[ "$(wc -l <"$phase2_block" | tr -d ' ')" -eq 5 ]]
-[[ "$(grep -c '\\$' "$phase2_block")" -eq 4 ]]
-! grep -Eq 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)' "$phase2_block"
-! grep -Eq '\\[[:space:]]+$' "$phase2_block"
+grep -E '^cd /home/aella && curl -fsSLo upgrade-phase2\.sh\.download ' "$DISPLAY" >"$phase2_block"
+[[ "$(wc -l <"$phase2_block" | tr -d ' ')" -eq 1 ]]
+grep -Fq 'upgrade-phase2.sh' "$phase2_block"
+grep -Fq "'${P2_SHA}'" "$phase2_block"
+! grep -q 'for F in' "$phase2_block"
+! grep -q 'mktemp' "$phase2_block"
 bash -n "$phase2_block"
 
 cat >"${TMP}/fakebin/sudo" <<'SUDO'
@@ -193,15 +171,22 @@ for _ in $(seq 1 50); do
   curl -fsS "${MIRROR}/client/stage-dp-phase2.sh" >/dev/null 2>&1 && break
   sleep 0.1
 done
-PATH="${TMP}/fakebin:${PATH}" bash "$phase2_block" >"${TMP}/phase2.out"
+(
+  cd "$TMP"
+  PATH="${TMP}/fakebin:${PATH}" bash "$phase2_block" >"${TMP}/phase2.out"
+)
 grep -q '^PHASE2_HELPER_FETCH_E2E=PASS$' "${TMP}/phase2.out"
 grep -q -- '--target-version 6.5.0 --same-version-recovery --mirror-url' "${TMP}/phase2.out"
+
+# Inner wrapper still pins the generation manifest SHA256.
+GEN_SHA="$(phase2_helper_generation_sha256 "${CLIENT_ROOT}/phase2-helper-generation.manifest")"
+grep -Fq "H='${GEN_SHA}'" "${CLIENT_ROOT}/upgrade-phase2.sh"
+grep -q 'sha256sum -c "$GEN"' "${CLIENT_ROOT}/upgrade-phase2.sh"
 
 # Legacy sidecar-only Menu 7 command must fail closed: no curl+bash -n source path.
 OLD_WORK="${TMP}/old-work"
 mkdir -p "$OLD_WORK"
 curl -fsSLo "${OLD_WORK}/stage-dp-phase2.sh" "${MIRROR}/client/stage-dp-phase2.sh"
-# Use the real stage script (generation-bound) without a local manifest.
 python3 - "${ROOT}/client/stage-dp-phase2.sh" "${OLD_WORK}/stage-dp-phase2.sh" <<'PY'
 from pathlib import Path
 import sys

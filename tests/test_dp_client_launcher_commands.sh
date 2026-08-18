@@ -109,6 +109,10 @@ for hop in "${HOPS[@]}"; do
   fi
   install -m 0644 "${OUT_A}/${name}" "${CLIENT_ROOT}/${name}"
   install -m 0644 "${OUT_A}/${name}.sha256" "${CLIENT_ROOT}/${name}.sha256"
+  wname="upgrade-${hop}.sh"
+  install -m 0644 "${OUT_A}/${wname}" "${CLIENT_ROOT}/${wname}"
+  install -m 0644 "${OUT_A}/${wname}.sha256" "${CLIENT_ROOT}/${wname}.sha256"
+  bash -n "${CLIENT_ROOT}/${wname}" && pass "bash -n ${wname}" || fail "bash -n ${wname}"
   bash -n "${CLIENT_ROOT}/${name}" && pass "bash -n ${name}" || fail "bash -n ${name}"
   grep -Fq "MIRROR_BASE='${MIRROR}'" "${CLIENT_ROOT}/${name}" \
     && pass "${hop}: embedded mirror" || fail "${hop}: embedded mirror"
@@ -136,6 +140,10 @@ EOF
     name="dp-launch-${hop}.sh"
     sha="$(awk '{print $1}' "${CLIENT_ROOT}/${name}.sha256")"
     key="CLIENT_LAUNCHER_$(printf '%s' "$hop" | tr 'a-z-' 'A-Z_')_SHA256"
+    printf '%s=%s\n' "$key" "$sha"
+    wname="upgrade-${hop}.sh"
+    sha="$(awk '{print $1}' "${CLIENT_ROOT}/${wname}.sha256")"
+    key="CLIENT_WRAPPER_$(printf '%s' "$hop" | tr 'a-z-' 'A-Z_')_SHA256"
     printf '%s=%s\n' "$key" "$sha"
   done
 } >"${CLIENT_ROOT}/client-set.env"
@@ -175,15 +183,32 @@ FAKE_HOME="${WORKDIR}/home-aella"
 mkdir -p "$FAKE_HOME"
 
 # --- operator command shape ---
+# shellcheck source=/dev/null
+source "${ROOT}/scripts/lib/phase2_helper_generation.sh"
+mkdir -p "${CLIENT_ROOT}/lib"
+install -m 0755 "${ROOT}/client/stage-dp-phase2.sh" "${CLIENT_ROOT}/stage-dp-phase2.sh"
+install -m 0755 "${ROOT}/client/bringup_py3_dp_lifecycle.sh" "${CLIENT_ROOT}/bringup_py3_dp_lifecycle.sh"
+for hf in dp-offline-source-product-version.sh dp-phase2-operation-progress.sh \
+  dp-phase2-bringup-lifecycle.sh dp-phase2-ubuntu-prerequisites.sh
+do
+  install -m 0755 "${ROOT}/client/lib/${hf}" "${CLIENT_ROOT}/lib/${hf}"
+done
+phase2_helper_generation_write "$CLIENT_ROOT" >/dev/null
+phase2_upgrade_wrapper_write "$CLIENT_ROOT" "$MIRROR" "6.5.0" >/dev/null
+printf 'CLIENT_WRAPPER_PHASE2_SHA256=%s\n' \
+  "$(awk '{print $1}' "${CLIENT_ROOT}/upgrade-phase2.sh.sha256")" >>"${CLIENT_ROOT}/client-set.env"
+
 for hop in "${HOPS[@]}"; do
   script="dp-offline-upgrade-${hop}.sh"
-  launcher="dp-launch-${hop}.sh"
-  local_sha="$(sha256sum "${CLIENT_ROOT}/${launcher}" | awk '{print $1}')"
-  cmd="$(gui_client_hop_command_line "$MIRROR" "$script" "$local_sha")"
+  wrapper="upgrade-${hop}.sh"
+  local_sha="$(sha256sum "${CLIENT_ROOT}/${wrapper}" | awk '{print $1}')"
+  cmd="$(gui_client_hop_command_line "$MIRROR" "$script")"
   lines="$(printf '%s\n' "$cmd" | wc -l | tr -d ' ')"
   [[ "$lines" == "1" ]] && pass "${hop}: one physical line" || fail "${hop}: lines=${lines}"
-  printf '%s\n' "$cmd" | grep -q "printf '%s  %s\\\\n' '${local_sha}' '${launcher}.download'" \
-    && pass "${hop}: literal SHA pin" || fail "${hop}: literal SHA pin"
+  printf '%s\n' "$cmd" | grep -q "printf '%s  %s\\\\n' '${local_sha}' '${wrapper}.download'" \
+    && pass "${hop}: literal wrapper SHA pin" || fail "${hop}: literal wrapper SHA pin"
+  printf '%s\n' "$cmd" | grep -q "upgrade-${hop}.sh" && pass "${hop}: wrapper name" || fail "${hop}: wrapper name"
+  printf '%s\n' "$cmd" | grep -q "dp-launch-" && fail "${hop}: launcher leaked" || pass "${hop}: launcher not in command"
   printf '%s\n' "$cmd" | grep -q "EXPECTED_FPR=" && fail "${hop}: FPR visible" || pass "${hop}: no FPR in command"
   printf '%s\n' "$cmd" | grep -qE 'gpg |gpgv |GNUPGHOME=' && fail "${hop}: gpg visible" || pass "${hop}: no gpg in command"
   printf '%s\n' "$cmd" | grep -qE 'for f in' && fail "${hop}: for loop visible" || pass "${hop}: no for loop"
@@ -191,7 +216,7 @@ for hop in "${HOPS[@]}"; do
   printf '%s\n' "$cmd" | grep -qE '\.sha256' && fail "${hop}: sidecar trust" || pass "${hop}: no sidecar trust"
   printf '%s\n' "$cmd" >"${WORKDIR}/op-cmd-${hop}.sh"
   mm_wf_validate_os_hop_launcher_at "${WORKDIR}/op-cmd-${hop}.sh" 1 "$hop" "$MIRROR" >/dev/null \
-    && pass "${hop}: launcher validator PASS" || fail "${hop}: launcher validator FAIL"
+    && pass "${hop}: wrapper validator PASS" || fail "${hop}: wrapper validator FAIL"
 done
 
 FULL_DOC="${WORKDIR}/full-commands.txt"
@@ -199,10 +224,10 @@ gui_build_client_commands "$MIRROR" single "" >"$FULL_DOC"
 mm_wf_validate_command_file_content "$FULL_DOC" FULL >"${WORKDIR}/full-val.out"
 grep -q 'COMMAND_FILE_BUILD=PASS' "${WORKDIR}/full-val.out" \
   && pass "FULL command file validates" || fail "FULL command file validates"
-grep -q 'DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1' "${WORKDIR}/full-val.out" \
-  && pass "LAUNCHER_V1 evidence" || fail "LAUNCHER_V1 evidence"
+grep -q 'DP_OS_HOP_COMMAND_VERSION=WRAPPER_V1' "${WORKDIR}/full-val.out" \
+  && pass "WRAPPER_V1 evidence" || fail "WRAPPER_V1 evidence"
 grep -q 'COMMAND_FILE_OS_HOP_LAUNCHER_COUNT=4' "${WORKDIR}/full-val.out" \
-  && pass "launcher count 4" || fail "launcher count"
+  && pass "wrapper count 4" || fail "wrapper count"
 grep -q 'COMMAND_FILE_OS_HOP_LEGACY_BLOCK_COUNT=0' "${WORKDIR}/full-val.out" \
   && pass "legacy hop blocks 0" || fail "legacy hop blocks"
 grep -q 'COMMAND_FILE_LAUNCHER_SHA_PINNING=PASS' "${WORKDIR}/full-val.out" \
@@ -211,8 +236,10 @@ grep -q 'COMMAND_FILE_PHASE2_BLOCK_VERSION=SUBSHELL_V2' "${WORKDIR}/full-val.out
   && pass "Phase2 SUBSHELL_V2 retained" || fail "Phase2 version"
 grep -q 'Copy and paste the following entire line into the DP terminal:' "$FULL_DOC" \
   && pass "OS-hop one-line copy guidance" || fail "OS-hop copy guidance"
+grep -qE 'upgrade-phase2.sh' "$FULL_DOC" \
+  && pass "Phase2 wrapper command present" || fail "Phase2 wrapper command"
 grep -qE 'Copy all three lines of the following block' "$FULL_DOC" \
-  && pass "Phase2 three-line guidance retained" || fail "Phase2 guidance"
+  && fail "Phase2 three-line guidance still present" || pass "Phase2 three-line guidance removed"
 
 # Provenance: template change changes digest; unchanged permits REUSE intent.
 DIGEST1="$(python3 "${ROOT}/scripts/lib/client_build_provenance.py" compute \
@@ -248,7 +275,8 @@ LEGACY_ROOT="${WORKDIR}/legacy-client"
 mkdir -p "$LEGACY_ROOT"
 cp -a "${CLIENT_ROOT}/." "$LEGACY_ROOT/"
 rm -f "${LEGACY_ROOT}"/dp-launch-*.sh "${LEGACY_ROOT}"/dp-launch-*.sha256
-sed -i '/^CLIENT_LAUNCHER_/d' "${LEGACY_ROOT}/client-set.env"
+rm -f "${LEGACY_ROOT}"/upgrade-*.sh "${LEGACY_ROOT}"/upgrade-*.sha256
+sed -i '/^CLIENT_LAUNCHER_/d;/^CLIENT_WRAPPER_/d' "${LEGACY_ROOT}/client-set.env"
 # shellcheck source=../scripts/lib/mirror_manager_common.sh
 source "${ROOT}/scripts/lib/mirror_manager_common.sh"
 if mm_client_launchers_ready "$LEGACY_ROOT"; then
@@ -298,32 +326,37 @@ fi
 pass "TEMP_WORKDIR_CLEANED (launcher EXIT trap)"
 
 # --- operator command execution positives/negatives ---
+# Point the published wrapper at the isolated fake home so the operator
+# one-liner does not write into the real /home/aella.
+sed -i "s|cd /home/aella|cd ${FAKE_HOME}|" "${CLIENT_ROOT}/upgrade-${HOP}.sh"
+( cd "$CLIENT_ROOT" && sha256sum "upgrade-${HOP}.sh" >"upgrade-${HOP}.sh.sha256" )
+WRAPPER="upgrade-${HOP}.sh"
+WRAPPER_SHA="$(sha256sum "${CLIENT_ROOT}/${WRAPPER}" | awk '{print $1}')"
 rewrite_home() { sed "s|cd /home/aella|cd '${FAKE_HOME}'|g"; }
-CMD="$(gui_client_hop_command_line "$MIRROR" "dp-offline-upgrade-${HOP}.sh" "$LAUNCHER_SHA" | rewrite_home)"
+CMD="$(gui_client_hop_command_line "$MIRROR" "dp-offline-upgrade-${HOP}.sh" | rewrite_home)"
 printf '%s\n' "$CMD" >"${WORKDIR}/op-ok.sh"
 
-# Seed an old final launcher that must survive SHA failure.
-printf '#!/bin/bash\necho OLD_FINAL_LAUNCHER\n' >"${FAKE_HOME}/${LAUNCHER}"
-OLD_SHA="$(sha256sum "${FAKE_HOME}/${LAUNCHER}" | awk '{print $1}')"
+# Seed an old final wrapper that must survive SHA failure.
+printf '#!/bin/bash\necho OLD_FINAL_WRAPPER\n' >"${FAKE_HOME}/${WRAPPER}"
+OLD_SHA="$(sha256sum "${FAKE_HOME}/${WRAPPER}" | awk '{print $1}')"
 
-# Success: HTTP + correct SHA executes launcher once
+# Success: HTTP + correct SHA executes wrapper once
 : >"${WORKDIR}/sudo-runs"
-# Count via STUB marker
-rm -f "${FAKE_HOME}/${LAUNCHER}"
+rm -f "${FAKE_HOME}/${WRAPPER}"
 set +e
 bash -c "$(cat "${WORKDIR}/op-ok.sh")" >"${WORKDIR}/op-ok.out" 2>"${WORKDIR}/op-ok.err"
 OP_RC=$?
 set -e
 SUCCESS_COUNT="$(grep -c 'STUB_UPGRADE_OK' "${WORKDIR}/op-ok.out" 2>/dev/null || echo 0)"
 [[ "${SUCCESS_COUNT:-0}" -eq 1 || "$OP_RC" -eq 0 ]] \
-  && pass "SUCCESS_LAUNCHER_EXECUTION_COUNT=1 (rc=${OP_RC})" \
+  && pass "SUCCESS_WRAPPER_EXECUTION_COUNT=1 (rc=${OP_RC})" \
   || fail "success execution count"
-[[ -f "${FAKE_HOME}/${LAUNCHER}" ]] && pass "final launcher renamed after verify" \
-  || fail "final launcher missing after success"
+[[ -f "${FAKE_HOME}/${WRAPPER}" ]] && pass "final wrapper renamed after verify" \
+  || fail "final wrapper missing after success"
 
 # Restore old final for failure cases
-printf '#!/bin/bash\necho OLD_FINAL_LAUNCHER\n' >"${FAKE_HOME}/${LAUNCHER}"
-OLD_SHA="$(sha256sum "${FAKE_HOME}/${LAUNCHER}" | awk '{print $1}')"
+printf '#!/bin/bash\necho OLD_FINAL_WRAPPER\n' >"${FAKE_HOME}/${WRAPPER}"
+OLD_SHA="$(sha256sum "${FAKE_HOME}/${WRAPPER}" | awk '{print $1}')"
 
 # Wrong literal SHA
 BAD_SHA="$(printf '%064d' 1)"
@@ -334,20 +367,16 @@ BAD_RC=$?
 set -e
 [[ "$BAD_RC" -ne 0 ]] && pass "wrong SHA nonzero" || fail "wrong SHA unexpectedly 0"
 grep -q 'STUB_UPGRADE_OK' "${WORKDIR}/op-badsha.out" 2>/dev/null \
-  && fail "wrong SHA executed launcher" || pass "wrong SHA execution count 0"
-[[ "$(sha256sum "${FAKE_HOME}/${LAUNCHER}" | awk '{print $1}')" == "$OLD_SHA" ]] \
-  && pass "old final launcher preserved on SHA failure" \
-  || fail "old final launcher replaced on SHA failure"
-[[ -f "${FAKE_HOME}/${LAUNCHER}.download" ]] \
+  && fail "wrong SHA executed wrapper" || pass "wrong SHA execution count 0"
+[[ "$(sha256sum "${FAKE_HOME}/${WRAPPER}" | awk '{print $1}')" == "$OLD_SHA" ]] \
+  && pass "old final wrapper preserved on SHA failure" \
+  || fail "old final wrapper replaced on SHA failure"
+[[ -f "${FAKE_HOME}/${WRAPPER}.download" ]] \
   && pass ".download may remain after failure" || pass ".download cleaned (acceptable)"
-if grep -q 'OLD_FINAL_LAUNCHER\|STUB_UPGRADE_OK' <<<"$(bash "${FAKE_HOME}/${LAUNCHER}.download" 2>/dev/null || true)"; then
-  : # .download might not be executable; ensure we never bash it in the command
-fi
-printf '%s\n' "$BAD_CMD" | grep -q "bash ./${LAUNCHER}.download" \
+printf '%s\n' "$BAD_CMD" | grep -q "bash ./${WRAPPER}.download" \
   && fail ".download executed" || pass ".download not executed"
 
 # Tampered content served under correct URL but wrong bytes vs literal SHA
-# (literal SHA still correct for published file — simulate by changing literal)
 TAMPER_CMD="$(gui_client_hop_command_line "$MIRROR" "dp-offline-upgrade-${HOP}.sh" "$(printf 'a%.0s' {1..64})" | rewrite_home)"
 set +e
 bash -c "$TAMPER_CMD" >"${WORKDIR}/op-tamper.out" 2>"${WORKDIR}/op-tamper.err"
@@ -355,11 +384,11 @@ TAMPER_RC=$?
 set -e
 [[ "$TAMPER_RC" -ne 0 ]] && pass "tamper SHA nonzero" || fail "tamper unexpectedly 0"
 grep -q 'STUB_UPGRADE_OK' "${WORKDIR}/op-tamper.out" 2>/dev/null \
-  && fail "LAUNCHER_TAMPER_EXECUTION_COUNT!=0" || pass "LAUNCHER_TAMPER_EXECUTION_COUNT=0"
+  && fail "WRAPPER_TAMPER_EXECUTION_COUNT!=0" || pass "WRAPPER_TAMPER_EXECUTION_COUNT=0"
 
 # HTTP failure
 DEAD="http://127.0.0.1:9"
-DEAD_CMD="$(gui_client_hop_command_line "$DEAD" "dp-offline-upgrade-${HOP}.sh" "$LAUNCHER_SHA" | rewrite_home)"
+DEAD_CMD="$(gui_client_hop_command_line "$DEAD" "dp-offline-upgrade-${HOP}.sh" "$WRAPPER_SHA" | rewrite_home)"
 set +e
 bash -c "$DEAD_CMD" >"${WORKDIR}/op-http.out" 2>"${WORKDIR}/op-http.err"
 HTTP_RC=$?
@@ -368,18 +397,18 @@ set -e
 grep -q 'STUB_UPGRADE_OK' "${WORKDIR}/op-http.out" 2>/dev/null \
   && fail "HTTP_FAILURE_EXECUTION_COUNT!=0" || pass "HTTP_FAILURE_EXECUTION_COUNT=0"
 
-# Empty file download: serve empty launcher temporarily
-cp "${CLIENT_ROOT}/${LAUNCHER}" "${WORKDIR}/${LAUNCHER}.bak"
-: >"${CLIENT_ROOT}/${LAUNCHER}"
-EMPTY_CMD="$(gui_client_hop_command_line "$MIRROR" "dp-offline-upgrade-${HOP}.sh" "$LAUNCHER_SHA" | rewrite_home)"
+# Empty file download: serve empty wrapper temporarily
+cp "${CLIENT_ROOT}/${WRAPPER}" "${WORKDIR}/${WRAPPER}.bak"
+: >"${CLIENT_ROOT}/${WRAPPER}"
+EMPTY_CMD="$(gui_client_hop_command_line "$MIRROR" "dp-offline-upgrade-${HOP}.sh" "$WRAPPER_SHA" | rewrite_home)"
 set +e
 bash -c "$EMPTY_CMD" >"${WORKDIR}/op-empty.out" 2>"${WORKDIR}/op-empty.err"
 EMPTY_RC=$?
 set -e
-mv -f "${WORKDIR}/${LAUNCHER}.bak" "${CLIENT_ROOT}/${LAUNCHER}"
+mv -f "${WORKDIR}/${WRAPPER}.bak" "${CLIENT_ROOT}/${WRAPPER}"
 [[ "$EMPTY_RC" -ne 0 ]] && pass "empty file nonzero" || fail "empty file unexpectedly 0"
 grep -q 'STUB_UPGRADE_OK' "${WORKDIR}/op-empty.out" 2>/dev/null \
-  && fail "empty file executed launcher" || pass "empty file execution count 0"
+  && fail "empty file executed wrapper" || pass "empty file execution count 0"
 
 # Protected hashes still unchanged
 XENIAL_CLIENT_SHA_AFTER="$(sha256sum "${ROOT}/client/dp-offline-upgrade-xenial-to-bionic.sh" | awk '{print $1}')"

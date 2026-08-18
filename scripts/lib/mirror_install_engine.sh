@@ -180,6 +180,22 @@ engine_ensure_phase2_helpers() {
     rm -rf "$stage"
     return 1
   fi
+  local mirror="${MIRROR_HTTP_URL:-${RESOLVED_MIRROR_BASE_URL:-}}"
+  mirror="${mirror%/}"
+  if [[ -z "$mirror" ]] && declare -F mm_client_mirror_url >/dev/null 2>&1; then
+    mirror="$(mm_client_mirror_url 2>/dev/null || true)"
+    mirror="${mirror%/}"
+  fi
+  if [[ -z "$mirror" ]]; then
+    rm -rf "$stage"
+    return 1
+  fi
+  if ! phase2_upgrade_wrapper_write "$stage" "$mirror" \
+    "${PHASE2_TARGET_VERSION:-6.5.0}" >/dev/null
+  then
+    rm -rf "$stage"
+    return 1
+  fi
   if declare -F mm_normalize_http_public_tree_permissions >/dev/null 2>&1; then
     mm_normalize_http_public_tree_permissions "$stage" client || {
       rm -rf "$stage"
@@ -1976,6 +1992,7 @@ engine_http_smoke_urls() {
   local urls=(
     "${base}/client/stage-dp-phase2.sh"
     "${base}/client/stage-dp-phase2.sh.sha256"
+    "${base}/client/upgrade-phase2.sh"
     "${base}/client/public-keyring.gpg"
     "${base}/dp-phase2/${ver}/release.env"
     "${base}/dp-phase2/${ver}/${stable}.sha256"
@@ -1991,6 +2008,10 @@ engine_http_smoke_urls() {
       "${base}/client/dp-launch-bionic-to-focal.sh"
       "${base}/client/dp-launch-focal-to-jammy.sh"
       "${base}/client/dp-launch-jammy-to-noble.sh"
+      "${base}/client/upgrade-xenial-to-bionic.sh"
+      "${base}/client/upgrade-bionic-to-focal.sh"
+      "${base}/client/upgrade-focal-to-jammy.sh"
+      "${base}/client/upgrade-jammy-to-noble.sh"
       "${base}/client/public.gpg"
     )
   fi

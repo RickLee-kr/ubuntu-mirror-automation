@@ -390,6 +390,27 @@ def verify_client_set_integrity(root, current, expected_mirror="", expected_fing
             raise RuntimeError("CLIENT_LAUNCHER_METADATA_MISSING hop=" + hop)
         if disk_meta[meta_key].lower() != launcher_sha:
             raise RuntimeError("CLIENT_LAUNCHER_METADATA_SHA_MISMATCH hop=" + hop)
+        wrapper = "upgrade-%s.sh" % hop
+        _verify_sidecar(root, wrapper)
+        wrapper_path = os.path.join(root, wrapper)
+        with open(wrapper_path, "r", encoding="utf-8", errors="replace") as fh:
+            wrapper_text = fh.read()
+        if "BEGIN PGP PRIVATE KEY" in wrapper_text:
+            raise RuntimeError("CLIENT_WRAPPER_PRIVATE_KEY_PRESENT hop=" + hop)
+        if launcher not in wrapper_text:
+            raise RuntimeError("CLIENT_WRAPPER_LAUNCHER_MISSING hop=" + hop)
+        if ("LAUNCHER_SHA256='%s'" % launcher_sha) not in wrapper_text:
+            raise RuntimeError("CLIENT_WRAPPER_LAUNCHER_SHA_MISMATCH hop=" + hop)
+        if expected_mirror and expected_mirror.rstrip("/") not in wrapper_text:
+            raise RuntimeError("CLIENT_WRAPPER_MIRROR_MISMATCH hop=" + hop)
+        if re.search(r"curl[^\n]*\|\s*(?:bash|sh)\b", wrapper_text):
+            raise RuntimeError("CLIENT_WRAPPER_CURL_PIPE_BASH hop=" + hop)
+        wrapper_key = "CLIENT_WRAPPER_%s_SHA256" % hop.upper().replace("-", "_")
+        wrapper_sha = _sha_file(wrapper_path)
+        if wrapper_key not in disk_meta:
+            raise RuntimeError("CLIENT_WRAPPER_METADATA_MISSING hop=" + hop)
+        if disk_meta[wrapper_key].lower() != wrapper_sha:
+            raise RuntimeError("CLIENT_WRAPPER_METADATA_SHA_MISMATCH hop=" + hop)
         manifest = os.path.join(root, hop, "client-manifest.json")
         signature = manifest + ".asc"
         if not os.path.isfile(manifest) or not os.path.isfile(signature):
@@ -414,6 +435,36 @@ def verify_client_set_integrity(root, current, expected_mirror="", expected_fing
                 raise RuntimeError(
                     "CLIENT_MANIFEST_PROVENANCE_MISMATCH hop=%s field=%s" % (hop, json_key)
                 )
+    _verify_sidecar(root, "upgrade-phase2.sh")
+    phase2_wrapper = os.path.join(root, "upgrade-phase2.sh")
+    with open(phase2_wrapper, "r", encoding="utf-8", errors="replace") as fh:
+        phase2_text = fh.read()
+    gen_path = os.path.join(root, "phase2-helper-generation.manifest")
+    if not os.path.isfile(gen_path):
+        raise RuntimeError("CLIENT_SET_FILE_MISSING=phase2-helper-generation.manifest")
+    gen_sha = _sha_file(gen_path)
+    if ("H='%s'" % gen_sha) not in phase2_text:
+        raise RuntimeError("CLIENT_WRAPPER_PHASE2_GENERATION_SHA_MISMATCH")
+    if "phase2-helper-generation.manifest" not in phase2_text:
+        raise RuntimeError("CLIENT_WRAPPER_PHASE2_GENERATION_MANIFEST_MISSING")
+    if "sha256sum -c \"$GEN\"" not in phase2_text and "sha256sum -c '$GEN'" not in phase2_text:
+        raise RuntimeError("CLIENT_WRAPPER_PHASE2_HELPER_VERIFY_MISSING")
+    if "stage-dp-phase2.sh" not in phase2_text:
+        raise RuntimeError("CLIENT_WRAPPER_PHASE2_STAGE_MISSING")
+    if "--target-version" not in phase2_text or "6.5.0" not in phase2_text:
+        raise RuntimeError("CLIENT_WRAPPER_PHASE2_TARGET_VERSION_MISSING")
+    if "--same-version-recovery" not in phase2_text:
+        raise RuntimeError("CLIENT_WRAPPER_PHASE2_SAME_VERSION_MISSING")
+    if "--mirror-url" not in phase2_text:
+        raise RuntimeError("CLIENT_WRAPPER_PHASE2_MIRROR_URL_FLAG_MISSING")
+    if expected_mirror and expected_mirror.rstrip("/") not in phase2_text:
+        raise RuntimeError("CLIENT_WRAPPER_PHASE2_MIRROR_MISMATCH")
+    if re.search(r"curl[^\n]*\|\s*(?:bash|sh)\b", phase2_text):
+        raise RuntimeError("CLIENT_WRAPPER_PHASE2_CURL_PIPE_BASH")
+    if "CLIENT_WRAPPER_PHASE2_SHA256" not in disk_meta:
+        raise RuntimeError("CLIENT_WRAPPER_PHASE2_METADATA_MISSING")
+    if disk_meta["CLIENT_WRAPPER_PHASE2_SHA256"].lower() != _sha_file(phase2_wrapper):
+        raise RuntimeError("CLIENT_WRAPPER_PHASE2_METADATA_SHA_MISMATCH")
     return current
 
 

@@ -182,6 +182,13 @@ done
 
 phase2_helper_generation_write "$DEST_ROOT" >/dev/null
 echo "ARTIFACT_SHA256=$(sha256sum "${DEST_ROOT}/${PHASE2_HELPER_GENERATION_MANIFEST_NAME}" | awk '{print $1}') name=${PHASE2_HELPER_GENERATION_MANIFEST_NAME}"
+if [[ -z "$MIRROR_BASE" ]]; then
+  echo "PHASE2_UPGRADE_WRAPPER=FAIL reason=mirror_missing" >&2
+  exit 1
+fi
+phase2_upgrade_wrapper_write "$DEST_ROOT" "$MIRROR_BASE" \
+  "${TARGET_DP_VERSION:-6.5.0}" >/dev/null
+echo "ARTIFACT_SHA256=$(sha256sum "${DEST_ROOT}/upgrade-phase2.sh" | awk '{print $1}') name=upgrade-phase2.sh"
 
 # Leave no partial temp files behind.
 find "$DEST_ROOT" -maxdepth 3 -type f \( -name '*.tmp.*' -o -name '.dp2-*.XXXXXX' \) -delete 2>/dev/null || true
@@ -225,3 +232,8 @@ curl -fsS -o "${TMPD}/${man}" "${MIRROR_BASE}/client/${man}"
 http_sha="$(sha256sum "${TMPD}/${man}" | awk '{print $1}')"
 [[ "$http_sha" == "$local_sha" ]] || { echo "HTTP SHA mismatch for ${man}" >&2; exit 1; }
 echo "HTTP_VERIFY=PASS name=${man} sha256=${http_sha}"
+local_sha="$(sha256sum "${DEST_ROOT}/upgrade-phase2.sh" | awk '{print $1}')"
+curl -fsS -o "${TMPD}/upgrade-phase2.sh" "${MIRROR_BASE}/client/upgrade-phase2.sh"
+http_sha="$(sha256sum "${TMPD}/upgrade-phase2.sh" | awk '{print $1}')"
+[[ "$http_sha" == "$local_sha" ]] || { echo "HTTP SHA mismatch for upgrade-phase2.sh" >&2; exit 1; }
+echo "HTTP_VERIFY=PASS name=upgrade-phase2.sh sha256=${http_sha}"

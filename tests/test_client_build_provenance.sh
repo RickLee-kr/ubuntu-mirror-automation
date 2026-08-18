@@ -270,6 +270,48 @@ echo "$OUT12" | grep -q 'CLIENT_SET_ACTION=REBUILD_SIGN_PUBLISH' \
   && pass "case 12: REBUILD_SIGN_PUBLISH on tamper" \
   || fail "case 12: tamper missing rebuild action"
 
+# Wrapper tamper after publication → integrity FAIL (sidecar/metadata).
+WRAP_TAMPER="${WORKDIR}/wrapper-tampered-client"
+cp -a "$GOLDEN_CLIENT" "$WRAP_TAMPER"
+[[ -f "${WRAP_TAMPER}/upgrade-jammy-to-noble.sh" ]] \
+  && pass "golden set contains OS wrappers" \
+  || fail "golden set missing OS wrappers"
+[[ -f "${WRAP_TAMPER}/upgrade-phase2.sh" ]] \
+  && pass "golden set contains upgrade-phase2.sh" \
+  || fail "golden set missing upgrade-phase2.sh"
+printf 'x' >>"${WRAP_TAMPER}/upgrade-jammy-to-noble.sh"
+OUT_WT="$(classify_client "$ROOT" "$WRAP_TAMPER" || true)"
+echo "$OUT_WT" | grep -qE 'CLIENT_SET_STATE=INVALID' \
+  && pass "wrapper tamper: INVALID" \
+  || fail "wrapper tamper not rejected (${OUT_WT})"
+MISS_WRAP="${WORKDIR}/missing-wrapper-client"
+cp -a "$GOLDEN_CLIENT" "$MISS_WRAP"
+rm -f "${MISS_WRAP}/upgrade-focal-to-jammy.sh"
+OUT_MW="$(classify_client "$ROOT" "$MISS_WRAP" || true)"
+echo "$OUT_MW" | grep -qE 'CLIENT_SET_STATE=INVALID' \
+  && pass "missing required wrapper: INVALID" \
+  || fail "missing wrapper not rejected"
+export MM_CLIENT_ROOT="$MISS_WRAP"
+if mm_client_files_ready "$MISS_WRAP"; then
+  fail "missing wrapper still CLIENT_FILES_READY"
+else
+  pass "missing wrapper makes client readiness FAIL"
+fi
+export MM_CLIENT_ROOT="$CLIENT_ROOT"
+
+# Wrapper-generation source change invalidates published set.
+make_scratch
+printf '\n# wrapper-generation-mutation\n' >>"${SCRATCH}/scripts/lib/build_client_launchers.py"
+OUT_WG="$(classify_client "$SCRATCH" "$GOLDEN_CLIENT" || true)"
+echo "$OUT_WG" | grep -q 'CLIENT_SET_STATE=STALE_BUILD_INPUT' \
+  && pass "wrapper generator change: STALE_BUILD_INPUT" \
+  || fail "wrapper generator change not stale"
+echo "$OUT_WG" | grep -q 'CLIENT_SET_ACTION=REBUILD_SIGN_PUBLISH' \
+  && pass "wrapper generator change: REBUILD_SIGN_PUBLISH" \
+  || fail "wrapper generator change missing rebuild action"
+rm -rf "$SCRATCH"
+SCRATCH=""
+
 # Stale build input via engine after scratch mutation on builder
 make_scratch
 printf '\n# stale-builder\n' >>"${SCRATCH}/scripts/lib/build_client_jammy_to_noble.py"

@@ -8,9 +8,17 @@ Produces four public launcher scripts from one template:
   dp-launch-focal-to-jammy.sh
   dp-launch-jammy-to-noble.sh
 
+and four operator-facing OS-hop wrappers that download/verify those launchers:
+
+  upgrade-xenial-to-bionic.sh
+  upgrade-bionic-to-focal.sh
+  upgrade-focal-to-jammy.sh
+  upgrade-jammy-to-noble.sh
+
 Deterministic for the same template bytes, Mirror URL, signing fingerprint,
-hop mapping, and launcher schema version. Never embeds timestamps, random
-values, temp paths, hostnames, inodes, or private-key material.
+hop mapping, launcher schema version, and resulting launcher SHA256. Never
+embeds timestamps, random values, temp paths, hostnames, inodes, or
+private-key material.
 """
 from __future__ import print_function
 
@@ -30,6 +38,21 @@ HOPS = (
 )
 
 TEMPLATE_REL = "client/dp-client-hop-launcher.sh.in"
+
+# Operator-facing bootstrap. Literal LAUNCHER_SHA256 is the inner trust anchor;
+# Menu 7 separately pins this wrapper's own SHA256. Never curl|bash.
+OS_UPGRADE_WRAPPER_TEMPLATE = """#!/usr/bin/env bash
+set -euo pipefail
+cd /home/aella
+L='@@LAUNCHER@@'
+D="${L}.download"
+MIRROR='@@MIRROR_BASE@@'
+LAUNCHER_SHA256='@@LAUNCHER_SHA256@@'
+curl -fsSLo "$D" "${MIRROR}/client/${L}"
+printf '%s  %s\\n' "$LAUNCHER_SHA256" "$D" | sha256sum -c -
+mv -f "$D" "$L"
+exec bash "./$L"
+"""
 
 
 def _sha_file(path):
@@ -80,6 +103,37 @@ def render_launcher(template_text, mirror_base, expected_fpr, hop, script):
     return text
 
 
+def render_os_upgrade_wrapper(mirror_base, hop, launcher_name, launcher_sha256):
+    if not re.match(r"^[0-9a-f]{64}$", launcher_sha256):
+        raise RuntimeError("LAUNCHER_SHA256_INVALID hop=" + hop)
+    text = OS_UPGRADE_WRAPPER_TEMPLATE
+    replacements = {
+        "@@LAUNCHER@@": launcher_name,
+        "@@MIRROR_BASE@@": mirror_base,
+        "@@LAUNCHER_SHA256@@": launcher_sha256,
+    }
+    for key, value in replacements.items():
+        if key not in text:
+            raise RuntimeError("WRAPPER_TEMPLATE_PLACEHOLDER_MISSING=" + key)
+        text = text.replace(key, value)
+    if re.search(r"@@[A-Z0-9_]+@@", text):
+        raise RuntimeError("WRAPPER_TEMPLATE_UNREPLACED_PLACEHOLDER")
+    if not text.startswith("#!/"):
+        raise RuntimeError("WRAPPER_TEMPLATE_SHEBANG_MISSING")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if not text.endswith("\n"):
+        text += "\n"
+    return text
+
+
+def _write_sha256_sidecar(path, digest, name):
+    sidecar = path + ".sha256"
+    with open(sidecar, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("%s  %s\n" % (digest, name))
+    os.chmod(sidecar, 0o644)
+    return sidecar
+
+
 def build_launchers(project_root, output_dir, mirror_base_url, signing_fingerprint):
     root = os.path.abspath(project_root)
     out = os.path.abspath(output_dir)
@@ -100,10 +154,17 @@ def build_launchers(project_root, output_dir, mirror_base_url, signing_fingerpri
             fh.write(body)
         os.chmod(path, 0o644)
         digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
-        sidecar = path + ".sha256"
-        with open(sidecar, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write("%s  %s\n" % (digest, name))
-        os.chmod(sidecar, 0o644)
+        sidecar = _write_sha256_sidecar(path, digest, name)
+        wrapper_name = "upgrade-%s.sh" % hop
+        wrapper_body = render_os_upgrade_wrapper(mirror, hop, name, digest)
+        wrapper_path = os.path.join(out, wrapper_name)
+        with open(wrapper_path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(wrapper_body)
+        os.chmod(wrapper_path, 0o644)
+        wrapper_digest = hashlib.sha256(wrapper_body.encode("utf-8")).hexdigest()
+        wrapper_sidecar = _write_sha256_sidecar(
+            wrapper_path, wrapper_digest, wrapper_name
+        )
         results.append(
             {
                 "hop": hop,
@@ -112,6 +173,10 @@ def build_launchers(project_root, output_dir, mirror_base_url, signing_fingerpri
                 "path": path,
                 "sha256": digest,
                 "sidecar": sidecar,
+                "wrapper_name": wrapper_name,
+                "wrapper_path": wrapper_path,
+                "wrapper_sha256": wrapper_digest,
+                "wrapper_sidecar": wrapper_sidecar,
             }
         )
     return results
@@ -144,7 +209,12 @@ def main(argv=None):
                     "LAUNCHER_BUILT hop=%s name=%s sha256=%s"
                     % (item["hop"], item["name"], item["sha256"])
                 )
+                print(
+                    "WRAPPER_BUILT hop=%s name=%s sha256=%s"
+                    % (item["hop"], item["wrapper_name"], item["wrapper_sha256"])
+                )
             print("LAUNCHER_BUILD=PASS")
+            print("OS_UPGRADE_WRAPPER_BUILD=PASS")
         return 0
     except Exception as exc:
         print("LAUNCHER_BUILD=FAIL", file=sys.stderr)

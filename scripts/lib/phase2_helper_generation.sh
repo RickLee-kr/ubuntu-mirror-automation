@@ -76,3 +76,60 @@ phase2_helper_generation_verify() {
   fi
   return 0
 }
+
+# Operator-facing Phase 2 bootstrap wrapper. Literal generation-manifest SHA256
+# remains the inner trust anchor. Menu 7 separately pins this wrapper's SHA256.
+phase2_upgrade_wrapper_write() {
+  local root="${1:?client root required}"
+  local mirror="${2:?mirror URL required}"
+  local ver="${3:-6.5.0}"
+  local dest="${root}/upgrade-phase2.sh"
+  local man="${root}/${PHASE2_HELPER_GENERATION_MANIFEST_NAME}"
+  local sha
+  mirror="${mirror%/}"
+  [[ -n "$mirror" && "$mirror" != *__UNREPLACED__* ]] || {
+    printf 'PHASE2_UPGRADE_WRAPPER=FAIL reason=mirror_missing\n' >&2
+    return 1
+  }
+  [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+    printf 'PHASE2_UPGRADE_WRAPPER=FAIL reason=target_version_invalid\n' >&2
+    return 1
+  }
+  sha="$(phase2_helper_generation_sha256 "$man")" || {
+    printf 'PHASE2_UPGRADE_WRAPPER=FAIL reason=generation_sha_missing\n' >&2
+    return 1
+  }
+  [[ "$sha" =~ ^[0-9a-fA-F]{64}$ ]] || {
+    printf 'PHASE2_UPGRADE_WRAPPER=FAIL reason=generation_sha_invalid\n' >&2
+    return 1
+  }
+  cat >"$dest" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/aella
+MIRROR='${mirror}'
+VER='${ver}'
+SCRIPT='stage-dp-phase2.sh'
+GEN='phase2-helper-generation.manifest'
+H='${sha}'
+W=\$(mktemp -d)
+trap 'rm -rf "\$W"' EXIT
+cd "\$W"
+mkdir -p lib
+for F in "\$GEN" "\$SCRIPT" bringup_py3_dp_lifecycle.sh lib/dp-{offline-source-product-version,phase2-operation-progress,phase2-bringup-lifecycle,phase2-ubuntu-prerequisites}.sh; do
+  curl -fsSLo "\$F" "\$MIRROR/client/\$F" || exit 1
+done
+printf '%s  %s\\n' "\$H" "\$GEN" | sha256sum -c -
+sha256sum -c "\$GEN"
+exec sudo bash "./\$SCRIPT" --target-version "\$VER" --same-version-recovery --mirror-url "\$MIRROR"
+EOF
+  chmod 0644 "$dest"
+  bash -n "$dest" || {
+    printf 'PHASE2_UPGRADE_WRAPPER=FAIL reason=bash_n\n' >&2
+    rm -f "$dest"
+    return 1
+  }
+  ( cd "$root" && sha256sum upgrade-phase2.sh >upgrade-phase2.sh.sha256 ) || return 1
+  chmod 0644 "${dest}.sha256"
+  printf '%s\n' "$dest"
+}

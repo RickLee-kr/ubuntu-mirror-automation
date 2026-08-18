@@ -155,6 +155,38 @@ fi
 HOP_COUNT="$(find "$CLIENT_ROOT" -maxdepth 1 -name 'dp-offline-upgrade-*.sh' | wc -l)"
 [[ "$HOP_COUNT" -eq 4 ]] && pass "four hop scripts published" || fail "hop count=${HOP_COUNT}"
 
+WRAP_OK=1
+for hop in xenial-to-bionic bionic-to-focal focal-to-jammy jammy-to-noble; do
+  wname="upgrade-${hop}.sh"
+  [[ -f "${CLIENT_ROOT}/${wname}" && -f "${CLIENT_ROOT}/${wname}.sha256" ]] || WRAP_OK=0
+  bash -n "${CLIENT_ROOT}/${wname}" || WRAP_OK=0
+  ( cd "$CLIENT_ROOT" && sha256sum -c "${wname}.sha256" >/dev/null ) || WRAP_OK=0
+  launcher="dp-launch-${hop}.sh"
+  lsha="$(sha256sum "${CLIENT_ROOT}/${launcher}" | awk '{print $1}')"
+  grep -Fq "L='${launcher}'" "${CLIENT_ROOT}/${wname}" || WRAP_OK=0
+  grep -Fq "LAUNCHER_SHA256='${lsha}'" "${CLIENT_ROOT}/${wname}" || WRAP_OK=0
+  grep -Fq "192.0.2.99" "${CLIENT_ROOT}/${wname}" || WRAP_OK=0
+done
+[[ -f "${CLIENT_ROOT}/upgrade-phase2.sh" && -f "${CLIENT_ROOT}/upgrade-phase2.sh.sha256" ]] || WRAP_OK=0
+bash -n "${CLIENT_ROOT}/upgrade-phase2.sh" || WRAP_OK=0
+( cd "$CLIENT_ROOT" && sha256sum -c upgrade-phase2.sh.sha256 >/dev/null ) || WRAP_OK=0
+grep -q 'phase2-helper-generation.manifest' "${CLIENT_ROOT}/upgrade-phase2.sh" || WRAP_OK=0
+grep -q -- '--target-version' "${CLIENT_ROOT}/upgrade-phase2.sh" || WRAP_OK=0
+grep -q -- '--same-version-recovery' "${CLIENT_ROOT}/upgrade-phase2.sh" || WRAP_OK=0
+if [[ "$WRAP_OK" -eq 1 ]]; then
+  pass "operator wrappers published and verified"
+else
+  fail "operator wrappers missing or invalid"
+fi
+TAMPER="${WORKDIR}/wrapper-tamper"
+cp -a "$CLIENT_ROOT" "$TAMPER"
+printf 'x' >>"${TAMPER}/upgrade-jammy-to-noble.sh"
+set +e
+( cd "$TAMPER" && sha256sum -c upgrade-jammy-to-noble.sh.sha256 >/dev/null 2>&1 )
+TAMPER_RC=$?
+set -e
+[[ "$TAMPER_RC" -ne 0 ]] && pass "wrapper tamper fail-closed" || fail "wrapper tamper still verified"
+
 # ========== E: failure injection — hop 2 build ==========
 # Save complete set
 COMPLETE_BACKUP="${WORKDIR}/complete-client-set"
@@ -277,7 +309,13 @@ for hop in xenial-to-bionic bionic-to-focal focal-to-jammy jammy-to-noble; do
   http_sha="$(sha256sum "${WORKDIR}/http-${name}" | awk '{print $1}')"
   [[ "$local_sha" == "$http_sha" ]] || HTTP_OK=0
   grep -q "192.0.2.99" "${WORKDIR}/http-${name}" || HTTP_OK=0
+  wname="upgrade-${hop}.sh"
+  curl -fsS -o "${WORKDIR}/http-${wname}" "${HTTP_BASE}/client/${wname}" || HTTP_OK=0
+  wlocal="$(sha256sum "${CLIENT_ROOT}/${wname}" | awk '{print $1}')"
+  whttp="$(sha256sum "${WORKDIR}/http-${wname}" | awk '{print $1}')"
+  [[ "$wlocal" == "$whttp" ]] || HTTP_OK=0
 done
+curl -fsS -o "${WORKDIR}/http-upgrade-phase2.sh" "${HTTP_BASE}/client/upgrade-phase2.sh" || HTTP_OK=0
 curl -fsS -o "${WORKDIR}/http-public.gpg" "${HTTP_BASE}/client/public.gpg" || HTTP_OK=0
 cmp -s "${SIGNING_DIR}/public.gpg" "${WORKDIR}/http-public.gpg" || HTTP_OK=0
 

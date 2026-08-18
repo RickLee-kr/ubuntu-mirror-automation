@@ -419,8 +419,21 @@ for hop in "${HOPS[@]}"; do
   }
   chmod 0644 "${STAGE_DIR}/${lname}" "${STAGE_DIR}/${lname}.sha256"
   evidence_echo "LAUNCHER_PUBLISH=PASS hop=${hop} file=${lname}"
+  wname="upgrade-${hop}.sh"
+  [[ -f "${STAGE_DIR}/${wname}" && -f "${STAGE_DIR}/${wname}.sha256" ]] || {
+    fail_build "$hop" "os_wrapper_missing" "missing staged OS wrapper ${wname}" 1
+  }
+  ( cd "$STAGE_DIR" && sha256sum -c "${wname}.sha256" >/dev/null ) || {
+    fail_build "$hop" "os_wrapper_checksum" "OS wrapper sidecar mismatch ${wname}" 1
+  }
+  bash -n "${STAGE_DIR}/${wname}" || {
+    fail_build "$hop" "os_wrapper_bash_n" "OS wrapper bash -n failed ${wname}" 1
+  }
+  chmod 0644 "${STAGE_DIR}/${wname}" "${STAGE_DIR}/${wname}.sha256"
+  evidence_echo "OS_UPGRADE_WRAPPER_PUBLISH=PASS hop=${hop} file=${wname}"
 done
 evidence_echo "LAUNCHER_SET_PUBLISH=PASS"
+evidence_echo "OS_UPGRADE_WRAPPER_SET_PUBLISH=PASS"
 evidence_echo "CLIENT_LAUNCHER_SCHEMA_VERSION=${CLIENT_LAUNCHER_SCHEMA_VERSION:-1}"
 if [[ -d "${ROOT}/client/lib" ]]; then
   mkdir -p "${STAGE_DIR}/lib"
@@ -433,6 +446,15 @@ if ! phase2_helper_generation_write "$STAGE_DIR" >/dev/null; then
   fail_build "" "phase2_helper_generation" "PHASE2_HELPER_GENERATION=FAIL" 1
 fi
 evidence_echo "PHASE2_HELPER_GENERATION=PASS"
+if ! phase2_upgrade_wrapper_write "$STAGE_DIR" "$MIRROR_BASE" \
+  "${PHASE2_TARGET_VERSION:-6.5.0}" >/dev/null
+then
+  fail_build "" "phase2_upgrade_wrapper" "PHASE2_UPGRADE_WRAPPER=FAIL" 1
+fi
+( cd "$STAGE_DIR" && sha256sum -c upgrade-phase2.sh.sha256 >/dev/null ) || {
+  fail_build "" "phase2_upgrade_wrapper_checksum" "Phase 2 wrapper sidecar mismatch" 1
+}
+evidence_echo "PHASE2_UPGRADE_WRAPPER_PUBLISH=PASS"
 
 local_signing_assert_private_not_published "$STAGE_DIR" || {
   evidence "PRIVATE_KEY_HTTP_PUBLISHED=YES"
@@ -465,13 +487,19 @@ CLIENT_MIRROR_BASE_URL=${CLIENT_MIRROR_BASE_URL}
 CLIENT_BUILD_CREATED_UTC=${CLIENT_BUILD_CREATED_UTC}
 CREATED_UTC=${CLIENT_BUILD_CREATED_UTC}
 EOF
-# Bind published launcher digests into client-set metadata for readiness/Menu 7.
+# Bind published launcher and operator-wrapper digests into client-set metadata.
 for hop in "${HOPS[@]}"; do
   lname="dp-launch-${hop}.sh"
   lsha="$(awk '{print $1; exit}' "${STAGE_DIR}/${lname}.sha256")"
   meta_key="CLIENT_LAUNCHER_$(printf '%s' "$hop" | tr 'a-z-' 'A-Z_')_SHA256"
   printf '%s=%s\n' "$meta_key" "$lsha" >>"${STAGE_DIR}/client-set.env"
+  wname="upgrade-${hop}.sh"
+  wsha="$(awk '{print $1; exit}' "${STAGE_DIR}/${wname}.sha256")"
+  wkey="CLIENT_WRAPPER_$(printf '%s' "$hop" | tr 'a-z-' 'A-Z_')_SHA256"
+  printf '%s=%s\n' "$wkey" "$wsha" >>"${STAGE_DIR}/client-set.env"
 done
+p2sha="$(awk '{print $1; exit}' "${STAGE_DIR}/upgrade-phase2.sh.sha256")"
+printf 'CLIENT_WRAPPER_PHASE2_SHA256=%s\n' "$p2sha" >>"${STAGE_DIR}/client-set.env"
 chmod 0644 "${STAGE_DIR}/client-set.env"
 
 # Final verify on staged tree before cutover.
@@ -483,7 +511,14 @@ for hop in "${HOPS[@]}"; do
   client_assert_mirror_base_match "${STAGE_DIR}/${name}" "$MIRROR_BASE" || {
     fail_build "$hop" "prepublish_pin" "prepublish pin gate failed" 1
   }
+  wname="upgrade-${hop}.sh"
+  ( cd "$STAGE_DIR" && sha256sum -c "${wname}.sha256" >/dev/null ) || {
+    fail_build "$hop" "prepublish_wrapper_checksum" "CLIENT_SET_VERIFY_COMPLETE=NO checksum ${wname}" 1
+  }
 done
+( cd "$STAGE_DIR" && sha256sum -c upgrade-phase2.sh.sha256 >/dev/null ) || {
+  fail_build "" "prepublish_phase2_wrapper_checksum" "CLIENT_SET_VERIFY_COMPLETE=NO checksum upgrade-phase2.sh" 1
+}
 
 # Binary keyring + gpgv against every hop manifest — fail closed, no swap.
 if ! local_signing_prepublish_keyring_gate "$STAGE_DIR" "$LOCAL_KEY_FINGERPRINT" "${HOPS[@]}"; then

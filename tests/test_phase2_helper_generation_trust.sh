@@ -155,10 +155,12 @@ grep -q 'lib/dp-phase2-ubuntu-prerequisites.sh' "${UNIT}/phase2-helper-generatio
   || fail "ubuntu-prerequisites helper not in generation manifest"
 pass "lifecycle wrapper and ubuntu-prerequisites covered by generation"
 
-# Menu 7 command remains copy/paste valid and pins the manifest hash
+# Menu 7 command remains copy/paste valid and pins the wrapper hash.
+# Inner generation-manifest SHA256 lives inside upgrade-phase2.sh.
 export MM_PROJECT_ROOT="$ROOT"
 export MM_CLIENT_ROOT="$UNIT"
 export SKIP_MIRROR_HOST_VALIDATE=1
+phase2_upgrade_wrapper_write "$UNIT" "http://192.0.2.10" "6.5.0" >/dev/null
 LIB_INST="${TMP}/installer-lib.sh"
 awk -v sd="${ROOT}/scripts" '
   /^SCRIPT_DIR=/ { print "SCRIPT_DIR=\"" sd "\""; next }
@@ -169,11 +171,19 @@ awk -v sd="${ROOT}/scripts" '
 source "$LIB_INST"
 cmd="$(gui_phase2_stage_command_line "http://192.0.2.10" "6.5.0")"
 printf '%s\n' "$cmd" >"${TMP}/menu7.sh"
+[[ "$(wc -l <"${TMP}/menu7.sh" | tr -d ' ')" == "1" ]] || fail "Menu 7 Phase 2 command not one line"
 bash -n "${TMP}/menu7.sh" || fail "Menu 7 Phase 2 command bash -n"
+wrapper_sha="$(sha256sum "${UNIT}/upgrade-phase2.sh" | awk '{print $1}')"
+grep -Fq "$wrapper_sha" "${TMP}/menu7.sh" || fail "Menu 7 command missing pinned wrapper SHA"
+grep -q 'upgrade-phase2.sh' "${TMP}/menu7.sh" || fail "Menu 7 command missing upgrade-phase2.sh"
+grep -q 'for F in' "${TMP}/menu7.sh" && fail "helper download loop leaked into Menu 7" \
+  || pass "helper download loop not visible"
 pinned="$(gui_phase2_helper_generation_sha256)"
-grep -Fq "$pinned" "${TMP}/menu7.sh" || fail "Menu 7 command missing pinned generation SHA"
-grep -q "GEN='phase2-helper-generation.manifest'" "${TMP}/menu7.sh" \
-  || fail "Menu 7 command missing generation manifest"
+grep -Fq "H='${pinned}'" "${UNIT}/upgrade-phase2.sh" || fail "wrapper missing pinned generation SHA"
+grep -q "GEN='phase2-helper-generation.manifest'" "${UNIT}/upgrade-phase2.sh" \
+  || fail "wrapper missing generation manifest"
+grep -q 'sha256sum -c "$GEN"' "${UNIT}/upgrade-phase2.sh" \
+  || fail "wrapper missing helper hash verification"
 grep -qE 'curl[^|]*\|[[:space:]]*bash' "${TMP}/menu7.sh" && fail "curl|bash introduced" \
   || pass "no curl|bash in generated command"
 if grep -Ei 'password|secret|ACPS_PASSWORD|WORKER_SSH_PASSWORD' "${TMP}/menu7.sh"; then

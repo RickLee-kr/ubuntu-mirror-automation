@@ -1047,26 +1047,26 @@ gui_expected_signing_fingerprint() {
   printf '%s\n' "$fpr"
 }
 
-# DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1
+# DP_OS_HOP_COMMAND_VERSION=WRAPPER_V1
 # One physical-line OS-hop operator command:
 #   cd /home/aella
-#   curl launcher into *.download
-#   verify literal SHA256 embedded in the command (not an HTTP sidecar)
-#   mv verified download to final launcher name
-#   bash ./dp-launch-<hop>.sh
-# The launcher authenticates the existing runner; the runner retains sudo.
-# Phase 2 staging remains DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2 (three lines)
-# with a literal generation-manifest SHA256 as the operator trust anchor.
-gui_client_launcher_sha256() {
-  local hop="$1"
+#   curl upgrade-<hop>.sh into *.download
+#   verify literal wrapper SHA256 embedded in the command (not an HTTP sidecar)
+#   mv verified download to final wrapper name
+#   bash ./upgrade-<hop>.sh
+# The wrapper then verifies the existing dp-launch-<hop>.sh SHA256 and executes it.
+# Phase 2 uses the same one-line wrapper bootstrap for upgrade-phase2.sh.
+# Inner Phase 2 trust (generation-manifest SHA256 + helper hashes) lives inside
+# upgrade-phase2.sh (DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2 semantics).
+gui_client_wrapper_sha256() {
+  local name="$1"
   local root="${MM_CLIENT_ROOT:-}"
-  local launcher="dp-launch-${hop}.sh"
   local path sha
-  [[ -n "$hop" ]] || return 1
-  if [[ -n "$root" && -f "${root}/${launcher}" ]]; then
-    path="${root}/${launcher}"
-  elif [[ -n "${MM_PROJECT_ROOT:-}" && -f "${MM_PROJECT_ROOT}/client/${launcher}" ]]; then
-    path="${MM_PROJECT_ROOT}/client/${launcher}"
+  [[ -n "$name" ]] || return 1
+  if [[ -n "$root" && -f "${root}/${name}" ]]; then
+    path="${root}/${name}"
+  elif [[ -n "${MM_PROJECT_ROOT:-}" && -f "${MM_PROJECT_ROOT}/client/${name}" ]]; then
+    path="${MM_PROJECT_ROOT}/client/${name}"
   else
     return 1
   fi
@@ -1075,24 +1075,31 @@ gui_client_launcher_sha256() {
   printf '%s\n' "$sha"
 }
 
+gui_client_launcher_sha256() {
+  local hop="$1"
+  [[ -n "$hop" ]] || return 1
+  gui_client_wrapper_sha256 "dp-launch-${hop}.sh"
+}
+
 gui_client_hop_command_line() {
   local mirror="$1" script="$2"
   local hop="${script#dp-offline-upgrade-}"
   hop="${hop%.sh}"
-  local launcher="dp-launch-${hop}.sh"
+  local wrapper="upgrade-${hop}.sh"
   local sha="${3:-}"
   local url
   mirror="${mirror%/}"
   if [[ -z "$sha" ]]; then
-    sha="$(gui_client_launcher_sha256 "$hop" 2>/dev/null || true)"
+    sha="$(gui_client_wrapper_sha256 "$wrapper" 2>/dev/null || true)"
   fi
   if [[ -z "$sha" || ! "$sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
-    sha="MISSING_LAUNCHER_SHA256"
+    echo "MENU7_WRAPPER_MISSING=${wrapper}" >&2
+    return 1
   fi
-  url="${mirror}/client/${launcher}"
+  url="${mirror}/client/${wrapper}"
   # Exactly one physical line. SHA is the operator trust anchor (not HTTP sidecar).
   printf '%s\n' \
-    "cd /home/aella && curl -fsSLo ${launcher}.download ${url} && printf '%s  %s\\n' '${sha}' '${launcher}.download' | sha256sum -c - && mv -f ${launcher}.download ${launcher} && bash ./${launcher}"
+    "cd /home/aella && curl -fsSLo ${wrapper}.download ${url} && printf '%s  %s\\n' '${sha}' '${wrapper}.download' | sha256sum -c - && mv -f ${wrapper}.download ${wrapper} && bash ./${wrapper}"
 }
 
 # Backward-compatible names used by older tests/callers.
@@ -1104,8 +1111,9 @@ gui_client_hop_command() {
   gui_client_hop_command_line "$@"
 }
 
-# Phase 2 staging: three physical lines, one Bash logical command (SUBSHELL_V2).
-# Trust anchor is a literal SHA256 of the generation manifest (not an HTTP sidecar).
+# Phase 2 staging: one physical WRAPPER_V1 line. Inner SUBSHELL_V2 bootstrap
+# (generation-manifest SHA256 + helper hashes + stage-dp-phase2.sh) lives in
+# the published upgrade-phase2.sh wrapper.
 gui_phase2_helper_generation_manifest_path() {
   if [[ -n "${MM_CLIENT_ROOT:-}" && -f "${MM_CLIENT_ROOT}/phase2-helper-generation.manifest" ]]; then
     printf '%s\n' "${MM_CLIENT_ROOT}/phase2-helper-generation.manifest"
@@ -1128,19 +1136,21 @@ gui_phase2_helper_generation_sha256() {
 }
 
 gui_phase2_stage_command_line() {
-  local mirror="$1" ver="$2"
+  local mirror="$1"
+  local wrapper="upgrade-phase2.sh"
   local sha="${3:-}"
+  local url
   mirror="${mirror%/}"
   if [[ -z "$sha" ]]; then
-    sha="$(gui_phase2_helper_generation_sha256 2>/dev/null || true)"
+    sha="$(gui_client_wrapper_sha256 "$wrapper" 2>/dev/null || true)"
   fi
   if [[ -z "$sha" || ! "$sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
-    sha="MISSING_PHASE2_HELPER_GENERATION_SHA256"
+    echo "MENU7_WRAPPER_MISSING=${wrapper}" >&2
+    return 1
   fi
+  url="${mirror}/client/${wrapper}"
   printf '%s\n' \
-    "( [[ \${BASH_SUBSHELL:-0} -gt 0 ]] || { printf '%s\\n' 'DP_COMMAND_SUBSHELL_REQUIRED=YES' >&2; exit 97; }; cd /home/aella && MIRROR='${mirror}' && VER='${ver}' && SCRIPT='stage-dp-phase2.sh' && GEN='phase2-helper-generation.manifest' && H='${sha}' && W=\$(mktemp -d)&&trap 'rm -rf \"\$W\"' EXIT&&cd \"\$W\" && \\" \
-    "  mkdir -p lib && for F in \"\$GEN\" \"\$SCRIPT\" bringup_py3_dp_lifecycle.sh lib/dp-{offline-source-product-version,phase2-operation-progress,phase2-bringup-lifecycle,phase2-ubuntu-prerequisites}.sh; do curl -fsSLo \"\$F\" \"\$MIRROR/client/\$F\" || exit; done && \\" \
-    "  printf '%s  %s\\n' \"\$H\" \"\$GEN\" | sha256sum -c - && sha256sum -c \"\$GEN\" && sudo bash \"./\$SCRIPT\" --target-version \"\$VER\" --same-version-recovery --mirror-url \"\$MIRROR\"; )"
+    "cd /home/aella && curl -fsSLo ${wrapper}.download ${url} && printf '%s  %s\\n' '${sha}' '${wrapper}.download' | sha256sum -c - && mv -f ${wrapper}.download ${wrapper} && bash ./${wrapper}"
 }
 
 gui_phase2_stage_command_block() {
@@ -1234,8 +1244,9 @@ gui_build_client_commands() {
   # Writes command text to stdout.
   # Args: mirror topology dl_worker_ips da_worker_ips [worker_password]
   # Uses PREPARATION_MODE from config (FULL or PHASE2_ONLY).
-  # OS-hop commands are one physical LAUNCHER_V1 line each.
-  # Phase 2 stage is shared by DL/DA and remains one SUBSHELL_V2 block.
+  # OS-hop commands are one physical WRAPPER_V1 line each.
+  # Phase 2 stage is shared by DL/DA and is one WRAPPER_V1 line; inner
+  # SUBSHELL_V2 helper bootstrap lives inside upgrade-phase2.sh.
   local mirror="$1" topology="$2" dl_worker_ips="${3:-}" da_worker_ips="${4:-}"
   local worker_password="${WORKER_SSH_PASSWORD:-}"
   if [[ $# -ge 5 ]]; then
@@ -1252,11 +1263,11 @@ gui_build_client_commands() {
   else
     snap_line="Create a full hypervisor snapshot of the DP VM."
   fi
-  stage_cmd="$(gui_phase2_stage_command_line "$mirror" "$ver")"
-  hop2="$(gui_client_hop_command_line "$mirror" "dp-offline-upgrade-xenial-to-bionic.sh")"
-  hop3="$(gui_client_hop_command_line "$mirror" "dp-offline-upgrade-bionic-to-focal.sh")"
-  hop4="$(gui_client_hop_command_line "$mirror" "dp-offline-upgrade-focal-to-jammy.sh")"
-  hop5="$(gui_client_hop_command_line "$mirror" "dp-offline-upgrade-jammy-to-noble.sh")"
+  stage_cmd="$(gui_phase2_stage_command_line "$mirror" "$ver")" || return 1
+  hop2="$(gui_client_hop_command_line "$mirror" "dp-offline-upgrade-xenial-to-bionic.sh")" || return 1
+  hop3="$(gui_client_hop_command_line "$mirror" "dp-offline-upgrade-bionic-to-focal.sh")" || return 1
+  hop4="$(gui_client_hop_command_line "$mirror" "dp-offline-upgrade-focal-to-jammy.sh")" || return 1
+  hop5="$(gui_client_hop_command_line "$mirror" "dp-offline-upgrade-jammy-to-noble.sh")" || return 1
   if [[ "$topology" == "cluster" ]]; then
     if [[ -z "$dl_worker_ips" && -z "$da_worker_ips" ]]; then
       echo "CLUSTER_WORKER_IPS_REQUIRED=YES" >&2
@@ -1279,19 +1290,7 @@ gui_build_client_commands() {
 
   hop_copy_guide='Copy and paste the following entire line into the DP terminal:'
 
-  copy_block_guide='Copy the complete three-line block.
-
-The block begins with an opening parenthesis "(" and ends with a closing
-parenthesis ")".
-
-Verify both parentheses are present before pressing Enter.
-
-The first two lines must end with backslash.
-
-Each Phase 2 executable block below is one logical Bash command (DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2).
-
-Do not copy only one or two lines.
-Do not include borders, status text, or the next section heading.'
+  copy_block_guide='Copy and paste the following entire line into the DP terminal:'
 
   if [[ "$topology" == "cluster" ]]; then
     if mm_is_phase2_only; then
@@ -1330,8 +1329,6 @@ $(mm_client_commands_file)
 
 ${cluster_rule}
 
-${copy_block_guide}
-
 STEP 0 — SNAPSHOT
 -----------------
 
@@ -1350,7 +1347,7 @@ STEP 2 — STAGE DP ${ver} FILES
 
 ${step2_where}
 
-Copy all three lines of the following block into the DP terminal once:
+Copy and paste the following entire line into the DP terminal:
 
 ${stage_cmd}
 
@@ -1412,7 +1409,7 @@ DP Client Upgrade Commands
 ==========================
 
 DP_COMMAND_BLOCK_VERSION=SUBSHELL_V2
-DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1
+DP_OS_HOP_COMMAND_VERSION=WRAPPER_V1
 
 Supported Starting DP Versions: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0
 Phase 2 Target: ${ver}
@@ -1427,8 +1424,8 @@ Do not edit the stage command to add a source version.
 Commands saved to:
 $(mm_client_commands_file)
 
-OS-hop steps use one hash-pinned launcher command per hop (DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1).
-The Phase 2 staging step remains a three-line SUBSHELL_V2 block.
+OS-hop steps use one hash-pinned wrapper command per hop (DP_OS_HOP_COMMAND_VERSION=WRAPPER_V1).
+The Phase 2 staging step uses one hash-pinned wrapper command (upgrade-phase2.sh).
 
 ${cluster_rule}
 
@@ -1496,7 +1493,7 @@ ${step6_where}
 
 ${copy_block_guide}
 
-Copy all three lines of the following block into the DP terminal once:
+Copy and paste the following entire line into the DP terminal:
 
 ${stage_cmd}
 

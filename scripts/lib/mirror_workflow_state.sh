@@ -569,10 +569,17 @@ mm_wf_commands_preflight() {
     fi
   fi
 
-  # FULL mode requires current-generation launchers before Menu 7 may show commands.
+  # FULL mode requires current-generation launchers and wrappers before Menu 7.
   if [[ "$mode" == "FULL" ]] && declare -F mm_client_launchers_ready >/dev/null 2>&1; then
     if ! mm_client_launchers_ready "${MM_CLIENT_ROOT:-}" >/dev/null 2>&1; then
       MM_WF_BLOCK_REASON="launcher_generation_mismatch"
+      MM_WF_REQUIRED_ACTION="Run Download and Prepare Upgrade Files"
+      return 1
+    fi
+  fi
+  if [[ "$mode" == "PHASE2_ONLY" ]] && declare -F mm_client_files_ready_phase2 >/dev/null 2>&1; then
+    if ! mm_client_files_ready_phase2 "${MM_CLIENT_ROOT:-}" >/dev/null 2>&1; then
+      MM_WF_BLOCK_REASON="phase2_wrapper_missing"
       MM_WF_REQUIRED_ACTION="Run Download and Prepare Upgrade Files"
       return 1
     fi
@@ -592,11 +599,59 @@ mm_wf_reconstruct_command_block() {
   printf '\n'
 }
 
-# Validate one OS-hop LAUNCHER_V1 one-line command at file line number.
+# Validate the upgrade-phase2.sh WRAPPER_V1 one-liner.
+mm_wf_validate_phase2_wrapper_at() {
+  local file="$1" expected_mirror="${2:-}"
+  local line wrapper download_name
+  line="$(grep -E '^cd /home/aella && curl -fsSLo upgrade-phase2\.sh\.download ' "$file" | head -1 || true)"
+  [[ -n "$line" ]] || {
+    printf 'COMMAND_FILE_PHASE2_WRAPPER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_PHASE2_WRAPPER_MISSING=YES\n'
+    return 1
+  }
+  if [[ "$line" =~ \\[[:space:]]*$ ]]; then
+    printf 'COMMAND_FILE_PHASE2_WRAPPER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_PHASE2_WRAPPER_BACKSLASH=YES\n'
+    return 1
+  fi
+  wrapper="upgrade-phase2.sh"
+  download_name="${wrapper}.download"
+  printf '%s\n' "$line" | grep -qE "'[0-9A-Fa-f]{64}'" || {
+    printf 'COMMAND_FILE_PHASE2_WRAPPER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_PHASE2_WRAPPER_SHA_PINNING=FAIL\n'
+    return 1
+  }
+  printf '%s\n' "$line" | grep -qE "sha256sum -c - && mv -f ${download_name} ${wrapper} && bash \./${wrapper}" || {
+    printf 'COMMAND_FILE_PHASE2_WRAPPER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_PHASE2_WRAPPER_SHA_PINNING=FAIL\n'
+    return 1
+  }
+  if printf '%s\n' "$line" | grep -qE 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)'; then
+    printf 'COMMAND_FILE_PHASE2_WRAPPER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_CURL_PIPE_BASH=YES\n'
+    return 1
+  fi
+  if printf '%s\n' "$line" | grep -qE '\.sha256|for F in|BASH_SUBSHELL|mktemp|phase2-helper-generation\.manifest'; then
+    printf 'COMMAND_FILE_PHASE2_WRAPPER_VALIDATION=FAIL\n'
+    printf 'COMMAND_FILE_PHASE2_LEGACY_BOOTSTRAP=YES\n'
+    return 1
+  fi
+  if [[ -n "$expected_mirror" ]]; then
+    printf '%s\n' "$line" | grep -Fq "${expected_mirror%/}/client/${wrapper}" || {
+      printf 'COMMAND_FILE_PHASE2_WRAPPER_VALIDATION=FAIL\n'
+      printf 'COMMAND_FILE_PHASE2_WRAPPER_MIRROR_URL=FAIL\n'
+      return 1
+    }
+  fi
+  printf 'COMMAND_FILE_PHASE2_WRAPPER_SHA_PINNING=PASS\n'
+  return 0
+}
+
+# Validate one OS-hop WRAPPER_V1 one-line command at file line number.
 # Prints evidence; returns 0 on PASS.
 mm_wf_validate_os_hop_launcher_at() {
   local file="$1" start_line="$2" expected_hop="${3:-}" expected_mirror="${4:-}"
-  local line launcher sha download_name url_part
+  local line wrapper sha download_name url_part
   line="$(sed -n "${start_line}p" "$file")"
   [[ -n "$line" ]] || {
     printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
@@ -619,18 +674,18 @@ mm_wf_validate_os_hop_launcher_at() {
     printf 'COMMAND_FILE_HOP_LAUNCHER_PREFIX=FAIL\n'
     return 1
   }
-  launcher="$(printf '%s\n' "$line" | sed -nE 's/.*bash \.\/(dp-launch-[a-z0-9-]+\.sh).*/\1/p')"
-  [[ -n "$launcher" ]] || {
+  wrapper="$(printf '%s\n' "$line" | sed -nE 's/.*bash \.\/(upgrade-[a-z0-9-]+\.sh).*/\1/p')"
+  [[ -n "$wrapper" ]] || {
     printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
     printf 'COMMAND_FILE_HOP_LAUNCHER_BASH_TARGET=MISSING\n'
     return 1
   }
-  if [[ -n "$expected_hop" && "$launcher" != "dp-launch-${expected_hop}.sh" ]]; then
+  if [[ -n "$expected_hop" && "$wrapper" != "upgrade-${expected_hop}.sh" ]]; then
     printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
     printf 'COMMAND_FILE_HOP_LAUNCHER_NAME_MISMATCH=YES\n'
     return 1
   fi
-  download_name="${launcher}.download"
+  download_name="${wrapper}.download"
   printf '%s\n' "$line" | grep -qE "curl -fsSLo ${download_name} " || {
     printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
     printf 'COMMAND_FILE_HOP_LAUNCHER_DOWNLOAD_NAME=FAIL\n'
@@ -641,7 +696,7 @@ mm_wf_validate_os_hop_launcher_at() {
     printf 'COMMAND_FILE_LAUNCHER_SHA_PINNING=FAIL\n'
     return 1
   fi
-  if ! printf '%s\n' "$line" | grep -qE "sha256sum -c - && mv -f ${download_name} ${launcher} && bash \./${launcher}"; then
+  if ! printf '%s\n' "$line" | grep -qE "sha256sum -c - && mv -f ${download_name} ${wrapper} && bash \./${wrapper}"; then
     printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
     printf 'COMMAND_FILE_LAUNCHER_SHA_PINNING=FAIL\n'
     return 1
@@ -649,8 +704,8 @@ mm_wf_validate_os_hop_launcher_at() {
   # SHA verify before mv; mv before bash.
   local sha_pos mv_pos bash_pos
   sha_pos="$(python3 -c 'import sys; s=sys.argv[1]; print(s.find("sha256sum -c -"))' "$line")"
-  mv_pos="$(python3 -c 'import sys; s=sys.argv[1]; n=sys.argv[2]; print(s.find(n))' "$line" "mv -f ${download_name} ${launcher}")"
-  bash_pos="$(python3 -c 'import sys; s=sys.argv[1]; n=sys.argv[2]; print(s.find(n))' "$line" "bash ./${launcher}")"
+  mv_pos="$(python3 -c 'import sys; s=sys.argv[1]; n=sys.argv[2]; print(s.find(n))' "$line" "mv -f ${download_name} ${wrapper}")"
+  bash_pos="$(python3 -c 'import sys; s=sys.argv[1]; n=sys.argv[2]; print(s.find(n))' "$line" "bash ./${wrapper}")"
   if [[ "$sha_pos" -lt 0 || "$mv_pos" -lt 0 || "$bash_pos" -lt 0 \
     || "$sha_pos" -ge "$mv_pos" || "$mv_pos" -ge "$bash_pos" ]]; then
     printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
@@ -667,13 +722,13 @@ mm_wf_validate_os_hop_launcher_at() {
     printf 'COMMAND_FILE_HTTP_SIDECAR_TRUST_ANCHOR=YES\n'
     return 1
   fi
-  if printf '%s\n' "$line" | grep -qE 'EXPECTED_FPR=|gpgv |GNUPGHOME=|for f in'; then
+  if printf '%s\n' "$line" | grep -qE 'EXPECTED_FPR=|gpgv |GNUPGHOME=|for f in|dp-launch-'; then
     printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
     printf 'COMMAND_FILE_OS_HOP_LEGACY_BOOTSTRAP=YES\n'
     return 1
   fi
   if [[ -n "$expected_mirror" ]]; then
-    url_part="${expected_mirror%/}/client/${launcher}"
+    url_part="${expected_mirror%/}/client/${wrapper}"
     printf '%s\n' "$line" | grep -Fq "$url_part" || {
       printf 'COMMAND_FILE_OS_HOP_LAUNCHER_VALIDATION=FAIL\n'
       printf 'COMMAND_FILE_HOP_LAUNCHER_MIRROR_URL=FAIL\n'
@@ -724,18 +779,18 @@ mm_wf_validate_command_file_content() {
   printf 'COMMAND_FILE_PHASE2_BLOCK_VERSION=SUBSHELL_V2\n'
 
   lines="$(wc -l <"$file" | tr -d ' ')"
-  # Phase 2 executable command blocks still use leading "(".
+  # Legacy Phase 2 subshell copy blocks must not appear in operator commands.
   exec_count="$(grep -cE '^\( .*cd /home/aella && ' "$file" || true)"
-  # OS-hop LAUNCHER_V1 one-liners.
-  hop_count="$(grep -cE "^cd /home/aella && curl -fsSLo dp-launch-(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)\.sh\.download " "$file" || true)"
+  hop_count="$(grep -cE "^cd /home/aella && curl -fsSLo upgrade-(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)\.sh\.download " "$file" || true)"
   launcher_count="$hop_count"
   legacy_hop_count="$(grep -cE "^\( .*HOP='(xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)'" "$file" || true)"
-  stage_count="$(grep -cE "^\( .*SCRIPT='stage-dp-phase2\.sh'" "$file" || true)"
+  legacy_hop_count=$((legacy_hop_count + $(grep -cE '^cd /home/aella && curl -fsSLo dp-launch-' "$file" || true)))
+  stage_count="$(grep -cE '^cd /home/aella && curl -fsSLo upgrade-phase2\.sh\.download ' "$file" || true)"
   bringup_count="$(grep -cE 'bringup_py3_dp_after_os_upgrade\.sh' "$file" || true)"
-  xenial="$(grep -cE '^cd /home/aella && curl -fsSLo dp-launch-xenial-to-bionic\.sh\.download ' "$file" || true)"
-  bionic="$(grep -cE '^cd /home/aella && curl -fsSLo dp-launch-bionic-to-focal\.sh\.download ' "$file" || true)"
-  focal="$(grep -cE '^cd /home/aella && curl -fsSLo dp-launch-focal-to-jammy\.sh\.download ' "$file" || true)"
-  jammy="$(grep -cE '^cd /home/aella && curl -fsSLo dp-launch-jammy-to-noble\.sh\.download ' "$file" || true)"
+  xenial="$(grep -cE '^cd /home/aella && curl -fsSLo upgrade-xenial-to-bionic\.sh\.download ' "$file" || true)"
+  bionic="$(grep -cE '^cd /home/aella && curl -fsSLo upgrade-bionic-to-focal\.sh\.download ' "$file" || true)"
+  focal="$(grep -cE '^cd /home/aella && curl -fsSLo upgrade-focal-to-jammy\.sh\.download ' "$file" || true)"
+  jammy="$(grep -cE '^cd /home/aella && curl -fsSLo upgrade-jammy-to-noble\.sh\.download ' "$file" || true)"
 
   block_count="$exec_count"
   hop_block_count="$hop_count"
@@ -746,14 +801,15 @@ mm_wf_validate_command_file_content() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     lineno=$((lineno + 1))
     [[ ${#line} -gt "$max_phys" ]] && max_phys=${#line}
-    if [[ "$line" == 'cd /home/aella && curl -fsSLo dp-launch-'*'.download '* ]]; then
+    if [[ "$line" == 'cd /home/aella && curl -fsSLo upgrade-'*'.download '* \
+      && "$line" != 'cd /home/aella && curl -fsSLo upgrade-phase2.sh.download '* ]]; then
       hop_starts+=("$lineno")
     fi
   done <"$file"
 
   printf 'COMMAND_FILE_MODE=%s\n' "$mode"
   printf 'COMMAND_FILE_LINE_COUNT=%s\n' "$lines"
-  printf 'COMMAND_FILE_EXECUTABLE_COUNT=%s\n' "$((exec_count + hop_count))"
+  printf 'COMMAND_FILE_EXECUTABLE_COUNT=%s\n' "$((stage_count + hop_count))"
   printf 'COMMAND_FILE_COMMAND_BLOCK_COUNT=%s\n' "$block_count"
   printf 'COMMAND_FILE_OS_HOP_COUNT=%s\n' "$hop_count"
   printf 'COMMAND_FILE_OS_HOP_BLOCK_COUNT=%s\n' "$hop_block_count"
@@ -761,14 +817,25 @@ mm_wf_validate_command_file_content() {
   printf 'COMMAND_FILE_OS_HOP_LEGACY_BLOCK_COUNT=%s\n' "$legacy_hop_count"
   printf 'COMMAND_FILE_MAX_PHYSICAL_LINE_LENGTH=%s\n' "$max_phys"
 
+  if grep -qE 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)' "$file"; then
+    printf 'COMMAND_FILE_BUILD=FAIL\n'
+    printf 'COMMAND_FILE_CURL_PIPE_BASH=YES\n'
+    return 1
+  fi
+  if grep -qE 'BASH_SUBSHELL|DP_COMMAND_SUBSHELL_REQUIRED=YES|for F in' "$file"; then
+    printf 'COMMAND_FILE_BUILD=FAIL\n'
+    printf 'COMMAND_FILE_PHASE2_LEGACY_SUBSHELL=YES\n'
+    return 1
+  fi
+
   case "$mode" in
     FULL)
-      if ! grep -qE '^DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1$' "$file"; then
+      if ! grep -qE '^DP_OS_HOP_COMMAND_VERSION=WRAPPER_V1$' "$file"; then
         printf 'COMMAND_FILE_BUILD=FAIL\n'
         printf 'COMMAND_FILE_OS_HOP_COMMAND_VERSION=FAIL\n'
         return 1
       fi
-      printf 'DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1\n'
+      printf 'DP_OS_HOP_COMMAND_VERSION=WRAPPER_V1\n'
       for n in 0 1 2 3 4 5 6 7 8 9; do
         if ! grep -qE "STEP ${n} —|Step ${n} —" "$file"; then
           printf 'COMMAND_FILE_BUILD=FAIL\n'
@@ -802,7 +869,7 @@ mm_wf_validate_command_file_content() {
         printf 'COMMAND_FILE_BRINGUP_COUNT=%s\n' "$bringup_count"
         return 1
       fi
-      # Phase 2 still uses sudo bash; OS-hop operator command must not.
+      # Bringup still uses sudo bash; OS-hop/Phase2 wrapper operator commands must not.
       grep -q "sudo bash" "$file" || {
         printf 'COMMAND_FILE_BUILD=FAIL\n'
         printf 'COMMAND_FILE_SUDO_BASH=MISSING\n'
@@ -825,29 +892,23 @@ mm_wf_validate_command_file_content() {
       done
       printf 'COMMAND_FILE_LAUNCHER_SHA_PINNING=PASS\n'
 
-      # Reject trailing backslashes outside the Phase 2 stage command block.
-      local stage_start="" ok_cont
-      stage_start="$(grep -nE "^\( .*SCRIPT='stage-dp-phase2\.sh'" "$file" | head -1 | cut -d: -f1 || true)"
+      if ! mm_wf_validate_phase2_wrapper_at "$file" "$mirror_url"; then
+        printf 'COMMAND_FILE_BUILD=FAIL\n'
+        return 1
+      fi
+
       lineno=0
       while IFS= read -r line || [[ -n "$line" ]]; do
         lineno=$((lineno + 1))
         if [[ "$line" =~ \\[[:space:]]*$ ]]; then
-          ok_cont=0
-          if [[ -n "$stage_start" ]] \
-            && { [[ "$lineno" -eq "$stage_start" ]] || [[ "$lineno" -eq $((stage_start + 1)) ]]; }
-          then
-            ok_cont=1
-          fi
-          if [[ "$ok_cont" -eq 0 ]]; then
-            printf 'COMMAND_FILE_BUILD=FAIL\n'
-            printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-            printf 'COMMAND_FILE_ARBITRARY_BACKSLASH=YES\n'
-            printf 'COMMAND_FILE_ARBITRARY_BACKSLASH_LINE=%s\n' "$lineno"
-            return 1
-          fi
+          printf 'COMMAND_FILE_BUILD=FAIL\n'
+          printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
+          printf 'COMMAND_FILE_ARBITRARY_BACKSLASH=YES\n'
+          printf 'COMMAND_FILE_ARBITRARY_BACKSLASH_LINE=%s\n' "$lineno"
+          return 1
         fi
       done <"$file"
-      max_block_lines=3
+      max_block_lines=1
       ;;
     PHASE2_ONLY)
       if [[ "$hop_count" -ne 0 || "$legacy_hop_count" -ne 0 ]]; then
@@ -873,46 +934,25 @@ mm_wf_validate_command_file_content() {
         printf 'COMMAND_FILE_BRINGUP_COUNT=%s\n' "$bringup_count"
         return 1
       fi
-      max_block_lines=3
-      # Validate phase2 stage continuation if present.
-      local stage_start
-      stage_start="$(grep -nE "^\( .*SCRIPT='stage-dp-phase2\.sh'" "$file" | head -1 | cut -d: -f1 || true)"
-      if [[ -n "$stage_start" ]]; then
-        local s1 s2 s3
-        s1="$(sed -n "${stage_start}p" "$file")"
-        s2="$(sed -n "$((stage_start + 1))p" "$file")"
-        s3="$(sed -n "$((stage_start + 2))p" "$file")"
-        [[ "$s1" == '('* ]] || {
-          printf 'COMMAND_FILE_BUILD=FAIL\n'
-          printf 'COMMAND_FILE_LEGACY_NON_SUBSHELL=YES\n'
-          return 1
-        }
-        printf '%s\n' "$s1" | grep -qE 'BASH_SUBSHELL' || {
-          printf 'COMMAND_FILE_BUILD=FAIL\n'
-          printf 'COMMAND_FILE_SUBSHELL_GUARD=MISSING\n'
-          return 1
-        }
-        [[ "$s1" =~ \\[[:space:]]*$ ]] || {
-          printf 'COMMAND_FILE_BUILD=FAIL\n'
-          printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-          return 1
-        }
-        [[ "$s2" =~ \\[[:space:]]*$ ]] || {
-          printf 'COMMAND_FILE_BUILD=FAIL\n'
-          printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
-          return 1
-        }
-        if [[ "$s3" =~ \\[[:space:]]*$ ]]; then
+      grep -q "sudo bash" "$file" || {
+        printf 'COMMAND_FILE_BUILD=FAIL\n'
+        printf 'COMMAND_FILE_SUDO_BASH=MISSING\n'
+        return 1
+      }
+      max_block_lines=1
+      if ! mm_wf_validate_phase2_wrapper_at "$file" "$mirror_url"; then
+        printf 'COMMAND_FILE_BUILD=FAIL\n'
+        return 1
+      fi
+      lineno=0
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        lineno=$((lineno + 1))
+        if [[ "$line" =~ \\[[:space:]]*$ ]]; then
           printf 'COMMAND_FILE_BUILD=FAIL\n'
           printf 'COMMAND_FILE_CONTINUATION_VALIDATION=FAIL\n'
           return 1
         fi
-        grep -q "sudo bash" <<<"$s3" || {
-          printf 'COMMAND_FILE_BUILD=FAIL\n'
-          printf 'COMMAND_FILE_SUDO_BASH=MISSING\n'
-          return 1
-        }
-      fi
+      done <"$file"
       ;;
     *)
       printf 'COMMAND_FILE_BUILD=FAIL\n'
@@ -968,7 +1008,7 @@ mm_wf_write_client_set_metadata() {
   local created_utc="${17:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
   local launcher_schema="${18:-${CLIENT_LAUNCHER_SCHEMA_VERSION:-1}}"
   local meta="${dest}/client-set.env"
-  local hop lname lsha meta_key
+  local hop lname lsha meta_key wname wsha wkey
   cat >"${meta}.tmp" <<EOF
 CLIENT_SET_GENERATION_ID=${gen}
 CLIENT_SIGNING_FINGERPRINT=${fpr}
@@ -997,7 +1037,17 @@ EOF
       meta_key="CLIENT_LAUNCHER_$(printf '%s' "$hop" | tr 'a-z-' 'A-Z_')_SHA256"
       printf '%s=%s\n' "$meta_key" "$lsha" >>"${meta}.tmp"
     fi
+    wname="upgrade-${hop}.sh"
+    if [[ -f "${dest}/${wname}.sha256" ]]; then
+      wsha="$(awk '{print $1; exit}' "${dest}/${wname}.sha256")"
+      wkey="CLIENT_WRAPPER_$(printf '%s' "$hop" | tr 'a-z-' 'A-Z_')_SHA256"
+      printf '%s=%s\n' "$wkey" "$wsha" >>"${meta}.tmp"
+    fi
   done
+  if [[ -f "${dest}/upgrade-phase2.sh.sha256" ]]; then
+    printf 'CLIENT_WRAPPER_PHASE2_SHA256=%s\n' \
+      "$(awk '{print $1; exit}' "${dest}/upgrade-phase2.sh.sha256")" >>"${meta}.tmp"
+  fi
   chmod 0644 "${meta}.tmp"
   mv -f "${meta}.tmp" "$meta"
   chmod 0644 "$meta"

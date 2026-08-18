@@ -28,6 +28,18 @@ python3 "${ROOT}/scripts/lib/build_client_launchers.py" \
   --output-dir "$MM_CLIENT_ROOT" \
   --mirror-base-url "http://192.0.2.10" \
   --signing-fingerprint "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" >/dev/null
+# shellcheck source=/dev/null
+source "${ROOT}/scripts/lib/phase2_helper_generation.sh"
+mkdir -p "${MM_CLIENT_ROOT}/lib"
+install -m 0755 "${ROOT}/client/stage-dp-phase2.sh" "${MM_CLIENT_ROOT}/stage-dp-phase2.sh"
+install -m 0755 "${ROOT}/client/bringup_py3_dp_lifecycle.sh" "${MM_CLIENT_ROOT}/bringup_py3_dp_lifecycle.sh"
+for hf in dp-offline-source-product-version.sh dp-phase2-operation-progress.sh \
+  dp-phase2-bringup-lifecycle.sh dp-phase2-ubuntu-prerequisites.sh
+do
+  install -m 0755 "${ROOT}/client/lib/${hf}" "${MM_CLIENT_ROOT}/lib/${hf}"
+done
+phase2_helper_generation_write "$MM_CLIENT_ROOT" >/dev/null
+phase2_upgrade_wrapper_write "$MM_CLIENT_ROOT" "http://192.0.2.10" "6.5.0" >/dev/null
 export SCRIPT_DIR="${ROOT}/scripts"
 mkdir -p "$MM_LOG_DIR" "$MM_CONFIG_DIR" "$MM_CLIENT_ROOT"
 : >"$MM_STATUS_FILE"
@@ -174,9 +186,9 @@ grep -q 'Supported Starting DP Versions: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0' "$OUT" \
 grep -q 'Phase 2 Target: 6.5.0' "$OUT" || fail "missing phase2 target header"
 grep -q 'OS Upgrade: Ubuntu 16.04 → Ubuntu 24.04' "$OUT" || fail "missing OS upgrade header"
 grep -q 'Commands saved to:' "$OUT" || fail "missing Commands saved to"
-grep -q 'DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1' "$OUT" || fail "missing LAUNCHER_V1"
+grep -q 'DP_OS_HOP_COMMAND_VERSION=WRAPPER_V1' "$OUT" || fail "missing WRAPPER_V1"
 grep -q 'Copy and paste the following entire line into the DP terminal:' "$OUT" || fail "missing one-line copy guidance"
-grep -q 'Do not copy only one or two lines' "$OUT" || fail "missing Phase2 partial-copy warning"
+grep -q 'Do not copy only one or two lines' "$OUT" && fail "obsolete three-line Phase2 warning still present" || true
 true  # OS-hop one-line guidance is now required
 grep -q 'Visual wrapping does not insert a newline' "$OUT" && fail "obsolete wrap guidance still present" || true
 grep -qE 'STEP 0 — SNAPSHOT|Step 0 —' "$OUT" || fail "missing step 0"
@@ -203,12 +215,14 @@ grep -q 'Show complete instructions' "$OUT" && fail "Show complete instructions 
 grep -q 'Show Step 2 command block' "$OUT" && fail "Show Step submenu still present" || true
 grep -q 'BEGIN STEP' "$OUT" && fail "BEGIN STEP markers must be removed" || true
 grep -q 'END STEP' "$OUT" && fail "END STEP markers must be removed" || true
-grep -qE '\\[[:space:]]*$' "$OUT" || fail "expected controlled backslash continuations"
-grep -q 'dp-launch-xenial-to-bionic.sh' "$OUT" || fail "missing launcher in commands"
+grep -qE '\\[[:space:]]*$' "$OUT" && fail "backslash continuations must not appear in Menu 7" || true
+grep -q 'upgrade-xenial-to-bionic.sh' "$OUT" || fail "missing OS wrapper in commands"
 # gpgv lives inside launcher, not operator command
 grep -qE 'gpgv --keyring' "$OUT" && fail "gpgv must not appear in operator OS-hop command" || true
 grep -q -- '--keyring ./public.gpg' "$OUT" && fail "gpgv must not use armored public.gpg" || true
 grep -q "EXPECTED_FPR=" "$OUT" && fail "EXPECTED_FPR must not appear in Menu 7 OS-hop command" || true
+grep -q 'mktemp -d' "$OUT" && fail "mktemp must not appear in Menu 7 operator command" || true
+grep -q 'dp-launch-xenial-to-bionic.sh' "$OUT" && fail "launcher bootstrap leaked into Menu 7" || true
 grep -q 'mktemp -d' "$MM_CLIENT_ROOT/dp-launch-xenial-to-bionic.sh" || fail "missing isolated workdir in launcher"
 grep -q 'dp-client-command-runner.sh' "$MM_CLIENT_ROOT/dp-launch-xenial-to-bionic.sh" || fail "missing command runner in launcher"
 grep -q 'rm -f "\$SCRIPT"' "$OUT" && fail "must not rm existing files before HTTP" || true
@@ -219,27 +233,28 @@ for n in 0 1 2 3 4 5 6 7 8 9; do
   grep -qE "Step ${n} —|STEP ${n} —" "$OUT" || fail "missing step ${n}"
 done
 for script in \
-  stage-dp-phase2.sh \
+  upgrade-phase2.sh \
   bringup_py3_dp_after_os_upgrade.sh
 do
   grep -Fq "$script" "$OUT" || fail "missing script name: $script"
 done
 for hop in xenial-to-bionic bionic-to-focal focal-to-jammy jammy-to-noble; do
-  grep -q "dp-launch-${hop}.sh" "$OUT" || fail "missing launcher ${hop}"
+  grep -q "upgrade-${hop}.sh" "$OUT" || fail "missing wrapper ${hop}"
 done
 true  # SCRIPT binding lives inside launcher
 grep -q 'dp-client-command-runner.sh' "$MM_CLIENT_ROOT/dp-launch-xenial-to-bionic.sh" || fail "missing command runner name in launcher"
 grep -Fq -- '--source-dp-version' "$OUT" && fail "FULL command has --source-dp-version" || true
-grep -Fq -- '--target-version' "$OUT" || fail "target version missing"
-grep -Fq -- '--same-version-recovery' "$OUT" || fail "same-version-recovery missing"
-hop_count="$(grep -cE '^cd /home/aella && curl -fsSLo dp-launch-' "$OUT" || true)"
-[[ "$hop_count" -eq 4 ]] || fail "expected four launcher commands, got ${hop_count}"
-mirror_count="$(grep -c "http://192.0.2.10/client/dp-launch-" "$OUT" || true)"
-[[ "$mirror_count" -ge 4 ]] || fail "expected launcher URLs, got ${mirror_count}"
+grep -Fq -- '--target-version' "$MM_CLIENT_ROOT/upgrade-phase2.sh" || fail "target version missing from phase2 wrapper"
+grep -Fq -- '--same-version-recovery' "$MM_CLIENT_ROOT/upgrade-phase2.sh" || fail "same-version-recovery missing from phase2 wrapper"
+grep -Fq -- '--target-version' "$OUT" && fail "target-version leaked into Menu 7" || true
+hop_count="$(grep -cE '^cd /home/aella && curl -fsSLo upgrade-' "$OUT" || true)"
+[[ "$hop_count" -eq 5 ]] || fail "expected four OS wrappers + phase2 wrapper, got ${hop_count}"
+mirror_count="$(grep -c "http://192.0.2.10/client/upgrade-" "$OUT" || true)"
+[[ "$mirror_count" -ge 5 ]] || fail "expected wrapper URLs, got ${mirror_count}"
 second_cmd="$(gui_client_hop_command_line "http://192.0.2.20" "dp-offline-upgrade-xenial-to-bionic.sh")"
 [[ "$(printf '%s\n' "$second_cmd" | wc -l | tr -d ' ')" == "1" ]] \
   || fail "hop command_line must be one physical line"
-[[ "$second_cmd" == *"http://192.0.2.20/client/dp-launch-xenial-to-bionic.sh"* ]] \
+[[ "$second_cmd" == *"http://192.0.2.20/client/upgrade-xenial-to-bionic.sh"* ]] \
   || fail "second fixture URL missing from hop command"
 grep -q 'License is valid' "$OUT" || fail "license check missing"
 pass "FULL mode client commands"
@@ -256,9 +271,66 @@ grep -qE 'STEP 2 — STAGE DP 6.5.0|Step 2 — Stage DP 6.5.0 files' "$P2_OUT" \
   || fail "phase2 stage step missing"
 grep -qE 'STEP 3 — RUN DP 6.5.0 BRINGUP|Step 3 — Run DP 6.5.0 bringup' "$P2_OUT" \
   || fail "phase2 bringup missing"
-grep -Fq -- '--same-version-recovery' "$P2_OUT" || fail "phase2 same-version-recovery missing"
+grep -q 'upgrade-phase2.sh' "$P2_OUT" || fail "phase2 wrapper missing from PHASE2_ONLY commands"
+grep -Fq -- '--same-version-recovery' "$P2_OUT" && fail "same-version-recovery leaked into PHASE2_ONLY Menu 7" || true
 grep -q 'BEGIN STEP\|BEGIN PHASE' "$P2_OUT" && fail "phase2 still has BEGIN markers" || true
 pass "PHASE2_ONLY omits OS hop commands"
+
+# Required wrappers: FULL needs all five; PHASE2_ONLY needs upgrade-phase2.sh.
+READY_FULL="$TMP/ready-full"
+cp -a "$MM_CLIENT_ROOT" "$READY_FULL"
+if mm_client_files_ready "$READY_FULL" 2>/dev/null; then
+  pass "FULL seeded client with wrappers is ready"
+else
+  # Synthetic launcher tree may lack signed hop clients; wrapper presence still required.
+  [[ -f "${READY_FULL}/upgrade-xenial-to-bionic.sh" ]] \
+    && [[ -f "${READY_FULL}/upgrade-phase2.sh" ]] \
+    && pass "FULL required wrappers present" \
+    || fail "FULL required wrappers missing"
+fi
+rm -f "${READY_FULL}/upgrade-jammy-to-noble.sh"
+if mm_client_files_ready "$READY_FULL" 2>/dev/null; then
+  fail "FULL readiness passed with missing OS wrapper"
+else
+  pass "missing required OS wrapper makes FULL readiness FAIL"
+fi
+READY_P2="$TMP/ready-p2"
+mkdir -p "${READY_P2}/lib"
+cp -a "${MM_CLIENT_ROOT}/stage-dp-phase2.sh" "${READY_P2}/stage-dp-phase2.sh"
+cp -a "${MM_CLIENT_ROOT}/stage-dp-phase2.sh.sha256" "${READY_P2}/stage-dp-phase2.sh.sha256" 2>/dev/null || \
+  (cd "$READY_P2" && sha256sum stage-dp-phase2.sh >stage-dp-phase2.sh.sha256)
+cp -a "${MM_CLIENT_ROOT}/bringup_py3_dp_lifecycle.sh" "${READY_P2}/bringup_py3_dp_lifecycle.sh"
+cp -a "${MM_CLIENT_ROOT}/lib/." "${READY_P2}/lib/"
+cp -a "${MM_CLIENT_ROOT}/phase2-helper-generation.manifest" "${READY_P2}/phase2-helper-generation.manifest"
+cp -a "${MM_CLIENT_ROOT}/upgrade-phase2.sh" "${READY_P2}/upgrade-phase2.sh"
+cp -a "${MM_CLIENT_ROOT}/upgrade-phase2.sh.sha256" "${READY_P2}/upgrade-phase2.sh.sha256"
+if mm_client_files_ready_phase2 "$READY_P2"; then
+  pass "PHASE2_ONLY required wrapper present"
+else
+  fail "PHASE2_ONLY helper set with wrapper should be ready"
+fi
+rm -f "${READY_P2}/upgrade-phase2.sh"
+if mm_client_files_ready_phase2 "$READY_P2"; then
+  fail "PHASE2_ONLY readiness passed without upgrade-phase2.sh"
+else
+  pass "missing upgrade-phase2.sh makes PHASE2_ONLY readiness FAIL"
+fi
+mm_http_probe_ok() {
+  local url="$1"
+  [[ "$url" == *"/client/upgrade-phase2.sh" ]] && return 1
+  return 0
+}
+mm_phase2_paths() { MM_WF_PHASE2_STABLE="dp_bundle_6.5.0-current.tar"; }
+TARGET_DP_VERSION=6.5.0
+PHASE2_TARGET_VERSION=6.5.0
+PREPARATION_MODE=FULL
+if mm_http_required_urls_ok; then
+  fail "HTTP readiness passed without upgrade-phase2.sh probe"
+else
+  pass "missing wrapper over HTTP makes readiness FAIL"
+fi
+mm_http_probe_ok() { return 0; }
+PREPARATION_MODE=PHASE2_ONLY
 
 # Forbidden strings
 for bad in \
@@ -442,7 +514,13 @@ EOF
     sha="$(sha256sum "${MM_CLIENT_ROOT}/${name}" | awk '{print $1}')"
     key="CLIENT_LAUNCHER_$(printf '%s' "$hop" | tr 'a-z-' 'A-Z_')_SHA256"
     printf '%s=%s\n' "$key" "$sha"
+    wname="upgrade-${hop}.sh"
+    sha="$(sha256sum "${MM_CLIENT_ROOT}/${wname}" | awk '{print $1}')"
+    key="CLIENT_WRAPPER_$(printf '%s' "$hop" | tr 'a-z-' 'A-Z_')_SHA256"
+    printf '%s=%s\n' "$key" "$sha"
   done
+  printf 'CLIENT_WRAPPER_PHASE2_SHA256=%s\n' \
+    "$(sha256sum "${MM_CLIENT_ROOT}/upgrade-phase2.sh" | awk '{print $1}')"
 } >"${MM_CLIENT_ROOT}/client-set.env"
 mm_client_set_current_source() { return 0; }
 mm_client_launchers_ready() { return 0; }
@@ -492,20 +570,21 @@ grep -q 'cat "\$out_file"' "$INSTALLER" && fail "TTY reprint after GUI still pre
 [[ -s "$(mm_client_commands_file)" ]] || fail "menu7 created empty command file"
 [[ "$(stat -c '%a' "$(mm_client_commands_file)")" == "644" ]] || fail "menu7 file mode not 644"
 grep -Fq -- '--source-dp-version' "$(mm_client_commands_file)" && fail "menu7 has source" || true
-grep -Fq -- '--target-version' "$(mm_client_commands_file)" || fail "menu7 missing target"
-grep -Fq -- '--same-version-recovery' "$(mm_client_commands_file)" || fail "menu7 missing recovery"
+grep -q 'upgrade-phase2.sh' "$(mm_client_commands_file)" || fail "menu7 missing phase2 wrapper"
+grep -Fq -- '--target-version' "$(mm_client_commands_file)" && fail "menu7 leaked --target-version" || true
+grep -Fq -- '--same-version-recovery' "$(mm_client_commands_file)" && fail "menu7 leaked recovery flag" || true
 for n in 0 1 2 3 4 5 6 7 8 9; do
   grep -qE "STEP ${n} —|Step ${n} —" "$(mm_client_commands_file)" \
     || fail "menu7 missing step ${n}"
 done
 grep -q 'BEGIN STEP' "$(mm_client_commands_file)" && fail "menu7 still has BEGIN STEP" || true
-grep -q 'dp-launch-xenial-to-bionic.sh' "$(mm_client_commands_file)" || fail "menu7 missing launcher"
+grep -q 'upgrade-xenial-to-bionic.sh' "$(mm_client_commands_file)" || fail "menu7 missing OS wrapper"
 grep -qE 'gpgv --keyring' "$(mm_client_commands_file)" \
   && fail "menu7 OS-hop must not expose gpgv" || true
-grep -q "DP_OS_HOP_COMMAND_VERSION=LAUNCHER_V1" "$(mm_client_commands_file)" || fail "menu7 missing LAUNCHER_V1"
+grep -q "DP_OS_HOP_COMMAND_VERSION=WRAPPER_V1" "$(mm_client_commands_file)" || fail "menu7 missing WRAPPER_V1"
 grep -q 'dp-client-command-runner.sh' "$MM_CLIENT_ROOT/dp-launch-xenial-to-bionic.sh" \
   || fail "launcher missing command runner"
-# Saved file and generators must agree (same one-line hop / three-line stage content).
+# Saved file and generators must agree (same one-line hop / one-line stage content).
 gen_hop="$(gui_client_hop_command_line "http://192.0.2.10" "dp-offline-upgrade-xenial-to-bionic.sh")"
 grep -Fq "$gen_hop" "$(mm_client_commands_file)" \
   || fail "saved file hop command differs from gui_client_hop_command_line"
@@ -591,7 +670,7 @@ echo "MENU7_COMMON_STEPS_1_TO_6=PASS"
 
 [[ "$(grep -cE '^STEP 6 — STAGE DP' "$REG_DUAL")" -eq 1 ]] \
   || fail "STEP 6 heading not unique"
-[[ "$(grep -c "SCRIPT='stage-dp-phase2.sh'" "$REG_DUAL")" -eq 1 ]] \
+[[ "$(grep -cE '^cd /home/aella && curl -fsSLo upgrade-phase2\.sh\.download ' "$REG_DUAL")" -eq 1 ]] \
   || fail "expected exactly one common stage command"
 grep -q 'Use the SAME staging command on every node' "$REG_DUAL" \
   || fail "same staging command guidance missing"
@@ -698,7 +777,7 @@ grep -q 'STEP 3A: DL master only' "$REG_P2" || fail "PHASE2 missing STEP 3A mast
 grep -q 'STEP 3B: DA master only' "$REG_P2" || fail "PHASE2 missing STEP 3B master-only"
 grep -q 'Use the SAME staging command on every node' "$REG_P2" \
   || fail "PHASE2 missing shared stage command guidance"
-[[ "$(grep -c "SCRIPT='stage-dp-phase2.sh'" "$REG_P2")" -eq 1 ]] \
+[[ "$(grep -cE '^cd /home/aella && curl -fsSLo upgrade-phase2\.sh\.download ' "$REG_P2")" -eq 1 ]] \
   || fail "PHASE2 expected exactly one stage command"
 awk '/STEP 3A — DL CLUSTER MASTER/,/STEP 3B — DA CLUSTER MASTER/' "$REG_P2" \
   | grep -q -- "--worker-ips \"${REG_DL_IPS}\"" \
