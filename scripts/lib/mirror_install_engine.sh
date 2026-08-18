@@ -873,7 +873,7 @@ engine_materialize_os_mirror() {
 engine_prepare_phase2_ubuntu_prerequisites() {
   local script="${MM_PROJECT_ROOT}/scripts/prepare-phase2-ubuntu-prerequisites.sh"
   local work="${1:-}"
-  local extras out rc=0
+  local extras out rc=0 child_log line
   [[ -f "$script" ]] || mm_die "PHASE2_PREREQ=FAIL reason=prepare_script_missing"
   mm_set_phase "Preparing Phase 2 Ubuntu Prerequisites"
   if [[ -z "$work" || ! -f "${work}/aelladeb_py3_common.tar.gz" ]]; then
@@ -885,15 +885,27 @@ engine_prepare_phase2_ubuntu_prerequisites() {
   fi
   extras="${MM_DP_PHASE2_ROOT}/${TARGET_DP_VERSION}/extras"
   mkdir -p "$extras"
+  child_log="$(mktemp "${TMPDIR:-/tmp}/phase2-prereq-child.XXXXXX")"
   set +e
   DP_PHASE2_VERSION="${TARGET_DP_VERSION}" \
     DP_PHASE2_ROOT="${MM_DP_PHASE2_ROOT}" \
     MM_SELECTIVE_ROOT="${MM_SELECTIVE_ROOT}" \
     PHASE2_PREREQ_WORK_DIR="$work" \
     PHASE2_PREREQ_OUT_DIR="$extras" \
-    bash "$script" "${TARGET_DP_VERSION}"
+    bash "$script" "${TARGET_DP_VERSION}" >"$child_log" 2>&1
   rc=$?
   set -e
+  # Replay child stdout/stderr through mm_log so Menu 2 live progress
+  # (/dev/tty + MM_LOG_FILE) shows the specific reason before the generic rc.
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+    if [[ "$line" == *'=FAIL'* || "$line" == *'[ERROR]'* ]]; then
+      mm_error "$line"
+    else
+      mm_info "$line"
+    fi
+  done < "$child_log"
+  rm -f "$child_log"
   if [[ "$rc" -ne 0 ]]; then
     mm_error "PHASE2_PREREQ_BUILD=FAIL rc=${rc}"
     mm_die "PHASE2_PREREQ=FAIL rc=${rc}"

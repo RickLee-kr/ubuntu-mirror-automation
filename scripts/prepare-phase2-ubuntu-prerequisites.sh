@@ -111,22 +111,79 @@ dp2_find_extra_acps_debs() {
 dp2_extract_py3_apt_from_common() {
   local common="$1"
   local dest="$2"
+  local listing member found
+  local tar_rc=0 listing_rc=0 extract_rc=0 flatten_rc=0
   mkdir -p "$dest"
   # Extract only the inner py3-apt tarball; never rewrite the common archive.
-  if tar -tzf "$common" 2>/dev/null | grep -q 'py3-apt-packages.tar.gz$'; then
-    local member
-    member="$(tar -tzf "$common" | grep 'py3-apt-packages.tar.gz$' | head -1)"
-    tar -xzf "$common" -C "$dest" "$member"
-    # Flatten if nested.
-    if [[ ! -f "${dest}/py3-apt-packages.tar.gz" ]]; then
-      local found
-      found="$(find "$dest" -name 'py3-apt-packages.tar.gz' -type f | head -1 || true)"
-      if [[ -n "$found" ]]; then
-        cp -a "$found" "${dest}/py3-apt-packages.tar.gz"
-      fi
+  # Consume the complete tar listing. Never close tar stdout early:
+  # grep -q / head / sed-q under set -o pipefail can SIGPIPE tar (rc=141)
+  # and falsely report a missing member that exists.
+  listing="$(mktemp "${TMPDIR:-/tmp}/phase2-prereq-list.XXXXXX")"
+  set +e
+  tar -tzf "$common" >"$listing" 2>/dev/null
+  tar_rc=$?
+  set -e
+  if [[ "$tar_rc" -ne 0 ]]; then
+    rm -f "$listing"
+    dp2_error "PHASE2_PREREQ=FAIL reason=py3_apt_archive_invalid"
+    return 1
+  fi
+  set +e
+  member="$(
+    awk '
+      /py3-apt-packages\.tar\.gz$/ {
+        n++
+        if (n == 1) saved = $0
+      }
+      END {
+        if (n == 1) { print saved; exit 0 }
+        if (n > 1) exit 2
+        exit 1
+      }
+    ' "$listing"
+  )"
+  listing_rc=$?
+  set -e
+  rm -f "$listing"
+  if [[ "$listing_rc" -eq 2 ]]; then
+    dp2_error "PHASE2_PREREQ=FAIL reason=py3_apt_ambiguous"
+    return 1
+  fi
+  if [[ "$listing_rc" -ne 0 || -z "$member" ]]; then
+    dp2_error "PHASE2_PREREQ=FAIL reason=py3_apt_missing"
+    return 1
+  fi
+  set +e
+  tar -xzf "$common" -C "$dest" -- "$member"
+  extract_rc=$?
+  set -e
+  if [[ "$extract_rc" -ne 0 ]]; then
+    dp2_error "PHASE2_PREREQ=FAIL reason=py3_apt_extract_failed"
+    return 1
+  fi
+  if [[ ! -f "${dest}/py3-apt-packages.tar.gz" ]]; then
+    set +e
+    found="$(
+      find "$dest" -name 'py3-apt-packages.tar.gz' -type f |
+      awk '
+        { n++; if (n == 1) saved = $0 }
+        END {
+          if (n == 1) { print saved; exit 0 }
+          exit 1
+        }
+      '
+    )"
+    flatten_rc=$?
+    set -e
+    if [[ "$flatten_rc" -eq 0 && -n "$found" ]]; then
+      cp -a "$found" "${dest}/py3-apt-packages.tar.gz"
     fi
   fi
-  [[ -f "${dest}/py3-apt-packages.tar.gz" ]]
+  if [[ ! -f "${dest}/py3-apt-packages.tar.gz" ]]; then
+    dp2_error "PHASE2_PREREQ=FAIL reason=py3_apt_missing"
+    return 1
+  fi
+  return 0
 }
 
 prepare_phase2_ubuntu_prerequisites() {
@@ -164,7 +221,6 @@ prepare_phase2_ubuntu_prerequisites() {
 
   if ! dp2_extract_py3_apt_from_common "$common" "$work"; then
     rm -rf "$work"
-    dp2_error "PHASE2_PREREQ=FAIL reason=py3_apt_missing"
     return 1
   fi
 
