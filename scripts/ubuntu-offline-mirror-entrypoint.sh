@@ -49,13 +49,56 @@ phase2_replacement_guidance = [
     "(generation manifest, stage script, lifecycle wrapper, and required lib helpers).",
 ]
 
+# FULL-mode safety emphasis. This is intentionally presentation-only: it makes
+# the existing mandatory pause instruction impossible to miss without changing
+# any generated command, checksum, workflow generation, or trust decision.
+pause_heading = "STEP 1 — PAUSE DP SERVICES"
+pause_underline = "--------------------------"
+pause_completion = "Wait until the pause operation completes."
+pause_warning = [
+    "",
+    "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+    "CRITICAL — PAUSE IS MANDATORY. DO NOT SKIP STEP 1.",
+    "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+    "",
+    "The DP MUST be paused before any Ubuntu OS upgrade command is run.",
+    "DO NOT start STEP 2 until `aella_cli` -> `pause` has completed successfully.",
+    "",
+    "Skipping this step can leave DP services running during the OS upgrade.",
+    "This may cause severe memory pressure/OOM, upgrade failure, or an unstable DP.",
+]
+pause_stop_warning = [
+    "",
+    "STOP: Confirm the pause is fully complete before continuing to STEP 2.",
+]
+
 lines = src.read_text(encoding="utf-8").splitlines()
 out: list[str] = []
 hop_wrapped = 0
 phase2_wrapped = 0
+pause_emphasized = 0
+pause_completion_emphasized = 0
 i = 0
 while i < len(lines):
     line = lines[i]
+
+    if (
+        line == pause_heading
+        and i + 1 < len(lines)
+        and lines[i + 1] == pause_underline
+    ):
+        out.extend([line, lines[i + 1], *pause_warning])
+        pause_emphasized += 1
+        i += 2
+        continue
+
+    if line == pause_completion:
+        out.append(line)
+        out.extend(pause_stop_warning)
+        pause_completion_emphasized += 1
+        i += 1
+        continue
+
     m = hop_pat.match(line)
     if m:
         # Replace only the guidance immediately preceding an OS-hop launcher.
@@ -160,11 +203,21 @@ if phase2_wrapped not in (0, 1):
     raise SystemExit(
         f"MENU7_DISPLAY_FORMAT=FAIL reason=unexpected_phase2_count count={phase2_wrapped}"
     )
+if pause_emphasized not in (0, 1) or pause_completion_emphasized not in (0, 1):
+    raise SystemExit(
+        "MENU7_DISPLAY_FORMAT=FAIL reason=unexpected_pause_section_count "
+        f"heading={pause_emphasized} completion={pause_completion_emphasized}"
+    )
+if pause_emphasized != pause_completion_emphasized:
+    raise SystemExit(
+        "MENU7_DISPLAY_FORMAT=FAIL reason=incomplete_pause_section "
+        f"heading={pause_emphasized} completion={pause_completion_emphasized}"
+    )
 
 dst.write_text("\n".join(out) + "\n", encoding="utf-8")
 print(
     f"MENU7_DISPLAY_FORMAT=PASS wrapped_launchers={hop_wrapped} "
-    f"wrapped_phase2={phase2_wrapped}",
+    f"wrapped_phase2={phase2_wrapped} pause_emphasized={pause_emphasized}",
     file=sys.stderr,
 )
 PY
