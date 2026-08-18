@@ -184,6 +184,15 @@ grep -q "GEN='phase2-helper-generation.manifest'" "${UNIT}/upgrade-phase2.sh" \
   || fail "wrapper missing generation manifest"
 grep -q 'sha256sum -c "$GEN"' "${UNIT}/upgrade-phase2.sh" \
   || fail "wrapper missing helper hash verification"
+# The wrapper must return from sudo normally so its EXIT trap removes the mktemp tree.
+grep -Fq 'trap '\''rm -rf "$W"'\'' EXIT' "${UNIT}/upgrade-phase2.sh" \
+  || fail "wrapper missing temp cleanup EXIT trap"
+grep -Fq 'sudo bash "./$SCRIPT" --target-version "$VER" --same-version-recovery --mirror-url "$MIRROR"' \
+  "${UNIT}/upgrade-phase2.sh" || fail "wrapper missing Phase 2 stage invocation"
+if grep -q '^exec sudo bash ' "${UNIT}/upgrade-phase2.sh"; then
+  fail "exec bypasses wrapper EXIT cleanup trap"
+fi
+pass "Phase 2 wrapper preserves temp cleanup after stage"
 grep -qE 'curl[^|]*\|[[:space:]]*bash' "${TMP}/menu7.sh" && fail "curl|bash introduced" \
   || pass "no curl|bash in generated command"
 if grep -Ei 'password|secret|ACPS_PASSWORD|WORKER_SSH_PASSWORD' "${TMP}/menu7.sh"; then
