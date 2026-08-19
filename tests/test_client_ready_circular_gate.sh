@@ -345,6 +345,7 @@ chmod +x "${MM_CLIENT_ROOT}/stage-dp-phase2.sh" "${MM_CLIENT_ROOT}/bringup_py3_d
 # shellcheck source=/dev/null
 source "${ROOT}/scripts/lib/phase2_helper_generation.sh"
 phase2_helper_generation_write "$MM_CLIENT_ROOT" >/dev/null
+phase2_upgrade_wrapper_write "$MM_CLIENT_ROOT" "http://192.0.2.10" "6.5.0" >/dev/null
 if mm_check_client_build_prerequisites_ready; then
   pass "PHASE2_ONLY prerequisites PASS without hop clients"
 else

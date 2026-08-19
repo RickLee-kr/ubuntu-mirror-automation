@@ -163,15 +163,29 @@ else
 fi
 rm -f "${HTTP}/private.gpg"
 
-# --- GUI command uses local mirror URL ---
+# --- GUI command uses local mirror URL (WRAPPER_V1) ---
+# Menu 7 pins the published upgrade-<hop>.sh SHA256. The launcher download
+# lives inside that wrapper, not in the operator one-liner.
 eval "$(awk '
+  /^gui_client_wrapper_sha256\(\)/ { in_fn=1 }
   /^gui_client_hop_command_line\(\)/ { in_fn=1 }
   /^gui_client_hop_command_block\(\)/ { in_fn=1 }
   /^gui_client_hop_command\(\)/ { in_fn=1 }
   in_fn { print }
-  in_fn && /^}/ { if (++done >= 3) exit }
+  in_fn && /^}/ { in_fn=0; if (++done >= 4) exit }
 ' "${ROOT}/scripts/install-dp-upgrade-mirror.sh")"
-# Prefer the one-line generator when present.
+set +e
+cmd_missing="$(gui_client_hop_command_line "$HOST_A" "dp-offline-upgrade-xenial-to-bionic.sh" 2>"${WORKDIR}/menu7.missing.err")"
+cmd_missing_rc=$?
+set -e
+[[ "$cmd_missing_rc" -ne 0 ]] \
+  && grep -q 'MENU7_WRAPPER_MISSING=upgrade-xenial-to-bionic.sh' "${WORKDIR}/menu7.missing.err" \
+  && pass "missing wrapper prevents Menu 7 hop command" \
+  || fail "Menu 7 hop command should fail closed without published wrapper"
+export MM_CLIENT_ROOT="${WORKDIR}/published-client"
+mkdir -p "$MM_CLIENT_ROOT"
+printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' '# fixture OS-hop wrapper' \
+  >"${MM_CLIENT_ROOT}/upgrade-xenial-to-bionic.sh"
 if declare -F gui_client_hop_command_line >/dev/null 2>&1; then
   cmd_a="$(gui_client_hop_command_line "$HOST_A" "dp-offline-upgrade-xenial-to-bionic.sh")"
 elif declare -F gui_client_hop_command_block >/dev/null 2>&1; then
@@ -182,9 +196,12 @@ fi
 [[ "$cmd_a" == *"MIRROR='${HOST_A}'"* || "$cmd_a" == *"$HOST_A/client/"* ]] \
   && pass "GUI hop command downloads from Host A" \
   || fail "GUI hop command missing Host A URL"
-[[ "$cmd_a" == *"dp-launch-xenial-to-bionic.sh"* ]] \
-  && pass "GUI hop command downloads hop launcher" \
-  || fail "GUI hop command missing launcher download"
+[[ "$cmd_a" == *"upgrade-xenial-to-bionic.sh"* ]] \
+  && pass "GUI hop command downloads OS-hop wrapper" \
+  || fail "GUI hop command missing wrapper download"
+[[ "$cmd_a" != *"dp-launch-xenial-to-bionic.sh"* ]] \
+  && pass "GUI hop command does not embed launcher download" \
+  || fail "GUI hop command still embeds launcher download"
 [[ "$cmd_a" == *"sha256sum -c -"* ]] \
   && pass "GUI hop command pins launcher SHA256" \
   || fail "GUI hop command missing SHA pin"
