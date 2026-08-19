@@ -132,11 +132,12 @@ grep -Fq 'CLUSTER:' "$DISPLAY"
 grep -Fq 'Run STEP 6 on the DL master, every DL worker,' "$DISPLAY"
 grep -Fq 'Complete STEP 6 on ALL cluster nodes before starting STEP 7.' "$DISPLAY"
 grep -Fq 'Use the SAME staging command on every node.' "$DISPLAY"
-grep -Fq 'Copy and paste all 3 lines together into the DP terminal:' "$DISPLAY"
+[[ "$(grep -cF 'Copy and paste all 3 lines together into the DP terminal:' "$DISPLAY")" -eq 5 ]]
 ! grep -Fq 'Copy and paste the following entire line into the DP terminal:' "$DISPLAY"
 grep -Fq 'Copy and paste the following entire line into the DP terminal:' "$CANONICAL"
 [[ "$(grep -cE "^cd /home/aella && F='upgrade-" "$DISPLAY")" -eq 5 ]]
 [[ "$(grep -cE '^cd /home/aella && curl -fsSLo upgrade-' "$DISPLAY")" -eq 0 ]]
+[[ "$(grep -cF "U='${MIRROR}/client'" "$DISPLAY")" -eq 5 ]]
 [[ "$(grep -c '^cd /home/aella && L=' "$DISPLAY")" -eq 0 ]]
 [[ "$(grep -c '^( C=' "$DISPLAY")" -eq 0 ]]
 ! grep -q 'for F in' "$DISPLAY"
@@ -145,8 +146,8 @@ grep -Fq 'Copy and paste the following entire line into the DP terminal:' "$CANO
 ! grep -q 'dp-launch-' "$DISPLAY"
 
 extract_wrapper_block() {
-  local wrapper="$1" dest="$2"
-  python3 - "$DISPLAY" "$wrapper" "$dest" <<'PY'
+  local wrapper="$1" dest="$2" src="${3:-$DISPLAY}"
+  python3 - "$src" "$wrapper" "$dest" <<'PY'
 from pathlib import Path
 import sys
 text = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
@@ -165,7 +166,7 @@ PY
 }
 
 assert_three_line_block() {
-  local block="$1" wrapper="$2" sha="$3"
+  local block="$1" wrapper="$2" sha="$3" mirror="$4"
   local l1 l2 l3
   [[ "$(wc -l <"$block" | tr -d ' ')" -eq 3 ]]
   l1="$(sed -n '1p' "$block")"
@@ -178,6 +179,8 @@ assert_three_line_block() {
   [[ "${l3: -1}" != '\' ]]
   grep -Fq "F='${wrapper}'" "$block"
   grep -Fq "H='${sha}'" "$block"
+  grep -Fq "U='${mirror}/client'" "$block"
+  grep -Fq "${mirror}/client" "$block"
   grep -Fq 'curl -fsSLo "$D" "$U/$F"' "$block"
   grep -Fq 'sha256sum -c -' "$block"
   ! grep -Eq 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)' "$block"
@@ -192,7 +195,7 @@ MAX_ALLOWED_COMMAND_WIDTH=125
 for hop in "${HOPS[@]}"; do
   block="${TMP}/${hop}.sh"
   extract_wrapper_block "upgrade-${hop}.sh" "$block"
-  assert_three_line_block "$block" "upgrade-${hop}.sh" "$SHA"
+  assert_three_line_block "$block" "upgrade-${hop}.sh" "$SHA" "$MIRROR"
   while IFS= read -r cline; do
     clen="${#cline}"
     [[ "$clen" -gt "$MAX_COMMAND_DISPLAY_WIDTH" ]] && MAX_COMMAND_DISPLAY_WIDTH="$clen"
@@ -202,7 +205,7 @@ done
 
 phase2_block="${TMP}/phase2.sh"
 extract_wrapper_block "upgrade-phase2.sh" "$phase2_block"
-assert_three_line_block "$phase2_block" "upgrade-phase2.sh" "$P2_SHA"
+assert_three_line_block "$phase2_block" "upgrade-phase2.sh" "$P2_SHA" "$MIRROR"
 ! grep -q 'mktemp' "$phase2_block"
 ! grep -q 'phase2-helper-generation.manifest' "$phase2_block"
 while IFS= read -r cline; do
@@ -210,6 +213,36 @@ while IFS= read -r cline; do
   [[ "$clen" -gt "$MAX_COMMAND_DISPLAY_WIDTH" ]] && MAX_COMMAND_DISPLAY_WIDTH="$clen"
   [[ "$clen" -le "$MAX_ALLOWED_COMMAND_WIDTH" ]]
 done <"$phase2_block"
+
+# Prove the 125-column bound with the current field mirror URL.
+PROD_MIRROR="http://221.139.249.112"
+PROD_CANONICAL="${TMP}/prod-canonical.txt"
+PROD_DISPLAY="${TMP}/prod-display.txt"
+sed "s#${MIRROR}#${PROD_MIRROR}#g" "$CANONICAL" >"$PROD_CANONICAL"
+prod_before="$(sha256sum "$PROD_CANONICAL" | awk '{print $1}')"
+bash "$WRAPPER" --format-menu7 "$PROD_CANONICAL" "$PROD_DISPLAY" 2>"${TMP}/prod-format.log"
+prod_after="$(sha256sum "$PROD_CANONICAL" | awk '{print $1}')"
+[[ "$prod_before" == "$prod_after" ]]
+grep -q 'MENU7_DISPLAY_FORMAT=PASS wrapped_launchers=4 wrapped_phase2=1' "${TMP}/prod-format.log"
+[[ "$(grep -cF "U='${PROD_MIRROR}/client'" "$PROD_DISPLAY")" -eq 5 ]]
+for hop in "${HOPS[@]}"; do
+  block="${TMP}/prod-${hop}.sh"
+  extract_wrapper_block "upgrade-${hop}.sh" "$block" "$PROD_DISPLAY"
+  assert_three_line_block "$block" "upgrade-${hop}.sh" "$SHA" "$PROD_MIRROR"
+  while IFS= read -r cline; do
+    clen="${#cline}"
+    [[ "$clen" -gt "$MAX_COMMAND_DISPLAY_WIDTH" ]] && MAX_COMMAND_DISPLAY_WIDTH="$clen"
+    [[ "$clen" -le "$MAX_ALLOWED_COMMAND_WIDTH" ]]
+  done <"$block"
+done
+prod_phase2_block="${TMP}/prod-phase2.sh"
+extract_wrapper_block "upgrade-phase2.sh" "$prod_phase2_block" "$PROD_DISPLAY"
+assert_three_line_block "$prod_phase2_block" "upgrade-phase2.sh" "$P2_SHA" "$PROD_MIRROR"
+while IFS= read -r cline; do
+  clen="${#cline}"
+  [[ "$clen" -gt "$MAX_COMMAND_DISPLAY_WIDTH" ]] && MAX_COMMAND_DISPLAY_WIDTH="$clen"
+  [[ "$clen" -le "$MAX_ALLOWED_COMMAND_WIDTH" ]]
+done <"$prod_phase2_block"
 
 cat >"${TMP}/fakebin/sudo" <<'SUDO'
 #!/usr/bin/env bash

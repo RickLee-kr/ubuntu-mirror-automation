@@ -195,6 +195,17 @@ if pause_emphasized != pause_completion_emphasized:
         f"heading={pause_emphasized} completion={pause_completion_emphasized}"
     )
 
+leftover = [
+    line
+    for line in out
+    if re.match(r"^cd /home/aella && curl -fsSLo upgrade-", line)
+]
+if leftover:
+    raise SystemExit(
+        "MENU7_DISPLAY_FORMAT=FAIL reason=unwrapped_canonical_command "
+        f"count={len(leftover)}"
+    )
+
 dst.write_text("\n".join(out) + "\n", encoding="utf-8")
 print(
     f"MENU7_DISPLAY_FORMAT=PASS wrapped_launchers={hop_wrapped} "
