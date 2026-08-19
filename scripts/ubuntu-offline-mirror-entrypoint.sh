@@ -26,7 +26,9 @@ dst = Path(sys.argv[2])
 
 # Canonical WRAPPER_V1 command written by gui_client_hop_command_line().
 # The formatter changes presentation only; it does not change the saved command
-# file or any trust decision. Wrapper one-liners stay one physical line.
+# file or any trust decision. Wrapper one-liners are shown as 3 continuation lines.
+COPY_ONE_LINE = "Copy and paste the following entire line into the DP terminal:"
+COPY_THREE_LINES = "Copy and paste all 3 lines together into the DP terminal:"
 hop_pat = re.compile(
     r"^cd /home/aella && curl -fsSLo "
     r"(?P<wrapper>upgrade-(?:xenial-to-bionic|bionic-to-focal|focal-to-jammy|jammy-to-noble)\.sh)\.download "
@@ -45,6 +47,50 @@ phase2_pat = re.compile(
     r"mv -f (?P=wrapper)\.download (?P=wrapper) && "
     r"bash \./(?P=wrapper)$"
 )
+
+
+def wrapper_display_lines(wrapper, url, sha):
+    suffix = f"/client/{wrapper}"
+    if not url.endswith(suffix):
+        raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=wrapper_url_shape")
+    client_base = url[: -len(wrapper)].rstrip("/")
+    if not client_base.endswith("/client") or not client_base:
+        raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=mirror_url_empty")
+    line1 = (
+        f"cd /home/aella && F='{wrapper}' && D=\"$F.download\" && "
+        f"U='{client_base}' && \\"
+    )
+    line2 = f"H='{sha}' && curl -fsSLo \"$D\" \"$U/$F\" && \\"
+    line3 = (
+        "printf '%s  %s\\n' \"$H\" \"$D\" | sha256sum -c - && "
+        "mv -f \"$D\" \"$F\" && bash \"./$F\""
+    )
+    rendered = [line1, line2, line3]
+    joined = "\n".join(rendered)
+    if re.search(r"curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)", joined):
+        raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=curl_pipe_bash")
+    if ".sha256" in joined or "dp-launch-" in joined:
+        raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=trust_leak")
+    if "for F in" in joined or "BASH_SUBSHELL" in joined:
+        raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=phase2_legacy_bootstrap")
+    if not line1.endswith("\\") or not line2.endswith("\\"):
+        raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=continuation_missing")
+    if line1.rstrip("\\") != line1[:-1] or line2.rstrip("\\") != line2[:-1]:
+        raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=continuation_trailing_space")
+    if line3.endswith("\\"):
+        raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=final_line_continued")
+    return rendered
+
+
+def next_substantive_line(lines, start):
+    j = start
+    while j < len(lines):
+        candidate = lines[j]
+        if candidate == "" or candidate == COPY_ONE_LINE:
+            j += 1
+            continue
+        return candidate
+    return ""
 
 # FULL-mode safety emphasis. This is intentionally presentation-only: it makes
 # the existing mandatory pause instruction impossible to miss without changing
@@ -96,35 +142,31 @@ while i < len(lines):
         i += 1
         continue
 
+    if line == COPY_ONE_LINE:
+        nxt = next_substantive_line(lines, i + 1)
+        if hop_pat.match(nxt) or phase2_pat.match(nxt):
+            out.append(COPY_THREE_LINES)
+            i += 1
+            continue
+
     m = hop_pat.match(line)
     if m:
-        wrapper = m.group("wrapper")
-        url = m.group("url")
-        suffix = f"/client/{wrapper}"
-        if not url.endswith(suffix):
-            raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=wrapper_url_shape")
-        mirror = url[: -len(suffix)].rstrip("/")
-        if not mirror:
-            raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=mirror_url_empty")
         if re.search(r"curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)", line):
             raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=curl_pipe_bash")
-        out.append(line)
+        out.extend(wrapper_display_lines(m.group("wrapper"), m.group("url"), m.group("sha")))
         hop_wrapped += 1
         i += 1
         continue
 
     p2 = phase2_pat.match(line)
     if p2:
-        wrapper = p2.group("wrapper")
-        url = p2.group("url")
-        suffix = f"/client/{wrapper}"
-        if not url.endswith(suffix):
-            raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=phase2_url_shape")
         if re.search(r"curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)", line):
             raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=curl_pipe_bash")
         if "for F in" in line or "BASH_SUBSHELL" in line:
             raise SystemExit("MENU7_DISPLAY_FORMAT=FAIL reason=phase2_legacy_bootstrap")
-        out.append(line)
+        out.extend(
+            wrapper_display_lines(p2.group("wrapper"), p2.group("url"), p2.group("sha"))
+        )
         phase2_wrapped += 1
         i += 1
         continue

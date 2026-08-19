@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Verify Menu 7 display keeps WRAPPER_V1 commands as one physical line and that
-# upgrade-phase2.sh still fetches the complete helper unit over HTTP.
+# Verify Menu 7 DISPLAY wraps WRAPPER_V1 commands to 3 continuation lines
+# without changing the canonical command file, and that upgrade-phase2.sh
+# still fetches the complete helper unit over HTTP.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -131,33 +132,84 @@ grep -Fq 'CLUSTER:' "$DISPLAY"
 grep -Fq 'Run STEP 6 on the DL master, every DL worker,' "$DISPLAY"
 grep -Fq 'Complete STEP 6 on ALL cluster nodes before starting STEP 7.' "$DISPLAY"
 grep -Fq 'Use the SAME staging command on every node.' "$DISPLAY"
-[[ "$(grep -cE '^cd /home/aella && curl -fsSLo upgrade-' "$DISPLAY")" -eq 5 ]]
+grep -Fq 'Copy and paste all 3 lines together into the DP terminal:' "$DISPLAY"
+! grep -Fq 'Copy and paste the following entire line into the DP terminal:' "$DISPLAY"
+grep -Fq 'Copy and paste the following entire line into the DP terminal:' "$CANONICAL"
+[[ "$(grep -cE "^cd /home/aella && F='upgrade-" "$DISPLAY")" -eq 5 ]]
+[[ "$(grep -cE '^cd /home/aella && curl -fsSLo upgrade-' "$DISPLAY")" -eq 0 ]]
 [[ "$(grep -c '^cd /home/aella && L=' "$DISPLAY")" -eq 0 ]]
 [[ "$(grep -c '^( C=' "$DISPLAY")" -eq 0 ]]
 ! grep -q 'for F in' "$DISPLAY"
 ! grep -q 'BASH_SUBSHELL' "$DISPLAY"
 ! grep -Eq 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)' "$DISPLAY"
-! grep -Eq '\\[[:space:]]+$' "$DISPLAY"
-! grep -Eq '\\[[:space:]]*$' "$DISPLAY"
+! grep -q 'dp-launch-' "$DISPLAY"
 
+extract_wrapper_block() {
+  local wrapper="$1" dest="$2"
+  python3 - "$DISPLAY" "$wrapper" "$dest" <<'PY'
+from pathlib import Path
+import sys
+text = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+wrapper = sys.argv[2]
+prefix = "cd /home/aella && F='%s'" % wrapper
+found = []
+for i, line in enumerate(text):
+    if line.startswith(prefix):
+        if i + 2 >= len(text):
+            raise SystemExit("incomplete display block for %s" % wrapper)
+        found.append(text[i:i + 3])
+if len(found) != 1:
+    raise SystemExit("expected 1 display block for %s, got %s" % (wrapper, len(found)))
+Path(sys.argv[3]).write_text("\n".join(found[0]) + "\n", encoding="utf-8")
+PY
+}
+
+assert_three_line_block() {
+  local block="$1" wrapper="$2" sha="$3"
+  local l1 l2 l3
+  [[ "$(wc -l <"$block" | tr -d ' ')" -eq 3 ]]
+  l1="$(sed -n '1p' "$block")"
+  l2="$(sed -n '2p' "$block")"
+  l3="$(sed -n '3p' "$block")"
+  [[ "${l1: -1}" == '\' ]]
+  [[ "${l2: -1}" == '\' ]]
+  [[ "$l1" == "${l1%"${l1##*[![:space:]]}"}" ]]
+  [[ "$l2" == "${l2%"${l2##*[![:space:]]}"}" ]]
+  [[ "${l3: -1}" != '\' ]]
+  grep -Fq "F='${wrapper}'" "$block"
+  grep -Fq "H='${sha}'" "$block"
+  grep -Fq 'curl -fsSLo "$D" "$U/$F"' "$block"
+  grep -Fq 'sha256sum -c -' "$block"
+  ! grep -Eq 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)' "$block"
+  ! grep -Fq '.sha256' "$block"
+  ! grep -q 'dp-launch-' "$block"
+  ! grep -q 'for F in' "$block"
+  bash -n "$block"
+}
+
+MAX_COMMAND_DISPLAY_WIDTH=0
+MAX_ALLOWED_COMMAND_WIDTH=125
 for hop in "${HOPS[@]}"; do
   block="${TMP}/${hop}.sh"
-  grep -E "^cd /home/aella && curl -fsSLo upgrade-${hop}\\.sh\\.download " "$DISPLAY" >"$block"
-  [[ "$(wc -l <"$block" | tr -d ' ')" -eq 1 ]]
-  grep -Fq "upgrade-${hop}.sh" "$block"
-  grep -Fq "'${SHA}'" "$block"
-  ! grep -Eq 'curl[^|;]*\|[[:space:]]*(bash|sh)([[:space:]]|$)|\\.sha256|dp-launch-' "$block"
-  bash -n "$block"
+  extract_wrapper_block "upgrade-${hop}.sh" "$block"
+  assert_three_line_block "$block" "upgrade-${hop}.sh" "$SHA"
+  while IFS= read -r cline; do
+    clen="${#cline}"
+    [[ "$clen" -gt "$MAX_COMMAND_DISPLAY_WIDTH" ]] && MAX_COMMAND_DISPLAY_WIDTH="$clen"
+    [[ "$clen" -le "$MAX_ALLOWED_COMMAND_WIDTH" ]]
+  done <"$block"
 done
 
 phase2_block="${TMP}/phase2.sh"
-grep -E '^cd /home/aella && curl -fsSLo upgrade-phase2\.sh\.download ' "$DISPLAY" >"$phase2_block"
-[[ "$(wc -l <"$phase2_block" | tr -d ' ')" -eq 1 ]]
-grep -Fq 'upgrade-phase2.sh' "$phase2_block"
-grep -Fq "'${P2_SHA}'" "$phase2_block"
-! grep -q 'for F in' "$phase2_block"
+extract_wrapper_block "upgrade-phase2.sh" "$phase2_block"
+assert_three_line_block "$phase2_block" "upgrade-phase2.sh" "$P2_SHA"
 ! grep -q 'mktemp' "$phase2_block"
-bash -n "$phase2_block"
+! grep -q 'phase2-helper-generation.manifest' "$phase2_block"
+while IFS= read -r cline; do
+  clen="${#cline}"
+  [[ "$clen" -gt "$MAX_COMMAND_DISPLAY_WIDTH" ]] && MAX_COMMAND_DISPLAY_WIDTH="$clen"
+  [[ "$clen" -le "$MAX_ALLOWED_COMMAND_WIDTH" ]]
+done <"$phase2_block"
 
 cat >"${TMP}/fakebin/sudo" <<'SUDO'
 #!/usr/bin/env bash
@@ -204,5 +256,6 @@ grep -q 'PHASE2_HELPER_GENERATION=FAIL' "${TMP}/old.out"
 grep -q 'manifest_missing' "${TMP}/old.out"
 
 echo "MENU7_NORMAL_WIDTH_DISPLAY=PASS"
+echo "MAX_COMMAND_DISPLAY_WIDTH=${MAX_COMMAND_DISPLAY_WIDTH}"
 echo "PHASE2_HELPER_FETCH_E2E=PASS"
 echo "PHASE2_OLD_MENU7_HELPER_PREFETCH=FAILCLOSED"
