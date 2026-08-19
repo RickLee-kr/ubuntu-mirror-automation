@@ -376,7 +376,7 @@ grep -q 'passwordbox' "$INSTALLER" && grep -q '"1" "Preparation Mode"' "$INSTALL
   && pass "B configuration fields" || fail "B config"
 grep -qE 'Current DP Version|Target DP Version|"DP Version"' "$INSTALLER" \
   && fail "B DP version config labels present" || pass "B no DP version config labels"
-grep -Fq 'Phase 2 Target:      6.5.0 고정' "$COMMON" \
+grep -Fq 'Phase 2 Target:      6.5.0 (fixed)' "$COMMON" \
   && pass "B exact Phase 2 footer present" || fail "B exact Phase 2 footer missing"
 grep -qE 'Enter R2 URL|Enter ACPS URL|R2 URL input|ACPS URL input|Set R2 URL|Set ACPS URL' "$INSTALLER" \
   && fail "B URL menus present" || pass "B no URL menus"

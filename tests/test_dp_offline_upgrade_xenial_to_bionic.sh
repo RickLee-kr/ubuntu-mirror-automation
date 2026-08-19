@@ -383,7 +383,7 @@ detect_dp_topology >/dev/null || true
   && pass "CLI no semver → version fallback; topology still from prompt" \
   || fail "no-semver split detect failed (v='${DP_VERSION}' topo='${DP_TOPOLOGY}' tsrc=${DP_TOPOLOGY_SOURCE})"
 
-# prompt 없음 → topology fallback
+# no prompt → topology fallback
 install_fake_aella_cli noprompt
 detect_dp_version >/dev/null || true
 detect_dp_topology >/dev/null || true
@@ -2350,7 +2350,7 @@ grep -q "ENV_DEFAULT_FILE=\"/etc/default/stellar-offline-os-upgrade\"" "$SCRIPT_
 if grep -nE '^\s*nohup |disown' "$SCRIPT_IN"; then
   fail "nohup/disown bypass present"
 elif grep -nE '&\s*$' "$SCRIPT_IN" \
-  | grep -vE '^[0-9]+:[[:space:]]*\)[[:space:]]*&[[:space:]]*$|grep|#|forbidden|금지|nohup/background|PACKAGE_TRANSITION_WATCHER'; then
+  | grep -vE '^[0-9]+:[[:space:]]*\)[[:space:]]*&[[:space:]]*$|grep|#|forbidden|nohup/background|PACKAGE_TRANSITION_WATCHER'; then
   fail "unexpected background bypass present"
 else
   pass "no client nohup/disown; watcher-only background allowed"
@@ -2951,7 +2951,7 @@ fi
 
 # Static: monitor must not signal runner/service
 if grep -nE '^\s*wait "\$\{?RUNNER|^\s*wait "\$\{?UPGRADE_RUNNER|^\s*kill "\$\{?RUNNER|^\s*kill "\$\{?UPGRADE_RUNNER|^\s*systemctl stop|^\s*pkill |^\s*killall ' "$SCRIPT_IN" \
-  | grep -v 'grep\|#\|forbidden\|금지\|kill_fake\|pkill -f' ; then
+  | grep -v 'grep\|#\|forbidden\|kill_fake\|pkill -f' ; then
   fail "monitor path appears to signal runner/service"
 else
   pass "no wait/kill/systemctl-stop of runner in client template"

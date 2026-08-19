@@ -276,7 +276,7 @@ PY
     ' >"$log" 2>&1
 }
 
-# 3) UNSIGNED_TEST artifact → deploy 거부
+# 3) UNSIGNED_TEST artifact → deploy rejected
 UNSIGNED_OUT="${WORKDIR}/unsigned-client"
 set +e
 python3 "$BUILD_PY_PROJ" \
@@ -316,13 +316,13 @@ run_deploy_gate "$UNSIGNED_OUT" "${WORKDIR}/deploy-unsigned" "${WORKDIR}/deploy-
 rc=$?
 set -e
 if [[ "$rc" -ne 0 ]] && grep -qiE 'UNSIGNED_TEST|verification failed|signature' "${WORKDIR}/deploy-unsigned.log"; then
-  pass "3 UNSIGNED_TEST artifact → deploy 거부"
+  pass "3 UNSIGNED_TEST artifact → deploy rejected"
 else
   fail "3 UNSIGNED_TEST deploy should be rejected (rc=${rc})"
   cat "${WORKDIR}/deploy-unsigned.log" || true
 fi
 
-# 4) wrong signer fingerprint → deploy 거부
+# 4) wrong signer fingerprint → deploy rejected
 if [[ -f "$PROD_SCRIPT" ]]; then
   WRONG="${WORKDIR}/wrong-fpr"
   mkdir -p "$WRONG"
@@ -345,7 +345,7 @@ PY
   rc=$?
   set -e
   if [[ "$rc" -ne 0 ]] && grep -q 'REJECT:' "${WORKDIR}/wrong-fpr.log"; then
-    pass "4 wrong signer fingerprint → deploy 거부"
+    pass "4 wrong signer fingerprint → deploy rejected"
   else
     fail "4 wrong fingerprint should reject"
     cat "${WORKDIR}/wrong-fpr.log" || true
@@ -392,7 +392,7 @@ PY
   fi
 fi
 
-# 6) tampered client → SHA + signature 검증 FAIL
+# 6) tampered client → SHA + signature verification FAIL
 if [[ -f "$PROD_SCRIPT" ]]; then
   TAMPER_DIR="${WORKDIR}/tamper-client"
   mkdir -p "$TAMPER_DIR"

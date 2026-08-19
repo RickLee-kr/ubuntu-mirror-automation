@@ -6323,11 +6323,6 @@ print_final_hop_notice() {
  Docker daemon minimum API 1.44. This is an expected Jammy runtime
  interruption, not a Phase 1 abort condition.
 
-[IMPORTANT / 중요]
- Ubuntu 22.04 중간 단계에서는 DP 서비스가 중단되어 DP 제품 기능을
- 사용할 수 없습니다. aella_cli 도 사용할 수 없으며 Phase 1 에서는
- 제품 상태 검증을 수행하지 않습니다.
-
 [PHASE 1 JUDGEMENT]
  The product runtime interruption above is NOT a blocking condition
  for the Jammy -> Noble OS upgrade.

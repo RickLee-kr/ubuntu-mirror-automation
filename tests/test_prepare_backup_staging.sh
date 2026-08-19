@@ -667,21 +667,21 @@ else
   printf '%s\n' "$out" | tail -40
 fi
 
-# 24) spaced + Hangul filename with real block -> detect
-echo "-- 24 spaced Hangul filename block --"
+# 24) spaced + Unicode filename with real block -> detect
+echo "-- 24 spaced Unicode filename block --"
 T24="${WORKDIR}/t24"
 make_base_fixture "$T24"
-write_fake_pem_block "$T24/docs/비밀 키 메모.txt" "EC PRIVATE KEY"
-git -C "$T24" add -- "docs/비밀 키 메모.txt"
+write_fake_pem_block "$T24/docs/secret key café.txt" "EC PRIVATE KEY"
+git -C "$T24" add -- "docs/secret key café.txt"
 set +e
 out="$(run_script "$T24" --audit-only 2>&1)"
 rc=$?
 set +e
 if [[ "$rc" -ne 0 ]] \
-  && grep -q 'PRIVATE_KEY_BLOCK_STAGED path=docs/비밀 키 메모.txt type=EC' <<<"$out"; then
-  pass "24 Hangul/spaced filename block detected"
+  && grep -q 'PRIVATE_KEY_BLOCK_STAGED path=docs/secret key café.txt type=EC' <<<"$out"; then
+  pass "24 Unicode/spaced filename block detected"
 else
-  fail "24 Hangul filename (rc=${rc})"
+  fail "24 Unicode filename (rc=${rc})"
   printf '%s\n' "$out" | tail -40
 fi
 

@@ -83,7 +83,7 @@ fi
 
 # Notices present.
 assert_grep 'NOTICE: Local image import may take tens of minutes' "$BRINGUP" "EN duration notice"
-assert_no_grep '안내:' "$BRINGUP" "no Korean image-import guidance"
+assert_no_grep $'\uc548\ub0b4:' "$BRINGUP" "no Korean image-import guidance"
 assert_grep 'IMAGE_IMPORT_HEARTBEAT_SECONDS' "$BRINGUP" "heartbeat env honored"
 
 WORKDIR="$(mktemp -d)"

@@ -1651,7 +1651,7 @@ EOF
   # UTF-8 / non-ASCII field preserved verbatim in export
   printf 'hop\tfile_type\tfilename\toriginal_url\tfinal_url\tlocal_path\tsize_bytes\tsha256\thttp_status\trequest_count\tevidence_source\n' \
     >"${hd}/required-files.tsv"
-  printf '%s\tinrelease\tInRelease\thttp://example.test/utf8/경로/InRelease\thttp://example.test/utf8/경로/InRelease\t/opt/aelladata/abs/path/InRelease\t12\tabc\t200\t1\tproxy_access_log\n' \
+  printf '%s\tinrelease\tInRelease\thttp://example.test/utf8/path-café/InRelease\thttp://example.test/utf8/path-café/InRelease\t/opt/aelladata/abs/path/InRelease\t12\tabc\t200\t1\tproxy_access_log\n' \
     "$hop" >>"${hd}/required-files.tsv"
   printf 'hop\trequested_at\tmethod\toriginal_url\tfinal_url\thttp_status\tsize_bytes\tsha256\tlocal_path\n' \
     >"${hd}/required-urls.tsv"
@@ -1746,7 +1746,7 @@ else
 fi
 # Absolute paths preserved in exported copy
 if grep -q '/opt/aelladata/abs/path/InRelease' "${EXP1}/required-files.tsv" \
-   && grep -q 'utf8/경로/InRelease' "${EXP1}/required-files.tsv"; then
+   && grep -q 'utf8/path-café/InRelease' "${EXP1}/required-files.tsv"; then
   pass "export-hop preserves absolute paths and UTF-8"
 else
   fail "export-hop preserves absolute paths and UTF-8"
@@ -2211,9 +2211,9 @@ else
 fi
 
 # non-ASCII output-dir path
-EXPORT_UTF="${WORKDIR}/export-src-유니코드"
+EXPORT_UTF="${WORKDIR}/export-src-café"
 seed_export_hop "$EXPORT_UTF" "bionic-to-focal" "18.04" "20.04" 1
-REPO_UTF="${WORKDIR}/repo-유니코드"
+REPO_UTF="${WORKDIR}/repo-café"
 mkdir -p "$REPO_UTF"
 set +e
 bash "$SCRIPT" export-hop --output-dir "$EXPORT_UTF" --repo-dir "$REPO_UTF" \

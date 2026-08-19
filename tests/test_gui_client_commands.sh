@@ -129,7 +129,7 @@ grep -qE 'Current DP Version|Starting DP Version"|Target DP Version|"DP Version"
 footer="$(mm_config_footer_text)"
 grep -Fxq 'Starting DP Version: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0' <<<"$footer" \
   || fail "exact footer starting line missing"
-grep -Fxq 'Phase 2 Target:      6.5.0 고정' <<<"$footer" \
+grep -Fxq 'Phase 2 Target:      6.5.0 (fixed)' <<<"$footer" \
   || fail "exact footer phase2 target line missing"
 grep -Fxq 'DP OS version: 16.04' <<<"$footer" \
   || fail "exact footer DP OS line missing"

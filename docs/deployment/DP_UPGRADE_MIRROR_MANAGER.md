@@ -94,7 +94,7 @@ Exact Configuration footer:
 
 ```
 Starting DP Version: 6.2.0 / 6.3.0 / 6.4.0 / 6.5.0
-Phase 2 Target:      6.5.0 고정
+Phase 2 Target:      6.5.0 (fixed)
 DP OS version: 16.04
 
 If the DP is already running Ubuntu 24.04, select Phase 2 Only.

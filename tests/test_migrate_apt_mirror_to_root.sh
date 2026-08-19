@@ -72,7 +72,7 @@ make_spool_tree() {
   local spool="$1"
   mkdir -p "$spool"/selective/{published/hops/jammy-to-noble/ubuntu/dists/noble,published.previous/hops/jammy-to-noble/ubuntu/dists/noble,keys,state,staging} \
            "$spool"/client "$spool"/offline \
-           "$spool/selective/published/hops/jammy-to-noble/ubuntu/pool/한글 디렉터리"
+           "$spool/selective/published/hops/jammy-to-noble/ubuntu/pool/café dir"
   ln -sfn published "$spool/selective/current"
   ln -sfn published "$spool/selective/active"
   printf 'READY\n' >"$spool/selective/state/READY"
@@ -82,7 +82,7 @@ make_spool_tree() {
   printf 'shared-payload\n' >"$spool/selective/published/hops/jammy-to-noble/ubuntu/pool-file.deb"
   ln "$spool/selective/published/hops/jammy-to-noble/ubuntu/pool-file.deb" \
      "$spool/selective/published.previous/hops/jammy-to-noble/ubuntu/pool-file.deb"
-  printf 'ok\n' >"$spool/selective/published/hops/jammy-to-noble/ubuntu/pool/한글 디렉터리/파일 name.deb"
+  printf 'ok\n' >"$spool/selective/published/hops/jammy-to-noble/ubuntu/pool/café dir/file name.deb"
   local hop
   for hop in xenial-to-bionic bionic-to-focal focal-to-jammy jammy-to-noble; do
     printf '#!/bin/sh\necho %s\n' "$hop" >"$spool/client/dp-offline-upgrade-${hop}.sh"
@@ -240,7 +240,7 @@ if grep -q 'PRIVATE-FIXTURE-DO-NOT-LOG' "$LOGF" 2>/dev/null; then
 else
   pass "11 private key not logged"
 fi
-[[ -f "$STAGE/selective/published/hops/jammy-to-noble/ubuntu/pool/한글 디렉터리/파일 name.deb" ]] \
+[[ -f "$STAGE/selective/published/hops/jammy-to-noble/ubuntu/pool/café dir/file name.deb" ]] \
   && pass "25 unicode/space names" || fail "25 unicode/space"
 out="$(run_script "$FX/repo" "${base_env[@]}" MIGRATE_EVIDENCE_DIR="$FX/evidence/c2" \
   --initial-copy --execute 2>&1)" || true

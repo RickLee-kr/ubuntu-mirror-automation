@@ -383,7 +383,7 @@ detect_dp_topology >/dev/null || true
   && pass "CLI no semver → version fallback; topology still from prompt" \
   || fail "no-semver split detect failed (v='${DP_VERSION}' topo='${DP_TOPOLOGY}' tsrc=${DP_TOPOLOGY_SOURCE})"
 
-# prompt 없음 → topology fallback
+# no prompt → topology fallback
 install_fake_aella_cli noprompt
 detect_dp_version >/dev/null || true
 detect_dp_topology >/dev/null || true
@@ -2795,7 +2795,7 @@ fi
 
 # Static: monitor must not signal runner/service
 if grep -nE '^\s*wait "\$\{?RUNNER|^\s*wait "\$\{?UPGRADE_RUNNER|^\s*kill "\$\{?RUNNER|^\s*kill "\$\{?UPGRADE_RUNNER|^\s*systemctl stop|^\s*pkill |^\s*killall ' "$SCRIPT_IN" \
-  | grep -v 'grep\|#\|forbidden\|금지\|kill_fake\|pkill -f' ; then
+  | grep -v 'grep\|#\|forbidden\|kill_fake\|pkill -f' ; then
   fail "monitor path appears to signal runner/service"
 else
   pass "no wait/kill/systemctl-stop of runner in client template"
@@ -6781,7 +6781,7 @@ else
   cat "$bp/out.txt" || true
 fi
 
-# 18.BQ confirmation 이후 실제 제거 (fixture path)
+# 18.BQ actual removal after confirmation (fixture path)
 bq="$(mktemp -d "${OUT_DIR}/bq.XXXX")"
 mkdir -p "$bq/opt/aelladata/os-upgrade/offline" "$bq/etc/apt/preferences.d"
 set +e
@@ -6809,7 +6809,7 @@ else
   cat "$bq/out.txt" || true
 fi
 
-# 18.BR target plan에 lxd 미선택
+# 18.BR lxd not selected in target plan
 br="$(mktemp -d "${OUT_DIR}/br.XXXX")"
 mkdir -p "$br/evid"
 set +e
@@ -6829,7 +6829,7 @@ else
   cat "$br/out.txt" || true
 fi
 
-# 18.BS target plan에 lxd 재선택 시 차단
+# 18.BS block lxd reselect in target plan
 bs="$(mktemp -d "${OUT_DIR}/bs.XXXX")"
 mkdir -p "$bs/evid"
 set +e
@@ -6849,7 +6849,7 @@ else
   cat "$bs/out.txt" || true
 fi
 
-# 18.BT api.snapcraft.io 호출 없음 (정적 + pin/guard 경로)
+# 18.BT no api.snapcraft.io call (static + pin/guard path)
 if grep -q 'apply_lxd_noinstall_pin' "$SCRIPT_IN" \
   && grep -q 'api\.snapcraft\.io' "$SCRIPT_IN" \
   && grep -q 'PACKAGE_MAINTAINER_NETWORK_RISK_SCAN=PASS' "$SCRIPT_IN" \
@@ -7205,7 +7205,7 @@ else
   cat "$ci/out.txt" "$ci2/out.txt" "$ci/gate.txt" "$ci2/gate.txt" || true
 fi
 
-# 18.CJ first-run 이외 비CSV 예상외 출력 → AMBIGUOUS / exit 36
+# 18.CJ unexpected non-CSV output besides first-run → AMBIGUOUS / exit 36
 cj="$(mktemp -d "${OUT_DIR}/cj.XXXX")"
 plant_lxd_dpkg_status "$cj"
 install_fake_lxc "$cj" unexpected

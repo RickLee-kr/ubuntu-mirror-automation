@@ -47,7 +47,7 @@ _acb_strip_lxd_heartbeat_fn() {
 # Return 0 if a trailing-`&` line is NOT an allowed watcher/comment exception.
 _acb_has_unexpected_ampersand() {
   grep -nE '&\s*$' "$1" \
-    | grep -vE '^[0-9]+:[[:space:]]*\)[[:space:]]*&[[:space:]]*$|grep|#|forbidden|금지|nohup/background|PACKAGE_TRANSITION_WATCHER' \
+    | grep -vE '^[0-9]+:[[:space:]]*\)[[:space:]]*&[[:space:]]*$|grep|#|forbidden|nohup/background|PACKAGE_TRANSITION_WATCHER' \
     >/dev/null
 }
 
@@ -96,7 +96,7 @@ assert_offline_hop_background_policy() {
     fail "nohup/disown bypass present"
   elif _acb_has_unexpected_ampersand "$filtered"; then
     grep -nE '&\s*$' "$filtered" \
-      | grep -vE '^[0-9]+:[[:space:]]*\)[[:space:]]*&[[:space:]]*$|grep|#|forbidden|금지|nohup/background|PACKAGE_TRANSITION_WATCHER' \
+      | grep -vE '^[0-9]+:[[:space:]]*\)[[:space:]]*&[[:space:]]*$|grep|#|forbidden|nohup/background|PACKAGE_TRANSITION_WATCHER' \
       || true
     fail "unexpected background bypass present"
   else

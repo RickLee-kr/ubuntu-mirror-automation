@@ -20,11 +20,11 @@ Collector
 → OS-only Preflight
 → Discovery OS Hop (or production hop chain)
 → Package/File Analysis
-→ Mirror/Offline Set 보완
-→ 다음 OS Hop 반복
-→ Ubuntu 24.04 도달
+→ Mirror/Offline Set completion
+→ Repeat for the next OS hop
+→ Reach Ubuntu 24.04
 ────────────────────────────────
-→ 별도 Phase 2 Readiness
+→ Separate Phase 2 Readiness
 → DP Python/Py3 Bringup
 ```
 

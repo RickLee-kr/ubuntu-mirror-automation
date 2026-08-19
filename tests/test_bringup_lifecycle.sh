@@ -22,12 +22,12 @@ echo "=== test_bringup_lifecycle ==="
 
 cat >"$PHASE2_BRINGUP_LOG_DEFAULT" <<'EOF'
 Bringup complete: run this command when installation completes
-안내: Bringup complete: 문구가 출력된 후에만 실행하십시오
+Note: run this only after the Bringup complete: line is printed
 EOF
 if p2b_log_has_anchored_completion "$PHASE2_BRINGUP_LOG_DEFAULT"; then
   fail "instructional completion text was accepted"
 fi
-pass "instructional English/Korean text is not completion"
+pass "instructional text is not completion"
 
 # A production-like active worker and IMAGE_IMPORT records remain RUNNING; CLI
 # discovery is deliberately deferred during an active run.
