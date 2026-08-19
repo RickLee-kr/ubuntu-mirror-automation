@@ -145,7 +145,9 @@ while i < len(lines):
     if line == COPY_ONE_LINE:
         nxt = next_substantive_line(lines, i + 1)
         if hop_pat.match(nxt) or phase2_pat.match(nxt):
-            out.append(COPY_THREE_LINES)
+            prev = next((item for item in reversed(out) if item), "")
+            if prev != COPY_THREE_LINES:
+                out.append(COPY_THREE_LINES)
             i += 1
             continue
 
